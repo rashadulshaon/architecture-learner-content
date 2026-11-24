@@ -9,7 +9,7 @@ slides:
         icon: switch
         title: 'বাড়ির সুইচ বোর্ড'
         body: |
-          বাড়িতে নতুন একটা ঘরের লাইন টানা হলো। শর্ট সার্কিট হলে পুরো এলাকার লাইন কাটতে হয় না, শুধু ওই ঘরের সুইচটা off করলেই চলে। তার টানা হলো deploy, আর সুইচ অন করা হলো release। দুটো আলাদা হলে ভুল হলে তুমি তার খোলো না, শুধু সুইচ off করো।
+          বাড়িতে নতুন একটা ঘরের লাইন টানা হলো। শর্ট সার্কিট হলে পুরো এলাকার লাইন কাটতে হয় না, শুধু ওই ঘরের সুইচটা off করলেই চলে। তার টানা হলো deploy, আর সুইচ অন করা হলো release। দুটো আলাদা হলে ভুল হলে আপনি তার খোলেন না, শুধু সুইচ off করেন।
       - type: text
         body: |
           রহিমের টিম রাত ১১টায় নতুন checkout deploy করল, আর তাতে একটা bug। পুরনো কোডে ফেরাতে গেলে rollback deploy লাগবে, যা ২০ মিনিটের কাজ আর নিজেই ঝুঁকিপূর্ণ। এই ২০ মিনিটে ক্রেতারা অর্ডার দিতে পারছে না।
@@ -54,7 +54,7 @@ slides:
     blocks:
       - type: text
         body: |
-          সব সুইচ এক নয়। বাড়ির মেইন সুইচ বছরের পর বছর থাকে, কিন্তু নতুন ঘরের অস্থায়ী সুইচ কাজ শেষে খুলে ফেলা হয়। Flag-ও তাই। আগে ঠিক করো এটা কোন ধরনের, কারণ ধরনই বলে দেয় কত দিন বাঁচবে আর কে বদলাবে।
+          সব সুইচ এক নয়। বাড়ির মেইন সুইচ বছরের পর বছর থাকে, কিন্তু নতুন ঘরের অস্থায়ী সুইচ কাজ শেষে খুলে ফেলা হয়। Flag-ও তাই। আগে ঠিক করুন এটা কোন ধরনের, কারণ ধরনই বলে দেয় কত দিন বাঁচবে আর কে বদলাবে।
       - type: visual
         kind: table
         caption: 'চার ধরনের feature flag'
@@ -75,10 +75,30 @@ slides:
           - 'deploy ছাড়া বদলানো যায় (ডেটাবেস বা কনফিগ সার্ভিস থেকে)।'
           - 'অন-কল ইঞ্জিনিয়ার এক মিনিটে খুঁজে পায় আর বদলাতে পারে।'
           - 'বন্ধ থাকলে অ্যাপ ভেঙে পড়ে না, বিকল্প পথে চলে (যেমন "পরে চেষ্টা করুন" বার্তা)।'
+      - type: code
+        lang: php
+        file: 'src/Controller/PaymentController.php'
+        variant: good
+        code: |
+          #[Route('/checkout/pay', methods: ['POST'])]
+          public function pay(Request $request): Response
+          {
+              if ($this->flags->isOn('card-payments-off')) {      // kill switch
+                  return $this->json([
+                      'message' => 'এখন কার্ড পেমেন্ট চলছে না। অনুগ্রহ করে বিকাশে পেমেন্ট করুন।',
+                  ], Response::HTTP_SERVICE_UNAVAILABLE);          // বিকল্প পথ, ক্র্যাশ নয়
+              }
+
+              return $this->paymentGateway->charge($request);
+          }
+        marks:
+          - {line: 4, tip: 'flag-এর নাম ইচ্ছে করেই "off": flag না থাকলে ডিফল্ট false, তাই কেউ সত্যিই সুইচ না টানলে কার্ড পেমেন্ট চলতেই থাকে।'}
+          - {line: 7, tip: 'সুইচ চালু থাকলে ক্রেতা ঝুলে থাকা পাতার বদলে পরিষ্কার বার্তা আর পেমেন্টের অন্য পথ পায়।'}
     aside:
       - type: tips
         items:
-          - 'প্রতিটা flag-এ লেখো: ধরন, মালিক, আর কখন সরানো হবে। permission ও kill switch ছাড়া সবগুলোর মেয়াদ থাকা দরকার।'
+          - 'Kill switch-এর একটা দাম আছে: চালু থাকলে ফিচারটা নেই। জরুরি অবস্থার আগেই বিকল্প পথ বানিয়ে test করে রাখুন।'
+          - 'প্রতিটা flag-এ লিখুন: ধরন, মালিক, আর কখন সরানো হবে। permission ও kill switch ছাড়া সবগুলোর মেয়াদ থাকা দরকার।'
           - 'Permission flag আসলে অনুমতির নিয়ম; সেটা security-র আলোচনায় authorization-এর অংশ।'
       - type: refs
         items:
@@ -91,21 +111,21 @@ slides:
   - slug: flag-service-symfony
     title: 'Symfony-তে সাধারণ flag service ও শতাংশ rollout'
     kind: howto
-    tldr: 'Flag-এর অবস্থা ডেটাবেসে রাখো, ছোট TTL দিয়ে cache করো; শতাংশ rollout-এ ব্যবহারকারীর আইডি hash করে ০ থেকে ৯৯ বের করো, যাতে একই ব্যবহারকারী সবসময় একই ফল পায়।'
+    tldr: 'Flag-এর অবস্থা ডেটাবেসে রাখুন, ছোট TTL দিয়ে cache করুন; শতাংশ rollout-এ ব্যবহারকারীর আইডি hash করে ০ থেকে ৯৯ বের করুন, যাতে একই ব্যবহারকারী সবসময় একই ফল পায়।'
     keywords: ['FeatureFlags service', 'percentage rollout', 'gradual rollout', 'crc32', 'sticky bucketing', 'Symfony']
     blocks:
       - type: text
         body: |
-          ফিচার একবারে সবাইকে নয়, ধাপে ধাপে খোলো। ১% দিয়ে শুরু করে সব ঠিক থাকলে বাড়াও। মূল কৌশল: ব্যবহারকারীর আইডি আর flag-এর নাম মিলিয়ে একটা hash বের করে ০–৯৯ সংখ্যায় নামাও। সংখ্যাটা শতাংশের চেয়ে ছোট হলে ফিচার চালু। একই আইডি সবসময় একই সংখ্যা পায়, তাই ব্যবহারকারী একবার চালু পেলে চালুই থাকে।
+          ফিচার একবারে সবাইকে নয়, ধাপে ধাপে খুলুন। ১% দিয়ে শুরু করে সব ঠিক থাকলে বাড়ান। মূল কৌশল: ব্যবহারকারীর আইডি আর flag-এর নাম মিলিয়ে একটা hash বের করে ০–৯৯ সংখ্যায় নামান। সংখ্যাটা শতাংশের চেয়ে ছোট হলে ফিচার চালু। একই আইডি সবসময় একই সংখ্যা পায়, তাই ব্যবহারকারী একবার চালু পেলে চালুই থাকে।
       - type: visual
         kind: steps
         caption: 'একটা নতুন checkout-এর ধাপে ধাপে rollout'
         steps:
-          - {title: '১. শুধু টিম', body: 'allow list-এ নিজেদের আইডি; শতাংশ ০।', tip: 'আসল ব্যবহারকারীর আগে নিজেরা প্রোডাকশনে ব্যবহার করে দেখো।'}
-          - {title: '২. ১% ব্যবহারকারী', body: 'error rate আর অর্ডার সংখ্যা মেলাও।', tip: 'খারাপ হলে মাত্র ১% ক্ষতিগ্রস্ত। flag off করলেই ফিরে।'}
-          - {title: '৩. ২৫%', body: 'এক দিন চালিয়ে দেখো, লোড আর error ঠিক আছে কি না।', tip: 'পূর্ণ লোডে ধরা পড়ে এমন সমস্যা এখানে বেরিয়ে আসে।'}
-          - {title: '৪. ১০০%', body: 'সবার জন্য চালু।', tip: 'এখনো flag মোছা হয়নি; কয়েক দিন চোখ রাখো।'}
-          - {title: '৫. flag আর পুরনো কোড মোছো', body: 'শর্ত সরিয়ে শুধু নতুন পথ রাখো।', tone: accent, tip: 'এই ধাপ বাদ পড়লে flag ঋণ জমে। পরের স্লাইডে আরও।'}
+          - {title: '১. শুধু টিম', body: 'allow list-এ নিজেদের আইডি; শতাংশ ০।', tip: 'আসল ব্যবহারকারীর আগে নিজেরা প্রোডাকশনে ব্যবহার করে দেখুন।'}
+          - {title: '২. ১% ব্যবহারকারী', body: 'error rate আর অর্ডার সংখ্যা মেলান।', tip: 'খারাপ হলে মাত্র ১% ক্ষতিগ্রস্ত। flag off করলেই ফিরে।'}
+          - {title: '৩. ২৫%', body: 'এক দিন চালিয়ে দেখুন, লোড আর error ঠিক আছে কি না।', tip: 'পূর্ণ লোডে ধরা পড়ে এমন সমস্যা এখানে বেরিয়ে আসে।'}
+          - {title: '৪. ১০০%', body: 'সবার জন্য চালু।', tip: 'এখনো flag মোছা হয়নি; কয়েক দিন চোখ রাখুন।'}
+          - {title: '৫. flag আর পুরনো কোড মুছুন', body: 'শর্ত সরিয়ে শুধু নতুন পথ রাখুন।', tone: accent, tip: 'এই ধাপ বাদ পড়লে flag ঋণ জমে। পরের স্লাইডে আরও।'}
       - type: code
         lang: php
         file: 'src/Flag/FeatureFlags.php'
@@ -142,11 +162,12 @@ slides:
     aside:
       - type: tips
         items:
-          - 'একটা ব্যবহারকারীকে প্রথমে চালু, পরে বন্ধ দেখানো এড়াও; তাই hash-ই ব্যবহার করো, random() নয়।'
-          - 'লগে লেখো কোন request-এ কোন flag কী ছিল; ভুল খুঁজতে তা অমূল্য।'
+          - 'একটা ব্যবহারকারীকে প্রথমে চালু, পরে বন্ধ দেখানো এড়ান; তাই hash-ই ব্যবহার করুন, random() নয়।'
+          - 'লগে লিখুন কোন request-এ কোন flag কী ছিল; ভুল খুঁজতে তা অমূল্য।'
       - type: pitfalls
         items:
           - 'flag-এর অবস্থা কনফিগ ফাইলে রাখলে বদলাতে deploy লাগে — সেটা তো আসল উদ্দেশ্যই মারে।'
+          - 'দিনে ৩০০ ক্রেতার ১% মানে ৩ জন, যা দিয়ে কিছু বোঝা যায় না। ছোট সাইটে প্রতি ধাপে বেশি সময় রাখুন, বা ১০% থেকে শুরু করুন।'
     check:
       q: 'শতাংশ rollout-এ random() না লাগিয়ে আইডির hash কেন ব্যবহার করা হয়?'
       a: 'random() প্রতি request-এ আলাদা ফল দেয়, তাই একই ব্যবহারকারী একবার নতুন, একবার পুরনো পথ দেখে। hash একই আইডিকে সবসময় একই ফল দেয়।'
@@ -154,12 +175,12 @@ slides:
   - slug: flag-in-vue
     title: 'Vue-তে flag: সার্ভার ঠিক করে, ক্লায়েন্ট দেখায়'
     kind: howto
-    tldr: 'Flag-এর সিদ্ধান্ত সার্ভারে নাও, ব্যবহারকারীর জন্য মূল্যায়ন করা ফল API থেকে Vue-তে পাঠাও; Vue শুধু দেখানো বা লুকানোর কাজ করে, সুরক্ষা সার্ভারেই।'
+    tldr: 'Flag-এর সিদ্ধান্ত সার্ভারে নিন, ব্যবহারকারীর জন্য মূল্যায়ন করা ফল API থেকে Vue-তে পাঠান; Vue শুধু দেখানো বা লুকানোর কাজ করে, সুরক্ষা সার্ভারেই।'
     keywords: ['Vue feature flag', 'Pinia', 'flags endpoint', 'client side flag', 'server enforcement', 'UI toggle']
     blocks:
       - type: text
         body: |
-          Vue অ্যাপ নিজে flag-এর সিদ্ধান্ত নেয় না। সার্ভার ব্যবহারকারীর জন্য প্রতিটা flag মূল্যায়ন করে একটা ছোট JSON দেয়। Vue সেটা Pinia store-এ রেখে `v-if`-এ ব্যবহার করে। তবে মনে রাখো, ব্রাউজারে সব কিছু দেখা যায়: UI লুকালেই কিছু নিরাপদ হয় না। নতুন checkout-এর API-ও সার্ভারে একই flag দিয়ে আটকাতে হবে।
+          Vue অ্যাপ নিজে flag-এর সিদ্ধান্ত নেয় না। সার্ভার ব্যবহারকারীর জন্য প্রতিটা flag মূল্যায়ন করে একটা ছোট JSON দেয়। Vue সেটা Pinia store-এ রেখে `v-if`-এ ব্যবহার করে। তবে মনে রাখুন, ব্রাউজারে সব কিছু দেখা যায়: UI লুকালেই কিছু নিরাপদ হয় না। নতুন checkout-এর API-ও সার্ভারে একই flag দিয়ে আটকাতে হবে (পরের স্লাইডে)।
       - type: code
         lang: php
         file: 'src/Controller/FlagController.php'
@@ -178,7 +199,7 @@ slides:
               return $response;
           }
         marks:
-          - {line: 5, tip: 'ক্লায়েন্টকে শুধু true/false ফল দাও। শতাংশ বা allow list দেখাবে না।'}
+          - {line: 5, tip: 'ক্লায়েন্টকে শুধু true/false ফল দিন। শতাংশ বা allow list দেখাবে না।'}
           - {line: 9, tip: 'উত্তরটা ব্যবহারকারীর ওপর নির্ভর করে, তাই private।'}
       - type: code
         lang: vue
@@ -202,7 +223,7 @@ slides:
     aside:
       - type: tips
         items:
-          - 'পাতা খোলার সময়ই একবার /api/flags ডেকে store-এ রাখো; প্রতিটা component আলাদা করে ডেকো না।'
+          - 'পাতা খোলার সময়ই একবার /api/flags ডেকে store-এ রাখুন; প্রতিটা component আলাদা করে ডাকবেন না।'
           - 'flag না এলে বা request ব্যর্থ হলে isOn() false ফেরাক: নতুন ফিচার বন্ধ।'
       - type: pitfalls
         items:
@@ -211,10 +232,65 @@ slides:
       q: 'Vue-তে বাটন লুকালে ফিচার নিরাপদ হয় না কেন?'
       a: 'ব্রাউজারের কোড আর request ব্যবহারকারীর হাতে। সে সরাসরি API ডাকতে পারে। তাই সার্ভারে একই flag দিয়ে আটকাতে হয়।'
 
+  - slug: flag-server-guard
+    title: 'বাটন লুকানো তালা নয়: API-ও আটকান'
+    kind: pitfall
+    tldr: 'লুকানো বাটনের URL তবু খোলা থাকে। API action-এর ভেতরেই একই flag দেখুন, বন্ধ থাকলে ৪০৪ দিন।'
+    keywords: ['server-side flag check', 'hidden button', 'direct API call', '404', 'সার্ভারে সুরক্ষা']
+    blocks:
+      - type: metaphor
+        icon: lock
+        title: '"কর্মচারী ছাড়া প্রবেশ নিষেধ" সাইনবোর্ড'
+        body: |
+          দোকানের পেছনের দরজা থেকে "প্রবেশ নিষেধ" সাইনবোর্ড খুলে নিলে দরজায় তালা পড়ে না। বাটন লুকানো হলো সাইনবোর্ড; সার্ভারে flag যাচাই হলো তালা।
+      - type: text
+        body: |
+          রহিম নতুন checkout-এর বাটনটা flag-এর পেছনে লুকিয়েছে। কৌতূহলী এক ব্যবহারকারী ব্রাউজারের network tab খুলে নতুন পাতার request-টা কপি করে হাতে পাঠিয়ে দিল। সার্ভারে কেউ flag জিজ্ঞেস করে না, তাই অসমাপ্ত checkout অচেনা মানুষের জন্য চলে গেল।
+      - type: code
+        lang: php
+        file: 'src/Controller/CheckoutV2Controller.php'
+        variant: bad
+        code: |
+          #[Route('/api/checkout/v2', methods: ['POST'])]
+          public function create(#[MapRequestPayload] CheckoutV2Request $dto): JsonResponse
+          {
+              // Vue বাটন লুকায়, কিন্তু এখানে flag কেউ জিজ্ঞেস করে না
+              return $this->json($this->checkoutV2->place($dto), Response::HTTP_CREATED);
+          }
+      - type: code
+        lang: php
+        file: 'src/Controller/CheckoutV2Controller.php'
+        variant: good
+        code: |
+          #[Route('/api/checkout/v2', methods: ['POST'])]
+          public function create(#[MapRequestPayload] CheckoutV2Request $dto): JsonResponse
+          {
+              if (!$this->flags->isOn('new-checkout', $this->getUser())) {
+                  throw $this->createNotFoundException();   // যেন route-টাই নেই
+              }
+
+              return $this->json($this->checkoutV2->place($dto), Response::HTTP_CREATED);
+          }
+        marks:
+          - {line: 4, tip: '/api/flags-এর মতো একই isOn() ডাক, একই ব্যবহারকারী। hash একই উত্তর দেয়, তাই Vue আর সার্ভার সবসময় একমত।'}
+          - {line: 5, tip: '৪০৪ অচেনা লোককে কিছুই জানায় না। ৪০৩ দিলে বোঝা যেত বন্ধ একটা ফিচার আছে।'}
+      - type: quote
+        body: 'ক্লায়েন্ট ফিচার লুকাতে পারে। নিষেধ করতে পারে শুধু সার্ভার।'
+    aside:
+      - type: tips
+        items:
+          - 'ফিচারের প্রতিটা endpoint আটকান, শুধু প্রথমটা নয়। একটা না-আটকানো route মানে খোলা দরজা।'
+          - 'পাতা খোলা থাকতেই flag বন্ধ হলে পরের call ৪০৪ পাবে। Vue অ্যাপ /api/flags আবার এনে পুরনো checkout-এ ফিরে যাক।'
+      - type: remember
+        body: 'Vue ঠিক করে কী দেখাবে। সার্ভার ঠিক করে কী অনুমোদিত।'
+    check:
+      q: 'new-checkout যার জন্য বন্ধ, সে সরাসরি POST /api/checkout/v2 ডাকলে কী হওয়া উচিত, আর তা কোথায় ঠিক হয়?'
+      a: 'সার্ভার ৪০৪ দেয়; সিদ্ধান্তটা controller action-এর ভেতরে একই isOn() ডাক থেকে আসে। Vue-র লুকানো বাটন শুধু সাজসজ্জা।'
+
   - slug: flag-debt
     title: 'Flag ঋণ: যে সুইচ কেউ খোলে না'
     kind: pitfall
-    tldr: 'মুছে ফেলা হয়নি এমন পুরনো release flag কোডে দুই পথ বাঁচিয়ে রাখে, test দ্বিগুণ করে আর ভয়ের জায়গা বানায়; প্রতিটা flag-এর মালিক আর মুছে ফেলার তারিখ রাখো।'
+    tldr: 'মুছে ফেলা হয়নি এমন পুরনো release flag কোডে দুই পথ বাঁচিয়ে রাখে, test দ্বিগুণ করে আর ভয়ের জায়গা বানায়; প্রতিটা flag-এর মালিক আর মুছে ফেলার তারিখ রাখুন।'
     keywords: ['flag debt', 'flag cleanup', 'stale flags', 'technical debt', 'flag registry', 'remove_by']
     blocks:
       - type: text
@@ -222,13 +298,13 @@ slides:
           সুইচ বোর্ডে বছর পুরনো, কেউ চেনে না এমন সুইচ থাকলে কেউ সেটা ছুঁতে সাহস পায় না। কোডেও তাই। ১০টা flag মানে তত্ত্বে ১০২৪ রকম সংমিশ্রণ, অথচ test হয় দু-একটার। সবচেয়ে দুঃখজনক ঘটনা: কেউ ভুল করে এমন পুরনো flag বদলে দিল, যার পুরনো পথ বহুদিন আগে ভাঙা।
       - type: code
         lang: yaml
-        file: 'config/flags.yaml (নথি হিসেবে)'
+        file: 'config/flags.yaml (registry)'
         code: |
           new-checkout:
             type: release
             owner: 'rahim'
             created: '2026-11-01'
-            remove_by: '2026-12-15'      # এর পরে CI warning দেবে
+            remove_by: '2026-12-15'      # এর পরে নিচের CI test ফেল করবে
           payments-kill-switch:
             type: ops
             owner: 'oncall-payments'
@@ -236,21 +312,49 @@ slides:
         marks:
           - {line: 5, tip: 'প্রতিটা release flag-এ মুছে ফেলার তারিখ। তারিখ পেরোলে CI বা সাপ্তাহিক রিপোর্ট জানাবে।'}
           - {line: 9, tip: 'ops flag-এ থাকে runbook: বন্ধ করলে কী হয় আর কখন ব্যবহার করতে হয়।'}
+      - type: code
+        lang: php
+        file: 'tests/Flag/FlagRegistryTest.php'
+        variant: good
+        code: |
+          public function testNoReleaseFlagIsPastItsRemovalDate(): void
+          {
+              $flags = Yaml::parseFile(__DIR__.'/../../config/flags.yaml');
+              $today = new \DateTimeImmutable('today');
+              $overdue = [];
+
+              foreach ($flags as $name => $flag) {
+                  if ('release' !== $flag['type']) {
+                      continue;
+                  }
+                  if (new \DateTimeImmutable($flag['remove_by']) < $today) {
+                      $overdue[] = $name;
+                  }
+              }
+
+              self::assertSame([], $overdue, 'Overdue flags: delete them and their old paths.');
+          }
+        marks:
+          - {line: 11, tip: 'ops flag-এ remove_by নেই, তাই আজকের তারিখের সাথে শুধু release flag মেলানো হয়।'}
+          - {line: 16, tip: 'তারিখ পেরোলেই build লাল হয় আর flag-এর নাম বলে দেয়। কাউকে মনে রাখতে হয় না।'}
       - type: points
         title: 'flag মোছার নিয়ম'
         style: number
         items:
-          - 'ফিচার ১০০% হলে এক সপ্তাহের মধ্যে flag আর পুরনো পথ মুছে ফেলো।'
-          - 'ফিচারটা বাতিল হলে flag আর নতুন পথ মুছে পুরনোটাই রাখো।'
-          - 'ticket তৈরি করে মুছে ফেলার কাজটা release-এর অংশ ধরো, "পরে করব" নয়।'
+          - 'ফিচার ১০০% হলে এক সপ্তাহের মধ্যে flag আর পুরনো পথ মুছে ফেলুন।'
+          - 'ফিচারটা বাতিল হলে flag আর নতুন পথ মুছে পুরনোটাই রাখুন।'
+          - 'ticket তৈরি করে মুছে ফেলার কাজটা release-এর অংশ ধরুন, "পরে করব" নয়।'
       - type: quote
         body: 'যে flag-এর কাজ শেষ, সে এখন ঋণ। মুছে ফেলাটা ফিচার শেষ করার অংশ।'
     aside:
       - type: when
         use:
-          - 'release আর experiment flag: কাজ শেষে সরাও।'
+          - 'release আর experiment flag: কাজ শেষে সরান।'
         avoid:
           - 'একটা flag-এর ভেতরে আরেকটা flag জুড়ে ফেলা; জট পাকায়।'
+      - type: tips
+        items:
+          - 'তারিখে build লাল হওয়াটাই উদ্দেশ্য। তারিখ সত্যিই রাখা না গেলে review-সহ commit-এ remove_by সরান; test কখনো বাদ দেবেন না।'
       - type: remember
         body: 'প্রতিটা flag জন্মের সময়েই মৃত্যুর তারিখ নিয়ে আসে।'
       - type: refs
@@ -274,12 +378,12 @@ flashcards:
   - q: 'Feature flag-এর চার ধরন কী কী?'
     a: 'Release (ধীরে খোলা), ops/kill switch (জরুরি বন্ধ), experiment (A/B), permission (কে পাবে)।'
     more: |
-      ধরন ঠিক করলেই আয়ু আর মালিক ঠিক হয়। release আর experiment অস্থায়ী: কাজ শেষে মুছতে হয়। kill switch দীর্ঘস্থায়ী, সাথে runbook রাখা ভালো। permission আসলে ব্যবসার নিয়ম, তাই সেটাকে authorization-এর অংশ ভাবো।
+      ধরন ঠিক করলেই আয়ু আর মালিক ঠিক হয়। release আর experiment অস্থায়ী: কাজ শেষে মুছতে হয়। kill switch দীর্ঘস্থায়ী, সাথে runbook রাখা ভালো। permission আসলে ব্যবসার নিয়ম, তাই সেটাকে authorization-এর অংশ ভাবুন।
     ref: four-kinds-of-flags
   - q: 'Kill switch কী আর কেন লাগে?'
     a: 'জরুরিতে deploy ছাড়া কোনো ফিচার বা নির্ভরতা বন্ধ করার flag। যেমন ধীর পেমেন্ট গেটওয়ে বন্ধ করা।'
     more: |
-      বন্ধ থাকলে অ্যাপ বিকল্প পথে চলতে হবে, যেমন "এখন এই পদ্ধতি পাওয়া যাচ্ছে না" বার্তা। অন-কল ইঞ্জিনিয়ার এক মিনিটে খুঁজে বদলাতে পারে, এমন জায়গায় রাখো, সাথে runbook।
+      বন্ধ থাকলে অ্যাপ বিকল্প পথে চলতে হবে, যেমন "এখন এই পদ্ধতি পাওয়া যাচ্ছে না" বার্তা। অন-কল ইঞ্জিনিয়ার এক মিনিটে খুঁজে বদলাতে পারে, এমন জায়গায় রাখুন, সাথে runbook।
     ref: four-kinds-of-flags
   - q: 'শতাংশ rollout-এ কীভাবে ঠিক হয় কে নতুন ফিচার পাবে?'
     a: 'ব্যবহারকারীর আইডি আর flag-এর নাম মিলিয়ে hash করে ০–৯৯ বের করা হয়; শতাংশের চেয়ে ছোট হলে ফিচার চালু।'
@@ -292,15 +396,20 @@ flashcards:
       ডেটাবেস থেকে পড়ে ছোট TTL (যেমন ৩০ সেকেন্ড) দিয়ে cache করলে প্রতি request-এ ডেটাবেসে যাওয়া লাগে না, আবার বদল দ্রুত পৌঁছায়। flag-ই না পেলে ডিফল্ট হবে false।
     ref: flag-service-symfony
   - q: 'Flag ঋণ (flag debt) কী, আর কীভাবে এড়ানো যায়?'
-    a: 'কাজ শেষ হওয়া flag কোডে থেকে যাওয়া। এড়াতে প্রতিটা flag-এ মালিক আর মুছে ফেলার তারিখ রাখো।'
+    a: 'কাজ শেষ হওয়া flag কোডে থেকে যাওয়া। এড়াতে প্রতিটা flag-এ মালিক আর মুছে ফেলার তারিখ রাখুন।'
     more: |
-      পুরনো flag দুই পথ বাঁচিয়ে রাখে, test দ্বিগুণ করে আর ভুল করে বদলালে ভাঙা পথ চালু হয়। ফিচার ১০০% হলে এক সপ্তাহে flag আর পুরনো কোড মুছে ফেলো। এটা release-এর অংশ।
+      পুরনো flag দুই পথ বাঁচিয়ে রাখে, test দ্বিগুণ করে আর ভুল করে বদলালে ভাঙা পথ চালু হয়। ফিচার ১০০% হলে এক সপ্তাহে flag আর পুরনো কোড মুছে ফেলুন। এটা release-এর অংশ।
     ref: flag-debt
   - q: 'Vue-তে flag দিয়ে বাটন লুকালেই কি ফিচার সুরক্ষিত?'
     a: 'না। ব্যবহারকারী সরাসরি API ডাকতে পারে, তাই সার্ভারেও একই flag দিয়ে আটকাতে হবে।'
     more: |
       Vue শুধু দেখানো বা লুকানোর কাজ করে। সিদ্ধান্ত নেয় সার্ভার, আর সে ব্যবহারকারীর জন্য ফল (true/false) একটা API দিয়ে পাঠায়। flag-এর শতাংশ বা allow list ক্লায়েন্টকে জানানোর দরকার নেই।
-    ref: flag-in-vue
+    ref: flag-server-guard
+  - q: 'শেষ হয়ে যাওয়া release flag সত্যিই মোছা হচ্ছে কি না, তা কীভাবে নিশ্চিত করবেন?'
+    a: 'registry-তে প্রতিটা flag-এর মালিক আর remove_by তারিখ রাখুন, আর তারিখ পেরোনো release flag থাকলে ফেল করে এমন একটা CI test যোগ করুন।'
+    more: |
+      তারিখে build লাল হয় আর flag-এর নাম বলে দেয়, তাই কাউকে মনে রাখতে হয় না। তারিখ সত্যিই রাখা না গেলে test বাদ না দিয়ে review-সহ commit-এ তারিখ সরান। ops flag-এ (kill switch) remove_by থাকে না।
+    ref: flag-debt
 
 quiz:
   - q: 'রাত ১১টায় নতুন ফিচারে bug পাওয়া গেল। ফিচারটি flag-এর পেছনে ছিল। সবচেয়ে দ্রুত আর নিরাপদ পদক্ষেপ কী?'
@@ -375,6 +484,22 @@ quiz:
         correct: false
         why: 'ক্ষতি তখন সবাইকে ছোঁয়; ধীরে খোলার সুবিধাই হারায়।'
     ref: flag-service-symfony
+  - q: 'Vue-তে flag-এর বাটন লুকানো, কিন্তু API route-এ flag যাচাই নেই। কৌতূহলী ব্যবহারকারী কী করতে পারে?'
+    hint: 'ব্রাউজার কার হাতে: আপনার, না ব্যবহারকারীর?'
+    options:
+      - text: 'নিজে হাতে request পাঠিয়ে বন্ধ ফিচার ব্যবহার করতে পারে'
+        correct: true
+        why: 'ব্রাউজারের সবকিছু ব্যবহারকারীর হাতে। request ফেরাতে পারে শুধু সার্ভারের যাচাই।'
+      - text: 'কিছুই পারে না, কারণ বাটন লুকানো'
+        correct: false
+        why: 'বাটন লুকালে একটা শর্টকাট সরে, তার পেছনের URL সরে না।'
+      - text: 'কিছুই পারে না, কারণ Vue প্রতিটা request-এর সাথে flag পাঠায়'
+        correct: false
+        why: 'হাতে লেখা request-এ লেখক যা দেয় তা-ই যায়; সার্ভার ক্লায়েন্টকে বিশ্বাস করতে পারে না।'
+      - text: 'শুধু শতাংশের ভেতরের ব্যবহারকারীরা পারে'
+        correct: false
+        why: 'সার্ভার জিজ্ঞেস করলে তবেই bucket দেখা হয়। এই route জিজ্ঞেসই করে না।'
+    ref: flag-server-guard
   - q: 'দুই মাস আগে ১০০% হওয়া release flag এখনো কোডে আছে। এখন কী করা উচিত?'
     hint: 'flag-এর কাজ ফুরিয়েছে; তাহলে কোডে তার জায়গা আছে কি?'
     options:

@@ -80,7 +80,7 @@ slides:
       - type: terms
         items:
           - {term: 'Entry', meaning: 'কোনো অ্যাকাউন্টে এক দিকের এক লাইন: অ্যাকাউন্ট, debit বা credit, অঙ্ক।'}
-          - {term: 'Debit / Credit', meaning: 'খাতার দুই পাশ। ওয়ালেট বা আয়ের মতো দায়-ধরনের অ্যাকাউন্টে credit বাড়ায়, debit কমায়।'}
+          - {term: 'Debit / Credit', meaning: 'খাতার দুই পাশ। ওয়ালেট (আমাদের দায়) বা ফি আয়ের মতো অ্যাকাউন্টে credit অঙ্ক বাড়ায়, debit কমায়।'}
           - {term: 'Derived balance', meaning: 'আলাদা সংখ্যা নয়; entry-র যোগফল থেকে হিসাব করা অঙ্ক।'}
       - type: problem
         body: 'প্রতিটা টাকার উৎস আর গন্তব্য থাকে, তাই টাকা উবে যাওয়া বা শূন্য থেকে তৈরি হওয়া ধরা পড়ে।'
@@ -91,12 +91,12 @@ slides:
   - slug: ledger-schema
     title: 'টেবিল বানানো: account, transaction, entry'
     kind: howto
-    tldr: 'তিনটা টেবিল: account, transaction, entry; CHECK আর REVOKE দিয়ে ভুল অঙ্ক আর বদল আটকাও; balance = entry-র SUM।'
+    tldr: 'তিনটা টেবিল: account, transaction, entry; CHECK, currency foreign key আর REVOKE দিয়ে ভুল অঙ্ক, ভুল currency আর বদল আটকান; balance = entry-র SUM।'
     keywords: ['ledger schema', 'SQL', 'CHECK constraint', 'REVOKE', 'SUM', 'ledger_entry']
     blocks:
       - type: text
         body: |
-          তিনটা টেবিল যথেষ্ট। **account** হলো খাতার পাতা, **transaction** একটা ঘটনা (একটা পাঠানো), আর **entry** সেই ঘটনার প্রতিটা লাইন। অঙ্ক সবসময় ধনাত্মক integer, দিকটা `side` কলাম বলে। আর অ্যাপের ডেটাবেস user-কে UPDATE/DELETE-এর অধিকারই দেওয়া হয় না।
+          তিনটা টেবিল যথেষ্ট। **account** হলো খাতার পাতা, একটাই currency-র; **transaction** একটা ঘটনা (একটা পাঠানো), আর **entry** সেই ঘটনার প্রতিটা লাইন। অঙ্ক সবসময় ধনাত্মক integer, দিকটা `side` কলাম বলে। আর অ্যাপের ডেটাবেস user-কে UPDATE/DELETE-এর অধিকারই দেওয়া হয় না। দাম: ভুল শুধরানো যায় শুধু নতুন reversing লেনদেন দিয়ে, কখনো বদলে নয়।
       - type: code
         lang: sql
         file: 'migrations — ledger schema'
@@ -105,7 +105,8 @@ slides:
           CREATE TABLE ledger_account (
             id       bigserial PRIMARY KEY,
             code     text UNIQUE NOT NULL,      -- 'wallet:rahim', 'income:fees'
-            currency char(3) NOT NULL
+            currency char(3) NOT NULL,
+            UNIQUE (id, currency)
           );
           CREATE TABLE ledger_transaction (
             id          uuid PRIMARY KEY,
@@ -116,19 +117,21 @@ slides:
           CREATE TABLE ledger_entry (
             id             bigserial PRIMARY KEY,
             transaction_id uuid    NOT NULL REFERENCES ledger_transaction (id),
-            account_id     bigint  NOT NULL REFERENCES ledger_account (id),
+            account_id     bigint  NOT NULL,
             side           char(1) NOT NULL CHECK (side IN ('D', 'C')),
             amount_minor   bigint  NOT NULL CHECK (amount_minor > 0),
-            currency       char(3) NOT NULL
+            currency       char(3) NOT NULL,
+            FOREIGN KEY (account_id, currency) REFERENCES ledger_account (id, currency)
           );
           CREATE INDEX ON ledger_entry (account_id);
 
           REVOKE UPDATE, DELETE
             ON ledger_entry, ledger_transaction FROM app_user;
         marks:
-          - {line: 9, tip: '`UNIQUE` মানে একটা লেনদেন একবারের বেশি বাতিল করা যায় না — ডবল reversal ঠেকায়।'}
-          - {line: 17, tip: 'অঙ্ক সবসময় ০-র বেশি। কমা-বাড়ার দিক `side` ঠিক করে, ঋণাত্মক সংখ্যা নয়।'}
-          - {line: 22, tip: 'অ্যাপের user ভুল করে বা bug-এ entry বদলাতেই পারে না। কলম দিয়ে লেখা পাতার মতো।'}
+          - {line: 10, tip: '`UNIQUE` মানে একটা লেনদেন একবারের বেশি বাতিল করা যায় না — ডবল reversal ঠেকায়।'}
+          - {line: 18, tip: 'অঙ্ক সবসময় ০-র বেশি। কমা-বাড়ার দিক `side` ঠিক করে, ঋণাত্মক সংখ্যা নয়।'}
+          - {line: 20, tip: 'entry-র currency তার অ্যাকাউন্টের currency-র সমান হতেই হবে। BDT ওয়ালেটে USD entry বসালে ডেটাবেসই ফিরিয়ে দেয়।'}
+          - {line: 24, tip: 'অ্যাপের user ভুল করে বা bug-এ entry বদলাতেই পারে না। কলম দিয়ে লেখা পাতার মতো।'}
       - type: code
         lang: sql
         file: 'balance বের করা'
@@ -145,8 +148,8 @@ slides:
     aside:
       - type: tips
         items:
-          - 'balance দ্রুত লাগলে একটা cache কলাম রাখো, কিন্তু সেটা entry থেকে বানানো হিসাব, সত্যের উৎস নয়। অমিল হলে entry-ই ঠিক।'
-          - 'দুই-দিকের সমান হওয়ার নিয়মটা DB-তে বসাতে চাইলে PostgreSQL-এ `DEFERRABLE INITIALLY DEFERRED` constraint trigger দাও।'
+          - 'balance দ্রুত লাগলে একটা cache কলাম রাখুন, কিন্তু সেটা entry থেকে বানানো হিসাব, সত্যের উৎস নয়। অমিল হলে entry-ই ঠিক।'
+          - 'দুই-দিকের সমান হওয়ার নিয়মটা DB-তে বসাতে চাইলে PostgreSQL-এ `DEFERRABLE INITIALLY DEFERRED` constraint trigger দিন।'
       - type: refs
         items:
           - {to: 'concurrency/atomic-operations', label: 'এক transaction-এ সব entry'}
@@ -157,12 +160,12 @@ slides:
   - slug: posting-service
     title: 'Posting service: সমান না হলে লেখাই হবে না'
     kind: howto
-    tldr: 'একটা service সব entry এক transaction-এ লেখে, আগে debit = credit মেলায়; ভুল হলে মোছে না, উল্টো entry-র একটা লেনদেন লেখে।'
+    tldr: 'একটা service সব entry এক transaction-এ লেখে, আগে প্রতিটা currency-তে debit = credit মেলায়; ভুল হলে মোছে না, উল্টো entry-র একটা লেনদেন লেখে।'
     keywords: ['posting service', 'reversing entry', 'Symfony', 'DBAL transactional', 'Uuid::v7', 'reversal']
     blocks:
       - type: text
         body: |
-          সব লেখা একটাই দরজা দিয়ে ঢুকবে: `LedgerService::post()`। সে আগে দুই পাশের যোগফল মেলায়, তারপর transaction আর entry একই DB transaction-এ লেখে। লেনদেন ভুল হলে মোছা বা বদলানো যায় না — তখন **reversing entry**, মানে প্রতিটা লাইনের উল্টো দিকের একটা নতুন লেনদেন লেখা হয়।
+          সব লেখা একটাই দরজা দিয়ে ঢুকবে: `LedgerService::post()`। সে আগে প্রতিটা currency-তে দুই পাশের যোগফল মেলায়, তারপর transaction আর entry একই DB transaction-এ লেখে। লেনদেন ভুল হলে মোছা বা বদলানো যায় না — তখন **reversing entry**, মানে প্রতিটা লাইনের উল্টো দিকের একটা নতুন লেনদেন লেখা হয়।
       - type: code
         lang: php
         file: 'src/Ledger/LedgerService.php'
@@ -171,10 +174,13 @@ slides:
           /** @param list<Posting> $postings */
           public function post(string $memo, array $postings, ?Uuid $reverses = null): Uuid
           {
-              $sum = fn (Side $s) => array_sum(array_map(
-                  fn (Posting $p) => $p->side === $s ? $p->money->amount : 0, $postings));
-              if ($sum(Side::Debit) !== $sum(Side::Credit) || 0 === $sum(Side::Debit)) {
-                  throw new \DomainException('debit আর credit সমান নয়');
+              $net = [];                                    // currency => debit বিয়োগ credit
+              foreach ($postings as $p) {
+                  $signed = Side::Debit === $p->side ? $p->money->amount : -$p->money->amount;
+                  $net[$p->money->currency] = ($net[$p->money->currency] ?? 0) + $signed;
+              }
+              if ([] === $net || [] !== array_filter($net)) {
+                  throw new \DomainException('প্রতিটা currency-তে debit আর credit সমান হতে হবে');
               }
 
               return $this->db->transactional(function () use ($memo, $postings, $reverses) {
@@ -197,9 +203,9 @@ slides:
               });
           }
         marks:
-          - {line: 6, tip: 'দুই পাশ না মিললে DB-র কাছে যাওয়ার আগেই থামে। অসমান লেনদেন কখনো লেখাই হয় না।'}
-          - {line: 10, tip: 'transaction আর সব entry একসাথে। মাঝপথে ভাঙলে কিছুই লেখা থাকে না, অর্ধেক লেনদেন থাকে না।'}
-          - {line: 14, tip: 'বাতিলের ক্ষেত্রে এখানে মূল লেনদেনের id বসে; UNIQUE থাকায় ডবল বাতিল হয় না।'}
+          - {line: 9, tip: 'প্রতিটা currency আলাদাভাবে ঠিক শূন্য হতে হবে। ৫০০ BDT debit আর ৫০০ USD credit দিলে BDT +৫০০, USD −৫০০ থাকে, তাই ফিরিয়ে দেয়। পরের স্লাইড দেখুন।'}
+          - {line: 13, tip: 'transaction আর সব entry একসাথে। মাঝপথে ভাঙলে কিছুই লেখা থাকে না, অর্ধেক লেনদেন থাকে না।'}
+          - {line: 17, tip: 'বাতিলের ক্ষেত্রে এখানে মূল লেনদেনের id বসে; UNIQUE থাকায় ডবল বাতিল হয় না।'}
       - type: code
         lang: php
         file: 'বাতিল করা: মোছা নয়, উল্টো entry'
@@ -232,8 +238,8 @@ slides:
     aside:
       - type: pitfalls
         items:
-          - 'ভুল entry-তে UPDATE বা DELETE চালিও না। পরে কেউ জানবে না আসলে কী ঘটেছিল।'
-          - 'বাতিলের পর সঠিক অঙ্কের নতুন লেনদেন আলাদা করে লেখো; বাতিলটা আর "ঠিক করা" একসাথে নয়।'
+          - 'ভুল entry-তে UPDATE বা DELETE চালাবেন না। পরে কেউ জানবে না আসলে কী ঘটেছিল।'
+          - 'বাতিলের পর সঠিক অঙ্কের নতুন লেনদেন আলাদা করে লিখুন; বাতিলটা আর "ঠিক করা" একসাথে নয়।'
       - type: refs
         items:
           - {to: 'workflows/refunds-reversals', label: 'Refund আর reversal'}
@@ -241,6 +247,55 @@ slides:
     check:
       q: 'ভুল লেনদেন মুছে না দিয়ে উল্টো entry লেখার সুবিধা কী?'
       a: 'ইতিহাস অটুট থাকে: মূল ভুল আর তার বাতিল দুটোই দেখা যায়। অডিটর বুঝতে পারে কী ঘটেছিল, কখন, আর কীভাবে শোধরানো হলো।'
+
+  - slug: each-currency-balances
+    title: 'প্রতিটা currency-তে debit = credit'
+    kind: pitfall
+    tldr: 'Currency না দেখে অঙ্ক যোগ করলে ৫০০ BDT debit আর ৫০০ USD credit "সমান" ধরা পড়ে। প্রতিটা currency আলাদাভাবে মিলতে হবে; রূপান্তর যায় FX অ্যাকাউন্টের মধ্য দিয়ে।'
+    keywords: ['multi-currency', 'FX', 'currency check', 'balanced', 'conversion', 'মুদ্রা']
+    blocks:
+      - type: text
+        body: |
+          একটা পাঠানো লেখা হলো রহিমের ৫০০ BDT debit আর করিমের ৫০০ USD credit। যে check শুধু সংখ্যা যোগ করে, সে দেখে ৫০০০০ = ৫০০০০ আর মেনে নেয়। অথচ ১ ডলার ১২০ টাকা ধরলে ৫০০ USD প্রায় ৬০,০০০ BDT; ব্যাংক বিনা কারণে ৫৯,৫০০ টাকা দিয়ে ফেলল। টাকার নোট আর ডলারের নোট যোগ করে একটা মোট বানানো যায় না।
+      - type: code
+        lang: php
+        file: 'ভুল: check currency দেখে না'
+        variant: bad
+        code: |
+          // ৫০০ BDT বেরোল, ৫০০ USD ঢুকল: সংখ্যা সমান, তাই "balanced"
+          $this->post('Send money', [
+              new Posting($rahimBdt, Side::Debit,  new Money(50000, 'BDT')),
+              new Posting($karimUsd, Side::Credit, new Money(50000, 'USD')),
+          ]);
+        marks:
+          - {line: 4, tip: 'দুটো আলাদা currency। currency না দেখা মোট দিয়ে এটা পাস হয়, আর টাকা শূন্য থেকে তৈরি হয়।'}
+      - type: visual
+        kind: table
+        caption: 'সঠিক পথ: রহিম ৬০,০০০ BDT দেয়, করিম ৫০০ USD পায় (১ USD = ১২০ BDT)'
+        headers: ['অ্যাকাউন্ট', 'Debit', 'Credit']
+        rows:
+          - cells: ['রহিমের ওয়ালেট (BDT)', '৬০,০০০ BDT', '—']
+            tip: 'রহিমের টাকা তার ওয়ালেট থেকে বেরোল।'
+          - cells: ['FX clearing (BDT)', '—', '৬০,০০০ BDT']
+            tip: 'ব্যাংকের নিজের টাকার অ্যাকাউন্ট টাকাটা নিল। এখন BDT-র দিকে debit আর credit দুটোই আছে।'
+          - cells: ['FX clearing (USD)', '৫০০ USD', '—']
+            tip: 'ব্যাংকের নিজের ডলার অ্যাকাউন্ট ডলার বের করে দিল।'
+          - cells: ['করিমের ওয়ালেট (USD)', '—', '৫০০ USD']
+            tip: 'করিমের ওয়ালেটে ডলার ঢুকল।'
+          - cells: ['BDT মোট', '৬০,০০০', '৬০,০০০']
+            tip: 'BDT entry-গুলো নিজেদের মধ্যে মেলে।'
+          - cells: ['USD মোট', '৫০০', '৫০০']
+            tip: 'USD entry-গুলোও নিজেদের মধ্যে মেলে। দুই currency-ই check পাস করে।'
+      - type: quote
+        body: 'Debit = credit প্রতিটা currency-তে আলাদা, মোটের হিসাবে নয়।'
+    aside:
+      - type: pitfalls
+        items:
+          - 'দাম: প্রতি currency-র জন্য একটা FX clearing অ্যাকাউন্ট লাগে, আর ব্যবহৃত rate লেনদেনের সাথে (যেমন memo-তে) রাখতে হয়; নইলে পরে রূপান্তর যাচাই করা যায় না।'
+          - 'ডেটাবেসও পাহারা দেয়: entry-র currency তার অ্যাকাউন্টের currency-র সমান হতেই হবে, তাই BDT ওয়ালেটে USD entry বসতেই পারে না।'
+    check:
+      q: '৫০০ BDT debit আর ৫০০ USD credit কেন ফেরত যায়, আর আসল রূপান্তর কীভাবে লেখা হয়?'
+      a: 'BDT +৫০০ আর USD −৫০০ থাকে, কোনোটাই মেলে না। FX clearing অ্যাকাউন্টের মধ্য দিয়ে চারটা entry লিখুন, যাতে প্রতিটা currency-র নিজের debit-credit মেলে।'
 
 flashcards:
   - q: 'Double-entry ledger-এর মূল নিয়ম কী?'
@@ -273,6 +328,16 @@ flashcards:
     more: |
       `reverses_id`-তে UNIQUE দিলে একই লেনদেন দুইবার বাতিল করা যায় না। বাতিলের পর সঠিক অঙ্কের নতুন লেনদেন আলাদা করে লিখতে হয়।
     ref: posting-service
+  - q: 'শুধু মোটে নয়, প্রতিটা currency-তে আলাদা করে debit = credit কেন মেলাতে হয়?'
+    a: 'সংখ্যা যোগ করলে currency লুকিয়ে যায়: ৫০০ BDT বেরোনো আর ৫০০ USD ঢোকা সমান দেখায়, অথচ টাকা এক নয়। প্রতিটা currency নিজে মিলতে হবে।'
+    more: |
+      Service প্রতিটা currency-র debit বিয়োগ credit হিসাব করে, আর সবগুলো ঠিক শূন্য না হলে ফিরিয়ে দেয়। ডেটাবেসও চায় entry-র currency তার অ্যাকাউন্টের currency-র সমান হোক।
+    ref: each-currency-balances
+  - q: 'Ledger-এ currency রূপান্তর কীভাবে লেখা হয়?'
+    a: 'চারটা entry: পুরনো currency-তে গ্রাহকের ওয়ালেট ও FX clearing অ্যাকাউন্ট, তারপর নতুন currency-তে FX clearing আর গ্রাহকের ওয়ালেট।'
+    more: |
+      উদাহরণ: রহিম ৬০,০০০ BDT দেয়, করিম ৫০০ USD পায়। BDT: রহিম debit ৬০,০০০, FX clearing credit ৬০,০০০। USD: FX clearing debit ৫০০, করিম credit ৫০০। দুই currency-ই মেলে, আর rate লেনদেনের সাথে রাখা হয়।
+    ref: each-currency-balances
   - q: 'LedgerService কেন সব entry একই DB transaction-এ লেখে?'
     a: 'মাঝপথে ভাঙলে সব rollback হয়। তাই অর্ধেক লেখা লেনদেন থাকে না, যেখানে debit আছে কিন্তু credit নেই।'
     more: |
@@ -334,7 +399,7 @@ quiz:
         why: 'অঙ্ক ঠিক হলেও entry বদলানো নিষিদ্ধ; reversing entry লিখে নতুন সঠিক লেনদেন লিখতে হয়।'
     ref: posting-service
   - q: 'ledger-এ কোনগুলো সঠিক নকশা?'
-    hint: 'ইতিহাস, দিক আর যোগফল ভাবো।'
+    hint: 'ইতিহাস, দিক আর যোগফল ভাবুন।'
     options:
       - text: 'amount সবসময় ধনাত্মক, দিক আলাদা `side` কলামে'
         correct: true
@@ -349,6 +414,47 @@ quiz:
         correct: false
         why: 'উল্টো। entry সত্যের উৎস; balance তার হিসাব করা ফল।'
     ref: ledger-schema
+  - q: 'এই posting check-এ কী সমস্যা?'
+    lang: php
+    code: |
+      $debits  = array_sum(array_map(fn (Posting $p) =>
+          Side::Debit === $p->side ? $p->money->amount : 0, $postings));
+      $credits = array_sum(array_map(fn (Posting $p) =>
+          Side::Credit === $p->side ? $p->money->amount : 0, $postings));
+      if ($debits !== $credits) {
+          throw new \DomainException('Not balanced');
+      }
+    hint: 'একটা debit BDT-তে আর একটা credit USD-তে হলে কী হবে?'
+    options:
+      - text: 'আলাদা currency-র অঙ্ক একসাথে যোগ করে, তাই ৫০০ BDT বনাম ৫০০ USD পাস হয়ে যায়'
+        correct: true
+        why: 'প্রতিটা currency আলাদা করে যোগ করতে হবে, আর প্রতিটার নিট শূন্য হতে হবে।'
+      - text: '`!==`-এর বদলে `==` লাগবে'
+        correct: false
+        why: 'তুলনার চিহ্ন সমস্যা নয়; কী তুলনা হচ্ছে সেটাই সমস্যা।'
+      - text: 'শুধু `$debits` বড় হলে exception দেওয়া উচিত'
+        correct: false
+        why: 'credit বড় হলেও লেনদেন সমান অসমান।'
+      - text: 'কোনো সমস্যা নেই; মোট সমান মানেই লেনদেন balanced'
+        correct: false
+        why: 'সব অঙ্ক একই currency-তে হলেই শুধু মোট সমান মানে balanced।'
+    ref: each-currency-balances
+  - q: 'রহিম ৬০,০০০ BDT দেয়, করিমের ৫০০ USD পাওয়ার কথা। কোন posting সঠিক?'
+    hint: 'প্রতিটা currency-র নিজের মেলানো জোড়া দরকার।'
+    options:
+      - text: 'রহিম D ৬০,০০০ BDT, FX BDT C ৬০,০০০ BDT, FX USD D ৫০০ USD, করিম C ৫০০ USD'
+        correct: true
+        why: 'BDT: ৬০,০০০ = ৬০,০০০। USD: ৫০০ = ৫০০। প্রতিটা currency নিজে মেলে।'
+      - text: 'রহিম D ৬০,০০০ BDT, করিম C ৫০০ USD'
+        correct: false
+        why: 'BDT +৬০,০০০ আর USD −৫০০ থাকে; কোনোটাই মেলে না।'
+      - text: 'রহিম D ৬০,০০০ BDT, করিম C ৬০,০০০ USD'
+        correct: false
+        why: 'সংখ্যা হিসেবে মেলে, কিন্তু করিম ৫০০ নয়, ৬০,০০০ ডলার পেত।'
+      - text: 'কোডে ৫০০ USD-কে BDT বানিয়ে করিমের USD ওয়ালেটে ৬০,০০০ BDT-র একটা entry বসানো'
+        correct: false
+        why: 'entry-র currency ওয়ালেটের currency-র সমান হতে হয়, আর রূপান্তরের কোনো চিহ্ন খাতায় থাকে না।'
+    ref: each-currency-balances
   - q: 'একটা ভুল লেনদেন #১ বাতিল করতে গিয়ে reverse() দুইবার চালানো হলো। কী হবে?'
     hint: 'schema-তে reverses_id কলামে কী constraint আছে?'
     options:

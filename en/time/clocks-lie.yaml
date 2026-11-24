@@ -7,7 +7,7 @@ slides:
     blocks:
       - type: text
         body: |
-          Tania's dashboard shows the courier API's response time. One morning a row reads **−2.7 seconds**. In her code she simply subtracts the start time from the end time. But between those two lines, someone corrected the server's clock by turning it backwards.
+          Tania's dashboard shows the courier API's response time. One morning a row reads **−2.7 seconds**. In her code she simply subtracts the start time from the end time. But between those two lines, someone corrected the server's clock by turning it backwards. The fix is a clock that can't go backwards: [[wall-vs-monotonic|the stopwatch]], two slides on.
       - type: code
         lang: php
         file: 'src/Courier/CourierClient.php'
@@ -190,6 +190,26 @@ slides:
       - type: text
         body: |
           An OTP is valid for 5 minutes. To test that, do you sit in the test for 5 minutes? If your code calls `new DateTimeImmutable()` itself, time is out of your control. The fix: make the clock a service and inject it from outside. In the real app Symfony supplies the real clock; in tests you supply a fake one.
+      - type: visual
+        kind: compare
+        caption: 'The same expiry test, without and with an injected clock'
+        columns:
+          - title: 'new DateTimeImmutable() inside'
+            tone: bad
+            icon: cross
+            tip: 'The class reads the system clock itself, so a test cannot move time. It can only wait or fake the data.'
+            items:
+              - 'The test really waits 5 minutes'
+              - 'Or you edit rows by hand to fake the time'
+              - 'The 299 s / 300 s boundary stays untested'
+          - title: 'Injected ClockInterface'
+            tone: good
+            icon: check
+            tip: 'The class asks the clock it was given. The test hands it a MockClock and moves time itself.'
+            items:
+              - 'One call moves the clock 299 seconds'
+              - 'Both sides of the boundary run in milliseconds'
+              - 'Same result on every run'
       - type: code
         lang: php
         file: 'src/Security/OtpVerifier.php'
@@ -294,6 +314,23 @@ slides:
           - 'When did it happen (created_at, logs): UTC time taken from `ClockInterface`.'
           - 'Which came first: a version or sequence number, not a timestamp.'
           - 'Has it expired: only the server''s clock, never the user''s phone.'
+      - type: code
+        lang: sql
+        file: 'migration (PostgreSQL)'
+        variant: good
+        code: |
+          CREATE TABLE order_event (
+              id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,   -- one counter, one place
+              order_id   BIGINT NOT NULL,
+              type       TEXT NOT NULL,
+              created_at TIMESTAMPTZ NOT NULL DEFAULT now()                 -- for people, not for order
+          );
+
+          SELECT type FROM order_event WHERE order_id = 42 ORDER BY id;
+        marks:
+          - {line: 2, tip: 'One database numbers the rows in the order it receives them. One authority means no two clocks to compare.'}
+          - {line: 5, tip: 'Keep the time for display and reports. Never sort or decide by it when events come from different servers.'}
+          - {line: 8, tip: 'Sorting by id gives one agreed order: created, then cancelled. The price: it is the order of arrival at this database, and it needs one place that hands out numbers.'}
     aside:
       - type: pitfalls
         items:
@@ -352,6 +389,11 @@ flashcards:
     a: 'The two servers'' clocks have skew. If the gap between the events is smaller than the skew, the timestamps can come out in the wrong order.'
     more: |
       For example, if A's clock is 80 ms ahead, an event on B 50 ms after one on A gets a smaller timestamp. To keep the order right you need a number issued by a single authority: a version or a sequence. More here: [[time/ordering-events|Which came first?]]
+    ref: two-servers-one-timeline
+  - q: 'How do you get one agreed order for events written by several servers?'
+    a: 'Let one database number the rows (an identity column) and sort by that number. The price: one place hands out the numbers, and it is arrival order.'
+    more: |
+      `created_at` stays for display and reports. The `id` decides the order, because only one authority issues it. If you need the real order of changes to one entity, give the entity its own version number (see the ordering lesson).
     ref: two-servers-one-timeline
 
 quiz:

@@ -21,7 +21,7 @@ slides:
             tone: good
             icon: check
             tip: 'Profiler first, then one change, then measure again. The result is clear at once.'
-            items: ['Open the profiler and read the time breakdown', 'Add one index, 5 minutes', '1.4 s → 0.25 s', 'Numbers in hand before and after the change']
+            items: ['Open the profiler and read the time breakdown', 'Add one index, 5 minutes', '1.4 s → 0.22 s', 'Numbers in hand before and after the change']
     aside:
       - type: story
         title: 'Knuth''s famous line'
@@ -56,8 +56,8 @@ slides:
       - type: remember
         body: 'Measure first, then change, then measure again.'
     check:
-      q: 'If the database query takes 84% of the time, how much does the total drop if you make all the PHP code twice as fast?'
-      a: 'PHP is a small slice (about 16%), so doubling its speed cuts the total by 8% at best. Leave the biggest slice alone and the gain is small (Amdahl''s law).'
+      q: 'If the database query takes 84% of the time, how much does the total drop if you make everything else twice as fast?'
+      a: 'Everything else together is a small slice (about 16%), so doubling its speed cuts the total by 8% at best. Leave the biggest slice alone and the gain is small (Amdahl''s law).'
 
   - slug: profiler-stopwatch-explain
     title: 'Symfony Profiler, Stopwatch and EXPLAIN'
@@ -135,7 +135,10 @@ slides:
         icon: shop
         title: 'The wedding kitchen'
         body: |
-          Before cooking biryani for 500 people, the cook makes a small batch in one pot and tastes it for salt and spice. That small pot is the **spike**: one question, a fixed amount of time, and the pot gets washed afterwards. If something is wrong, you lose one pot, not 500 plates. What he learned from tasting is the real result, not the pot.
+          Before cooking biryani for 500, the cook makes one small pot and tastes it. That pot is the **spike**: one question, a fixed time, then the pot is washed. A mistake costs one pot, not 500 plates. What the cook learned is the result, not the pot.
+      - type: text
+        body: |
+          Without a spike: Rahim's team promises a client "the import takes 5 minutes", then spends three weeks building it with one `persist()` per row. On launch day, with 1 million rows, Doctrine keeps every object in memory, the PHP process hits its memory limit around row 200,000 and dies. The promise is already made and three weeks are gone. A one-day spike (below) shows this on day one, and the fix is a small batch size plus `clear()`.
       - type: visual
         kind: steps
         caption: 'The life of a spike'
@@ -172,6 +175,12 @@ slides:
         items:
           - 'Write the result of a spike in a short note: the question, the method, the numbers, the decision. If someone asks six months later, the answer exists.'
           - 'Run it at real data size (millions of rows), not 100 rows; everything is fast on small data.'
+      - type: when
+        use:
+          - 'The answer is unknown and wrong guesses are costly: volume, speed, whether a library fits.'
+        avoid:
+          - 'A quick read of the docs answers it, or the choice is easy to undo later.'
+          - 'You have no way to test at real data size; the numbers would mislead.'
       - type: refs
         items:
           - {to: 'thinking/reversible-decisions', label: 'Which decisions can be reversed'}
@@ -197,8 +206,10 @@ slides:
             tip: 'Even a Seq Scan is fast on a small table. The problem shows up at millions of rows.'
           - cells: ['Only the average', 'The slowest 1% hides', 'Look at p50, p95, p99']
             tip: 'The average can be 100ms while p99 is 5 seconds; users remember that slow share.'
-          - cells: ['Measuring with APP_DEBUG=1 or in dev', 'The profiler itself is a load', 'Measure in prod mode, with a warm cache']
-            tip: 'In dev mode Symfony does extra work. Without a cache warmup, the first request is unusually slow.'
+          - cells: ['Measuring with APP_DEBUG=1 or in dev', 'The profiler itself is a load', 'Measure in prod mode (APP_DEBUG=0)']
+            tip: 'In dev mode Symfony does extra work and the profiler records every request, so the numbers are inflated.'
+          - cells: ['Timing only the first request', 'The cache is cold, so it looks slow', 'Warm up first, then time the next runs']
+            tip: 'The first request fills the Symfony cache and the database buffers. Throw it away and time the steady state.'
           - cells: ['Taking the number from one run', 'Treating noise as a result', 'Run several times and take the middle']
             tip: 'The OS cache, database buffers and other processes all shake a single measurement.'
           - cells: ['Five changes at once', 'You can''t tell which one worked', 'One change at a time, measure each time']
@@ -247,6 +258,11 @@ flashcards:
     a: 'Time-boxed, throwaway experimental code that answers one question. The result is what you learn, not the code.'
     more: |
       "Will importing 1 million rows take 5 minutes?" is a clear question. Give it 1-2 days, write down the numbers, throw the code away. Then write the real thing cleanly.
+    ref: spike-first
+  - q: 'What can happen if a team skips the spike and builds a big feature on a guess?'
+    a: 'The wrong answer shows up only at launch, after weeks of work and a promise. One day of spike would have shown it on day one.'
+    more: |
+      Example: building a 1-million-row import with one `persist()` per row and never trying it at full size. At launch the process runs out of memory around row 200,000. A one-day spike would have shown that, and the fix, batches plus `clear()`.
     ref: spike-first
   - q: 'What harm does it do if spike code reaches production?'
     a: 'Untested, rushed code becomes debt that haunts you for years. So throwing the code away after a spike is the rule.'

@@ -12,7 +12,7 @@ slides:
           If the restaurant cooked a fresh biryani for every order, customers would sit for an hour. So the big pot is cooked before lunch and packed portions are lined up at the counter. A customer walks in, takes a packet and leaves. The kitchen is the database, and the packets on the counter are the **cache**.
       - type: text
         body: |
-          Rahim's homepage shows "the 10 best-selling products". The calculation takes 800ms in the database, and the page is opened 50,000 times a day. The answer barely changes in 10 minutes, yet it is cooked from scratch every time.
+          Rahim's homepage shows "the 10 best-selling products". The calculation takes 800ms in the database, and the page is opened 50,000 times a day. The answer barely changes in 10 minutes, yet it is cooked from scratch every time. That adds up to 50,000 x 800ms, about 11 hours of database work a day. Cache the answer for 10 minutes and it is cooked at most 144 times a day, under 2 minutes of work.
       - type: visual
         kind: bars
         caption: 'The same answer: calculated in the database vs. fetched from the cache'
@@ -67,6 +67,9 @@ slides:
           - 'Data that changes every second and must never be shown wrong.'
       - type: remember
         body: 'The first request is slow (miss), all the later ones are fast (hit).'
+      - type: pitfalls
+        items:
+          - 'If the cache dies at peak traffic, every request becomes a miss and the database takes the full load at once. A small site survives; a busy one can fall over.'
     check:
       q: 'What does a cache-aside app do when the cache goes down?'
       a: 'It treats every lookup as a miss and fetches from the database. The app gets slower but stays up, because the truth lives in the database.'
@@ -79,7 +82,7 @@ slides:
     blocks:
       - type: text
         body: |
-          In Symfony you pass the `get()` method of `CacheInterface` a key and a callback. If the key exists, the value comes straight back. If not, the callback runs, its result is stored and returned. You set the expiry with `$item->expiresAfter()`.
+          In Symfony you pass the `get()` method of `CacheInterface` a key and a callback. If the key exists, the value comes straight back. If not, the callback runs, its result is stored and returned. You set the expiry with `$item->expiresAfter()`. Without this call, `findTopSelling(10)` would run on every page view, 800ms each time.
       - type: code
         lang: php
         file: 'src/Catalog/TopProducts.php'
@@ -132,6 +135,7 @@ slides:
       - type: refs
         items:
           - {to: 'caching/cache-invalidation', label: 'TTL and invalidation'}
+          - {to: 'caching/cache-stampede', label: 'When a hot entry expires'}
     check:
       q: 'When does the callback of a get() call run, and when does it not?'
       a: 'Only on a miss, meaning the key is missing or has expired. On a hit the stored value comes straight back.'
@@ -163,7 +167,7 @@ slides:
             tip: 'The write goes to both places at once and counts as done only when both finish. The cache stays fresh.'
             items:
               - 'Writes go to both cache and database'
-              - 'The cache is never stale'
+              - 'The cache stays fresh'
               - 'Every write gets slower'
           - title: 'Write-behind'
             tone: warn
@@ -180,6 +184,7 @@ slides:
         items:
           - 'Symfony''s get(key, callback) looks like read-through, but it is really cache-aside: the callback is your app''s code, not the cache''s.'
           - 'Almost nobody builds write-behind by hand in a PHP app, and certainly not for money or order data.'
+          - 'Where it fits: 5,000 likes a second counted in the cache and saved as one "+5,000" update each second, not 5,000 writes. If the cache dies, that second''s likes are lost.'
       - type: terms
         items:
           - {term: 'Loader', meaning: 'The code that fetches a value from the source on a miss; in read-through it lives inside the cache.'}
@@ -236,10 +241,11 @@ slides:
           - 'Account balances and checkout stock: a wrong value means direct loss.'
           - 'Data that nobody asks for a second time.'
           - 'Anything cheap to build, where the cache adds more hassle than it saves.'
+          - 'A query that is slow only because an index is missing, or an N+1 (one extra query per row): fix that first, then see if you still need a cache.'
     aside:
       - type: pitfalls
         items:
-          - 'Hiding a slow query behind a cache instead of fixing it leaves the real problem (a missing index, N+1) in place.'
+          - 'Don''t cache a whole page that holds a logged-in user''s name or CSRF token under a shared key; it leaks exactly like the cart.'
       - type: remember
         body: 'If the answer differs per person, that person''s identity must be in the key.'
     check:
@@ -289,10 +295,20 @@ flashcards:
     more: |
       The higher the hit rate, the more useful the cache. The first request for something is always a miss; after that miss the answer sits in the cache, and the following requests get hits.
     ref: same-answer-again
+  - q: 'A page opens 50,000 times a day and its query takes 800ms. What does caching save?'
+    a: 'About 11 hours of database work a day. With a 10-minute cache the query runs at most 144 times, under 2 minutes.'
+    more: |
+      50,000 x 800ms is 40,000 seconds. Cached for 10 minutes, the query runs at most 6 times an hour, 144 times a day, about 115 seconds in total. And each visitor waits about 3ms instead of 800ms.
+    ref: same-answer-again
   - q: 'How does the cache-aside strategy work?'
     a: 'The app looks in the cache first; if it isn''t there, the app fetches it from the database itself and stores it in the cache.'
     more: |
       The cache fetches nothing; looking up, fetching and filling all happen in the app's code. That is why the app keeps working when the cache is down, only slower. It is also called lazy loading, because the cache is filled only when something is asked for.
+    ref: cache-aside
+  - q: 'What happens to a cache-aside app when the cache goes down at peak traffic?'
+    a: 'Every request becomes a miss and goes to the database. The app stays correct, but a busy site''s database may fall over.'
+    more: |
+      The app keeps working because the truth lives in the database. But the database was counting on the cache to absorb most reads. A small site survives the extra load; a busy one may not, so keep an eye on the cache and make sure the database can cope with a cold cache, at least briefly.
     ref: cache-aside
   - q: 'What does Symfony''s CacheInterface::get($key, $callback) do?'
     a: 'If the key exists it returns the stored value; if not, it runs the callback, stores the result and returns it.'

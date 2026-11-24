@@ -129,7 +129,7 @@ slides:
           The manager has his orders: "There must always be 3 cooks." If one falls ill, he calls in a replacement. Here the cook is the **Pod** and the manager's standing order is the **Deployment**. Guests don't know the cooks' names, so they order at a counter: that's the **Service**. The hall's main gate is the **Ingress**.
       - type: visual
         kind: flow
-        caption: 'How an outside request reaches a Pod, and what the Deployment does'
+        caption: 'How an outside request reaches a Pod, and what the Deployment does (the third Pod is left out of the picture)'
         nodes:
           - {id: ing, label: 'Ingress', sub: 'api.shop.example.com', icon: gateway, col: 0, row: 1, tip: 'The gate to the outside world. It looks at the hostname and path and sends the request to the right Service.'}
           - {id: svc, label: 'Service', sub: 'shop-api', icon: lb, tone: accent, col: 1.5, row: 1, tip: 'A stable address. Even when a Pod dies and is replaced, this address stays the same.'}
@@ -156,6 +156,9 @@ slides:
           - {term: 'Liveness probe', meaning: 'A check on whether a Pod is stuck. If it is, it gets restarted.'}
       - type: problem
         body: 'With docker run on one server, the app is gone as soon as the server dies. Kubernetes spreads containers over many servers, replaces any that die, and rolls out new versions gradually.'
+      - type: when
+        use: ['Several services on several servers, needing self-healing and gradual rollouts']
+        avoid: ['One small app on one server: Docker Compose or a managed container service is simpler. Kubernetes costs real time to learn and to run']
     check:
       q: 'A Pod''s IP keeps changing, so how do other apps still find it?'
       a: 'Through a Service. Its name and address are stable, and it forwards requests to whichever Pods are healthy behind it.'
@@ -246,6 +249,10 @@ slides:
           - {cmd: 'kubectl rollout status deploy/shop-api', desc: 'Watch whether the new version is coming up'}
           - {cmd: 'kubectl rollout undo deploy/shop-api', desc: 'Go back to the previous version'}
           - {cmd: 'kubectl logs deploy/shop-api', desc: 'Read the logs'}
+      - type: terms
+        items:
+          - {term: 'Requests and limits', meaning: 'A request is what is reserved for the Pod (250m is a quarter of a CPU core). A limit is the ceiling: go past the memory limit and the Pod is killed.'}
+          - {term: 'Rolling update', meaning: 'Replacing Pods a few at a time, so old ones are still serving while new ones start. maxSurge: 1 allows one extra Pod meanwhile.'}
       - type: pitfalls
         items:
           - 'Without a memory limit, one Pod can eat all of a node''s memory and kill its neighbours.'
@@ -344,6 +351,29 @@ slides:
           - {line: 16, tip: 'No password in the code. AWS generates one itself and keeps it in Secrets Manager.'}
           - {line: 18, tip: '14 days of backups. Even on a managed service, this number is your decision.'}
           - {line: 19, tip: 'Even if someone runs terraform destroy by mistake, the database won''t be deleted. You must switch this flag off by hand first.'}
+      - type: code
+        lang: text
+        file: 'terminal: terraform plan (abridged)'
+        code: |
+          $ terraform plan
+          aws_security_group.db: Refreshing state...
+
+            # aws_security_group.db will be updated in-place
+            ~ resource "aws_security_group" "db" {
+                ~ ingress = [
+                    - {
+                        - cidr_blocks = ["0.0.0.0/0"]
+                        - from_port   = 3306
+                        - to_port     = 3306
+                        # (4 unchanged attributes hidden)
+                      },
+                  ]
+              }
+
+          Plan: 0 to add, 1 to change, 0 to destroy.
+        marks:
+          - {line: 8, tip: 'Someone opened the database port to the whole world in the console. Terraform compares reality with the code and shows the stray rule as a deletion. This is how drift is found.'}
+          - {line: 16, tip: 'Applying this plan would close that port again. Price: if the console change was a real emergency fix, copy it into the code first, or apply will undo it.'}
       - type: visual
         kind: steps
         caption: 'A safe Terraform workflow'
@@ -359,6 +389,9 @@ slides:
           - {cmd: 'terraform init', desc: 'First-time setup'}
           - {cmd: 'terraform plan -out=tfplan', desc: 'Write out the list of changes'}
           - {cmd: 'terraform apply tfplan', desc: 'Run exactly that plan'}
+      - type: when
+        use: ['More than one environment or more than one person', 'Anything you could not afford to rebuild from memory']
+        avoid: ['A throwaway experiment you will delete within the hour', 'Resources another tool already manages: two tools will fight over them']
       - type: pitfalls
         items:
           - 'The state file can contain secrets. Don''t commit it to git; keep it in an encrypted remote backend.'
@@ -411,6 +444,16 @@ flashcards:
     more: |
       The safest routine is to review the plan in a pull request, and after approval let CI apply that same plan. Keep the state file in an encrypted remote backend so the whole team sees the same state.
     ref: terraform-basics
+  - q: 'How does Terraform show that someone changed infrastructure by hand in the console?'
+    a: 'terraform plan compares the real infrastructure with the code and lists every difference, so a hand-made change appears as a change to be undone.'
+    more: |
+      That is how drift is caught. The price: an emergency fix made in the console must be copied into the code, or the next apply will quietly undo it.
+    ref: terraform-basics
+  - q: 'When is Kubernetes more than you need?'
+    a: 'For one small app on one server. Docker Compose or a managed container service is simpler, because Kubernetes costs real time to learn and run.'
+    more: |
+      Kubernetes pays off with several services, several servers and a need for self-healing and gradual rollouts. Below that, its extra moving parts are cost without benefit.
+    ref: kubernetes-objects
 
 quiz:
   - q: 'What is wrong with this Dockerfile for production?'
@@ -432,6 +475,9 @@ quiz:
       - text: 'composer install without --no-dev puts dev packages into production'
         correct: true
         why: 'Unneeded code that widens the attack surface ends up in the image.'
+      - text: 'php -S is the built-in development server, not meant for production'
+        correct: true
+        why: 'By default it serves one request at a time and has no production hardening. Use FrankenPHP, or Nginx with PHP-FPM.'
       - text: 'Only the ENV name isn''t in capitals; everything else is fine'
         correct: false
         why: 'There is nothing wrong with the ENV name. The problems are its value and the other lines.'
@@ -503,4 +549,17 @@ quiz:
       - text: 'Turn off deletion_protection and run it'
         correct: false
         why: 'That flag exists to prevent exactly this accident. Turning it off removes the protection and invites trouble.'
+    ref: terraform-basics
+  - q: 'A colleague opened port 3306 to 0.0.0.0/0 in the console to test something. How does a team using Terraform find out?'
+    hint: 'What does plan compare?'
+    options:
+      - text: 'terraform plan lists the stray rule as a change to remove'
+        correct: true
+        why: 'Plan compares the real infrastructure with the code, so anything added by hand shows up as a difference.'
+      - text: 'They cannot find out until something breaks'
+        correct: false
+        why: 'That is click-ops. With Terraform, plan shows the difference before anything breaks.'
+      - text: 'Terraform blocks changes made in the console'
+        correct: false
+        why: 'Terraform cannot stop console changes. It only reveals them the next time you run plan.'
     ref: terraform-basics

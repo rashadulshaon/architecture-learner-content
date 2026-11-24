@@ -130,8 +130,9 @@ slides:
         lang: http
         file: 'Elasticsearch: creating the index'
         code: |
-          PUT /products
+          PUT /products_v1
           {
+            "aliases": { "products": {} },
             "settings": {
               "analysis": {
                 "analyzer": {
@@ -148,14 +149,16 @@ slides:
               "properties": {
                 "name":  { "type": "text", "analyzer": "product_text" },
                 "brand": { "type": "keyword" },
-                "price": { "type": "integer" }
+                "price": { "type": "integer" },
+                "in_stock": { "type": "boolean" }
               }
             }
           }
         marks:
-          - {line: 10, tip: 'The filters run in exactly this order. Without lowercase first, the stop word filter and the stemmer won''t recognise capitalised words.'}
-          - {line: 17, tip: 'text means the analyzer runs, for searching inside the full text. product_text is used at both index time and query time.'}
-          - {line: 18, tip: 'keyword means no analyzer: the whole value is one exact term. This is what you need for filters, sorting and facets.'}
+          - {line: 3, tip: 'The real index is called products_v1, and the app always says products. That nickname (an alias) lets you swap in a rebuilt index later without touching any code.'}
+          - {line: 11, tip: 'The filters run in exactly this order. Without lowercase first, the stop word filter and the stemmer won''t recognise capitalised words.'}
+          - {line: 18, tip: 'text means the analyzer runs, for searching inside the full text. product_text is used at both index time and query time.'}
+          - {line: 19, tip: 'keyword means no analyzer: the whole value is one exact term. This is what you need for filters, sorting and facets.'}
       - type: quote
         body: 'Same analyzer on both sides, index and query. Otherwise the word sits in the notebook and never matches.'
     aside:
@@ -240,7 +243,7 @@ slides:
     blocks:
       - type: text
         body: |
-          Type "phone" in an online shop and the left side shows: Samsung (12), Xiaomi (8). That counted list is a **facet**. It splits the results into groups and shows how many fall in each, so the customer can narrow the list with one click. Elasticsearch calls it an aggregation. The search text goes in `must`, where it gets a score. The brand the customer picked goes in `filter`, where it is a plain yes or no.
+          Type "phone" in an online shop and the left side shows: Samsung (12), Xiaomi (8). That counted list is a **facet**. It splits the results into groups and shows how many fall in each, so the customer can narrow the list with one click. Elasticsearch calls it an aggregation. The search text goes in `must`, where it gets a score. A plain yes-or-no condition such as "in stock" goes in `filter`. The brand the customer clicks goes in `post_filter`, which trims the hits only after the counting is done. Put it in the main query instead, and the facet shrinks to Samsung (12) alone, with no way to switch brands.
       - type: code
         lang: yaml
         file: 'config/packages/framework.yaml'
@@ -264,23 +267,26 @@ slides:
               /** @return array{hits: list<array>, brands: list<array>} */
               public function search(string $text, ?string $brand = null): array
               {
-                  $filter = null === $brand ? [] : [['term' => ['brand' => $brand]]];
-
-                  $data = $this->searchClient->request('POST', '/products/_search', [
-                      'json' => [
-                          'size' => 20,
-                          'query' => ['bool' => [
-                              'must' => [['multi_match' => [
-                                  'query' => $text,
-                                  'fields' => ['name^3', 'description'],
-                              ]]],
-                              'filter' => $filter,
-                          ]],
-                          'aggs' => [
-                              'brands' => ['terms' => ['field' => 'brand', 'size' => 10]],
-                          ],
+                  $body = [
+                      'size' => 20,
+                      'query' => ['bool' => [
+                          'must' => [['multi_match' => [
+                              'query' => $text,
+                              'fields' => ['name^3', 'description'],
+                          ]]],
+                          'filter' => [['term' => ['in_stock' => true]]],
+                      ]],
+                      'aggs' => [
+                          'brands' => ['terms' => ['field' => 'brand', 'size' => 10]],
                       ],
-                  ])->toArray();
+                  ];
+                  if (null !== $brand) {
+                      $body['post_filter'] = ['term' => ['brand' => $brand]];
+                  }
+
+                  $data = $this->searchClient
+                      ->request('POST', '/products/_search', ['json' => $body])
+                      ->toArray();
 
                   return [
                       'hits' => array_column($data['hits']['hits'], '_source'),
@@ -290,9 +296,10 @@ slides:
           }
         marks:
           - {line: 3, tip: 'The scoped client named search.client is autowired automatically into an argument called $searchClient.'}
-          - {line: 16, tip: 'The query inside must calculates scores, so this is where the order of products is decided.'}
-          - {line: 20, tip: 'A filter never changes the score; it only excludes. It is also cached, so yes/no conditions always belong here.'}
-          - {line: 23, tip: 'Counts how many products matched for each brand: [{key: samsung, doc_count: 12}, …]. The field must be a keyword.'}
+          - {line: 13, tip: 'The query inside must calculates scores, so this is where the order of products is decided.'}
+          - {line: 17, tip: 'A filter never changes the score; it only excludes, and Elasticsearch caches the result. Yes/no conditions belong here. in_stock is a boolean field in the mapping.'}
+          - {line: 20, tip: 'Counts the products matched per brand, before post_filter runs: [{key: samsung, doc_count: 12}, {key: xiaomi, doc_count: 8}]. The field must be a keyword.'}
+          - {line: 24, tip: 'Runs after the counting. The hits shrink to Samsung, but the facet still lists Xiaomi (8). The price: post_filter is not cached and speeds nothing up, so use it only for the facet''s own field.'}
       - type: visual
         kind: flow
         caption: 'Results and facets in one request'
@@ -302,22 +309,22 @@ slides:
           - {id: es, label: 'Elasticsearch', sub: 'products index', icon: search, col: 4, row: 0, tip: 'Finds the matching documents in the inverted index, scores them, and counts them by brand in the same pass.'}
         edges:
           - {from: vue, to: api, label: 'The customer types "phone" and picks the brand Samsung'}
-          - {from: api, to: es, label: 'The query, filter and aggs go in one request'}
-          - {from: es, to: api, label: '20 hits ranked by score come back, plus the brand buckets', dashed: true}
+          - {from: api, to: es, label: 'The query, filter, aggs and post_filter go in one request'}
+          - {from: es, to: api, label: '20 Samsung hits ranked by score come back, plus counts for every brand', dashed: true}
           - {from: api, to: vue, label: 'Vue shows the facets on the left and the results on the right', dashed: true, tone: good}
     aside:
       - type: pitfalls
         items:
           - 'Running an aggregation on a `text` field throws an error. Always keep facet fields as `keyword`.'
-          - 'If the brand filter is in the main query, the facet shows only the selected brand. To show the other brands too, put it in `post_filter`.'
+          - '`post_filter` is only for the facet''s own field. Every other condition (in stock, a price range) belongs in `filter`, so it is cached and the counts shrink with it.'
           - 'Never expose Elasticsearch directly to the internet; every request should go through Symfony.'
       - type: terms
         items:
           - {term: 'Facet / aggregation', meaning: 'Splitting the results into groups and counting the documents in each group.'}
           - {term: 'Bucket', meaning: 'One group of an aggregation, such as brand = samsung, together with its count.'}
     check:
-      q: 'A customer types "phone" and picks the brand Samsung. Which goes in `must` and which in `filter`, and why?'
-      a: '"phone" goes in must, because it needs a score. brand = Samsung goes in filter, because it is only yes or no: no score is needed, and the result is cached.'
+      q: 'A customer types "phone" and picks Samsung, yet should still see Xiaomi (8) listed. Where do the text, the brand and "in stock" go?'
+      a: '"phone" goes in must, because it needs a score. The brand goes in post_filter, so the counts are made before it trims the hits. "In stock" goes in filter: yes or no, no score, cached.'
 
   - slug: search-engine-tradeoffs
     title: 'Elasticsearch / OpenSearch: when to bring one in, when not to'
@@ -327,7 +334,7 @@ slides:
     blocks:
       - type: text
         body: |
-          Elasticsearch and OpenSearch are both search engines built on the same library, Lucene, so the inner concepts and the API are almost identical. (OpenSearch is an Apache 2.0 fork of Elasticsearch 7.10.) Both give excellent search, but not for free: it is one more moving part in your system, which you have to run, monitor and keep in sync with the database.
+          Elasticsearch and OpenSearch are both search engines built on the same library, Lucene, so the inner concepts and the API are almost identical. (OpenSearch is an Apache 2.0 fork of Elasticsearch 7.10.) Both give excellent search, but not for free: it is one more moving part in your system, which you have to run, monitor and keep in sync with the database. The cheapest path is already in your database, so it is shown first, below the comparison.
       - type: visual
         kind: compare
         caption: 'Three paths: what you get and what you pay'
@@ -359,6 +366,30 @@ slides:
               - 'Great for small to medium catalogues'
               - 'Limited on huge data or complex aggregations'
               - 'Also needs syncing from the database'
+      - type: code
+        lang: sql
+        file: 'PostgreSQL: the database route, in full'
+        variant: good
+        code: |
+          -- 1. Once, in a migration: a column of terms the database keeps up to date
+          ALTER TABLE product ADD search_vector tsvector GENERATED ALWAYS AS (
+              setweight(to_tsvector('english', coalesce(name, '')), 'A') ||
+              setweight(to_tsvector('english', coalesce(description, '')), 'B')
+          ) STORED;
+          CREATE INDEX product_search_idx ON product USING GIN (search_vector);
+
+          -- 2. Every search: "samsung phones" finds the Samsung Galaxy A15 Phone
+          SELECT id, name, ts_rank(search_vector, q) AS score
+          FROM product, websearch_to_tsquery('english', 'samsung phones') AS q
+          WHERE search_vector @@ q
+          ORDER BY score DESC
+          LIMIT 20;
+        marks:
+          - {line: 3, tip: 'Weight A for the name, B for the description: a match in the name ranks higher, like the name^3 boost in Elasticsearch.'}
+          - {line: 5, tip: 'STORED means the database fills this column on every insert and update, inside the same transaction, so it is never stale. Needs PostgreSQL 12 or newer.'}
+          - {line: 6, tip: 'GIN is an inverted index: the same word to rows list as before. Without it, every search reads the whole table again, exactly like LIKE.'}
+          - {line: 10, tip: 'The english configuration lowercases and stems, so "phones" becomes phone and matches. websearch_to_tsquery accepts text as typed in a search box and never errors.'}
+          - {line: 12, tip: 'ts_rank counts matches and weights, nothing more. It is simpler than BM25 and does not know that a word is rare. A typo like "samsang" still finds nothing.'}
       - type: points
         title: 'The decision rule'
         style: number
@@ -369,6 +400,10 @@ slides:
       - type: quote
         body: 'A search index is a copy, not the source of truth. Never base a decision about money or stock on the index.'
     aside:
+      - type: pitfalls
+        items:
+          - 'Doctrine doesn''t know the `search_vector` column, so the next `make:migration` may propose dropping it. Read every generated migration before you run it.'
+          - 'PostgreSQL ships no Bangla configuration. For Bangla text use `simple` (no stemming), or move to an engine that has a Bangla analyzer.'
       - type: when
         use:
           - 'Searching is the customer''s main task: an e-commerce catalogue, job listings, documents.'
@@ -382,7 +417,7 @@ slides:
           - {to: 'thinking/build-vs-buy', label: 'The real cost of new technology'}
     check:
       q: 'Rahim''s shop has 8,000 products, one server and a team of two. What should he choose for search first, and why?'
-      a: 'Database full-text search. At that size it is fast enough, with no new server and no sync to worry about. Move to a search engine when complaints arrive.'
+      a: 'Database full-text search (a tsvector column with a GIN index). At that size it is fast enough, with no new server and no sync. Move to a search engine when complaints arrive.'
 
 flashcards:
   - q: 'Why is LIKE ''%word%'' slow on a big table?'
@@ -425,6 +460,16 @@ flashcards:
     more: |
       The customer's search words go in must, because "how well does it fit" matters there. Brand, a price range or in-stock status go in filter. Putting everything in must still works, but the query is slower and the scores change for no reason.
     ref: search-with-facets
+  - q: 'What is post_filter for in a faceted search?'
+    a: 'It trims the hits after the aggregation has counted, so the facet still shows every brand even after the customer picks one.'
+    more: |
+      A brand condition inside the main query shrinks the counts too, so the facet would show only Samsung (12). In post_filter, the counts are made first and the hits are trimmed afterwards. The price: post_filter isn't cached and speeds nothing up, so use it only for the facet's own field and keep other conditions in filter.
+    ref: search-with-facets
+  - q: 'How does database full-text search work in PostgreSQL?'
+    a: 'A tsvector column holds the terms, a GIN index (an inverted index) makes it fast, and @@ matches it against a tsquery.'
+    more: |
+      A generated column keeps the terms in step with the row, so there is no sync job. `ts_rank` orders the results. What you give up: typo tolerance (add the pg_trgm extension for some), facets and BM25-grade ranking. For a few thousand to a few hundred thousand rows it is often all you need.
+    ref: search-engine-tradeoffs
   - q: 'Why shouldn''t the search index be the only home of your real data?'
     a: 'It is a copy: it lags by a second or two, has no transactions, and a mapping change means rebuilding it all.'
     more: |
@@ -507,6 +552,22 @@ quiz:
         correct: false
         why: 'An index can have as many fields as you like.'
     ref: search-with-facets
+  - q: 'A customer clicks Samsung. The hits shrink to Samsung, but the brand facet now lists only "Samsung (12)" and Xiaomi has vanished. What is the cause?'
+    hint: 'Was the brand condition applied before the counting, or after it?'
+    options:
+      - text: 'The brand condition is in the main query, so the counts are made on Samsung products only'
+        correct: true
+        why: 'An aggregation counts what the query matched. In post_filter, the counts run first and the hits are trimmed afterwards.'
+      - text: 'The aggregation size is too small'
+        correct: false
+        why: 'size 10 allows ten brands. Only one brand was matched at all, so only one could be counted.'
+      - text: 'brand should be a text field'
+        correct: false
+        why: 'An aggregation on a text field throws an error; it would not quietly show one brand.'
+      - text: 'Filters are cached, so the facet is stale'
+        correct: false
+        why: 'The cache affects speed, not what the counts contain.'
+    ref: search-with-facets
   - q: 'According to BM25, in which cases does a document''s score go up?'
     hint: 'Remember three words: rare, repeated, short.'
     options:
@@ -538,6 +599,22 @@ quiz:
       - text: 'Checking whether a product is in stock at checkout'
         correct: false
         why: 'Stock decisions must be made from the database; the search index can lag behind.'
+    ref: search-engine-tradeoffs
+  - q: 'Rahim added a `search_vector` tsvector column to 500,000 products, but searches are still slow and EXPLAIN shows a sequential scan. What is missing?'
+    hint: 'The column holds the terms. What turns it into a word-to-rows lookup?'
+    options:
+      - text: 'A GIN index on search_vector'
+        correct: true
+        why: 'GIN is the inverted index. Without it, PostgreSQL checks the query against every row''s tsvector.'
+      - text: 'A B-tree index on name'
+        correct: false
+        why: 'A B-tree is sorted by the start of the text. It cannot answer "which rows contain this word".'
+      - text: 'Switching the query to LIKE ''%word%'''
+        correct: false
+        why: 'LIKE is the slow full table scan that the tsvector column exists to replace.'
+      - text: 'Moving to Elasticsearch right away'
+        correct: false
+        why: 'The database route is meant for this size. One missing index does not justify running a new cluster.'
     ref: search-engine-tradeoffs
   - q: 'A customer searched "samsang" and got nothing back. What is the most fitting fix?'
     hint: 'Search engines already have a way to tolerate a typo of one or two letters.'

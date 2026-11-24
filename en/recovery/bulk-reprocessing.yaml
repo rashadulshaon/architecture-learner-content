@@ -7,7 +7,7 @@ slides:
     blocks:
       - type: text
         body: |
-          For 6 hours a bug made the payment webhook handler fail, and 4000 events piled up. The bug was fixed, and an engineer ran a one-line script: push every event back onto the queue. Of those 4000, 600 had actually been partly processed, and they credited money a second time. And 4000 jobs arriving at once put the database and the gateway under heavy strain.
+          For 6 hours a bug made the payment webhook handler fail, and 4000 events piled up. The bug was fixed, and an engineer ran a one-line script: push every event back onto the queue. Of those 4000, 600 had been partly processed already (the money was credited, then the receipt step failed), and they credited money a second time. And 4000 jobs at once is 6 hours of traffic in one go, so the database and the gateway buckled.
       - type: visual
         kind: sequence
         caption: 'The attempt to fix things became a second disaster'
@@ -77,7 +77,7 @@ slides:
     blocks:
       - type: text
         body: |
-          Don't load the whole list into memory. Fetch batches of 100, and instead of `OFFSET`, fetch from just after the last id (**keyset pagination**). Save a checkpoint at the end of each batch. With `--dry-run`, skip both the dispatch and the checkpoint.
+          Don't load the whole list into memory. Fetch batches of 100, and instead of `OFFSET`, fetch from just after the last id (**keyset pagination**). Save a checkpoint at the end of each batch. With `--dry-run`, skip both the dispatch and the checkpoint. At 20 a second, 4000 events take about 3 minutes: slow for a computer, still quick for a recovery.
       - type: code
         lang: php
         file: 'src/Command/ReplayEventsCommand.php'
@@ -101,7 +101,10 @@ slides:
               while ($batch = $this->failed->after($after, 100)) {
                   foreach ($batch as $e) {
                       if (!$dry) {
-                          $this->bus->dispatch(new ProcessPayment($e->id, $e->payload));
+                          $this->bus->dispatch(
+                              new ProcessPayment($e->id, $e->userId, $e->amount),
+                              [new TransportNamesStamp('replay')],    // its own transport
+                          );
                           usleep($pause);                  // slow: capped per second
                       }
                       $after = $e->id;
@@ -118,8 +121,9 @@ slides:
         marks:
           - {line: 3, tip: 'With `--dry-run` nothing is dispatched; it only counts how many jobs there would be.'}
           - {line: 13, tip: 'Starts from wherever the previous run stopped. 0 the first time.'}
-          - {line: 20, tip: 'A pause after every dispatch. At 20 per second, that is 50,000 microseconds.'}
-          - {line: 26, tip: 'A marker after each batch. If the command crashes, at most one batch repeats, and since the handler is idempotent, no harm is done.'}
+          - {line: 21, tip: 'Replay work goes to its own `replay` transport, so a few workers there can be limited apart from normal work.'}
+          - {line: 23, tip: 'A pause after every dispatch. At 20 per second, that is 50,000 microseconds.'}
+          - {line: 29, tip: 'A marker after each batch. If the command crashes, at most one batch repeats, and since the handler is idempotent, no harm is done.'}
       - type: code
         lang: sql
         file: 'migrations: checkpoint and the next batch'
@@ -159,14 +163,14 @@ slides:
       a: 'With a large OFFSET, the database must skip all the earlier rows every time, which is slow. `id > :after` jumps straight there through the index, and it matches the checkpoint too.'
 
   - slug: replay-twice-safe
-    title: 'Run twice, nothing happens: and no second email'
+    title: 'Run twice, nothing doubles: and no receipt goes missing'
     kind: pitfall
-    tldr: 'Make the replay handler idempotent, and keep outside side effects such as emails or SMS switched off during a replay.'
-    keywords: ['idempotent handler', 'processed_event', 'side effects', 'duplicate email', 'replay flag', 'exactly once']
+    tldr: 'Make the replay handler idempotent, and queue each outside side effect once in a table, so a replay neither doubles it nor skips one the first attempt missed.'
+    keywords: ['idempotent handler', 'processed_event', 'side effects', 'duplicate email', 'receipt outbox', 'exactly once']
     blocks:
       - type: text
         body: |
-          The most dangerous handler is one that does its work every time it runs. And work that leaves your system (emails, SMS, calls to outside APIs) can't be taken back. So the handler remembers which events it has already handled, and during a replay it sends nothing outside.
+          The most dangerous handler is one that does its work every time it runs, so the handler remembers which events it has already handled. Work that leaves your system (an email, an SMS) can't be taken back, so the replay never sends it directly. It writes one "send this receipt" row per event, with a UNIQUE `event_id`, and a separate sender emails each unsent row once. Why not just a "skip emails during a replay" switch? Some of the 600 events were credited and then failed before the receipt. The switch would skip the credit (right) and the receipt (wrong): those customers would never get one.
       - type: code
         lang: php
         file: 'the wrong handler'
@@ -189,27 +193,26 @@ slides:
           #[AsMessageHandler]
           public function __invoke(ProcessPayment $m): void
           {
-              $applied = $this->db->transactional(function () use ($m): bool {
+              $this->db->transactional(function () use ($m): void {
                   $new = $this->db->executeStatement(
                       'INSERT INTO processed_event (event_id) VALUES (?) ON CONFLICT DO NOTHING',
                       [$m->eventId],
                   );
-                  if (0 === $new) {
-                      return false;                          // already done
+                  if (1 === $new) {
+                      $this->wallet->credit($m->userId, $m->amount);   // only the first time
                   }
-                  $this->wallet->credit($m->userId, $m->amount);
-
-                  return true;
+                  // the receipt is queued once per event, even if the credit was done earlier
+                  $this->db->executeStatement(
+                      'INSERT INTO receipt_outbox (event_id, user_id) VALUES (?, ?)'
+                      .' ON CONFLICT DO NOTHING',
+                      [$m->eventId, $m->userId],
+                  );
               });
-
-              if ($applied && !$m->isReplay) {
-                  $this->mailer->send(new ReceiptEmail($m->userId));
-              }
           }
         marks:
-          - {line: 4, tip: 'The event_id INSERT and the credit are in one transaction. Either both happen or neither does.'}
-          - {line: 10, tip: '0 rows means this event was already processed. This time it does nothing and returns.'}
-          - {line: 17, tip: 'The email goes out only if it was newly processed and this is not a replay. A replay sends nothing outside.'}
+          - {line: 6, tip: 'Guard 1: the event_id INSERT and the credit share one transaction. Either both happen or neither does.'}
+          - {line: 9, tip: '0 rows means this event was already credited. Skip the credit, but not the receipt row below.'}
+          - {line: 14, tip: 'Guard 2: its own unique key. It runs even when the credit was done earlier, so a receipt the first attempt missed is queued now.'}
       - type: visual
         kind: table
         caption: 'How each kind of work should behave in a replay'
@@ -217,8 +220,8 @@ slides:
         rows:
           - cells: ['Credit/debit money', 'Double credit', 'processed_event guard']
             tip: 'Writes to the ledger or wallet must be idempotent. This is the main protection.'
-          - cells: ['Email/SMS', 'Annoyed customers', 'Don''t send during a replay']
-            tip: 'Once it has gone out it can''t be recalled. Keeping it off in a replay is the safe choice.'
+          - cells: ['Email/SMS', 'Doubled or missing receipts', 'Queue one row per event']
+            tip: 'Once it has gone out it can''t be recalled. A unique row sends it once, and also covers events the first attempt missed.'
           - cells: ['Call to an outside API', 'Double charge', 'The same Idempotency-Key']
             tip: 'Send the original transaction''s key again, so the other side also treats it as one.'
           - cells: ['Cache/Search index', 'No harm', 'As many times as you like']
@@ -226,14 +229,77 @@ slides:
     aside:
       - type: pitfalls
         items:
+          - 'Events handled before the guard existed have no `processed_event` row, so a replay would credit them again. Backfill rows for events that already have a ledger credit, and check the count in the dry run.'
           - 'Don''t trust an old event''s payload to reverse today''s state. Decide by looking at the current state.'
       - type: refs
         items:
           - {to: 'payments/idempotency-keys', label: 'Idempotency keys'}
           - {to: 'messaging/dlq-retries', label: 'Idempotent consumers'}
     check:
-      q: 'Why is sending email switched off in a replay while crediting money still runs?'
-      a: 'The credit has a guard, so one already done is skipped and does no harm. An email can''t be recalled once sent, and sending it again would annoy the customer.'
+      q: 'The credit was already done by the first attempt. Why does the replay still insert the receipt row?'
+      a: 'The first attempt may have failed before the receipt. The row''s own unique key queues it once: no duplicate if it was sent, and no missing receipt if it wasn''t.'
+
+  - slug: receipt-sender
+    title: 'Sending each receipt once, missed ones included'
+    kind: howto
+    tldr: 'A separate sender emails the unsent receipt rows in small batches and marks each one sent, so every event ends with exactly one receipt.'
+    keywords: ['receipt outbox', 'sender job', 'missed email', 'backfill', 'at least once', 'scheduler']
+    blocks:
+      - type: text
+        body: |
+          The replay only fills the `receipt_outbox` table. A small periodic job does the emailing. Three kinds of event can meet a replay, and each one ends with exactly one receipt.
+      - type: visual
+        kind: table
+        caption: 'What the replay does for each kind of event'
+        headers: ['First attempt', 'Credit', 'Receipt row', 'Replay result']
+        rows:
+          - cells: ['Credited, receipt sent', 'exists', 'sent', 'Nothing happens']
+            tip: 'Both guards say done, and the customer already has the receipt.'
+          - cells: ['Credited, failed before receipt', 'exists', 'missing', 'Row added, then sent']
+            tip: 'The case a plain "skip emails in a replay" switch would lose.'
+          - cells: ['Never processed', 'missing', 'missing', 'Credited, receipt sent']
+            tip: 'Both guards pass, so the replay does the full job once.'
+      - type: code
+        lang: php
+        file: 'src/Receipt/ReceiptSender.php'
+        variant: good
+        code: |
+          #[AsPeriodicTask(frequency: '10 seconds', schedule: 'default')]
+          final readonly class ReceiptSender
+          {
+              public function __invoke(): void
+              {
+                  $rows = $this->db->fetchAllAssociative(
+                      'SELECT event_id, user_id FROM receipt_outbox
+                        WHERE sent_at IS NULL ORDER BY event_id LIMIT 50'
+                  );
+                  foreach ($rows as $r) {
+                      $this->mailer->send(new ReceiptEmail($r['user_id']));
+                      $this->db->executeStatement(
+                          'UPDATE receipt_outbox SET sent_at = now() WHERE event_id = ?',
+                          [$r['event_id']],
+                      );
+                  }
+              }
+          }
+        marks:
+          - {line: 8, tip: 'Only unsent rows, 50 at a time, every 10 seconds. A backlog of 600 receipts drains in about 2 minutes, with no flood of email.'}
+          - {line: 11, tip: 'Sent first, marked second. A crash between the two lines means one duplicate email, never a missing one.'}
+    aside:
+      - type: tips
+        items:
+          - 'Price: that rare duplicate is fine for a receipt, never for money. Money keeps its own guard.'
+          - 'Keep the rows. `sent_at` is also your proof that the receipt went out.'
+      - type: terms
+        items:
+          - {term: 'Outbox', meaning: 'A table of "things still to send". One writer fills it safely, and one sender empties it.'}
+      - type: refs
+        items:
+          - {to: 'workflows/outbox-inbox', label: 'Outbox and inbox'}
+    check:
+      q: 'A customer was credited, but the first attempt failed before the receipt. What does the replay do for them?'
+      a: 'The credit guard skips the credit. The receipt insert adds the missing row, and the sender emails it once.'
+
 
 flashcards:
   - q: 'Which four safeguards should be in place before a bulk replay?'
@@ -266,13 +332,18 @@ flashcards:
     more: |
       This is called keyset pagination. The last id is our checkpoint too, so one thing does both jobs.
     ref: replay-command
-  - q: 'Why aren''t emails or SMS sent during a replay?'
-    a: 'Once sent, they can''t be recalled. A thousand customers getting the same receipt again would be annoyed, so they are switched off using a replay flag.'
+  - q: 'How does a replay avoid both a second email and a missing one?'
+    a: 'It never emails directly. It queues one receipt row per event (UNIQUE event_id), and a separate sender emails each unsent row once.'
     more: |
-      Money writes are safe thanks to the guard, but outside actions aren't safe by themselves. Put an `isReplay` marker on the message, and the handler skips outside actions when it sees it.
+      A sent email can't be recalled, so doubles must not happen. A plain "skip emails in a replay" switch would also skip receipts the first attempt missed. A unique row per event covers both.
     ref: replay-twice-safe
+  - q: 'The first attempt credited a customer but failed before the receipt. What does the replay do?'
+    a: 'The processed_event guard skips the credit, but the receipt row is still inserted, and the sender emails it once.'
+    more: |
+      The credit and the receipt have separate guards, so each is decided on its own. The sender sends only rows with no `sent_at`, a few at a time, so even a backlog of 600 drains calmly.
+    ref: receipt-sender
   - q: 'What is the simple way to make a handler idempotent?'
-    a: 'Keep a UNIQUE `processed_event(event_id)`, INSERT in the same transaction as the work, and if 0 rows were inserted, do nothing and return.'
+    a: 'Keep a UNIQUE `processed_event(event_id)`, INSERT in the same transaction as the work, and if 0 rows were inserted, skip the work.'
     more: |
       With the INSERT and the real write in one transaction, after a crash either both exist or neither does. So running again does the work exactly once.
     ref: replay-twice-safe
@@ -314,7 +385,7 @@ quiz:
     lang: php
     code: |
       foreach ($this->failed->all() as $e) {
-          $this->bus->dispatch(new ProcessPayment($e->id, $e->payload));
+          $this->bus->dispatch(new ProcessPayment($e->id, $e->userId, $e->amount));
       }
     hint: 'Where are the limit, the rehearsal and the bookmark?'
     options:
@@ -337,9 +408,9 @@ quiz:
       - text: 'Money writes in one transaction with a UNIQUE processed_event guard'
         correct: true
         why: 'On a second arrival, 0 rows are inserted and nothing happens.'
-      - text: 'Skipping email/SMS when the replay flag is set'
+      - text: 'Queueing one receipt row per event (UNIQUE event_id) and emailing from that table'
         correct: true
-        why: 'Once sent, they can''t be recalled, so they stay off during a replay.'
+        why: 'A sent email can''t be recalled. One row per event means one email, and a receipt the first attempt missed still gets queued.'
       - text: 'Sending the original transaction''s Idempotency-Key again to an outside API'
         correct: true
         why: 'The other side recognises the same work and does it only once.'
@@ -363,3 +434,19 @@ quiz:
         correct: false
         why: 'Once the events are deleted, the lost work can''t be recovered.'
     ref: four-safeguards
+  - q: 'Event 1731 was credited, then failed before its receipt. The replay has a processed_event guard and a "skip email during replay" flag. What goes wrong?'
+    hint: 'What does the flag skip besides a duplicate?'
+    options:
+      - text: 'The customer is credited correctly but never gets a receipt'
+        correct: true
+        why: 'The guard skips the credit (right), but the flag also skips the one receipt that was never sent.'
+      - text: 'The customer is credited twice'
+        correct: false
+        why: 'The processed_event guard stops a second credit.'
+      - text: 'The customer gets two receipts'
+        correct: false
+        why: 'The flag stops all emails in a replay, so none is sent at all.'
+      - text: 'Nothing: the flag handles every case'
+        correct: false
+        why: 'It handles duplicates but loses missed receipts. A receipt row per event handles both.'
+    ref: receipt-sender

@@ -35,7 +35,7 @@ slides:
   - slug: match-and-break
     title: 'মেলানোর চাবি আর অমিলের ছয় ধরন'
     kind: concept
-    tldr: 'দুই খাতার প্রতিটা লাইন একটা অপরিবর্তনীয় reference দিয়ে জোড়া লাগাও; যা জোড়া লাগে না বা অঙ্কে মেলে না, তা একটা break।'
+    tldr: 'দুই খাতার প্রতিটা লাইন একটা অপরিবর্তনীয় reference দিয়ে জোড়া লাগান; যা জোড়া লাগে না বা অঙ্কে মেলে না, তা একটা break।'
     keywords: ['matching key', 'break', 'unmatched', 'reference id', 'cutoff', 'timing difference']
     blocks:
       - type: metaphor
@@ -67,42 +67,50 @@ slides:
           - {term: 'Matching key', meaning: 'দুই পাশের একই লেনদেন চেনার অপরিবর্তনীয় reference, যেমন gateway-র payment id।'}
       - type: tips
         items:
-          - 'payment তৈরির সময়ই gateway reference নিজের টেবিলে রাখো। পরে খুঁজে পাওয়া কঠিন।'
-          - 'timing break আলাদা চিহ্নিত রাখো, যাতে প্রতিদিন ভুল alarm না বাজে।'
+          - 'payment তৈরির সময়ই gateway reference নিজের টেবিলে রাখুন। পরে খুঁজে পাওয়া কঠিন।'
+          - 'timing break আলাদা চিহ্নিত রাখুন, যাতে প্রতিদিন ভুল alarm না বাজে।'
     check:
-      q: 'দুই খাতা মেলাতে "অঙ্ক আর সময় মিলিয়ে দেখো" না বলে reference id বলা হয় কেন?'
+      q: 'দুই খাতা মেলাতে "অঙ্ক আর সময় মিলিয়ে দেখুন" না বলে reference id বলা হয় কেন?'
       a: 'একই অঙ্কে একই সময়ে অনেক লেনদেন হতে পারে, তাই অঙ্ক-সময় দিয়ে ভুল জোড়া লাগে। reference id প্রতি লেনদেনে অনন্য।'
 
   - slug: daily-reconcile-job
-    title: 'রোজের job: statement আনো, মেলাও, break লেখো'
+    title: 'রোজের job: statement আনুন, মেলান, break লিখুন'
     kind: howto
-    tldr: 'Statement একটা টেবিলে ঢোকাও, একটা FULL OUTER JOIN-এ break বের করো, আর Symfony Scheduler-এ রোজ ভোরে console command চালাও।'
+    tldr: 'Statement একটা টেবিলে ঢোকান, একটা FULL OUTER JOIN-এ ছয় ধরনের break-ই বের করুন, আর Symfony Scheduler-এ রোজ ভোরে console command চালান।'
     keywords: ['FULL OUTER JOIN', 'recon_break', 'Symfony Scheduler', 'AsCronTask', 'console command', 'daily job']
     blocks:
       - type: text
         body: |
-          পদ্ধতি তিন ধাপের। এক, provider-এর statement ফাইল/API থেকে `statement_line` টেবিলে তোলো। দুই, `ledger_payment`-এর সাথে একটা `FULL OUTER JOIN` চালাও — দুই পাশের যা মেলে না, সেটাই break। তিন, `(day, provider, ref)`-এ UNIQUE রেখে ফলাফল `recon_break`-এ লেখো, যাতে job দুইবার চললেও একই break দুইবার না ঢোকে।
+          পদ্ধতি তিন ধাপের। এক, provider-এর statement ফাইল/API থেকে `statement_line` টেবিলে তুলুন। দুই, `ledger_payment`-এর সাথে একটা `FULL OUTER JOIN` চালান, যেখানে প্রতিটা ref প্রতি পাশে গুনে অঙ্ক, status আর দিন মেলানো হয়। কোনো পাশে না থাকা, দুইবার গোনা বা আলাদা হওয়া সবই break, আর `CASE` বলে দেয় ছয় ধরনের কোনটা। reference মেলে কিন্তু দিন আলাদা হলে সেটা `timing` break। সত্যিকারের হারানো লাইন থেকে সেটা আলাদা করতে query এক দিন আগে-পরেও দেখে, তাই job চলে দুই দিন আগের তারিখের জন্য, যখন পাশের দিনের statement এসে গেছে। তিন, `(day, provider, ref)`-এ UNIQUE রেখে ফলাফল `recon_break`-এ লিখুন, যাতে job দুইবার চললেও একই break দুইবার না ঢোকে।
       - type: code
         lang: sql
         file: 'break বের করার query'
         variant: good
         code: |
-          WITH l AS (SELECT ref, amount_minor FROM ledger_payment  WHERE day = :day),
-               s AS (SELECT ref, amount_minor FROM statement_line WHERE day = :day)
+          -- :from = :day - 1, :to = :day + 1 (timing ধরতে এক দিন আগে-পরে)
+          WITH l AS (SELECT ref, MIN(day) day, COUNT(*) n, MAX(amount_minor) amt, MAX(status) st
+                       FROM ledger_payment  WHERE day BETWEEN :from AND :to GROUP BY ref),
+               s AS (SELECT ref, MIN(day) day, COUNT(*) n, MAX(amount_minor) amt, MAX(status) st
+                       FROM statement_line WHERE day BETWEEN :from AND :to GROUP BY ref)
           INSERT INTO recon_break (day, provider, ref, category, our_minor, their_minor)
           SELECT :day, 'gw', COALESCE(l.ref, s.ref),
-                 CASE WHEN s.ref IS NULL THEN 'missing_at_provider'
-                      WHEN l.ref IS NULL THEN 'missing_in_ledger'
-                      ELSE 'amount_mismatch' END,
-                 l.amount_minor, s.amount_minor
+                 CASE WHEN l.n > 1 OR s.n > 1 THEN 'duplicate'
+                      WHEN s.ref IS NULL      THEN 'missing_at_provider'
+                      WHEN l.ref IS NULL      THEN 'missing_in_ledger'
+                      WHEN l.amt <> s.amt     THEN 'amount_mismatch'
+                      WHEN l.st  <> s.st      THEN 'status_mismatch'
+                      ELSE 'timing' END,
+                 l.amt, s.amt
             FROM l FULL OUTER JOIN s ON s.ref = l.ref
-           WHERE l.ref IS NULL OR s.ref IS NULL
-              OR l.amount_minor <> s.amount_minor
+           WHERE COALESCE(l.day, s.day) = :day
+             AND (l.n > 1 OR s.n > 1 OR l.ref IS NULL OR s.ref IS NULL
+                  OR l.amt <> s.amt OR l.st <> s.st OR l.day <> s.day)
           ON CONFLICT (day, provider, ref) DO NOTHING;
         marks:
-          - {line: 4, tip: 'COALESCE: যেদিকে reference আছে, সেটাই নেয়। দুই পাশের যেকোনো একটা ফাঁকা হতে পারে।'}
-          - {line: 5, tip: 'যার statement-এ নেই সে missing_at_provider; যার ledger-এ নেই সে missing_in_ledger।'}
-          - {line: 12, tip: 'দ্বিতীয়বার চালালে একই break আবার ঢোকে না। job নিরাপদে পুনরায় চালানো যায়।'}
+          - {line: 2, tip: 'প্রতি পাশে: এই ref কতগুলো লাইনে আছে (`n`), আর তার অঙ্ক, status ও দিন। `n` ১-এর বেশি মানে duplicate।'}
+          - {line: 8, tip: 'CASE ওপর থেকে নিচে চলে। প্রথম যে শর্ত সত্য, সেটাই break-এর নাম। পাঁচটার কোনোটা না মিললে একই ref আলাদা দিনে: timing।'}
+          - {line: 16, tip: 'শুধু এই দিনের break রাখে (ledger পাশের দিনই প্রাধান্য পায়), যাতে পরের দিনের run একই লাইন আবার না ধরে।'}
+          - {line: 19, tip: 'দ্বিতীয়বার চালালে একই break আবার ঢোকে না। job নিরাপদে পুনরায় চালানো যায়।'}
       - type: code
         lang: php
         file: 'src/Command/ReconcileCommand.php'
@@ -119,7 +127,7 @@ slides:
 
               protected function configure(): void
               {
-                  $this->addArgument('date', InputArgument::OPTIONAL, 'কোন দিন', 'yesterday');
+                  $this->addArgument('date', InputArgument::OPTIONAL, 'কোন দিন', '2 days ago');
               }
 
               protected function execute(InputInterface $in, OutputInterface $out): int
@@ -133,30 +141,31 @@ slides:
           }
         marks:
           - {line: 2, tip: 'Symfony Scheduler রোজ ভোর ৩টায় এই command চালায়। চালু রাখতে `messenger:consume scheduler_default` লাগে।'}
-          - {line: 12, tip: 'argument ছাড়া "গতকাল"। দরকারে হাতে আগের কোনো দিনও আবার চালানো যায়।'}
+          - {line: 12, tip: 'argument ছাড়া "দুই দিন আগে", যখন পাশের দিনের statement এসে গেছে। দরকারে হাতে আগের কোনো দিনও আবার চালানো যায়।'}
     aside:
       - type: commands
         title: 'চালানোর কমান্ড'
         items:
-          - {cmd: 'php bin/console app:reconcile 2026-11-20', desc: 'নির্দিষ্ট দিনের হিসাব আবার মেলাও'}
-          - {cmd: 'php bin/console messenger:consume scheduler_default', desc: 'Scheduler চালু রাখো'}
+          - {cmd: 'php bin/console app:reconcile 2026-11-20', desc: 'নির্দিষ্ট দিনের হিসাব আবার মেলান'}
+          - {cmd: 'php bin/console messenger:consume scheduler_default', desc: 'Scheduler চালু রাখুন'}
       - type: tips
         items:
-          - 'break সংখ্যা ০-র বেশি হলে alert পাঠাও। চুপচাপ থাকলে কেউ দেখবে না।'
-          - 'statement ফাইল আনার ধাপ নিয়ে দেখো [[ledgers/batch-files|Batch ফাইল ইন্টিগ্রেশন]]।'
+          - 'break সংখ্যা ০-র বেশি হলে alert পাঠান। চুপচাপ থাকলে কেউ দেখবে না।'
+          - 'দুই টেবিলেই `(day, ref)`-এ index দিন, নইলে join সব স্ক্যান করে। দিনে কয়েক মিলিয়ন লাইন পর্যন্ত চলে; তার চেয়ে অনেক বেশি হলে day ধরে partition করুন।'
+          - 'statement ফাইল আনার ধাপ নিয়ে দেখুন [[ledgers/batch-files|Batch ফাইল ইন্টিগ্রেশন]]।'
     check:
       q: '`recon_break`-এ `(day, provider, ref)` UNIQUE কেন, আর `ON CONFLICT DO NOTHING` কেন?'
       a: 'job দুইবার চললে (retry বা হাতে) একই break দুইবার ঢুকত। UNIQUE আর DO NOTHING মিলে job-কে নিরাপদে বারবার চালানোর উপযুক্ত করে।'
 
   - slug: dont-plug-the-gap
-    title: 'অমিল ঢাকতে নিজের খাতা বদলিয়ো না'
+    title: 'অমিল ঢাকতে নিজের খাতা বদলাবেন না'
     kind: pitfall
-    tldr: 'Break মিটাতে ledger-এ UPDATE করা ভুল; break খোলো, কারণ খোঁজো, তারপর সংশোধন entry লিখে বন্ধ করো।'
+    tldr: 'Break মিটাতে ledger-এ UPDATE করা ভুল; break খোলা রাখুন, কারণ খুঁজুন, তারপর সংশোধন entry লিখে বন্ধ করুন।'
     keywords: ['break resolution', 'plug figure', 'corrective entry', 'write-off', 'অমিল মেটানো', 'সংশোধন']
     blocks:
       - type: text
         body: |
-          অমিল দেখে সহজ লোভ: "ব্যাংকের অঙ্কটাই ঠিক, ledger-এ বসিয়ে দিই।" এতে সংখ্যা মেলে, কিন্তু কেন ভুল হয়েছিল তা চিরকালের জন্য চাপা পড়ে। ঠিক পথ: break-টা খোলা অবস্থায় রাখো, কারণ খুঁজে বের করো, তারপর একটা নতুন সংশোধন entry লিখে break বন্ধ করো।
+          অমিল দেখে সহজ লোভ: "ব্যাংকের অঙ্কটাই ঠিক, ledger-এ বসিয়ে দিই।" এতে সংখ্যা মেলে, কিন্তু কেন ভুল হয়েছিল তা চিরকালের জন্য চাপা পড়ে। ঠিক পথ: break-টা খোলা অবস্থায় রাখুন, কারণ খুঁজে বের করুন, তারপর একটা নতুন সংশোধন entry লিখে break বন্ধ করুন।
       - type: code
         lang: php
         file: 'break মেটানো'
@@ -178,14 +187,17 @@ slides:
 
           $txId = $ledger->post(
               memo: "recon সংশোধন: {$break->ref}",
-              postings: $postingsForMissingPayment,
+              postings: [   // pay_881: গেটওয়ের কাছে ৫০০ টাকা, যা আমরা লিখিনি
+                  new Posting($gatewayClearing, Side::Debit,  new Money(50000, 'BDT')),
+                  new Posting($sales,           Side::Credit, new Money(50000, 'BDT')),
+              ],
           );
 
           $break->resolve($user, correctedBy: $txId);
         marks:
           - {line: 1, tip: 'কে, কখন, কী কারণ — সব break-এর গায়ে লেখা থাকে। এটাই তদন্তের প্রমাণ।'}
-          - {line: 3, tip: 'ভুল ঠিক করা হয় নতুন লেনদেনে; আগের কোনো entry বদলায় না।'}
-          - {line: 8, tip: 'break বন্ধ হলো কোন লেনদেন দিয়ে, তা জুড়ে রাখা হলো। পরে অডিটর সোজা সেখানে পৌঁছায়।'}
+          - {line: 3, tip: 'ভুল ঠিক করা হয় নতুন লেনদেনে; আগের কোনো entry বদলায় না। দুই পাশ যথারীতি মেলে।'}
+          - {line: 11, tip: 'break বন্ধ হলো কোন লেনদেন দিয়ে, তা জুড়ে রাখা হলো। পরে অডিটর সোজা সেখানে পৌঁছায়।'}
       - type: visual
         kind: steps
         caption: 'একটা break-এর জীবনচক্র'
@@ -193,11 +205,11 @@ slides:
           - {title: '১. খোলা (open)', body: 'রাতের job break লেখে, কেউ এখনো দেখেনি', tip: 'এই অবস্থায় break গোনা হয়; পুরনো খোলা break-ই আসল ঝুঁকি।'}
           - {title: '২. তদন্ত (investigating)', body: 'একজন মালিক কারণ খোঁজে ও লিখে রাখে', tip: 'মালিক ছাড়া break কেউ দেখে না, তাই নাম বসানো বাধ্যতামূলক।'}
           - {title: '৩. সংশোধন (resolved)', body: 'নতুন entry লিখে break লেনদেনের সাথে জোড়া হয়', tip: 'ledger পরিবর্তিত হয় শুধু নতুন entry দিয়ে।'}
-          - {title: '৪. অনুমোদিত ছাড় (written off)', body: 'ছোট অঙ্ক, দ্বিতীয় জনের অনুমোদনে বন্ধ', tip: 'ছোট অঙ্কের জন্য অনন্তকাল খোঁজা সম্ভব নয়, কিন্তু এই সিদ্ধান্ত লিখে ও অনুমোদন নিয়ে হয়।'}
+          - {title: '৪. অনুমোদিত ছাড় (written off)', body: 'ছোট অঙ্ক, দ্বিতীয় জনের অনুমোদনে বন্ধ', tip: 'ছোট অঙ্কের জন্য অনন্তকাল খোঁজা সম্ভব নয়। অঙ্কটা write-off অ্যাকাউন্টে সাধারণ entry হিসেবে বসে, আর সিদ্ধান্ত লিখে ও অনুমোদন নিয়ে হয়।'}
     aside:
       - type: pitfalls
         items:
-          - 'খোলা break জমতে দিলে এক সময় কেউ আর দেখে না। বয়স ধরে alert দাও (যেমন ৩ দিনের পুরনো)।'
+          - 'খোলা break জমতে দিলে এক সময় কেউ আর দেখে না। বয়স ধরে alert দিন (যেমন ৩ দিনের পুরনো)।'
       - type: refs
         items:
           - {to: 'recovery/corrective-actions', label: 'সংশোধন entry আর data-fix'}
@@ -228,10 +240,15 @@ flashcards:
       প্রথমটা সাধারণত হারানো webhook বা timeout থেকে। দ্বিতীয়টা বিপজ্জনক: আমরা ধরে নিয়েছি পেমেন্ট হয়েছে, গেটওয়ে জানে না — পণ্য ছেড়ে দিলে ক্ষতি আমাদের।
     ref: match-and-break
   - q: 'Timing difference কী, আর কেন এটা আসল ভুল নয়?'
-    a: 'একই লেনদেন আজ এক খাতায়, কাল অন্য খাতায় (cutoff বা T+1 settlement)। পরের দিনের statement-এ মিলে যায়।'
+    a: 'একই reference দুই পাশেই আছে, কিন্তু আলাদা দিনে (cutoff বা T+1 settlement)। job এটাকে হারানো নয়, `timing` বলে।'
     more: |
-      এগুলো আলাদা চিহ্নিত না করলে প্রতিদিন ভুল alarm বাজে, আর মানুষ alert উপেক্ষা করতে শেখে। তবে পরের দিনও না মিললে এটা আসল break।
+      Query যে দিনটা দেখছে তার এক দিন আগে-পরেও খোঁজে, তাই শুধু পাশের দিনে পড়ে থাকা লাইনকে হারানো বলা হয় না। এগুলো আলাদা চিহ্নিত না করলে প্রতিদিন ভুল alarm বাজে, আর মানুষ alert উপেক্ষা করতে শেখে।
     ref: match-and-break
+  - q: 'একটা query ছয় ধরনের break আলাদা করে কীভাবে?'
+    a: 'প্রতি পাশে ref গুনে অঙ্ক, status আর দিন মেলায়। `CASE` প্রথম সত্য শর্তে নাম দেয়: duplicate, কোনো পাশে নেই, অঙ্ক, status, নইলে timing।'
+    more: |
+      একটা `FULL OUTER JOIN` শুধু একপাশে থাকা লাইন রাখে। `WHERE` আবার দুই পাশেই থাকা সেই লাইনও রাখে, যার সংখ্যা, অঙ্ক, status বা দিন আলাদা। ক্রম জরুরি: duplicate আগে নাম পায়, তাই সেটা অঙ্কের অমিল ভেবে ভুল হয় না।
+    ref: daily-reconcile-job
   - q: 'Daily reconciliation job কেন idempotent হওয়া উচিত?'
     a: 'job বারবার চালানো যায় (retry বা হাতে)। UNIQUE (day, provider, ref) আর DO NOTHING থাকলে একই break দুইবার ঢোকে না।'
     more: |
@@ -292,6 +309,22 @@ quiz:
         correct: false
         why: 'DO NOTHING মানে পুরনোকে ছোঁয়াই হয় না।'
     ref: daily-reconcile-job
+  - q: 'statement বলছে pay_77 `refunded`, আমাদের ledger বলছে `paid`; দুই পাশেই একই দিনে ৫০০ টাকা। এটা কোন break?'
+    hint: 'reference, অঙ্ক আর দিন তিনটাই মেলে।'
+    options:
+      - text: 'status_mismatch: একটা refund যা আমরা দেখিনি'
+        correct: true
+        why: 'অঙ্ক মেলে, status মেলে না। query অঙ্কের পর status মেলায়, তাই এটা এখানে পড়ে।'
+      - text: 'amount_mismatch'
+        correct: false
+        why: 'দুই পাশেই ৫০০ টাকা, অঙ্ক মেলে।'
+      - text: 'timing'
+        correct: false
+        why: 'দুটো লাইনই একই দিনে, দিনের পার্থক্য নেই।'
+      - text: 'missing_in_ledger'
+        correct: false
+        why: 'আমাদের ledger-এ লাইনটা আছে; শুধু status আলাদা।'
+    ref: daily-reconcile-job
   - q: 'নিচের কোডটা কেন সমস্যা?'
     lang: php
     code: |
@@ -317,15 +350,15 @@ quiz:
         correct: false
         why: 'মিললেও ভুলের কারণ অজানা, একই bug আবার ঘটলে ধরা যাবে না।'
     ref: dont-plug-the-gap
-  - q: 'গেটওয়ে statement-এ পেমেন্টটা ২১ নভেম্বর, আমাদের ledger-এ ২০ নভেম্বর রাত ১১:৫৯। ২০ তারিখের job-এ কী ঘটবে?'
-    hint: 'দিনের সীমা (cutoff) দুই পাশে আলাদা হলে কী হয়?'
+  - q: 'গেটওয়ে statement-এ পেমেন্টটা ২১ নভেম্বর, আমাদের ledger-এ ২০ নভেম্বর রাত ১১:৫৯। ২০ তারিখের job এটাকে কী নামে চিহ্নিত করবে?'
+    hint: 'একই reference দুই পাশেই আছে।'
     options:
-      - text: 'দুই পাশে দিন আলাদা হওয়ায় একটা timing break আসবে, যা পরের দিন মিলে যায়'
+      - text: 'timing break: reference মেলে, শুধু দিন আলাদা'
         correct: true
-        why: 'cutoff-এর পার্থক্য আসল ভুল নয়; আলাদা চিহ্নিত রাখলে ভুল alarm বাজে না।'
-      - text: 'পেমেন্টটা চিরকালের জন্য হারিয়ে গেছে'
+        why: 'query এক দিন আগে-পরে দেখে ২১ তারিখে ref-টা পায়, তাই missing না বলে timing বলে। cutoff-এর পার্থক্য আসল ভুল নয়।'
+      - text: 'missing_at_provider, কারণ ২০ তারিখের statement-এ এই লাইন নেই'
         correct: false
-        why: 'পরের দিনের statement-এ ঠিকই থাকবে; শুধু দিন আলাদা।'
+        why: 'এতে ভুল alarm বাজত। join পাশের দিনও দেখে, আর সেখানে লাইনটা পায়।'
       - text: 'ledger-এর তারিখ বদলে ২১ করে দিতে হবে'
         correct: false
         why: 'ledger-এর entry বদলানো যায় না, আর কারণ তারিখ নয়, cutoff।'

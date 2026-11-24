@@ -50,7 +50,7 @@ slides:
         kind: flow
         caption: 'কমান্ড এলে আগের event চালিয়ে অবস্থা জানা, তারপর নতুন event যোগ'
         nodes:
-          - {id: client, label: 'কমান্ড', sub: 'টাকা তোলো ৩০০', icon: send, col: 0, row: 1, tip: 'ব্যবহারকারী বা অন্য কোড যা করতে চায়, সেই অনুরোধ।'}
+          - {id: client, label: 'কমান্ড', sub: 'টাকা তোলা ৩০০', icon: send, col: 0, row: 1, tip: 'ব্যবহারকারী বা অন্য কোড যা করতে চায়, সেই অনুরোধ।'}
           - {id: agg, label: 'Account', sub: 'aggregate', icon: puzzle, tone: accent, col: 2, row: 0, tip: 'ব্যবসার নিয়মের মালিক। আগের event দেখে ঠিক করে নতুন event বৈধ কি না।'}
           - {id: store, label: 'Event store', sub: 'শুধু যোগ হয়', icon: archive, col: 4, row: 1, tip: 'সব event ক্রমানুসারে সংরক্ষিত। কখনো UPDATE বা DELETE হয় না।'}
         edges:
@@ -59,7 +59,7 @@ slides:
           - {from: agg, to: store, label: 'ব্যালেন্স যথেষ্ট থাকলে MoneyWithdrawn event যোগ হয়', tone: good}
       - type: text
         body: |
-          Replay-এ ১০,০০০ event থাকলে প্রতিবার সব চালানো ধীর। তখন মাঝে মাঝে **snapshot** নেওয়া হয়, মানে সেই মুহূর্তের অবস্থার একটা কপি। পরের বার সর্বশেষ snapshot তুলে শুধু তার পরের event গুলো চালানো হয়।
+          ১০,০০০ event-এর একটা Account প্রতিবার লোড করতে ১০,০০০ সারি পড়তে হয়। তাই প্রতি ১০০ event পরপর **snapshot** নেওয়া হয়, মানে সেই মুহূর্তের অবস্থার একটা কপি। পরের বার সর্বশেষ snapshot তুলে শুধু তার পরের event চালানো হয়: ১০০-র কম, ১০,০০০ নয়।
     aside:
       - type: terms
         items:
@@ -74,7 +74,7 @@ slides:
   - slug: store-and-aggregate
     title: 'Event store আর aggregate কোডে'
     kind: howto
-    tldr: 'event_store টেবিলের (aggregate_id, version) primary key দিয়ে সমান্তরাল লেখা আটকাও; aggregate fromHistory() দিয়ে event চালিয়ে অবস্থা বানায় আর নতুন event জমা রাখে।'
+    tldr: 'event_store টেবিলের (aggregate_id, version) primary key দিয়ে সমান্তরাল লেখা আটকান; aggregate fromHistory() দিয়ে event চালিয়ে অবস্থা বানায় আর নতুন event জমা রাখে।'
     keywords: ['event store table', 'optimistic concurrency', 'aggregate', 'Doctrine DBAL', 'fromHistory', 'version']
     blocks:
       - type: visual
@@ -89,7 +89,7 @@ slides:
           - cells: ['type, schema_v', 'event-এর নাম আর কাঠামোর সংস্করণ']
             tip: 'schema_v না রাখলে পুরনো event পরে বদলাতে গেলে বোঝা যায় না কোনটা কোন কাঠামোর।'
           - cells: ['payload (JSON), occurred_at', 'তথ্য আর সময়']
-            tip: 'event-এর আসল তথ্য। এই সারি কখনো UPDATE বা DELETE হয় না।'
+            tip: 'event-এর আসল তথ্য। occurred_at ডেটাবেসে ডিফল্ট now()। এই সারি কখনো UPDATE বা DELETE হয় না।'
       - type: code
         lang: php
         file: 'src/Account/Account.php'
@@ -155,19 +155,91 @@ slides:
               }
           }
         marks:
-          - {line: 8, tip: 'expectedVersion হলো পড়ার সময় যে version দেখেছিলে। এর পর থেকেই লেখা শুরু।'}
+          - {line: 8, tip: 'expectedVersion হলো পড়ার সময় যে version দেখেছিলেন। এর পর থেকেই লেখা শুরু।'}
           - {line: 15, tip: 'দুজন একসাথে একই version-এ লিখতে গেলে primary key একজনকে আটকায়। lock ছাড়াই optimistic concurrency।'}
     aside:
+      - type: story
+        title: 'একই সময়ে দুই তোলা'
+        body: |
+          রিনা আর তার স্বামী দুজনেই ৫০০ ব্যালেন্সে ৩০০ তোলার বোতাম চাপলেন। দুজনেই version ৫ পড়েন, দুজনেই দেখেন ৩০০ তোলা চলে, দুজনেই version ৬ লিখতে যান। Primary key না থাকলে দুটোই সংরক্ষিত হতো, ব্যালেন্স হতো -১০০। থাকলে দ্বিতীয় লেখা ব্যর্থ হয়, কমান্ড নতুন অবস্থায় (ব্যালেন্স ২০০) আবার চলে, আর InsufficientFunds পায়।
       - type: tips
         items:
           - 'Event-এর নাম অতীত কালে: `MoneyWithdrawn`, `OrderShipped`। ঘটে গেছে বলেই এগুলো বদলানো যায় না।'
-          - 'ConcurrentModification-এ কমান্ডটা আবার পড়ে নতুন করে চেষ্টা করো, কারণ ব্যালেন্স হয়তো এর মধ্যে বদলেছে।'
+          - 'ConcurrentModification-এ কমান্ডটা আবার পড়ে নতুন করে চেষ্টা করুন, কারণ ব্যালেন্স হয়তো এর মধ্যে বদলেছে।'
       - type: refs
         items:
           - {to: 'concurrency/locking', label: 'Optimistic locking'}
     check:
       q: 'দুজন একই সময়ে একই Account-এ version ৫ লিখতে গেলে কী ঘটে, আর কেন সেটা ভালো?'
       a: 'Primary key (aggregate_id, version) একজনকে আটকায়, সে ConcurrentModification পায়। ভালো, কারণ দুজনের একজন এমন ব্যালেন্সের ওপর কাজ করছিল যা ইতিমধ্যে বদলেছে।'
+
+  - slug: snapshots-in-code
+    title: 'কোডে snapshot: দ্রুত লোড, কম replay'
+    kind: howto
+    tldr: 'প্রতি ১০০ event-এ অবস্থা সংরক্ষণ; load() সর্বশেষ snapshot তুলে শুধু তার পরের event চালায়। দাম: আরেকটা টেবিল, আর নিয়ম বদলালে snapshot ফেলতে হয়।'
+    keywords: ['snapshot', 'load aggregate', 'restore', 'replay', 'snapshot interval', 'স্ন্যাপশট']
+    blocks:
+      - type: text
+        body: |
+          Snapshot না থাকলে ১০,০০০ event-এর একটা Account লোড করতে প্রতিবার ১০,০০০ সারি পড়তে হয়। প্রতি ১০০ event-এ একটা snapshot থাকলে `load()` পড়ে একটা snapshot-সারি আর ১০০-র কম পরের event। Snapshot শুধু শর্টকাট: মুছে ফেললেও event থেকে ঠিক অবস্থা পাওয়া যায়।
+      - type: code
+        lang: php
+        file: 'src/Account/AccountRepository.php'
+        variant: good
+        code: |
+          public function load(Uuid $id): Account
+          {
+              $snap = $this->db->fetchAssociative(
+                  'SELECT version, balance FROM account_snapshot WHERE aggregate_id = ?',
+                  [$id->toRfc4122()],
+              ) ?: ['version' => 0, 'balance' => 0];
+
+              $later = $this->store->eventsAfter($id, (int) $snap['version']);
+
+              return Account::restore((int) $snap['balance'], (int) $snap['version'], $later);
+          }
+
+          public function saveSnapshot(Uuid $id, Account $a): void     // প্রতি ১০০তম event-এ
+          {
+              $this->db->executeStatement(
+                  'INSERT INTO account_snapshot (aggregate_id, version, balance) VALUES (?, ?, ?)
+                   ON CONFLICT (aggregate_id) DO UPDATE
+                   SET version = EXCLUDED.version, balance = EXCLUDED.balance',
+                  [$id->toRfc4122(), $a->version(), $a->balance()],
+              );
+          }
+        marks:
+          - {line: 8, tip: 'শুধু snapshot-এর পরের version-এর event পড়া হয়: ১০,০০০ নয়, ১০০-র কম সারি।'}
+          - {line: 10, tip: 'restore() সংরক্ষিত balance আর version থেকে শুরু করে, তারপর পরের event চালায়।'}
+          - {line: 13, tip: '১০০-র গুণিতক version-এ append সফল হলে এটা ডাকুন। ব্যর্থ হলেও কিছু হারায় না: event-ই সত্য।'}
+      - type: code
+        lang: php
+        file: 'src/Account/Account.php (যোগ)'
+        variant: good
+        code: |
+          public static function restore(int $balance, int $version, iterable $later): self
+          {
+              $a = new self();
+              $a->balance = $balance;
+              $a->version = $version;
+              foreach ($later as $e) { $a->apply($e); }    // আগের সেই apply()-ই
+
+              return $a;
+          }
+      - type: points
+        title: 'এর দাম'
+        style: cross
+        items:
+          - 'আরেকটা টেবিল, আর তাকে হালনাগাদ রাখার কোড।'
+          - '`apply()`-এর নিয়ম বদলালে পুরনো snapshot ভুল হয়ে যায়: মুছে event থেকে আবার বানান।'
+          - 'প্রতি aggregate-এ কয়েকশো event-এর কম হলে replay-ই দ্রুত: snapshot লাগে না।'
+    aside:
+      - type: tips
+        items:
+          - 'চাইলে snapshot ব্যাকগ্রাউন্ড job-এ নিন। এটা event যা বলে, তারই একটা cache মাত্র।'
+    check:
+      q: 'একটা Account-এ ১০,০০০ event, আর সর্বশেষ snapshot version ৯,৯০০-তে। `load()` কয়টা event replay করে?'
+      a: '১০০টা: শুধু ৯,৯০০-র পরের version-এর event। Snapshot-এ ৯,৯০০ পর্যন্ত অবস্থা আগেই আছে, তাই সেগুলো আবার চালানো বৃথা।'
 
   - slug: projections-lag
     title: 'পড়ার জন্য আলাদা টেবিল: projection ও দেরি'
@@ -187,13 +259,13 @@ slides:
           - {id: proj, label: 'Projector', icon: worker, tip: 'event শুনে read model আপডেট করে। এটা ব্যাকগ্রাউন্ডে চলে, তাই দেরি হয়।'}
           - {id: read, label: 'Read model', icon: db, tip: 'account_balance টেবিল। পড়ার জন্য তৈরি, দ্রুত।'}
         messages:
-          - {from: user, to: store, label: 'টাকা তোলো ৩০০'}
+          - {from: user, to: store, label: '৩০০ তোলার অনুরোধ'}
           - {from: store, to: user, label: 'সফল, version ৭', dashed: true}
-          - {from: user, to: read, label: 'ব্যালেন্স দেখাও'}
+          - {from: user, to: read, label: 'ব্যালেন্স দেখার অনুরোধ'}
           - {from: read, to: user, label: '৫০০ (এখনো পুরনো)', dashed: true, tone: warn}
           - {from: store, to: proj, label: 'event ৭ পাঠানো হলো'}
           - {from: proj, to: read, label: 'ব্যালেন্স ২০০, version ৭'}
-          - {from: user, to: read, label: 'আবার দেখাও'}
+          - {from: user, to: read, label: 'আবার দেখার অনুরোধ'}
           - {from: read, to: user, label: '২০০', dashed: true, tone: good}
       - type: code
         lang: php
@@ -214,29 +286,34 @@ slides:
                        SET balance = account_balance.balance + :delta, version = :v
                        WHERE account_balance.version = :v - 1',
                       ['id' => $m->aggregateId, 'delta' => $m->signedAmount, 'v' => $m->version],
-                  );                                  // ০ সারি: duplicate বা আগের event এখনো আসেনি
+                  );                                  // ০ সারি: duplicate বা ক্রম-ভাঙা event
               }
           }
         marks:
           - {line: 13, tip: 'শুধু ঠিক পরের version হলেই আপডেট। duplicate event এলে version মেলে না, কিছু বদলায় না।'}
           - {line: 14, tip: 'projector idempotent, কারণ ফেলে দিয়ে সব event আবার চালালেও একই ফল আসে।'}
     aside:
+      - type: terms
+        items:
+          - {term: 'CQRS', meaning: 'যে মডেল লেখা সামলায় আর যে মডেল পড়ার উত্তর দেয়, দুটোকে আলাদা রাখা।'}
+          - {term: 'Projection', meaning: 'event থেকে বানানো টেবিল, যা এক ধরনের প্রশ্নের উত্তর দেয়, যেমন ব্যালেন্স।'}
+          - {term: 'Eventual consistency', meaning: 'পড়ার দিক লেখার ঠিক সাথে সাথে নয়, একটু পরে ধরে ফেলে।'}
       - type: tips
         items:
-          - 'লেখার উত্তরে `version` ফেরত দাও। Vue অ্যাপ read API-তে `?minVersion=7` পাঠিয়ে সেই version না আসা পর্যন্ত "আপডেট হচ্ছে…" দেখাক, বা নিজের হিসাবে মান বসিয়ে রাখুক।'
-          - 'Read model বদলাতে চাইলে নতুন projection বানিয়ে শুরু থেকে সব event চালাও (replay), পুরনোটা পরে ফেলে দাও।'
+          - 'লেখার উত্তরে `version` ফেরত দিন। Vue অ্যাপ read API-তে `?minVersion=7` পাঠিয়ে সেই version না আসা পর্যন্ত "আপডেট হচ্ছে…" দেখাক, বা নিজের হিসাবে মান বসিয়ে রাখুক।'
+          - 'Read model বদলাতে চাইলে নতুন projection বানিয়ে শুরু থেকে সব event চালান (replay), পুরনোটা পরে ফেলে দিন।'
       - type: refs
         items:
           - {to: 'workflows/outbox-inbox', label: 'Event projector-এ পৌঁছানো'}
           - {to: 'thinking/event-driven-cqrs', label: 'CQRS-এর মূল ধারণা'}
     check:
-      q: 'রিনা টাকা তুলেই ব্যালেন্স দেখে এখনো ৫০০ পেল। এটা কি bug? কীভাবে সামলাবে?'
+      q: 'রিনা টাকা তুলেই ব্যালেন্স দেখে এখনো ৫০০ পেল। এটা কি bug? কীভাবে সামলাবেন?'
       a: 'Bug নয়, eventual consistency: read model একটু পরে আপডেট হয়। লেখার উত্তরে পাওয়া version দিয়ে read model সেই version পর্যন্ত না পৌঁছানো অবধি অপেক্ষা বা নিজের হিসাবের মান দেখানো যায়।'
 
   - slug: worth-it-and-upcasting
     title: 'কখন সার্থক, আর পুরনো event বদলানোর দাম'
     kind: compare
-    tldr: 'Event sourcing ইতিহাস ও অডিট দেয়, কিন্তু দেয় জটিলতা: projection, replay, snapshot আর পুরনো event-এর কাঠামো বদলালে upcasting; তাই শুধু ইতিহাসই মূল চাহিদা হলে বেছে নাও।'
+    tldr: 'Event sourcing ইতিহাস ও অডিট দেয়, কিন্তু দেয় জটিলতা: projection, replay, snapshot আর পুরনো event-এর কাঠামো বদলালে upcasting; তাই শুধু ইতিহাসই মূল চাহিদা হলে বেছে নিন।'
     keywords: ['upcasting', 'schema evolution', 'when to use event sourcing', 'trade-off', 'event versioning', 'আপকাস্টিং']
     blocks:
       - type: visual
@@ -254,7 +331,7 @@ slides:
             tip: 'আগের event বদলানো যায় না, তাই পড়ার সময় রূপান্তর করতে হয়।'
       - type: text
         body: |
-          পুরনো event কখনো বদলানো যায় না, কিন্তু কাঠামো বদলায়: ধরো আগে `MoneyDeposited`-এ শুধু `amount` ছিল, এখন `currency`-ও লাগে। পড়ার সময় পুরনো event-কে নতুন কাঠামোয় রূপান্তরের কোডকে বলে **upcaster**। ভবিষ্যতে এই কোড জমতে থাকে, এটাই event sourcing-এর সবচেয়ে বড় লুকানো খরচ।
+          পুরনো event কখনো বদলানো যায় না, কিন্তু কাঠামো বদলায়: ধরুন আগে `MoneyDeposited`-এ শুধু `amount` ছিল, এখন `currency`-ও লাগে। পড়ার সময় পুরনো event-কে নতুন কাঠামোয় রূপান্তরের কোডকে বলে **upcaster**। ভবিষ্যতে এই কোড জমতে থাকে, এটাই event sourcing-এর সবচেয়ে বড় লুকানো খরচ।
       - type: code
         lang: php
         file: 'src/Account/Upcaster/MoneyDepositedUpcaster.php'
@@ -264,7 +341,7 @@ slides:
           {
               public function upcast(array $payload, int $schemaV): array
               {
-                  if (1 === $schemaV) {            // v1-এ currency ছিল না
+                  if (1 === $schemaV) {            // v1-এ currency ছিল না: সবই টাকা
                       $payload['currency'] = 'BDT';
                       $schemaV = 2;
                   }
@@ -284,8 +361,9 @@ slides:
         avoid: ['সাধারণ CRUD (প্রোফাইল, ব্লগ, সেটিংস)', 'টিম ছোট আর এই জটিলতা সামলানোর সময় নেই']
       - type: tips
         items:
-          - 'পুরো সিস্টেমে নয়, শুধু যে অংশে ইতিহাস মূল (যেমন ledger), সেখানে ব্যবহার করো। বাকিটা CRUD-ই রাখো।'
-          - 'Event-এর কাঠামো আগে ভাবো: ব্যক্তিগত তথ্য event-এ ঢোকালে মুছে ফেলার আইনি দায় (যেমন GDPR) কঠিন হয়ে যায়।'
+          - 'পুরো সিস্টেমে নয়, শুধু যে অংশে ইতিহাস মূল (যেমন ledger), সেখানে ব্যবহার করুন। বাকিটা CRUD-ই রাখুন।'
+          - 'শুধু audit trail লাগলে CRUD টেবিলের পাশে শুধু-যোগ-হয় `account_history` টেবিল অনেক সস্তা। event-ই যখন অবস্থা চালায়, তখনই event sourcing।'
+          - 'ব্যক্তিগত তথ্য event-এ রাখবেন না: customer id রাখুন, তথ্য থাকুক মোছা যায় এমন সাধারণ টেবিলে। নইলে আইনি মুছে ফেলার দায় (GDPR) মেটানো যাবে না।'
     check:
       q: 'আগের event বদলানো যায় না, তাহলে event-এর কাঠামো বদলালে পুরনো event কীভাবে নতুন কোডে চলে?'
       a: 'পড়ার সময় upcaster পুরনো schema_v-র event-কে সর্বশেষ কাঠামোয় রূপান্তর করে দেয়। ডেটাবেসের মূল event অপরিবর্তিত থাকে, কিন্তু upcaster-এর কোড বছরের পর বছর জমে।'
@@ -324,7 +402,7 @@ flashcards:
   - q: 'Read model-এ eventual consistency বলতে কী বোঝায়?'
     a: 'Event লেখার সাথে সাথে read model আপডেট হয় না, কিছু পরে হয়। তাই লেখার ঠিক পরে পড়লে পুরনো মান দেখা যেতে পারে।'
     more: |
-      UI-তে এটা সামলাতে: লেখার উত্তরে পাওয়া version নিয়ে read model সেই version-এ না পৌঁছানো পর্যন্ত অপেক্ষা করো, বা অ্যাপে নিজের হিসাবের মান দেখাও। কিছুক্ষণ পরে ঠিক মান ফিরে আসে।
+      UI-তে এটা সামলাতে: লেখার উত্তরে পাওয়া version নিয়ে read model সেই version-এ না পৌঁছানো পর্যন্ত অপেক্ষা করুন, বা অ্যাপে নিজের হিসাবের মান দেখান। কিছুক্ষণ পরে ঠিক মান ফিরে আসে।
     ref: projections-lag
   - q: 'Upcasting কী, আর কেন এটা event sourcing-এর বড় খরচ?'
     a: 'পুরনো event-কে পড়ার সময় নতুন কাঠামোয় রূপান্তর করা। Event বদলানো যায় না, তাই কাঠামো বদলালেই upcaster জমতে থাকে।'
@@ -334,8 +412,14 @@ flashcards:
   - q: 'কোন ক্ষেত্রে event sourcing বেছে নেওয়া উচিত নয়?'
     a: 'সাধারণ CRUD-তে, যেখানে শুধু বর্তমান মান দরকার আর ইতিহাস মূল চাহিদা নয়। জটিলতার দাম তখন পোষায় না।'
     more: |
-      Event sourcing-এ projection, replay, snapshot আর upcasting-এর জটিলতা আসে। তাই ব্যাংকের লেজার বা অডিট-নির্ভর অংশে লাগাও, আর বাকি অংশ সাধারণ CRUD রাখো। পুরো সিস্টেমে ছড়ানো সাধারণত ভুল সিদ্ধান্ত।
+      Event sourcing-এ projection, replay, snapshot আর upcasting-এর জটিলতা আসে। তাই ব্যাংকের লেজার বা অডিট-নির্ভর অংশে লাগান, আর বাকি অংশ সাধারণ CRUD রাখুন। পুরো সিস্টেমে ছড়ানো সাধারণত ভুল সিদ্ধান্ত।
     ref: worth-it-and-upcasting
+
+  - q: 'Snapshot আছে এমন aggregate কীভাবে লোড হয়?'
+    a: 'সর্বশেষ snapshot পড়ে শুধু তার চেয়ে বড় version-এর event চালানো হয়। ১০,০০০-এর মধ্যে ৯,৯০০-তে snapshot থাকলে চালাতে হয় ১০০টা, ১০,০০০ নয়।'
+    more: |
+      Snapshot শর্টকাট, সত্য নয়। হারিয়ে গেলে বা `apply()`-এর নিয়ম বদলালে সেটা মুছে event থেকে আবার বানাতে হয়। প্রতি aggregate-এ মাত্র কয়েকশো event থাকলে replay-ই যথেষ্ট দ্রুত, তখন snapshot বাদ দেওয়া যায়।
+    ref: snapshots-in-code
 
 quiz:
   - q: 'কোন পরিস্থিতিতে event sourcing সবচেয়ে বেশি যুক্তিসঙ্গত?'
@@ -375,7 +459,7 @@ quiz:
       - text: '`uuid` টাইপ আপনা-আপনি version বাড়ায়'
         correct: false
         why: 'uuid শুধু একটা পরিচয়; version বাড়ানো আমাদের কোডের দায়িত্ব।'
-      - text: 'কোনো কিছুই আটকায় না, জুড়ে দুই সারিই থাকবে'
+      - text: 'কোনো কিছুই আটকায় না, দুই সারিই সংরক্ষিত হবে'
         correct: false
         why: 'primary key ঠিক সেটাই আটকায়।'
     ref: store-and-aggregate
@@ -440,3 +524,19 @@ quiz:
         correct: false
         why: 'পুরনো ইতিহাস হারাবে; অবস্থাও ভুলভাবে ভেঙে যাবে।'
     ref: worth-it-and-upcasting
+  - q: 'রহিম `apply()` বদলাল: এখন টাকা তোলায় ফি-ও ধরা হয়। ব্যালেন্সের পুরনো snapshot আছে। সে কী করবে?'
+    hint: 'সত্য কোনটা: snapshot না event?'
+    options:
+      - text: 'Snapshot রেখে দেবে, ওগুলোই সত্যের উৎস'
+        correct: false
+        why: 'সত্য হলো event। Snapshot শুধু পুরনো নিয়মে পাওয়া ফলের সংরক্ষিত কপি।'
+      - text: 'Snapshot মুছে নতুন নিয়মে event থেকে আবার বানাবে'
+        correct: true
+        why: 'পুরনো snapshot-এ পুরনো নিয়মের ব্যালেন্স আছে। Event থেকে আবার বানালে ঠিক ব্যালেন্স আসে।'
+      - text: 'Snapshot-এর সাথে মেলাতে সবচেয়ে পুরনো event মুছবে'
+        correct: false
+        why: 'Event কখনো মোছা যায় না। এতে বাকি সবকিছু যে ইতিহাসের ওপর দাঁড়িয়ে, সেটাই নষ্ট হয়।'
+      - text: 'প্রতিটা snapshot হাতে এডিট করে ফি বাদ দেবে'
+        correct: false
+        why: 'হাতে এডিটে ভুল হয়, অথচ event থেকে প্রতিটা snapshot নিজে নিজেই আবার বানানো যায়।'
+    ref: snapshots-in-code

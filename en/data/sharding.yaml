@@ -14,15 +14,22 @@ slides:
         kind: steps
         caption: 'The rungs to climb before sharding'
         steps:
-          - {title: '1. Fix queries and indexes', body: 'Measure slow queries, add indexes, remove N+1.', tip: 'Most "the database can''t cope" problems end right here. It is the cheapest step.'}
+          - {title: '1. Fix queries and indexes', body: 'Measure slow queries, add indexes, remove N+1 (one query per row in a loop).', tip: 'Most "the database can''t cope" problems end right here. It is the cheapest step.'}
           - {title: '2. Add a cache', body: 'Answer repeated reads before they reach the database.', tip: 'A large share of the read load moves into the cache.'}
           - {title: '3. Get a bigger server', body: 'More RAM, faster disks (vertical scaling).', tip: 'Today''s big servers handle a lot of data. You buy time without touching code.'}
-          - {title: '4. Add read replicas', body: 'Move reads to followers; the leader only writes.', tip: 'This helps with read load. It does nothing for write load.'}
+          - {title: '4. Add read replicas', body: 'Copy the data to follower servers and send reads there. The leader takes the writes.', tip: 'This helps with read load. It does nothing for write load: every write still goes to the one leader.'}
           - {title: '5. Partition and archive', body: 'Split big tables on one server, move old data out.', tip: 'The table is cut into smaller pieces inside one database. The app doesn''t change.'}
-          - {title: '6. Then shard', body: 'Only when one server''s write limit is truly exceeded.', tone: accent, tip: 'From here on the app has to know which server holds the data. Complexity jumps.'}
+          - {title: '6. Then shard', body: 'Only when one server''s write limit is truly exceeded.', tone: accent, tip: 'Roughly when one tuned server can''t keep up with its writes, often thousands a second. From here on the app has to know which server holds the data. Complexity jumps.'}
       - type: quote
         body: 'Sharding is the last resort. Never shard before every simpler step is exhausted.'
     aside:
+      - type: when
+        use:
+          - 'Writes (not reads) outgrow one big server even after steps 1 to 5.'
+          - 'The data no longer fits on one server''s disk, even after archiving.'
+        avoid:
+          - 'Because big companies do it. Their volume is not yours.'
+          - 'When reads are the bottleneck. Replicas and a cache fix that for far less.'
       - type: terms
         items:
           - {term: 'Partitioning', meaning: 'Splitting one table into smaller pieces, usually on the same database server.'}
@@ -33,7 +40,7 @@ slides:
           - {to: 'data/replication', label: 'Replication for read load'}
     check:
       q: 'Your database write load keeps growing. Which steps do you try before sharding?'
-      a: 'Fix slow queries and indexes, add a cache, buy a bigger server, cut heavy writes, and archive or partition old data. Only if that still isn''t enough, shard.'
+      a: 'Fix slow queries and indexes, trim needless writes, buy a bigger server, archive or partition old data. A cache and replicas only relieve reads. If writes still outgrow one server, shard.'
 
   - slug: how-shards-work
     title: 'The shard key and the router'
@@ -84,7 +91,7 @@ slides:
     blocks:
       - type: text
         body: |
-          An e-commerce app has 4 shards, and the team chose the customer's country as the shard key. But 72% of customers are in Bangladesh, so one shard burns while three sleep. They bought four servers and only one is doing any work.
+          An e-commerce app has 4 shards, and the team chose the customer's country as the shard key. But 72% of customers are in Bangladesh, so one shard burns while three sleep. They bought four servers and only one is doing any work. Hash `customer_id` instead and each shard gets about a quarter of the customers, so each carries about 25%.
       - type: visual
         kind: bars
         caption: 'Shard key = country: share of the load on each shard'
@@ -108,14 +115,14 @@ slides:
         rows:
           - cells: ['Range (dates or ID ranges)', 'Range queries are easy', 'All new data hits the latest shard: hot shard']
             tip: 'With a date key, every write today lands on one shard while the older ones become read-only.'
-          - cells: ['Hash (hash(key) % N)', 'Spreads rows evenly', 'Range queries hit every shard; changing N moves nearly all data']
-            tip: 'The most common choice. But changing N directly is brutal, which is why you need virtual buckets.'
+          - cells: ['Hash (hash(key) % N)', 'Spreads rows evenly', 'Range queries hit every shard; changing N moves most data']
+            tip: 'The most common choice. But changing N directly moves most of the rows, which is why you need virtual buckets (next slides).'
           - cells: ['Lookup table', 'Any key can move to any shard', 'The lookup table becomes a new bottleneck and single point of failure']
             tip: 'Flexible, but every request consults it first, so you have to cache and replicate it.'
     aside:
       - type: pitfalls
         items:
-          - 'The celebrity problem: even with customer_id as the key, one huge customer (or tenant) can fill a shard alone. Give big tenants their own shard.'
+          - 'The celebrity problem: even with customer_id as the key, one huge customer (or tenant) can fill a shard alone. Give big tenants their own shard through a lookup table.'
           - 'Changing the shard key later means moving all the data. Think through the access patterns up front.'
       - type: refs
         items:
@@ -144,7 +151,7 @@ slides:
           CREATE TABLE click_event_2026_01 PARTITION OF click_event
             FOR VALUES FROM ('2026-01-01') TO ('2026-02-01');
         marks:
-          - {line: 5, tip: 'The partition key (created_at) must be part of the primary key.'}
+          - {line: 5, tip: 'The partition key (created_at) must be part of the primary key. Price: id alone is no longer guaranteed unique, only the pair (id, created_at).'}
           - {line: 6, tip: 'Split by month: you can DETACH an old month and archive it, and queries only touch the partitions they need.'}
       - type: code
         lang: php
@@ -173,18 +180,77 @@ slides:
           - {line: 15, tip: 'To move data you change only the bucket-to-shard map, never the bucket calculation, so the hashing stays put.'}
       - type: text
         body: |
-          In `config/packages/doctrine.yaml`, name one connection per shard under `doctrine.dbal.connections` (`shard_0`, `shard_1`) and read each `url` from its own env variable. Then `$registry->getConnection('shard_0')` returns the DBAL connection for that shard.
+          In `config/packages/doctrine.yaml`, name one connection per shard under `doctrine.dbal.connections` (`shard_0`, `shard_1`) and read each `url` from its own env variable. Then `$registry->getConnection('shard_0')` returns the DBAL connection for that shard. `$bucketToShard` is a 1024-entry map; the next slide shows where it lives and how to change it.
     aside:
       - type: tips
         items:
           - 'You would need a separate ORM EntityManager per shard. To keep things simple, use the DBAL Connection on shards.'
           - 'Migrations must run on every shard separately. If you don''t automate that, the shards drift into different schemas.'
+          - 'Pick the bucket count once: 1024 buckets means at most 1024 shards, and changing it later re-hashes everything.'
       - type: refs
         items:
           - {to: 'scaling/consistent-hashing', label: 'Moving less data when N changes'}
     check:
       q: 'What do 1024 virtual buckets buy you compared with plain hash % N?'
       a: 'Changing the number of shards doesn''t change the hash calculation. You only edit the bucket-to-shard map and move some buckets to another shard, so not all the data moves.'
+
+  - slug: add-shard-with-buckets
+    title: 'Adding a shard: move 20%, not 80%'
+    kind: howto
+    tldr: 'Going from 4 to 5 shards with hash % N moves 80% of the rows. With 1024 buckets you reassign about 205 buckets (20%), one at a time, while the app runs.'
+    keywords: ['add a shard', 'resharding', 'bucket map', 'dual write', 'shard_bucket', 'rebalancing']
+    blocks:
+      - type: text
+        body: |
+          A shop has 100 million orders on 4 shards and adds a fifth. With `hash % N`, the `% 4` becomes `% 5`, and a row stays put only when both remainders agree: 1 row in 5. So 80 million rows travel. With buckets the hash never changes: the map starts with 256 buckets per shard, and the new shard takes about 51 from each old one. That is 205 buckets, 20 million rows, the least that has to move.
+      - type: visual
+        kind: bars
+        caption: 'Rows that move when a 5th shard joins 100 million rows'
+        items:
+          - {label: 'hash % N', value: 80, display: '80 million', tone: bad, tip: '% 4 becomes % 5, so 4 of every 5 rows get a new home. Nearly a full copy of the database.'}
+          - {label: '1024 buckets', value: 20, display: '20 million', tone: good, tip: 'Only the buckets handed to shard_4 move, about 205 of 1024. The new shard gets its fair fifth and nothing more.'}
+      - type: code
+        lang: sql
+        file: 'The bucket map, kept in a small directory database'
+        variant: good
+        code: |
+          CREATE TABLE shard_bucket (
+            bucket smallint PRIMARY KEY,
+            shard  text     NOT NULL
+          );
+
+          -- day one: 4 shards, 256 buckets each
+          INSERT INTO shard_bucket
+          SELECT b, 'shard_' || (b / 256) FROM generate_series(0, 1023) AS b;
+
+          -- after bucket 4's rows are copied and verified
+          UPDATE shard_bucket SET shard = 'shard_4' WHERE bucket = 4;
+        marks:
+          - {line: 8, tip: 'Buckets 0 to 255 start on shard_0, 256 to 511 on shard_1, and so on. The crc32 calculation in the router never changes.'}
+          - {line: 11, tip: 'The flip. From now on the router sends bucket 4 to shard_4. App servers must reload the map (load it at boot and refresh it every few seconds).'}
+      - type: visual
+        kind: steps
+        caption: 'Moving one bucket without losing a write'
+        steps:
+          - {title: '1. Dual write', body: 'New writes for the bucket go to both shards. Reads stay on shard_0.', tip: 'Switch this on first. Anything written while you copy then lands on shard_4 as well and is not lost.'}
+          - {title: '2. Copy', body: 'Copy the bucket''s existing rows to shard_4, skipping rows already there.', tip: 'Users keep working. shard_0 still serves every read.'}
+          - {title: '3. Verify', body: 'Compare row counts and checksums on both sides.', tip: 'Trust nothing. A silent gap here becomes lost data after step 4.'}
+          - {title: '4. Flip', body: 'UPDATE the map. The router now reads shard_4.', tone: accent, tip: 'One row changes, so the switch is instant and easy to undo by flipping it back.'}
+          - {title: '5. Clean up', body: 'After a safety wait, delete the bucket from shard_0.', tip: 'Keep the old copy for a few days. It is your undo button.'}
+    aside:
+      - type: tips
+        items:
+          - 'Store the bucket number in each row (a `bucket` column, indexed). SQL can''t compute crc32 for you, so this is how you select exactly one bucket''s rows.'
+          - 'Move one bucket, check the dashboards, then the next. A slow trickle beats a weekend of copying.'
+      - type: when
+        use:
+          - 'You expect to add shards over the years, and rows must move in small, safe pieces.'
+        avoid:
+          - 'The data fits on one server. A partitioned table is far simpler.'
+          - 'You only ever need a fixed number of shards and never grow. Plain hash % N is enough.'
+    check:
+      q: 'Going from 4 to 5 shards, why does hash % N move 80% of the rows but buckets only about 20%?'
+      a: 'With hash % N the remainder changes for 4 rows in 5, so they all move. With buckets the hash is fixed and you only reassign about 205 of 1024 buckets to the new shard, which is the least that must move.'
 
   - slug: cross-shard-and-resharding
     title: 'Cross-shard queries and resharding'
@@ -218,10 +284,10 @@ slides:
     aside:
       - type: story
         title: 'The resharding weekend'
-        body: 'A company filled its 4 shards and wanted to go to 8. Switching from hash % 4 to % 8 moved about half the data. It took weeks of copying and verifying. Now they use virtual buckets from day one.'
+        body: 'A company filled its 4 shards and added a fifth. Switching from hash % 4 to % 5 moved 4 of every 5 rows. It took weeks of copying and verifying. Now they use virtual buckets from day one.'
       - type: tips
         items:
-          - 'When resharding, write to both old and new places (dual write), verify, then switch over. It is big work, so plan it.'
+          - 'When resharding, write to both old and new places (dual write), verify, then switch over, as the previous slide shows. It is big work, so plan it.'
           - 'If you need a very large database, consider a managed or distributed SQL system (CockroachDB, Vitess) that handles sharding for you.'
       - type: refs
         items:
@@ -265,8 +331,13 @@ flashcards:
   - q: 'Why do virtual buckets make resharding easier?'
     a: 'A key maps to one of about 1024 buckets, and each bucket maps to a shard. Adding shards changes only the bucket-to-shard map, not the hash.'
     more: |
-      With plain hash % N, changing N moves nearly all the data. With buckets you move just some buckets to the new shard, so resharding can happen step by step.
+      With plain hash % N, going from 4 to 5 shards moves 4 rows in 5. With buckets you move only about a fifth, one bucket at a time, so resharding can happen step by step.
     ref: partition-and-router-code
+  - q: 'You add a 5th shard to 4. How many rows move with hash % N, and with 1024 buckets?'
+    a: 'About 80% with hash % N (4 of every 5 rows change shard). About 20% with buckets, moved one bucket at a time.'
+    more: |
+      With buckets the hash never changes. A map says which shard owns each of the 1024 buckets, and you hand about 205 of them to the new shard. For each one: dual write, copy, verify, flip the map, clean up.
+    ref: add-shard-with-buckets
 
 quiz:
   - q: 'Rahim''s database is seeing more reads and more writes. What should he do first?'
@@ -306,12 +377,12 @@ quiz:
     code: |
       $shard = $customerId % 4;           // direct shard choice
       $conn  = $registry->getConnection('shard_' . $shard);
-      // ... later the shard count goes from 4 to 8
-    hint: 'When % 4 becomes % 8, which shard does the same customer_id go to?'
+      // ... later a 5th shard is added, so % 4 becomes % 5
+    hint: 'When % 4 becomes % 5, which shard does the same customer_id go to?'
     options:
-      - text: 'When the shard count changes, most customers map to a different shard, so nearly all data has to move'
+      - text: 'When the shard count changes, most customers map to a different shard (4 of every 5 here), so most data has to move'
         correct: true
-        why: 'With a direct % N, changing N changes the calculation itself. With virtual buckets only some buckets move.'
+        why: 'With a direct % N, changing N changes the calculation itself. With virtual buckets only about a fifth of the data moves.'
       - text: 'getConnection() can''t be called like this'
         correct: false
         why: 'ManagerRegistry::getConnection(name) works fine.'
@@ -320,8 +391,24 @@ quiz:
         why: 'The type isn''t the problem; the calculation changing during resharding is.'
       - text: 'Nothing is wrong'
         correct: false
-        why: 'There is a problem: changing N moves nearly all the data.'
+        why: 'There is a problem: changing N moves most of the data.'
     ref: partition-and-router-code
+  - q: 'Rahim copies bucket 4''s rows to shard_4, then flips the map. Customers kept ordering during the copy, and no dual write was on. What goes wrong?'
+    hint: 'What happened to the orders placed after the copy started?'
+    options:
+      - text: 'Orders placed during the copy exist only on shard_0, so they vanish for the router after the flip'
+        correct: true
+        why: 'The copy is a snapshot. Without dual writes (step 1) and a verify (step 3), everything written meanwhile is missing on the new shard.'
+      - text: 'Nothing, because the flip copies the rows by itself'
+        correct: false
+        why: 'The flip changes one row in the map. It moves no data at all.'
+      - text: 'Buckets can only move all at once, never one by one'
+        correct: false
+        why: 'One bucket at a time is exactly the point of the map.'
+      - text: 'The hash must be recalculated for every customer'
+        correct: false
+        why: 'The hash never changes with buckets. Only the map entry for the bucket does.'
+    ref: add-shard-with-buckets
   - q: 'Which tasks get harder in a sharded app?'
     hint: 'Think of tasks that need data from several shards at once.'
     options:

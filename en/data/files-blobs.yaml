@@ -130,6 +130,13 @@ slides:
         items:
           - {cmd: 'composer require league/flysystem-bundle', desc: 'The Flysystem bundle'}
           - {cmd: 'composer require league/flysystem-aws-s3-v3', desc: 'The S3 adapter'}
+      - type: when
+        use:
+          - 'More than one server, or files that must outlive a deploy'
+          - 'Any file your users upload'
+        avoid:
+          - 'One server and a few files shipped with the app: a plain folder is simpler'
+          - 'Anything that must roll back with a database transaction: a file and a row are two places, so keep a pending state (see the upload slides)'
     check:
       q: 'What is the benefit of storing only the key, not the full file URL, in the database?'
       a: 'If the bucket, CDN or domain changes, the database data doesn''t need to change. You build the URL from the key when you need it.'
@@ -137,12 +144,12 @@ slides:
   - slug: presigned-direct-upload
     title: 'Presigned URLs: send the file straight to storage'
     kind: howto
-    tldr: 'The server mints a time-limited signed URL; the Vue app PUTs the file straight to it, so the file never passes through your server.'
-    keywords: ['presigned URL', 'signed URL', 'direct upload', 'S3 PutObject', 'XMLHttpRequest progress']
+    tldr: 'The server mints a time-limited signed form; the Vue app POSTs the file straight to storage, with a size cap the storage itself enforces. The file never passes through your server.'
+    keywords: ['presigned URL', 'signed URL', 'direct upload', 'presigned POST', 'content-length-range', 'XMLHttpRequest progress']
     blocks:
       - type: text
         body: |
-          The warehouse gate has to keep strangers out, but making every truck detour through the owner's office wastes time. So the owner hands over a signed slip good for 10 minutes (a **presigned URL**), and the truck unloads straight at the warehouse. Your PHP server never carries the weight of the file. It only grants permission, and afterwards confirms the file really arrived.
+          The warehouse gate has to keep strangers out, but making every truck detour through the owner's office wastes time. So the owner hands over a signed slip good for 10 minutes (a **presigned URL**), and the truck unloads straight at the warehouse. Your PHP server never carries the weight of the file. It only grants permission, and afterwards confirms the file really arrived. The slip can also say "no sack heavier than 5 MB". That needs a presigned **POST** with a policy: a presigned PUT can't cap the size.
       - type: visual
         kind: sequence
         caption: 'Three steps to upload: permission, direct upload, confirmation'
@@ -151,9 +158,9 @@ slides:
           - {id: api, label: 'Symfony API', icon: server, tip: 'Grants permission and verifies at the end; it never touches the file.'}
           - {id: s3, label: 'Object storage', icon: storage, tip: 'The file arrives here directly.'}
         messages:
-          - {from: vue, to: api, label: 'I want to upload avatar.jpg'}
-          - {from: api, to: vue, label: 'PUT to this URL within 10 minutes', dashed: true, tip: 'The URL carries a signature over the key, type and expiry; change any of them and it no longer matches.'}
-          - {from: vue, to: s3, label: 'PUT the file (directly)', tone: good, tip: 'It costs your server no CPU, memory or network.'}
+          - {from: vue, to: api, label: 'I want to upload an avatar'}
+          - {from: api, to: vue, label: 'POST to this URL: max 5 MB, 10 minutes', dashed: true, tip: 'The signed policy fixes the key, the type, the size range and the expiry; storage rejects anything else.'}
+          - {from: vue, to: s3, label: 'POST the file (directly)', tone: good, tip: 'It costs your server no CPU, memory or network. A file over 5 MB is refused by storage itself.'}
           - {from: vue, to: api, label: 'Upload finished'}
           - {from: api, to: s3, label: 'Is the file there? How big?', tip: 'Verify it yourself instead of trusting the client blindly.'}
           - {at: api, note: 'All good: save the key in the database', tone: good}
@@ -164,22 +171,33 @@ slides:
         code: |
           #[Route('/uploads/presign', methods: ['POST'])]
           #[IsGranted('ROLE_USER')]
-          public function presign(S3Client $s3, #[MapRequestPayload] PresignRequest $in): JsonResponse
+          public function presign(S3Client $s3): JsonResponse
           {
               $key = sprintf('avatars/%s.jpg', Uuid::v7());
+              $this->pending->add($key, new \DateTimeImmutable('+1 hour'));   // next slide
 
-              $cmd = $s3->getCommand('PutObject', [
-                  'Bucket'      => $this->bucket,
-                  'Key'         => $key,
-                  'ContentType' => 'image/jpeg',   // signed: change it and the upload fails
+              $post = new PostObjectV4(
+                  $s3,
+                  $this->bucket,
+                  ['key' => $key, 'Content-Type' => 'image/jpeg'],   // fields the form must send
+                  [
+                      ['bucket' => $this->bucket],
+                      ['key' => $key],
+                      ['eq', '$Content-Type', 'image/jpeg'],
+                      ['content-length-range', 1, 5 * 1024 * 1024],   // 1 byte to 5 MB
+                  ],
+                  '+10 minutes',
+              );
+
+              return $this->json([
+                  'key' => $key,
+                  'url' => $post->getFormAttributes()['action'],
+                  'fields' => $post->getFormInputs(),
               ]);
-              $url = (string) $s3->createPresignedRequest($cmd, '+10 minutes')->getUri();
-
-              return $this->json(['key' => $key, 'url' => $url]);
           }
         marks:
-          - {line: 5, tip: 'The server decides the key. The client can''t choose where it writes.'}
-          - {line: 12, tip: 'After 10 minutes the URL dies. The shorter the lifetime, the less harm if it leaks.'}
+          - {line: 6, tip: 'Remember the key as "pending" right now, so an upload that never gets confirmed can be cleaned up later.'}
+          - {line: 16, tip: 'The size cap lives in the signed policy, so storage refuses a bigger file. A presigned PUT has no such rule.'}
       - type: code
         lang: vue
         file: 'src/components/AvatarUpload.vue'
@@ -190,39 +208,123 @@ slides:
           const progress = ref(0)
 
           async function upload(file: File) {
-            const res = await fetch('/uploads/presign', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ size: file.size, type: file.type }),
-            })
-            const { key, url } = await res.json()
+            const res = await fetch('/uploads/presign', { method: 'POST' })
+            const { key, url, fields } = await res.json()
+
+            const form = new FormData()
+            for (const [name, value] of Object.entries(fields)) form.append(name, value as string)
+            form.append('file', file)   // the file field must come last
 
             await new Promise<void>((resolve, reject) => {
               const xhr = new XMLHttpRequest()
-              xhr.open('PUT', url)
-              xhr.setRequestHeader('Content-Type', 'image/jpeg')
+              xhr.open('POST', url)
               xhr.upload.onprogress = (e) => (progress.value = Math.round((e.loaded / e.total) * 100))
               xhr.onload = () => (xhr.status < 300 ? resolve() : reject(new Error('upload failed')))
               xhr.onerror = () => reject(new Error('network'))
-              xhr.send(file)
+              xhr.send(form)
             })
-            await fetch('/uploads/confirm', { method: 'POST', body: JSON.stringify({ key }) })
+            await fetch('/uploads/confirm', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ key }),
+            })
           }
           </script>
         marks:
-          - {line: 17, tip: '`fetch` can''t report upload progress, but `XMLHttpRequest` can, so it is used here.'}
-          - {line: 22, tip: 'After the upload, tell the server. It verifies, and only then stores the key in the database.'}
+          - {line: 11, tip: 'Storage reads the form top to bottom. Every field from the server goes first, the file last.'}
+          - {line: 16, tip: '`fetch` can''t report upload progress, but `XMLHttpRequest` can, so it is used here.'}
     aside:
       - type: pitfalls
         items:
-          - 'If the bucket''s CORS doesn''t allow your domain and the `PUT` method, the browser blocks the upload.'
-          - 'On confirm, the server must check size and type with `headObject`; it can''t take the client''s word for it.'
+          - 'If the bucket''s CORS rules don''t allow your domain and the `POST` method, the browser blocks the upload.'
+          - 'A presigned PUT cannot limit size. If your S3-compatible store has no POST policies, check the size at confirm and delete what is too big.'
+          - 'The client''s "done" proves nothing. The server must still check size and type with `headObject`.'
       - type: refs
         items:
           - {to: 'security/input-validation', label: 'Validating uploaded files'}
     check:
-      q: 'With a presigned URL the file goes straight to storage. What is left for the server to do?'
-      a: 'Grant permission (mint the URL) and verify after the upload: is the file really there, and are its size and type right? Only then is the key stored in the database.'
+      q: 'Why must the Symfony server both set a size cap in the signed policy and check the file after the upload?'
+      a: 'The policy makes storage refuse oversize files up front. The check afterwards proves the file really arrived with the right type, because the client''s "done" can be wrong or a lie.'
+
+  - slug: confirm-and-cleanup
+    title: 'Confirm or clean up: no upload left behind'
+    kind: pitfall
+    tldr: 'A client can fetch a URL and never upload, or upload and vanish before confirming. Record every upload as pending, promote it only after the server''s own check, and delete whatever stays pending.'
+    keywords: ['pending upload', 'orphan files', 'cleanup', 'headObject', 'lifecycle rule', 'Scheduler']
+    blocks:
+      - type: text
+        body: |
+          Every presigned URL is a promise the client may break. Some users get a URL and close the tab. Others upload the file, then lose the connection before calling confirm. Either way, objects pile up in the bucket with no database row pointing at them, and you pay for them forever. The fix: write a `pending` row the moment you mint the URL, let confirm check the object and flip the row to `uploaded`, and have a scheduled job delete whatever is still pending after an hour.
+      - type: visual
+        kind: table
+        caption: 'Four ways an upload goes wrong, and what removes the leftovers'
+        headers: ['What happened', 'What is left behind', 'What cleans it']
+        rows:
+          - cells: ['URL minted, never used', 'A pending row only', 'The hourly job deletes the row']
+            tip: 'Nothing was uploaded, so there is no file to remove.'
+          - cells: ['File uploaded, confirm never called', 'An orphan object and a pending row', 'The hourly job deletes both']
+            tip: 'The pending row is what lets you find the orphan file; without it nobody knows the object exists.'
+          - cells: ['File uploaded, wrong size or type', 'A bad object', 'Confirm deletes it at once']
+            tip: 'Confirm rejects the upload and removes the file in the same step.'
+          - cells: ['Multipart upload abandoned', 'Half-stored parts you can''t see', 'A bucket lifecycle rule aborts it']
+            tip: 'Unfinished multipart parts are billed but never show up in a file list.'
+      - type: code
+        lang: php
+        file: 'src/Service/UploadLifecycle.php'
+        variant: good
+        code: |
+          final readonly class UploadLifecycle
+          {
+              public function __construct(
+                  private S3Client $s3,
+                  private PendingUploadRepository $pending,
+                  private string $bucket,
+              ) {}
+
+              public function confirm(PendingUpload $up): void
+              {
+                  $head = $this->s3->headObject(['Bucket' => $this->bucket, 'Key' => $up->key]);
+                  $tooBig = $head['ContentLength'] > 5 * 1024 * 1024;
+                  if ($tooBig || $head['ContentType'] !== 'image/jpeg') {
+                      $this->discard($up);
+                      throw new BadRequestHttpException('Upload rejected.');
+                  }
+                  $up->markUploaded();   // only now may the key go into the user's profile
+              }
+
+              #[AsMessageHandler]
+              public function cleanUp(CleanUpPendingUploads $m): void
+              {
+                  foreach ($this->pending->olderThan(new \DateTimeImmutable('-1 hour')) as $up) {
+                      $this->discard($up);
+                  }
+              }
+
+              private function discard(PendingUpload $up): void
+              {
+                  $this->s3->deleteObject(['Bucket' => $this->bucket, 'Key' => $up->key]);
+                  $this->pending->remove($up);   // deleting a missing object is not an error
+              }
+          }
+        marks:
+          - {line: 11, tip: 'The server asks storage itself about the object; nothing the client says is trusted.'}
+          - {line: 17, tip: 'Only a confirmed upload leaves the pending state.'}
+          - {line: 20, tip: 'Run this every hour with Symfony Scheduler: anything still pending after an hour is abandoned.'}
+      - type: quote
+        body: 'An upload is pending until the server has checked it, and what stays pending expires.'
+    aside:
+      - type: commands
+        title: 'Hourly schedule'
+        items:
+          - {cmd: 'RecurringMessage::every(''1 hour'', new CleanUpPendingUploads())', desc: 'Add to your Scheduler provider'}
+      - type: when
+        use:
+          - 'Every app that lets clients upload straight to storage'
+        avoid:
+          - 'A tiny app with few uploads can put new files under `tmp/` and let a bucket lifecycle rule expire that prefix after a day'
+    check:
+      q: 'A user gets an upload URL, uploads the file, then closes the tab before confirm. What stops that file from staying in the bucket forever?'
+      a: 'The pending row made when the URL was minted. The hourly job finds it still pending and deletes both the row and the object.'
 
   - slug: large-uploads-multipart
     title: 'Large files: in pieces, and resumable'
@@ -232,15 +334,16 @@ slides:
     blocks:
       - type: text
         body: |
-          Send a 2 GB video in a single request, lose the connection at 90%, and everything is wasted. Just as a big shipment reaches the warehouse split into small sacks, **multipart upload** cuts the file into parts of 5 to 100 MB. Each part goes to its own URL, and at the end you say "all parts have arrived" and they are stitched together. A failed part can simply be sent again.
+          Send a 2 GB video in a single request, lose the connection at 90%, and everything is wasted. Just as a big shipment reaches the warehouse split into small sacks, **multipart upload** cuts the file into parts of 5 to 100 MB. Each part goes to its own URL, and at the end you say "all parts have arrived" and they are stitched together. A failed part can simply be sent again, and the next slide shows how to carry on after a crash.
       - type: visual
         kind: steps
-        caption: 'The four steps of an S3 multipart upload'
+        caption: 'The steps of an S3 multipart upload'
         steps:
           - {title: '1. Create', body: 'The server gets an uploadId', tip: '`CreateMultipartUpload` returns an uploadId, which identifies this upload.'}
           - {title: '2. Sign parts', body: 'A presigned URL for each part', tip: 'A separate `UploadPart` URL is created for each part number.'}
-          - {title: '3. Upload', body: 'The client PUTs the parts', tip: 'Each response returns an ETag; a failed part can be resent on its own.'}
-          - {title: '4. Complete', body: 'Stitch them together with all the ETags', tip: '`CompleteMultipartUpload` takes the list of part numbers and ETags and assembles the file.'}
+          - {title: '3. Upload', body: 'The client PUTs the parts', tip: 'Storage keeps each part under the uploadId; a failed part can be resent on its own.'}
+          - {title: '4. List', body: 'After a crash, ask what is stored', tip: '`ListParts` shows which parts have already arrived, so a resume skips them.'}
+          - {title: '5. Complete', body: 'Stitch the parts together', tip: '`CompleteMultipartUpload` takes the list of part numbers and ETags and assembles the file.'}
       - type: code
         lang: php
         file: 'src/Service/MultipartUploader.php'
@@ -292,6 +395,106 @@ slides:
       q: 'A 2 GB file goes up in 400 parts and the connection drops at part 399. What must be resent?'
       a: 'Only that failed part (and any that never went). The earlier parts are already stored, so you don''t start from scratch.'
 
+  - slug: resume-multipart
+    title: 'Resume after a crash: ask storage what it already has'
+    kind: howto
+    tldr: 'Storage remembers every stored part of an open upload. After a crash or a refresh, ask it with ListParts and send only the missing parts.'
+    keywords: ['resumable upload', 'ListParts', 'uploadId', 'localStorage', 'resume', 'multipart']
+    blocks:
+      - type: text
+        body: |
+          The browser died at part 251 of 400. Storage still holds parts 1 to 250 under the same `uploadId`, so none of them needs resending. The page keeps the `uploadId` in `localStorage`; after a refresh the user picks the same file again (a page can't keep a file across a reload). Then the app asks storage which parts it has and sends only the rest. Don't trust a list of ETags kept by the browser: let the server read storage's own list and complete from that.
+      - type: visual
+        kind: sequence
+        caption: 'After a crash, ask which parts exist and continue from the gap'
+        actors:
+          - {id: vue, label: 'Vue app', icon: browser, tip: 'Reloaded after the crash; still knows the uploadId.'}
+          - {id: api, label: 'Symfony API', icon: server, tip: 'Asks storage for its list of parts.'}
+          - {id: s3, label: 'Object storage', icon: storage, tip: 'Holds the stored parts of the open upload.'}
+        messages:
+          - {from: vue, to: api, label: 'Which parts of this upload exist?'}
+          - {from: api, to: s3, label: 'ListParts for this uploadId'}
+          - {from: s3, to: api, label: 'Parts 1 to 250 are stored', dashed: true}
+          - {from: api, to: vue, label: 'You have 1 to 250', dashed: true}
+          - {from: vue, to: s3, label: 'PUT part 251, then 252, ...', tone: good, tip: 'Each part goes to its own presigned URL, as before.'}
+          - {at: vue, note: 'Resumes at 251, not at 1', tone: good}
+      - type: code
+        lang: php
+        file: 'src/Service/MultipartUploader.php'
+        variant: good
+        code: |
+          /** @return list<array{PartNumber:int, ETag:string}> */
+          public function uploadedParts(string $key, string $uploadId): array
+          {
+              $parts = [];
+              $pages = $this->s3->getPaginator('ListParts', [
+                  'Bucket' => $this->bucket, 'Key' => $key, 'UploadId' => $uploadId,
+              ]);
+              foreach ($pages as $page) {
+                  foreach ($page['Parts'] ?? [] as $p) {
+                      $parts[] = ['PartNumber' => $p['PartNumber'], 'ETag' => $p['ETag']];
+                  }
+              }
+              return $parts;
+          }
+
+          public function complete(string $key, string $uploadId, int $expected): void
+          {
+              $parts = $this->uploadedParts($key, $uploadId);   // storage's list, not the client's
+              if (count($parts) !== $expected) {
+                  throw new \DomainException('Some parts are still missing.');
+              }
+              $this->finish($key, $uploadId, $parts);
+          }
+        marks:
+          - {line: 5, tip: 'ListParts returns at most 1,000 parts per page; the paginator fetches the following pages for you.'}
+          - {line: 18, tip: 'Complete from what storage really holds. A client can''t slip in a part that never arrived.'}
+      - type: code
+        lang: ts
+        file: 'src/upload/resumable.ts'
+        variant: good
+        code: |
+          const PART = 5 * 1024 * 1024   // 5 MB per part
+          const call = (url: string, init?: RequestInit) => fetch(url, init).then((r) => r.json())
+
+          export async function upload(file: File) {
+            const id = `upload:${file.name}:${file.size}:${file.lastModified}`
+            let up = JSON.parse(localStorage.getItem(id) ?? 'null')
+            if (!up) {
+              up = await call('/uploads/multipart', { method: 'POST' })   // { key, uploadId }
+              localStorage.setItem(id, JSON.stringify(up))
+            }
+            const base = `/uploads/multipart/${up.uploadId}`
+            const have = new Set<number>(await call(`${base}/parts`))   // part numbers storage holds
+            const total = Math.ceil(file.size / PART)
+
+            for (let n = 1; n <= total; n++) {
+              if (have.has(n)) continue   // already stored: skip
+              const { url } = await call(`${base}/part-url/${n}`)
+              const res = await fetch(url, { method: 'PUT', body: file.slice((n - 1) * PART, n * PART) })
+              if (!res.ok) throw new Error(`part ${n} failed`)   // call upload() again to resume
+            }
+            await call(`${base}/complete`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ total }),
+            })
+            localStorage.removeItem(id)
+          }
+        marks:
+          - {line: 5, tip: 'Name, size and last-modified identify the file, so a different file can''t be mixed into the saved upload.'}
+          - {line: 16, tip: 'This one line is the whole resume logic: parts already in storage are never sent again.'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'An open upload keeps costing storage until it is completed or aborted. Call `AbortMultipartUpload` when the user cancels, and keep the lifecycle rule as a safety net.'
+      - type: tips
+        items:
+          - 'Smaller parts make a retry cheaper but need more requests; 5 to 100 MB is the usual range.'
+    check:
+      q: 'After a refresh at part 251 of 400, how does the upload continue without starting over?'
+      a: 'The page finds its saved uploadId, the server lists the parts storage holds, the page skips those and sends the rest, and the server completes from storage''s own list.'
+
 flashcards:
   - q: 'What is wrong with storing photos in a database BLOB column?'
     a: 'The database bloats, backups become huge, and every photo read adds load on the database.'
@@ -316,18 +519,33 @@ flashcards:
   - q: 'What is a presigned URL?'
     a: 'A time-limited URL signed by the server, with which a client can put or read a file in storage directly.'
     more: |
-      The signature covers the key, the HTTP method, the expiry and sometimes the content type; if any of those change, storage rejects it. When it expires, the URL stops working. That way you grant access without handing the client the storage credentials.
+      The signature covers the key, the HTTP method and the expiry; if any of those change, storage rejects it. When it expires, the URL stops working. That way you grant access without handing the client the storage credentials. It cannot limit the file size: for that you need a presigned POST.
     ref: presigned-direct-upload
   - q: 'Why must the server run a confirm step after an upload?'
     a: 'It doesn''t trust the client: it checks that the file exists and that its size and type are right, and only then saves the key.'
     more: |
       A client can claim "done" without uploading anything, or upload a file of a different size. The server uses `headObject` to check the size and content type. If everything matches, it moves the database record from `pending` to `uploaded`.
     ref: presigned-direct-upload
+  - q: 'How do you cap the size of a direct upload to object storage?'
+    a: 'Use a presigned POST with a `content-length-range` condition. Storage then refuses any body outside that range.'
+    more: |
+      A presigned PUT can't limit size, because the content length isn''t part of its signature. With the PHP SDK, `PostObjectV4` builds the signed form fields; the browser sends them as `FormData` with the file as the last field. Also check the size at confirm, as a second line of defence.
+    ref: presigned-direct-upload
+  - q: 'How do you stop abandoned uploads piling up in the bucket?'
+    a: 'Save a `pending` row when you mint the URL, flip it to `uploaded` at confirm, and delete rows still pending after an hour, with their objects.'
+    more: |
+      Without the pending row nobody knows an orphan object exists. A Symfony Scheduler job runs hourly. For abandoned multipart uploads add a bucket lifecycle rule that aborts them after about 7 days.
+    ref: confirm-and-cleanup
   - q: 'When do you need multipart upload, and how does it work?'
     a: 'For big files (100 MB+): the file is cut into parts, each sent to its own URL, and finally all the parts are stitched together.'
     more: |
       The steps: `CreateMultipartUpload` (uploadId), a presigned `UploadPart` per part, collect the ETags, and finally `CompleteMultipartUpload`. If a part fails, you resend only that one. Add a lifecycle rule so abandoned parts don't keep costing you.
     ref: large-uploads-multipart
+  - q: 'How does a multipart upload resume after a crash or refresh?'
+    a: 'Keep the uploadId, ask storage for its parts with `ListParts`, skip those, send only the missing ones, then complete from storage''s list.'
+    more: |
+      The page saves the uploadId in `localStorage`, and the user picks the same file again. Never complete from a list of ETags the browser kept: the server reads `ListParts` itself and checks that the part count is what it expects.
+    ref: resume-multipart
 
 quiz:
   - q: 'The app runs on 2 servers. A user uploaded a photo, but it shows up sometimes and returns 404 other times. What is the likely cause?'
@@ -415,3 +633,45 @@ quiz:
         correct: false
         why: 'Complete needs every part''s number and ETag.'
     ref: large-uploads-multipart
+  - q: 'A user''s upload to a presigned PUT URL is 2 GB, but your limit is 5 MB. What is wrong?'
+    hint: 'What does a presigned PUT actually sign?'
+    options:
+      - text: 'A presigned PUT can''t enforce a maximum size; storage accepts the big file'
+        correct: true
+        why: 'The content length isn''t part of the signature. Use a presigned POST with a content-length-range condition.'
+      - text: 'Nothing: the URL is time-limited, so it can''t be abused'
+        correct: false
+        why: 'The expiry limits when, not how much. A big file within 10 minutes is still accepted.'
+      - text: 'The server should stream the file and count the bytes itself'
+        correct: false
+        why: 'That puts the file back through your server, which is exactly what direct upload avoids.'
+      - text: 'The client must be trusted to check the size before it uploads'
+        correct: false
+        why: 'A client can send anything; the limit must be enforced by storage or the server.'
+    ref: presigned-direct-upload
+  - q: 'Which leftovers does an unconfirmed upload create, and what cleans them?'
+    hint: 'The user got a URL and never called confirm.'
+    options:
+      - text: 'An orphan object and a pending row, removed by a scheduled job that deletes what is still pending'
+        correct: true
+        why: 'The pending row is how you find the orphan object; deleting both keeps the bucket and the table clean.'
+      - text: 'Nothing is left, because storage deletes unconfirmed files by itself'
+        correct: false
+        why: 'Storage keeps every object it receives until something deletes it.'
+      - text: 'A broken page, fixed by the user retrying'
+        correct: false
+        why: 'The user never sees it, and the object keeps costing money.'
+    ref: confirm-and-cleanup
+  - q: 'The browser refreshed at part 251 of 400 of a multipart upload. What should the page and server do?'
+    hint: 'Storage still holds the earlier parts under the uploadId.'
+    options:
+      - text: 'Ask storage which parts it holds (ListParts), send only the missing ones, then complete from that list'
+        correct: true
+        why: 'Parts already stored are never sent again, and completing from storage''s own list means a client can''t slip in a bad part.'
+      - text: 'Start a new upload from part 1'
+        correct: false
+        why: 'That throws away 250 stored parts and wastes the user''s time.'
+      - text: 'Complete the upload now with whatever parts the browser remembers'
+        correct: false
+        why: 'The file would miss parts 251 to 400, and the browser''s list may be wrong.'
+    ref: resume-multipart

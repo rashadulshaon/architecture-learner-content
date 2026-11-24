@@ -61,6 +61,9 @@ slides:
         items:
           - {term: 'Fitness function', meaning: 'An automated check that measures one architectural quality (speed, dependency rules, security) and reports pass or fail.'}
           - {term: 'Performance budget', meaning: 'A speed limit, such as p95 of 300ms; if it is exceeded, the build fails.'}
+          - {term: 'CI', meaning: 'A robot that runs your checks and tests on every change before it is merged. A red result blocks the merge.'}
+          - {term: 'p95', meaning: '95 out of 100 requests are faster than this number. It shows what slow-ish users feel, not just the average.'}
+          - {term: 'N+1', meaning: 'One query for the list, then one more query for every row in it: 50 products means 51 queries instead of 1 or 2.'}
       - type: refs
         items:
           - {to: 'thinking/quality-attributes', label: 'Which qualities are worth measuring'}
@@ -71,12 +74,12 @@ slides:
   - slug: write-fitness-functions
     title: 'Guarding with Deptrac and a query budget'
     kind: howto
-    tldr: 'Describe layers and permissions in deptrac.yaml, put a query-count limit in PHPUnit, and run both in CI. A violation blocks the merge.'
+    tldr: 'Describe layers (the Doctrine library too) and permissions in deptrac.yaml, put a query-count limit in PHPUnit, and run both in CI. A violation blocks the merge.'
     keywords: ['deptrac', 'PHPUnit', 'query count', 'CI pipeline', 'performance budget', 'architecture test']
     blocks:
       - type: text
         body: |
-          First, the dependency rules: three layers and a list of who may know whom. **Domain** knows nobody, **Application** knows only Domain, and **Infrastructure** knows both.
+          First, the dependency rules: three layers, one more box for the Doctrine library (it lives in `vendor/`, so Deptrac can't see it unless you name it), and a list of who may know whom. **Domain** knows nobody, **Application** knows only Domain, and **Infrastructure** knows both plus Doctrine.
       - type: code
         lang: yaml
         file: 'deptrac.yaml'
@@ -94,13 +97,17 @@ slides:
               - name: Infrastructure
                 collectors:
                   - {type: directory, value: src/Infrastructure/.*}
+              - name: Doctrine
+                collectors:
+                  - {type: classNameRegex, value: '#^Doctrine\\.*#'}
             ruleset:
               Domain: ~
               Application: [Domain]
-              Infrastructure: [Domain, Application]
+              Infrastructure: [Domain, Application, Doctrine]
         marks:
-          - {line: 15, tip: '`~` means Domain may not depend on any layer. Import Doctrine here and deptrac catches it.'}
-          - {line: 17, tip: 'Infrastructure may depend on both inner layers, but never the reverse. Arrows point inward only.'}
+          - {line: 16, tip: 'Doctrine lives in vendor/, outside src/. Without this box, a Doctrine import inside Domain would pass unnoticed.'}
+          - {line: 18, tip: '`~` means Domain may not depend on any layer, Doctrine included. Import Doctrine here and Deptrac fails the build.'}
+          - {line: 20, tip: 'Infrastructure may use the inner layers and Doctrine, but never the reverse. Arrows point inward only.'}
       - type: text
         body: |
           Now the speed limit. If an N+1 or any extra query sneaks in, this test goes red immediately.
@@ -133,17 +140,81 @@ slides:
       - type: commands
         title: 'What to run in CI'
         items:
-          - {cmd: 'composer require --dev qossmic/deptrac', desc: 'Install Deptrac'}
+          - {cmd: 'composer require --dev deptrac/deptrac', desc: 'Install Deptrac'}
           - {cmd: 'vendor/bin/deptrac analyse', desc: 'Check the dependency rules; exit code is non-zero on a violation'}
           - {cmd: 'php bin/phpunit --testsuite budget', desc: 'Run the query budget tests'}
           - {cmd: 'k6 run --quiet load/products.js', desc: 'Nightly load test with a p95 threshold'}
       - type: tips
         items:
-          - 'On the day you add a new rule, many violations will show up. Record the old ones in a baseline file, block only new violations, then shrink the baseline over time.'
+          - 'On the day you add a new rule, many violations will show up. Record the old ones in a Deptrac baseline file, block only new violations, then shrink the baseline over time.'
           - 'Timing tests are flaky. In CI measure something stable like the query count, and measure time in a separate load test.'
     check:
       q: 'Why does ProductListBudgetTest measure the query count instead of time?'
       a: 'Time varies from machine to machine, so the test would sometimes fail for no reason. The query count is stable, and it is enough to catch a real problem like N+1.'
+
+  - slug: catch-a-violation
+    title: 'A violation caught, and the fix'
+    kind: pitfall
+    tldr: 'A developer maps a Domain class with Doctrine attributes; Deptrac turns CI red; moving the mapping to Infrastructure fixes it. Guard only rules worth the upkeep.'
+    keywords: ['deptrac violation', 'doctrine mapping', 'xml mapping', 'domain layer', 'baseline', 'architecture test']
+    blocks:
+      - type: text
+        body: |
+          Rushed on a Friday, a developer puts Doctrine attributes straight on a Domain class. Without a guard it merges, and that is shortcut number 8 of the 96. With the guard, the same change fails CI within minutes.
+      - type: code
+        lang: php
+        file: 'src/Domain/Invoice.php'
+        variant: bad
+        code: |
+          namespace App\Domain;
+
+          use Doctrine\ORM\Mapping as ORM;   // Domain now knows Doctrine
+
+          #[ORM\Entity]
+          final class Invoice
+          {
+              #[ORM\Id, ORM\Column]
+              private int $id;
+
+              #[ORM\Column]
+              private int $amountTaka;
+          }
+        marks:
+          - {line: 3, tip: 'This one import breaks the rule. Deptrac fails the build and names this file and line.'}
+      - type: text
+        body: |
+          The fix is not to switch the guard off. Keep `Invoice` a plain PHP class and describe the mapping outside it, in Infrastructure.
+      - type: code
+        lang: xml
+        file: 'src/Infrastructure/Persistence/mapping/App.Domain.Invoice.orm.xml'
+        variant: good
+        code: |
+          <doctrine-mapping
+              xmlns="http://doctrine-project.org/schemas/orm/doctrine-mapping"
+              xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+              xsi:schemaLocation="http://doctrine-project.org/schemas/orm/doctrine-mapping
+                  https://www.doctrine-project.org/schemas/orm/doctrine-mapping.xsd">
+            <entity name="App\Domain\Invoice" table="invoices">
+              <id name="id" type="integer"/>
+              <field name="amountTaka" type="integer"/>
+            </entity>
+          </doctrine-mapping>
+        marks:
+          - {line: 6, tip: 'The table and column mapping now lives in Infrastructure. The Domain class has no Doctrine import left.'}
+    aside:
+      - type: tips
+        items:
+          - 'Register the folder under doctrine.orm.mappings with type: xml, dir: src/Infrastructure/Persistence/mapping and prefix: App\Domain.'
+          - 'Start with two or three rules you would defend in a meeting. Every rule is one more thing to maintain, and a flaky one teaches the team to ignore red builds.'
+      - type: when
+        use:
+          - 'Layer rules, performance budgets and security checks that must hold for years'
+        avoid:
+          - 'Matters of taste (naming, spacing): a code-style tool does that job'
+          - 'Rules nobody has agreed on yet: the build would fail for no good reason'
+    check:
+      q: 'In the story, which rule did the Friday change break, and how did the developer fix it without turning the guard off?'
+      a: 'It broke "no Doctrine inside the Domain". The fix: keep Invoice a plain class and move the mapping into an XML file under Infrastructure.'
 
   - slug: last-responsible-moment
     title: 'The last responsible moment: when to decide?'
@@ -163,8 +234,8 @@ slides:
             icon: clock
             tip: 'A decision made on guesses, with little information. If it proves wrong, you throw away something expensive.'
             items:
-              - 'Installing Kafka before there is any problem'
-              - 'Building on guesswork'
+              - 'Installing Kafka (a heavy message server) before there is any problem'
+              - 'You pay to run and learn it, and the guess may be wrong'
           - title: 'Just in time'
             tone: good
             icon: check
@@ -186,18 +257,22 @@ slides:
           framework:
             messenger:
               transports:
-                # Today: the existing database is the queue. Trigger: 1000 messages/min or lag > 1 min
+                # Today: MESSENGER_TRANSPORT_DSN=doctrine://default (the database is the queue)
+                # Trigger: over 1000 messages/min (about 17 a second) or lag over 1 minute
+                # Then only the env var changes: redis://redis:6379/messages
                 async: '%env(MESSENGER_TRANSPORT_DSN)%'
               routing:
                 'App\Message\SendInvoiceEmail': async
         marks:
-          - {line: 5, tip: 'Changing the DSN changes the transport (from doctrine://default to redis:// or amqp://). The decision is cheap, so it is safe to postpone.'}
+          - {line: 4, tip: 'The trigger is written down as numbers. 1000 messages a minute is about 17 a second: a busy day, not a crisis.'}
+          - {line: 7, tip: 'Changing the DSN changes the transport (doctrine://default to redis:// or amqp://) and no handler code. The decision is cheap, so it is safe to postpone.'}
       - type: quote
         body: 'Before you say "later", write down which number will make you look.'
     aside:
       - type: pitfalls
         items:
           - 'Postponing a decision without a trigger is just avoiding the problem.'
+          - 'The price of waiting: the database queue polls the database, so near the trigger it adds load. That is why the trigger sits below the danger zone.'
           - 'Don''t postpone decisions that are expensive to change (the data model, a public API) so long that you get stuck.'
       - type: refs
         items:
@@ -227,6 +302,21 @@ flashcards:
     more: |
       deptrac.yaml describes layers such as Domain, Application and Infrastructure and the permissions between them. `vendor/bin/deptrac analyse` reads dependencies without running the code and checks them against the rules. PHPat and PHPArkitect are similar alternatives.
     ref: write-fitness-functions
+  - q: 'Why does a Deptrac setup need a layer for the Doctrine library?'
+    a: 'Doctrine lives in vendor/, outside src/. Unless you name it as a layer, Deptrac cannot see a Doctrine import inside Domain.'
+    more: |
+      Add a layer with a `classNameRegex` collector for `Doctrine\.*`, and give Domain an empty rule (`Domain: ~`). Then one Doctrine import in a Domain class fails the build. Keep the mapping outside the class, for example in an XML file under Infrastructure.
+    ref: write-fitness-functions
+  - q: 'A developer adds Doctrine attributes to a Domain class and Deptrac fails. What is the fix?'
+    a: 'Keep the Domain class plain and move the mapping out, for example into an XML mapping file in Infrastructure.'
+    more: |
+      Do not switch the guard off. The rule exists so the Domain stays free of Doctrine. Old violations that cannot be fixed today go into a baseline file; new ones are blocked.
+    ref: catch-a-violation
+  - q: 'What does a fitness function cost, and which rules should you not guard this way?'
+    a: 'Upkeep, and a flaky one teaches people to ignore red builds. Guard rules worth defending; leave taste (naming, spacing) to a style tool.'
+    more: |
+      Start with two or three rules that protect something expensive to lose: layer boundaries, a speed budget, security. Every extra check is code someone must maintain.
+    ref: catch-a-violation
   - q: 'What is a performance budget?'
     a: 'A speed limit (say p95 of 300ms, or 10 queries) that fails CI when exceeded.'
     more: |
@@ -240,7 +330,7 @@ flashcards:
   - q: 'What must you write down when you postpone a decision?'
     a: 'A trigger: the measured number or event that will make you decide.'
     more: |
-      For example: "if we pass 1000 messages a minute or the queue lag exceeds a minute, we move to Redis". Without a trigger, postponing is really avoidance, and the problem arrives like a fire.
+      For example: "if we pass 1000 messages a minute (about 17 a second) or the queue lag exceeds a minute, we move to Redis". Without a trigger, postponing is really avoidance, and the problem arrives like a fire.
     ref: last-responsible-moment
 
 quiz:
@@ -298,6 +388,19 @@ quiz:
         correct: false
         why: 'The ruleset is the architecture rule. Write it wrong and you guard the wrong thing.'
     ref: write-fitness-functions
+  - q: 'Your Deptrac config has layers Domain, Application and Infrastructure only. A developer adds `use Doctrine\ORM\Mapping` to a Domain class. What happens?'
+    hint: 'Where does Doctrine''s code live, and what did the config name?'
+    options:
+      - text: 'Nothing: Doctrine is not in src/ and is not a named layer, so Deptrac does not see it'
+        correct: true
+        why: 'Deptrac only judges layers you define. Add a Doctrine layer and give Domain an empty rule, and the same import fails the build.'
+      - text: 'The build fails, because Domain: ~ forbids every import'
+        correct: false
+        why: '`Domain: ~` forbids dependencies on other layers. A library that is not a layer is invisible to the rule.'
+      - text: 'Deptrac fails because the class has attributes'
+        correct: false
+        why: 'Deptrac reads dependencies between classes, not attributes as such. It needs a layer to judge them against.'
+    ref: catch-a-violation
   - q: 'The product list used to run 8 queries and now runs 54. What is the best way to catch this in CI?'
     hint: 'Measure what is stable.'
     options:

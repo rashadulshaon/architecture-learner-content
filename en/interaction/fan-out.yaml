@@ -36,6 +36,7 @@ slides:
         items:
           - {term: 'Feed', meaning: 'A time-ordered list of posts from the people a user follows.'}
           - {term: 'Fan-out', meaning: 'Spreading something one person creates to many people.'}
+          - {term: 'JOIN', meaning: 'Asking the database to match rows from two tables, here every follow with the posts of the person followed.'}
     check:
       q: 'Why is running that JOIN on every feed open harmful, even though the query is correct?'
       a: 'Both the follow counts and the posts keep growing, and opening the feed is the most frequent action. A huge join-and-sort every time makes the database buckle.'
@@ -79,6 +80,8 @@ slides:
         items:
           - 'When reads dominate (nearly every social feed), do extra work at write time to make reads cheap.'
           - 'When reads are rare and writes frequent (logs, weekly reports), read-time is the right one.'
+          - 'Example: 100,000 posts a day x 200 followers = 20 million list inserts, about 230 a second.'
+          - 'In return, each of 1 million feed opens reads one ready list instead of searching 200 people''s posts.'
     aside:
       - type: remember
         body: 'Delivery boy = write-time: hard work first, reading is easy. Stand = read-time: printing is easy, reading is hard.'
@@ -97,16 +100,22 @@ slides:
     blocks:
       - type: visual
         kind: bars
-        caption: 'How many feeds one post must be written to (under write-time)'
+        caption: 'Writes per post under write-time, at 10,000 writes a second'
         items:
-          - {label: 'Ordinary', value: 200, display: '200 writes', tone: good, tip: 'Placed into 200 followers'' feeds: done in a few seconds.'}
-          - {label: 'Popular', value: 20000, display: '20,000 writes', tone: warn, tip: 'The workers now need a few minutes, but it is manageable.'}
-          - {label: 'Celebrity', value: 5000000, display: '5,000,000 writes', tone: bad, tip: 'One post creates 5 million writes. The queue fills up and everyone else''s posts are delayed too.'}
+          - {label: 'Ordinary', value: 200, display: '200 writes', tone: good, tip: '200 feed writes take about 0.02 seconds. Nobody notices.'}
+          - {label: 'Popular', value: 20000, display: '20,000 writes', tone: warn, tip: '20,000 writes take about 2 seconds of the workers'' time. Heavy, but fine.'}
+          - {label: 'Celebrity', value: 5000000, display: '5,000,000 writes', tone: bad, tip: '5 million writes take 500 seconds, over 8 minutes. Everyone else''s posts wait in the queue behind it.'}
       - type: text
         body: |
           This is the **hot key** problem: one user can jam the entire system. The fix is **hybrid**. For users whose follower count is below a threshold (say 10,000), put their posts into followers' feeds at write time. Don't fan out celebrities' posts at all. When a feed is opened, fetch the recent posts of the celebrities that user follows directly, and merge them into the user's own feed.
       - type: quote
         body: 'Push the ordinary users'' posts; pull the celebrity''s at read time and merge.'
+      - type: points
+        title: 'What hybrid costs'
+        items:
+          - 'Opening a feed now also asks the posts table about each celebrity the user follows, and runs one more merge step.'
+          - 'Keep that cheap: cache each celebrity''s latest posts once, shared by all their followers.'
+          - 'Not worth it when nobody has more than a few thousand followers: plain write-time is simpler.'
     aside:
       - type: when
         use: ['Hybrid: when follower counts differ hugely (social, news)']
@@ -129,7 +138,7 @@ slides:
     blocks:
       - type: text
         body: |
-          When a post is saved, a `FanOutPost` message goes out. The handler takes 1,000 followers, adds the post id to each one's Redis **sorted set** (the score is the time), then dispatches a message for the next 1,000. Running `ZADD` again with the same member and score changes nothing, so redelivery of a message does no harm.
+          When a post is saved, a `FanOutPost` message goes out. The handler takes 1,000 followers, adds the post id to each one's Redis **sorted set** (a list ordered by a score, here the time), then dispatches a message for the next 1,000. Why chunks: one message for 10,000 followers that crashes at follower 6,000 must redo all 10,000, while with chunks it redoes at most 1,000. Running `ZADD` again with the same member and score changes nothing, so redelivery does no harm.
       - type: code
         lang: php
         file: 'src/MessageHandler/FanOutPostHandler.php'
@@ -170,6 +179,10 @@ slides:
         items:
           - 'The Redis feed is really a cache: if lost, it can be rebuilt from the posts table, where the true data lives.'
           - 'For a celebrity''s post, don''t dispatch `FanOutPost` at all; past the threshold, let it live in the posts table only.'
+      - type: terms
+        items:
+          - {term: 'Sorted set', meaning: 'A Redis list where every item has a score and the list stays sorted by it.'}
+          - {term: 'Pipeline', meaning: 'Sending many Redis commands in one trip instead of one trip each.'}
       - type: refs
         items:
           - {to: 'messaging/background-jobs', label: 'Chunks and checkpoints'}
@@ -181,8 +194,8 @@ slides:
   - slug: read-merge-ordering
     title: 'Reading the feed: merge, and keep the order stable'
     kind: howto
-    tldr: 'Feed = the user''s precomputed list + the new posts of the celebrities they follow, merged in a stable order by time and id. Page forward with a cursor, not an offset.'
-    keywords: ['feed merge', 'cursor pagination', 'ordering', 'eventual consistency', 'hybrid read']
+    tldr: 'Feed = the user''s precomputed list + the new posts of the celebrities they follow, merged by (time, id). Page with a (time, id) cursor, not an offset and not time alone.'
+    keywords: ['feed merge', 'cursor pagination', 'ordering', 'eventual consistency', 'hybrid read', 'tie breaker']
     blocks:
       - type: visual
         kind: flow
@@ -194,51 +207,79 @@ slides:
           - {id: db, label: 'Posts table', sub: 'celebrities'' new posts', icon: db, col: 3, row: 1.5, tip: 'The recent posts of the celebrities this user follows come from here.'}
         edges:
           - {from: user, to: api, label: 'The user asks for the feed, with the previous page''s cursor'}
-          - {from: api, to: redis, label: 'It reads 20 ids from its own feed, those before the cursor'}
-          - {from: api, to: db, label: 'It fetches the new posts of the followed celebrities'}
-          - {from: api, to: user, label: 'It merges, sorts by time and sends the best 20', tone: good, dashed: true}
+          - {from: api, to: redis, label: 'It reads 20 ids from its own feed, those after the cursor'}
+          - {from: api, to: db, label: 'It fetches the older posts of the followed celebrities'}
+          - {from: api, to: user, label: 'It merges, sorts by time and id, and sends the best 20', tone: good, dashed: true}
+      - type: text
+        body: |
+          A cursor made of the time alone has a hole. Say posts 9, 8 and 7 landed in the same millisecond and a page holds 2. Page 1 is posts 9 and 8, the cursor says "older than that millisecond", and post 7 is never shown. So the cursor is the pair (time, id): "older, or the same time with a smaller id". Ties are rare on one page, but over millions of page turns they happen every day.
       - type: code
         lang: php
         file: 'src/Feed/FeedReader.php'
         variant: good
         code: |
-          public function page(int $userId, ?int $beforeMs, int $limit = 20): array
+          /** @param array{int, int}|null $cursor [createdAtMs, postId] of the last item shown */
+          public function page(int $userId, ?array $cursor, int $limit = 20): array
           {
-              $max = null === $beforeMs ? '+inf' : '('.$beforeMs;       // a cursor, not an offset
-              $own = $this->redis->zRevRangeByScore(
-                  'feed:'.$userId, $max, '-inf', ['withscores' => true, 'limit' => [0, $limit]],
+              [$at, $id] = $cursor ?? [null, 0];
+              $key = 'feed:'.$userId;
+              $opt = ['withscores' => true];
+
+              // 1) posts in the cursor's own millisecond: take them all, keep the smaller ids
+              $same = null === $at ? [] : $this->redis->zRangeByScore($key, $at, $at, $opt);
+              $own = array_filter($same, fn ($score, $postId) => $postId < $id, ARRAY_FILTER_USE_BOTH);
+
+              // 2) strictly older milliseconds, newest first
+              $own += $this->redis->zRevRangeByScore(
+                  $key, null === $at ? '+inf' : '('.$at, '-inf', $opt + ['limit' => [0, $limit]],
               );
+
               $items = [];
               foreach ($own as $postId => $score) {
                   $items[] = ['id' => (int) $postId, 'at' => (int) $score];
               }
-
               $stars = $this->follows->celebritiesFollowedBy($userId);
-              foreach ($this->posts->latestBy($stars, $beforeMs, $limit) as $p) {
+              foreach ($this->posts->latestBy($stars, $cursor, $limit) as $p) {
                   $items[] = ['id' => $p->getId(), 'at' => $p->getCreatedAtMs()];
               }
 
               usort($items, fn ($a, $b) => [$b['at'], $b['id']] <=> [$a['at'], $a['id']]);
 
-              return array_slice($items, 0, $limit);                   // the last at is the next cursor
+              return array_slice($items, 0, $limit);       // the last item is the next cursor
           }
         marks:
-          - {line: 3, tip: '`(` means "less than" (exclusive). The cursor''s own post doesn''t come back.'}
-          - {line: 17, tip: 'Two posts at the same time are ordered by id; otherwise posts get skipped or duplicated across page turns.'}
+          - {line: 9, tip: 'Redis lists tied posts in text order, not number order. So read every post at the cursor''s millisecond and filter by id in PHP.'}
+          - {line: 14, tip: '`(` means "less than" (exclusive): only strictly older milliseconds here, because the ties were handled above.'}
+          - {line: 26, tip: 'Posts at the same time are ordered by id, so the order is the same on every page turn.'}
+      - type: code
+        lang: sql
+        file: 'celebrity posts (DBAL native query)'
+        variant: good
+        code: |
+          SELECT id, created_at_ms
+          FROM posts
+          WHERE author_id IN (:stars)
+            AND (created_at_ms, id) < (:at, :id)   -- time first, id breaks the tie
+          ORDER BY created_at_ms DESC, id DESC
+          LIMIT 20;
+          -- first page: bind :at and :id to the largest values
+        marks:
+          - {line: 4, tip: 'A row comparison: older time, or the same time with a smaller id. A time-only `<` here would drop the posts that share the boundary millisecond.'}
     aside:
       - type: pitfalls
         items:
-          - 'If you don''t pair the id with the time, posts with equal times come out in random order, and the cursor skips posts.'
+          - 'A cursor of the time alone drops every post that shares the last millisecond of the previous page.'
           - 'Deleted or blocked posts stay in the feed; when reading, filter them by checking the true state in the posts table.'
       - type: tips
         items:
+          - 'Give the client the cursor as one opaque string (such as `1700000000123_9`). Price: no jumping straight to page 7, only next and previous.'
           - 'The feed is eventually consistent: a post reaches followers'' feeds a few seconds later. That is acceptable, but show the author their own post immediately.'
       - type: refs
         items:
           - {to: 'api/pagination', label: 'Cursor pagination'}
     check:
-      q: 'Why page through a feed with a cursor (the last post''s time) instead of `OFFSET`?'
-      a: 'New posts keep arriving in a feed. With OFFSET, new posts push earlier posts onto the next page again. A cursor says "older than this", so it stays stable.'
+      q: 'Why does the cursor hold both the time and the id, rather than the time alone?'
+      a: 'Posts can share a millisecond. With time alone, the ones that did not fit on the page are skipped on the next one. The id decides who comes after whom.'
 
 flashcards:
   - q: 'What is fan-out?'
@@ -271,11 +312,21 @@ flashcards:
     more: |
       `ZADD` is idempotent, so redelivery of a message leaves the feed correct. `ZREMRANGEBYRANK` keeps each feed small, at about 800 items. The real data lives in the posts table; Redis is only a cache.
     ref: write-fanout-code
-  - q: 'In a feed, offset or cursor for paging, and how do you handle posts with equal times?'
-    a: 'A cursor, because it stays stable when new posts arrive. Order by the (time, id) pair so posts with equal times keep a stable order.'
+  - q: 'In a feed, offset or cursor for paging, and what goes in the cursor?'
+    a: 'A cursor, because it stays stable when new posts arrive. It holds the (time, id) pair of the last post shown: "older, or the same time with a smaller id".'
     more: |
-      Sort by time alone and two posts with equal times come out in random order, so one can be skipped or shown twice at a page boundary. Pinning the order with the id makes the cursor reliable.
+      Posts can share a millisecond. Sort and cut by time alone and two posts with equal times come out in random order, so one can be skipped or shown twice at a page boundary. Adding the id pins the order.
     ref: read-merge-ordering
+  - q: 'Why does a feed cursor of just the time drop posts?'
+    a: 'Posts that share the last post''s millisecond but did not fit on the page are "not older", so the next page skips them for good.'
+    more: |
+      Example: posts 9, 8 and 7 all at the same millisecond, page size 2. Page 1 is 9 and 8; "older than that time" excludes 7 forever. Reading the same-time posts with a smaller id as well fixes it.
+    ref: read-merge-ordering
+  - q: 'Why send a fan-out in chunks of 1,000 followers instead of one big message?'
+    a: 'If a long job crashes midway, a retry redoes all of it. Chunks with a checkpoint redo at most one chunk of 1,000.'
+    more: |
+      Each message carries the last follower id it reached, so the next chunk starts from there. With 10,000 followers, a crash at 6,000 redoes 10,000 as one job, but at most 1,000 in chunks.
+    ref: write-fanout-code
 
 quiz:
   - q: 'An app has 1 million users, most with fewer than 200 followers, and the feed is opened 100 times more often than posts are written. What is the best starting choice?'
@@ -354,4 +405,17 @@ quiz:
       - text: 'OFFSET doesn''t work in feeds at all'
         correct: false
         why: 'It works, but with the problems above.'
+    ref: read-merge-ordering
+  - q: 'A page holds 2 posts. Posts 9, 8 and 7 share one millisecond. The cursor is the time alone, "older than this". What does the reader see?'
+    hint: 'Which posts count as "older than" a time they share?'
+    options:
+      - text: 'Page 1 shows 9 and 8; post 7 is never shown'
+        correct: true
+        why: 'Post 7 has the same time as the cursor, so it is not older and is skipped. The cursor must also hold the id.'
+      - text: 'Page 2 shows post 7 first, as expected'
+        correct: false
+        why: 'It would only if the cursor said "same time with a smaller id", which a time-only cursor cannot say.'
+      - text: 'Posts 9 and 8 appear again on page 2'
+        correct: false
+        why: 'Those are not older than the cursor either. The problem is a post missing, not one repeating.'
     ref: read-merge-ordering

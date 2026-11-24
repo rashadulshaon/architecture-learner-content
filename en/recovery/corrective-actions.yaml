@@ -57,6 +57,19 @@ slides:
             tip: 'Never hand-edit a derived value; calculate it again from the entries.'
           - cells: ['Everything else (address, profile)', 'Audited script + data_fix_log', 'Old values can be restored']
             tip: 'The before and after of every row sits in the log, so the whole fix can be reversed if needed.'
+      - type: visual
+        kind: table
+        caption: 'A deposit posted as 5000 instead of 500, fixed in red ink'
+        headers: ['Entry', 'Debit', 'Credit', 'Note']
+        rows:
+          - cells: ['E-1 Deposit (wrong)', 'Cash 5000', 'Wallet 5000', 'The mistake stays']
+            tip: 'The original wrong posting. It is never edited or deleted.'
+          - cells: ['E-2 Reversal of E-1', 'Wallet 5000', 'Cash 5000', 'Cancels E-1']
+            tip: 'The same two accounts, on opposite sides, so its effect cancels E-1 exactly.'
+          - cells: ['E-3 Deposit (correct)', 'Cash 500', 'Wallet 500', 'The right amount']
+            tip: 'The deposit as it should have been posted in the first place.'
+          - cells: ['Net effect', 'Cash 500', 'Wallet 500', 'Debit = credit']
+            tip: 'Add the three entries: 500 taka in, with both sides equal, and the whole story still visible.'
       - type: quote
         body: 'Fix by writing, not erasing: the mistake stays and so does the correction.'
     aside:
@@ -64,6 +77,10 @@ slides:
         items:
           - {term: 'Compensating action', meaning: 'An opposite action that cancels the effect of an earlier one, rather than erasing it.'}
           - {term: 'Data fix', meaning: 'A one-off, documented job that corrects wrong production data.'}
+      - type: tips
+        items:
+          - 'Price: a correction takes two or three rows instead of one UPDATE, and queries must count the reversal pairs. That price buys the audit trail.'
+          - 'Reversing entries are for money. For an address or a profile, an audited script is enough.'
       - type: refs
         items:
           - {to: 'ledgers/double-entry', label: 'Reversing entries'}
@@ -102,11 +119,18 @@ slides:
           )
           INSERT INTO data_fix_log (fix_id, row_id, old_value, new_value)
           SELECT 'FIX-1042', id, old_status, new_status FROM fixed;
+
+          -- undo FIX-1042 from its log, if it turns out to be wrong
+          UPDATE orders o SET status = l.old_value
+            FROM data_fix_log l
+           WHERE l.fix_id = 'FIX-1042' AND l.row_id = o.id
+             AND o.status = l.new_value;
         marks:
           - {line: 4, tip: 'Only rows inside the bad deploy''s time window. Genuinely cancelled orders from before or after are left alone.'}
           - {line: 7, tip: 'Needs proof: this order really has a paid payment. The narrower the condition, the less room for error.'}
           - {line: 11, tip: 'The UPDATE and the log are in one statement. A change without a log entry simply can''t happen.'}
           - {line: 15, tip: 'Each row''s before and after values are written. If needed, the fix can be reversed from this.'}
+          - {line: 22, tip: 'Only rows still in the state the fix left them are put back. A row someone changed since is left alone.'}
       - type: code
         lang: php
         file: 'src/Command/Fix1042Command.php'
@@ -143,6 +167,7 @@ slides:
         items:
           - 'Put the script through code review and attach the dry-run output to the ticket. Nothing goes into production without a second pair of eyes.'
           - 'Take a snapshot of the affected rows before running; `data_fix_log` gives you a way to undo, and the backup is the last resort.'
+          - 'Price: review and a dry run add some time, often under an hour. A second wrong fix costs far more than that hour.'
       - type: pitfalls
         items:
           - 'A data-fix script must never change a ledger money entry. Money mistakes are always fixed with a reversing entry.'
@@ -182,6 +207,7 @@ slides:
               - 'A new column or data is already live'
               - 'The fix is small and tested, the pipeline fast'
               - 'Plus an audited data fix for the bad data'
+              - 'Risk: a rushed fix can bring a second bug'
       - type: code
         lang: bash
         file: 'the two paths'
@@ -229,7 +255,7 @@ flashcards:
   - q: 'How do you fix a money mistake in a ledger, and what do you never do?'
     a: 'You do: a reversing entry plus a new correct entry. You never do: UPDATE or DELETE an old entry.'
     more: |
-      A data-fix script doesn't change money entries in the ledger. Every money correction goes through the posting service as a transaction.
+      A data-fix script doesn't change money entries in the ledger. Every money correction goes through the posting service as a transaction. For example, a deposit posted as 5000 instead of 500: the 5000 stays, a reversal of 5000 is added, then a correct deposit of 500. The net is 500, and debit = credit still holds.
     ref: correction-is-a-record
   - q: 'Why does an audited data-fix script have an "expected count"?'
     a: 'If the counted number of rows doesn''t match the expected one, the script changes nothing. A wrong condition is caught before it runs.'
@@ -240,6 +266,11 @@ flashcards:
     a: 'So that a change always comes with a log entry, and a change without one can''t happen. The before and after values also let you reverse the fix.'
     more: |
       In PostgreSQL, `WITH fixed AS (UPDATE ... RETURNING ...) INSERT INTO data_fix_log SELECT ...` is a single statement, so it all runs in one transaction.
+    ref: audited-data-fix
+  - q: 'How do you undo a data-fix script that turned out to be wrong?'
+    a: 'Update the rows back from `data_fix_log`, but only those still in the state the fix left (`status = new_value`).'
+    more: |
+      The log holds each row's old and new value. The `new_value` guard means a row that someone changed after the fix isn't overwritten with an old value.
     ref: audited-data-fix
   - q: 'What should happen if you run a data-fix script again?'
     a: 'Nothing. The condition no longer matches the fixed rows, so 0 rows change.'
@@ -343,3 +374,19 @@ quiz:
         correct: false
         why: 'The bug will keep piling up more bad data.'
     ref: roll-back-or-forward
+  - q: 'FIX-1042 changed 2300 orders and turned out to be wrong. How do you undo it?'
+    hint: 'Where did the fix record each row''s old value?'
+    options:
+      - text: 'Update orders from `data_fix_log`, only for rows whose status still equals the logged new value'
+        correct: true
+        why: 'The log has every row''s old value, and the guard leaves rows changed since untouched.'
+      - text: 'Restore the whole DB from last night''s backup'
+        correct: false
+        why: 'You would lose every valid transaction since then. The log makes this unnecessary.'
+      - text: 'Run the fix script again'
+        correct: false
+        why: 'It finds 0 rows, because the condition no longer matches the fixed rows.'
+      - text: 'UPDATE orders SET status = ''cancelled'' WHERE status = ''paid'''
+        correct: false
+        why: 'That cancels every paid order, not just the 2300 the fix touched.'
+    ref: audited-data-fix

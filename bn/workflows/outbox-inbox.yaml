@@ -7,7 +7,7 @@ slides:
     blocks:
       - type: text
         body: |
-          রহিমের অর্ডার সার্ভিস অর্ডার ১০১ ডেটাবেসে সংরক্ষণ করল, তারপর `OrderPlaced` message broker-এ পাঠানোর কথা, যাতে stock সার্ভিস মাল আলাদা করে। ঠিক commit আর publish-এর মাঝখানে সার্ভার crash করল। অর্ডার আছে, কিন্তু খবর নেই — stock কখনো reserve হলো না, আর ক্রেতা পণ্য পাবে না। একে বলে **dual write**: একটা কাজ দুই জায়গায় লেখা, অথচ দুটোকে এক সাথে বাঁধার উপায় নেই।
+          রহিমের অর্ডার সার্ভিস অর্ডার ১০১ ডেটাবেসে সংরক্ষণ করল, তারপর `OrderPlaced` message broker-এ (সার্ভিসদের মধ্যে message বয়ে নেওয়া ডাকঘর) পাঠানোর কথা, যাতে stock সার্ভিস মাল আলাদা করে। ঠিক commit আর publish-এর মাঝখানে সার্ভার crash করল। অর্ডার আছে, কিন্তু খবর নেই — stock কখনো reserve হলো না, আর ক্রেতা পণ্য পাবে না। একে বলে **dual write**: একটা কাজ দুই জায়গায় লেখা, অথচ দুটোকে এক সাথে বাঁধার উপায় নেই।
       - type: visual
         kind: sequence
         caption: 'Commit হলো, কিন্তু publish-এর আগেই crash'
@@ -30,6 +30,7 @@ slides:
       - type: terms
         items:
           - {term: 'Dual write', meaning: 'একই ঘটনার জন্য দুটো আলাদা সিস্টেমে লেখা, যাদের মধ্যে atomic transaction নেই।'}
+          - {term: 'Transaction', meaning: 'ডেটাবেসের একদল বদল, যা হয় সবটা একসাথে সফল হয়, নয়তো সবটা ফিরে যায় (rollback)।'}
     check:
       q: 'আগে publish করে তারপর commit করলে কোন উল্টো সমস্যা হয়?'
       a: 'commit ব্যর্থ হলে event চলে গেছে অথচ অর্ডার নেই। stock সার্ভিস এমন অর্ডারের মাল আলাদা করে রাখবে, যা কখনো ছিলই না।'
@@ -37,7 +38,7 @@ slides:
   - slug: outbox-register
     title: 'পাঠানোর খাতা: transactional outbox'
     kind: concept
-    tldr: 'Event আগে একই transaction-এ নিজের ডেটাবেসের outbox টেবিলে লেখো; আলাদা relay পরে সেটা broker-এ পাঠায়, তাই ঘটনা আর খবর কখনো আলাদা হয় না।'
+    tldr: 'Event আগে একই transaction-এ নিজের ডেটাবেসের outbox টেবিলে লিখুন; আলাদা relay পরে সেটা broker-এ পাঠায়, তাই ঘটনা আর খবর কখনো আলাদা হয় না।'
     keywords: ['transactional outbox', 'relay', 'publisher', 'outbox table', 'at-least-once', 'আউটবক্স']
     blocks:
       - type: metaphor
@@ -61,14 +62,14 @@ slides:
           - {from: relay, to: db, label: 'পাঠানো লাইনে sent_at বসায়', tone: good}
       - type: text
         body: |
-          Relay publish করার পর `sent_at` বসানোর আগে crash করলে সেই event আবার যাবে। তাই outbox দেয় **at-least-once** delivery: কখনো হারায় না, কিন্তু কখনো দুইবার যেতে পারে। এই দুইবারের জন্য consumer-এ লাগে **inbox**।
+          Relay publish করার পর `sent_at` বসানোর আগে crash করলে সেই event আবার যাবে। তাই outbox দেয় **at-least-once** delivery: কখনো হারায় না, কিন্তু কখনো দুইবার যেতে পারে। এই দুইবারের জন্য consumer-এ লাগে **inbox**। দাম: event যেতে এক-দুই সেকেন্ড দেরি হয়, আর relay চালাতে ও টেবিল পরিষ্কার রাখতে হয়।
     aside:
       - type: terms
         items:
           - {term: 'Outbox', meaning: 'নিজের ডেটাবেসে একটা টেবিল, যেখানে বাইরে পাঠানোর event আগে লিখে রাখা হয়।'}
           - {term: 'Relay', meaning: 'যে প্রসেস outbox পড়ে event বাইরে পাঠায়।'}
       - type: remember
-        body: 'আগে খাতায় লেখো, পরে পিয়ন পাঠাবে। ঘটনা আর খবর এক কলমে।'
+        body: 'আগে খাতায় লিখুন, পরে পিয়ন পাঠাবে। ঘটনা আর খবর এক কলমে।'
     check:
       q: 'Outbox-এ event আর অর্ডার একই transaction-এ লেখায় কোন সমস্যাটা মিটে যায়?'
       a: 'অর্ডার আছে অথচ event নেই (বা উল্টোটা) — এই অমিল। দুটো একসাথে commit বা একসাথে rollback হয়।'
@@ -76,7 +77,7 @@ slides:
   - slug: outbox-and-relay
     title: 'Outbox লেখা আর relay চালানো: Doctrine ও Messenger'
     kind: howto
-    tldr: 'এক flush-এ Order আর OutboxMessage persist করো; relay FOR UPDATE SKIP LOCKED দিয়ে batch তুলে Messenger bus-এ dispatch করে sent_at বসায়।'
+    tldr: 'এক flush-এ Order আর OutboxMessage persist করুন; relay FOR UPDATE SKIP LOCKED দিয়ে batch তুলে Messenger bus-এ dispatch করে sent_at বসায়।'
     keywords: ['Doctrine', 'Messenger', 'SKIP LOCKED', 'relay command', 'outbox entity', 'wrapInTransaction']
     blocks:
       - type: code
@@ -125,22 +126,77 @@ slides:
           }
         marks:
           - {line: 6, tip: 'SKIP LOCKED: একাধিক relay একসাথে চললে একে অপরের নেওয়া লাইন এড়িয়ে যায়, তাই কাজ ভাগ হয় অথচ জট লাগে না।'}
-          - {line: 10, tip: 'আসল publish। এটা ব্যর্থ হলে exception ওঠে, transaction rollback হয়, লাইন unsent থাকে।'}
+          - {line: 10, tip: 'আসল publish। exception উঠলে transaction rollback হয়: এই লাইন আর batch-এর আগে পাঠানো লাইনগুলোও unsent থেকে আবার যায়। inbox সেটা সামলায়।'}
           - {line: 11, tip: 'dispatch সফল, কিন্তু এখানে লেখার আগে crash হলে event আবার যাবে। at-least-once এর দাম এটাই।'}
     aside:
       - type: tips
         items:
-          - 'Relay চালাও একটা command বা Scheduler task দিয়ে, প্রতি সেকেন্ডে বা কয়েক সেকেন্ডে একবার। পুরনো sent লাইন সপ্তাহখানেক পর মুছে দাও।'
+          - 'Relay চালান একটা command বা Scheduler task দিয়ে, প্রতি সেকেন্ডে বা কয়েক সেকেন্ডে একবার। পুরনো sent লাইন সপ্তাহখানেক পর মুছে দিন।'
           - 'হালকা বিকল্প: Messenger-এর Doctrine transport একই কানেকশনে চললে `dispatch()` নিজেই outbox-এর মতো কাজ করে। আলাদা broker-এ পাঠাতে হলে ওপরের relay লাগে।'
       - type: commands
         items:
-          - {cmd: 'php bin/console messenger:consume async -vv', desc: 'consumer worker চালাও'}
+          - {cmd: 'php bin/console messenger:consume async -vv', desc: 'consumer worker চালু করুন'}
+          - {cmd: 'php bin/console app:outbox:relay', desc: 'আপনার নিজের command: প্রায় প্রতি সেকেন্ডে publishBatch() ঘোরায়'}
       - type: refs
         items:
           - {to: 'messaging/delivery-guarantees', label: 'At-least-once ও exactly-once'}
     check:
       q: 'Relay-তে `FOR UPDATE SKIP LOCKED` কেন দেওয়া হয়?'
       a: 'দুটো relay একসাথে চললে একই লাইন দুজনে না নিয়ে ভাগ করে নেয়। যে লাইন অন্য relay lock করেছে, সেটা এড়িয়ে পরের লাইনে যায়।'
+
+  - slug: outbox-inbox-tables
+    title: 'দুটো টেবিল: outbox আর inbox'
+    kind: howto
+    tldr: 'Outbox-এ না-পাঠানো লাইনের index আর পুরনো লাইন মোছা লাগে; inbox-এ (message_id, handler)-এ unique key আর যথেষ্ট লম্বা মেয়াদ লাগে।'
+    keywords: ['outbox table', 'inbox table', 'partial index', 'retention', 'migration', 'unique constraint', 'আউটবক্স টেবিল']
+    blocks:
+      - type: text
+        body: |
+          দুটো প্যাটার্নই দুটো ছোট টেবিলের ওপর দাঁড়ানো। না-পাঠানো লাইনের index না থাকলে relay প্রতিবার সব পুরনো লাইন ঘাঁটে: দিনে ১ লাখ event হলে এক বছরে ৩ কোটি ৬৫ লাখ লাইন, অথচ দরকার মাত্র ৫০টা। মুছে না ফেললে দুটো টেবিলই বাড়তে থাকে। টেবিল দুটো Doctrine Migration দিয়ে বানান।
+      - type: code
+        lang: sql
+        file: 'outbox টেবিল (PostgreSQL)'
+        variant: good
+        code: |
+          CREATE TABLE outbox (
+              id          uuid PRIMARY KEY,
+              type        varchar(255) NOT NULL,
+              payload     jsonb NOT NULL,
+              created_at  timestamptz NOT NULL DEFAULT now(),
+              sent_at     timestamptz NULL
+          );
+          -- relay শুধু না-পাঠানো লাইন চায়
+          CREATE INDEX outbox_unsent ON outbox (created_at) WHERE sent_at IS NULL;
+
+          -- রোজ পরিষ্কার: পাঠানো লাইন এখন শুধু ইতিহাস
+          DELETE FROM outbox WHERE sent_at < now() - interval '7 days';
+        marks:
+          - {line: 9, tip: 'index-এ শুধু না-পাঠানো লাইন থাকে, তাই পুরনো লাইন যত জমুক এটা ছোটই থাকে। relay পুরো টেবিল না পড়ে এটাই পড়ে।'}
+          - {line: 12, tip: 'Scheduler task দিয়ে রোজ চালান। লাইন পাঠানো হয়ে গেলে সেটা শুধু ইতিহাস।'}
+      - type: code
+        lang: sql
+        file: 'inbox টেবিল (PostgreSQL)'
+        variant: good
+        code: |
+          CREATE TABLE inbox (
+              message_id  uuid NOT NULL,
+              handler     varchar(255) NOT NULL,
+              received_at timestamptz NOT NULL DEFAULT now(),
+              PRIMARY KEY (message_id, handler)
+          );
+          -- রোজ পরিষ্কার: duplicate আসার সর্বোচ্চ সময়ের পুরনো id ভুলে যান
+          DELETE FROM inbox WHERE received_at < now() - interval '14 days';
+        marks:
+          - {line: 5, tip: '`ON CONFLICT (message_id, handler)` এই key-র ওপর নির্ভর করে। এটা না থাকলে insert কখনো conflict করে না, আর সব duplicate পার পেয়ে যায়।'}
+          - {line: 8, tip: 'duplicate আসার সর্বোচ্চ সময়ের চেয়ে বেশি দিন লাইন রাখুন। আগে মুছলে দেরিতে আসা duplicate নতুন বলে মনে হয়।'}
+    aside:
+      - type: tips
+        items:
+          - 'MySQL-এ partial index নেই: বদলে `(sent_at, created_at)`-এ index দিন, আর `ON CONFLICT`-এর জায়গায় `INSERT IGNORE` ব্যবহার করুন।'
+          - 'Inbox-এর মেয়াদ ঠিক করুন broker-এর সবচেয়ে দেরির redelivery থেকে, আন্দাজে নয়।'
+    check:
+      q: 'এক বছর পর relay ধীর, অথচ না-পাঠানো লাইন মাত্র ৫০টা। প্রথমে কী দেখবেন?'
+      a: 'index। না-পাঠানো লাইনে index না থাকলে প্রতি poll-এ লক্ষ লক্ষ পুরনো লাইন ঘাঁটতে হয়। `sent_at IS NULL`-এর partial index শুধু ওই ৫০টা পড়ে।'
 
   - slug: inbox-dedup
     title: 'দুইবার এলেও একবার: inbox দিয়ে dedup'
@@ -185,16 +241,20 @@ slides:
           }
         marks:
           - {line: 6, tip: '(message_id, handler)-এ unique constraint। একই message-এর জন্য এই handler-এর সারি দুইবার ঢুকবে না।'}
-          - {line: 10, tip: '০ সারি মানে আগেই হয়েছে। কিছু না করে ফিরে যাও; exception ছুঁড়লে Messenger বৃথা retry করবে।'}
+          - {line: 10, tip: '০ সারি মানে আগেই হয়েছে। কিছু না করে ফিরে যান; exception ছুঁড়লে Messenger বৃথা retry করবে।'}
           - {line: 13, tip: 'inbox লেখা আর stock কমানো একই transaction-এ, তাই কাজ ব্যর্থ হলে inbox লাইনও rollback।'}
       - type: quote
         body: 'Outbox পাঠানোর দিকে নিশ্চয়তা দেয়, inbox গ্রহণের দিকে। দুটো মিলেই "কার্যত একবার"।'
     aside:
+      - type: terms
+        items:
+          - {term: 'Idempotent', meaning: 'দুইবার চালালেও নিরাপদ: দ্বিতীয়বারে কিছু বদলায় না।'}
+          - {term: 'Unique constraint', meaning: 'ডেটাবেসের নিয়ম, যা একই key-র দ্বিতীয় লাইন ঢুকতে দেয় না।'}
       - type: remember
         body: 'Outbox = হারাবে না। Inbox = দুইবার চলবে না।'
       - type: when
         use: ['ডেটাবেসে লেখা আর event পাঠানো দুটোই একসাথে জরুরি হলে', 'consumer-এর কাজ দুইবার হলে ক্ষতি (stock, টাকা, ইমেইল)']
-        avoid: ['কাজ স্বভাবতই idempotent হলে (যেমন "status বসাও"), তখন আলাদা inbox না লাগলেও চলে']
+        avoid: ['কাজ স্বভাবতই idempotent হলে (যেমন "status বসানো"), তখন আলাদা inbox না লাগলেও চলে']
     check:
       q: 'Inbox-এর insert আর আসল কাজ আলাদা transaction-এ করলে কী ভুল হবে?'
       a: 'insert-এর পর আসল কাজের আগে crash হলে message "সারা" হয়ে যায় অথচ কাজ হয়নি। retry এসে inbox-এ আগের লাইন দেখে ফিরে যাবে, কাজ আর হবে না।'
@@ -235,6 +295,17 @@ flashcards:
     more: |
       `SKIP LOCKED` ছাড়া দ্বিতীয় relay lock-এর জন্য অপেক্ষা করত, নয়তো একই লাইন দুইবার পাঠাত। PostgreSQL আর MySQL 8 দুটোই এটা সমর্থন করে।
     ref: outbox-and-relay
+
+  - q: 'Outbox টেবিলে শুধু না-পাঠানো লাইনের index কেন?'
+    a: 'Relay শুধু `sent_at IS NULL` লাইন চায়। partial index-এ শুধু সেগুলোই থাকে, তাই লক্ষ লক্ষ পুরনো লাইন জমলেও poll দ্রুত থাকে।'
+    more: |
+      index না থাকলে প্রতি poll পুরো টেবিল ঘাঁটে। দিনে ১ লাখ event হলে এক বছরে প্রায় ৩ কোটি ৬৫ লাখ লাইন, খুঁজতে মাত্র ৫০টা। MySQL-এ partial index নেই, তাই সেখানে `(sent_at, created_at)`-এ index দিতে হয়।
+    ref: outbox-inbox-tables
+  - q: 'Inbox-এর লাইন কত দিন রাখতে হয়?'
+    a: 'duplicate আসার সর্বোচ্চ সময়ের চেয়ে বেশি দিন, যেমন ১৪ দিন। আগে মুছলে দেরিতে আসা duplicate নতুন বলে মনে হয়।'
+    more: |
+      চিরকাল রাখলে টেবিল সীমাহীন বাড়ে। broker যত দেরিতে আবার পাঠাতে পারে তার আগে মুছলে পুরনো duplicate ফসকে গিয়ে কাজ দুইবার করে ফেলে। মেয়াদ ঠিক করুন broker-এর redelivery-র সীমা থেকে।
+    ref: outbox-inbox-tables
 
 quiz:
   - q: 'Order সার্ভিস অর্ডার সংরক্ষণ করে `$bus->dispatch(new OrderPlaced(...))` ডাকে (RabbitMQ transport)। কোন পরিস্থিতিতে সমস্যা হয়?'
@@ -317,3 +388,19 @@ quiz:
         correct: false
         why: 'outbox event ঠিকই পাঠায়; প্রশ্ন হলো কত বার।'
     ref: inbox-dedup
+  - q: 'করিম inbox-এর লাইন ১ ঘণ্টা পরে মুছে দেয়, অথচ broker একই message ৩ দিন পর পর্যন্ত আবার পাঠাতে পারে। কী ভুল হতে পারে?'
+    hint: 'দেরিতে আসা duplicate এলে inbox কী খোঁজে?'
+    options:
+      - text: 'প্রতিটা message-এর inbox insert ব্যর্থ হতে শুরু করে'
+        correct: false
+        why: 'পুরনো লাইন মুছলে insert সহজ হয়, কঠিন নয়।'
+      - text: 'inbox message গিলে ফেলে বলে message হারায়'
+        correct: false
+        why: 'inbox প্রথমবারের message কখনো ফেলে দেয় না। ঝুঁকিটা duplicate-এ, হারানোয় নয়।'
+      - text: '১ ঘণ্টা পরে আসা duplicate কোনো লাইন পায় না, নতুন মনে হয়, আর কাজ আবার করে ফেলে'
+        correct: true
+        why: 'inbox শুধু সেটাই মনে রাখে যা টেবিলে আছে। সম্ভাব্য সবচেয়ে দেরির redelivery-র চেয়ে বেশি দিন লাইন রাখুন।'
+      - text: 'relay publish করা বন্ধ করে দেয়'
+        correct: false
+        why: 'relay চলে outbox নিয়ে, inbox নিয়ে নয়।'
+    ref: outbox-inbox-tables

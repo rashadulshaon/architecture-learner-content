@@ -7,7 +7,7 @@ slides:
     blocks:
       - type: text
         body: |
-          Rahim's order service saves order 101 to the database, then is supposed to send an `OrderPlaced` message to the message broker so the stock service can set the goods aside. Right between the commit and the publish, the server crashes. The order exists, but nobody heard about it: stock is never reserved, and the customer never gets the product. This is called a **dual write**: one fact written to two places, with no way to tie the two writes together.
+          Rahim's order service saves order 101 to the database, then is supposed to send an `OrderPlaced` message to the message broker (the post office that carries messages between services) so the stock service can set the goods aside. Right between the commit and the publish, the server crashes. The order exists, but nobody heard about it: stock is never reserved, and the customer never gets the product. This is called a **dual write**: one fact written to two places, with no way to tie the two writes together.
       - type: visual
         kind: sequence
         caption: 'The commit succeeded, but the server crashed before publishing'
@@ -30,6 +30,7 @@ slides:
       - type: terms
         items:
           - {term: 'Dual write', meaning: 'Writing the same fact to two separate systems that have no atomic transaction between them.'}
+          - {term: 'Transaction', meaning: 'A group of database changes that either all succeed together or all roll back.'}
     check:
       q: 'What problem do you get if you publish first and commit afterwards?'
       a: 'If the commit fails, the event has already gone out but the order doesn''t exist. The stock service will reserve goods for an order that never existed.'
@@ -61,7 +62,7 @@ slides:
           - {from: relay, to: db, label: 'It stamps sent_at on the delivered rows', tone: good}
       - type: text
         body: |
-          If the relay crashes after publishing but before it sets `sent_at`, that event goes out again. So an outbox gives you **at-least-once** delivery: an event is never lost, but it may arrive twice. That double delivery is why the consumer needs an **inbox**.
+          If the relay crashes after publishing but before it sets `sent_at`, that event goes out again. So an outbox gives you **at-least-once** delivery: an event is never lost, but it may arrive twice. That double delivery is why the consumer needs an **inbox**. The price: events leave a second or so later, and you must run the relay and clean the table.
     aside:
       - type: terms
         items:
@@ -125,7 +126,7 @@ slides:
           }
         marks:
           - {line: 6, tip: 'SKIP LOCKED: when several relays run at once, each skips the rows another has taken, so the work is shared without blocking.'}
-          - {line: 10, tip: 'The actual publish. If it fails, an exception is thrown, the transaction rolls back and the row stays unsent.'}
+          - {line: 10, tip: 'The actual publish. If it throws, the transaction rolls back: this row and any rows of the batch already sent stay unsent and go out again. The inbox absorbs that.'}
           - {line: 11, tip: 'The dispatch succeeded, but if we crash before this write, the event goes out again. That is the price of at-least-once.'}
     aside:
       - type: tips
@@ -135,12 +136,67 @@ slides:
       - type: commands
         items:
           - {cmd: 'php bin/console messenger:consume async -vv', desc: 'start a consumer worker'}
+          - {cmd: 'php bin/console app:outbox:relay', desc: 'your own command: loops over publishBatch() every second or so'}
       - type: refs
         items:
           - {to: 'messaging/delivery-guarantees', label: 'At-least-once and exactly-once'}
     check:
       q: 'Why does the relay use `FOR UPDATE SKIP LOCKED`?'
       a: 'When two relays run at once, they split the rows instead of both taking the same one. A row locked by one relay is skipped by the other, which moves on to the next.'
+
+  - slug: outbox-inbox-tables
+    title: 'The two tables: outbox and inbox'
+    kind: howto
+    tldr: 'The outbox needs an index on unsent rows and a cleanup job; the inbox needs a unique key on (message_id, handler) and a retention period longer than any late duplicate.'
+    keywords: ['outbox table', 'inbox table', 'partial index', 'retention', 'migration', 'unique constraint']
+    blocks:
+      - type: text
+        body: |
+          Both patterns stand on two small tables. With no index on the unsent rows, the relay walks every old row on every poll: at 100,000 events a day that is 36 million rows after a year, when it wants the 50 not yet sent. With no cleanup, both tables grow for ever. Create them in a Doctrine Migration.
+      - type: code
+        lang: sql
+        file: 'outbox table (PostgreSQL)'
+        variant: good
+        code: |
+          CREATE TABLE outbox (
+              id          uuid PRIMARY KEY,
+              type        varchar(255) NOT NULL,
+              payload     jsonb NOT NULL,
+              created_at  timestamptz NOT NULL DEFAULT now(),
+              sent_at     timestamptz NULL
+          );
+          -- the relay only ever asks for unsent rows
+          CREATE INDEX outbox_unsent ON outbox (created_at) WHERE sent_at IS NULL;
+
+          -- housekeeping, daily: sent rows are only history
+          DELETE FROM outbox WHERE sent_at < now() - interval '7 days';
+        marks:
+          - {line: 9, tip: 'The index holds only unsent rows, so it stays tiny however many old rows pile up. The relay reads it instead of the whole table.'}
+          - {line: 12, tip: 'Run it daily from a Scheduler task. Once a row is sent it is only history.'}
+      - type: code
+        lang: sql
+        file: 'inbox table (PostgreSQL)'
+        variant: good
+        code: |
+          CREATE TABLE inbox (
+              message_id  uuid NOT NULL,
+              handler     varchar(255) NOT NULL,
+              received_at timestamptz NOT NULL DEFAULT now(),
+              PRIMARY KEY (message_id, handler)
+          );
+          -- housekeeping: forget ids older than any duplicate can be
+          DELETE FROM inbox WHERE received_at < now() - interval '14 days';
+        marks:
+          - {line: 5, tip: 'This key is what `ON CONFLICT (message_id, handler)` relies on. Without it the insert never conflicts and every duplicate gets through.'}
+          - {line: 8, tip: 'Keep rows longer than the longest time a duplicate can still arrive. Delete too early and a late duplicate looks new.'}
+    aside:
+      - type: tips
+        items:
+          - 'MySQL has no partial index: index `(sent_at, created_at)` instead, and use `INSERT IGNORE` in place of `ON CONFLICT`.'
+          - 'Set the inbox retention from your broker''s longest redelivery window, not from guesswork.'
+    check:
+      q: 'A year in, the relay is slow although only 50 rows are unsent. What do you look at first?'
+      a: 'The index. With none on the unsent rows, every poll walks millions of old rows. A partial index on `sent_at IS NULL` reads just the 50.'
 
   - slug: inbox-dedup
     title: 'Arrives twice, runs once: dedup with an inbox'
@@ -190,6 +246,10 @@ slides:
       - type: quote
         body: 'The outbox guarantees the sending side, the inbox guarantees the receiving side. Together they give you "effectively once".'
     aside:
+      - type: terms
+        items:
+          - {term: 'Idempotent', meaning: 'Safe to run twice: the second run changes nothing.'}
+          - {term: 'Unique constraint', meaning: 'A database rule that refuses a second row with the same key.'}
       - type: remember
         body: 'Outbox = never lost. Inbox = never run twice.'
       - type: when
@@ -235,6 +295,17 @@ flashcards:
     more: |
       Without `SKIP LOCKED`, the second relay would either wait for the lock or send the same row twice. Both PostgreSQL and MySQL 8 support it.
     ref: outbox-and-relay
+
+  - q: 'Why does the outbox table get an index on unsent rows only?'
+    a: 'The relay only wants rows with `sent_at IS NULL`. A partial index holds just those, so polling stays fast even with millions of old rows.'
+    more: |
+      Without it, each poll scans the whole table. After a year at 100,000 events a day that is about 36 million rows, to find 50. MySQL has no partial indexes, so there you index `(sent_at, created_at)`.
+    ref: outbox-inbox-tables
+  - q: 'How long should inbox rows be kept?'
+    a: 'Longer than the longest time a duplicate can still arrive, say 14 days. Delete too early and a late duplicate looks new.'
+    more: |
+      Keeping rows for ever makes the table grow without limit. Deleting them sooner than the broker can redeliver lets an old duplicate slip through and do its work twice. Match the retention to the broker''s redelivery window.
+    ref: outbox-inbox-tables
 
 quiz:
   - q: 'An order service saves the order and then calls `$bus->dispatch(new OrderPlaced(...))` (RabbitMQ transport). When does this cause trouble?'
@@ -317,3 +388,19 @@ quiz:
         correct: false
         why: 'An outbox does send the event; the question is how many times.'
     ref: inbox-dedup
+  - q: 'Karim deletes inbox rows after 1 hour, but the broker can redeliver a message up to 3 days late. What can go wrong?'
+    hint: 'What does the inbox look for when a late duplicate arrives?'
+    options:
+      - text: 'The inbox insert starts failing for every message'
+        correct: false
+        why: 'Deleting old rows makes inserts easier, not harder.'
+      - text: 'Messages are lost, because the inbox swallows them'
+        correct: false
+        why: 'The inbox never drops a first delivery. The risk is on duplicates, not on loss.'
+      - text: 'A duplicate arriving after 1 hour finds no row, looks new, and does its work again'
+        correct: true
+        why: 'The inbox only remembers what is still in the table. Keep rows longer than the longest possible redelivery.'
+      - text: 'The relay stops publishing'
+        correct: false
+        why: 'The relay works on the outbox, not the inbox.'
+    ref: outbox-inbox-tables

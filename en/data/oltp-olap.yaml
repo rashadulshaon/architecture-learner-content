@@ -28,7 +28,7 @@ slides:
           GROUP BY month, category_id;
         marks:
           - {line: 2, tip: 'It touches one row and it is done. A thousand of these at once won''t make the database gasp.'}
-          - {line: 6, tip: 'It scans the whole table, holding CPU, memory and disk I/O for a long time.'}
+          - {line: 7, tip: 'It scans the whole table, holding CPU, memory and disk I/O for a long time.'}
       - type: visual
         kind: bars
         caption: 'Checkout response time while the report runs (same server)'
@@ -102,12 +102,12 @@ slides:
   - slug: materialized-views
     title: 'Precompute summaries with a materialized view'
     kind: howto
-    tldr: 'Compute the heavy query''s result once and keep it like a table. Reports read the ready-made result, and the Scheduler refreshes it.'
+    tldr: 'Compute the heavy query''s result once and keep it like a table. Reports read the ready-made result, and the Scheduler refreshes it. The refresh itself still runs on the primary.'
     keywords: ['materialized view', 'REFRESH CONCURRENTLY', 'Scheduler', 'summary table']
     blocks:
       - type: text
         body: |
-          Instead of leafing through every bill each time, the owner writes a one-page summary called "sales by month" once a night. In a database that is a **materialized view**: the query's result is actually stored on disk. A plain view is just a name, and the query inside runs every time. You can put an index on a materialized view, and `REFRESH ... CONCURRENTLY` keeps reads working during the refresh.
+          Instead of leafing through every bill each time, the owner writes a one-page summary called "sales by month" once a night. In a database that is a **materialized view**: the query's result is actually stored on disk. A plain view is just a name, and the query inside runs every time. You can put an index on a materialized view, and `REFRESH ... CONCURRENTLY` keeps reads working during the refresh. The catch: the view lives inside the primary database, and every refresh redoes the whole calculation there. The heavy query hasn't gone away; it runs once a night instead of at every report.
       - type: code
         lang: sql
         file: 'migrations/Version20260301_sales_summary.sql'
@@ -170,19 +170,92 @@ slides:
           - 'The same heavy total is needed again and again'
         avoid:
           - 'You must show a customer their exact balance right now'
+          - 'The questions keep changing: a view answers only the one it was built for'
       - type: pitfalls
         items:
-          - 'The refresh itself runs a heavy query; don''t run it at peak hours.'
+          - 'The refresh runs the heavy query on the primary and recomputes everything, so keep it off-peak. The next slide shows a cheaper way.'
           - 'MySQL has no materialized views; there you build a summary table and update it yourself.'
     check:
       q: 'What is the main difference between a plain view and a materialized view? Which one protects the database in reporting?'
       a: 'A plain view runs its query every time; a materialized view stores the result. The second does the heavy calculation once, so it protects the database.'
 
+  - slug: summary-table-limits
+    title: 'A view answers only the question it was built for'
+    kind: pitfall
+    tldr: 'A refresh recomputes everything on the primary, and a view serves one fixed question. A small daily summary table is cheaper to refresh and rolls up; changing questions need a warehouse.'
+    keywords: ['summary table', 'incremental refresh', 'rollup', 'materialized view limits', 'upsert', 'ON CONFLICT']
+    blocks:
+      - type: text
+        body: |
+          The 2 a.m. refresh scans every order again. On 50 million orders that might be 5 minutes of heavy work on the primary; a year later, with 100 million, about 10. Worse, the view knows only "month and category". When the manager asks for revenue by city, per day, the view can't help, so the query goes back to the full `orders` table at noon, and checkout freezes again.
+      - type: visual
+        kind: compare
+        caption: 'Three ways to serve reports, and what each one costs'
+        columns:
+          - title: 'Materialized view'
+            tone: warn
+            tip: 'Simplest to set up, but each refresh redoes all the work, and the answer has one fixed shape.'
+            items: ['A refresh recomputes every row', 'Runs on the primary database', 'Answers one fixed question only']
+          - title: 'Daily summary table'
+            tone: good
+            tip: 'You add only yesterday''s numbers each night, so the work stays small as the table grows.'
+            items: ['Each night adds only yesterday', 'A month is the sum of about 30 days', 'You still pick the columns in advance']
+          - title: 'Warehouse'
+            tone: accent
+            tip: 'A separate system built for any question, at the price of building and running it.'
+            items: ['Any slicing, any question', 'Heavy work leaves the primary', 'More to build, run and keep in step']
+      - type: code
+        lang: sql
+        file: 'sales_by_day.sql'
+        variant: good
+        code: |
+          CREATE TABLE sales_by_day (
+              day         date    NOT NULL,
+              category_id int     NOT NULL,
+              revenue     numeric NOT NULL,
+              orders      int     NOT NULL,
+              PRIMARY KEY (day, category_id)
+          );
+
+          -- nightly: only yesterday's orders, found through an index on created_at
+          INSERT INTO sales_by_day
+          SELECT created_at::date, category_id, SUM(total_amount), COUNT(*)
+          FROM orders
+          WHERE status = 'paid'
+            AND created_at >= current_date - 1 AND created_at < current_date
+          GROUP BY 1, 2
+          ON CONFLICT (day, category_id)
+          DO UPDATE SET revenue = EXCLUDED.revenue, orders = EXCLUDED.orders;
+
+          -- a monthly report adds up about 30 small rows, not millions of orders
+          SELECT date_trunc('month', day) AS month, category_id, SUM(revenue)
+          FROM sales_by_day GROUP BY 1, 2;
+        marks:
+          - {line: 14, tip: 'Only yesterday''s rows are read, so the nightly work follows one day of orders, not the whole table.'}
+          - {line: 16, tip: 'Running it twice for the same day just overwrites the row, so a retry is safe.'}
+          - {line: 20, tip: 'Reports read tiny rows. Days roll up into months or years; a month-only view cannot split back into days.'}
+    aside:
+      - type: when
+        use:
+          - 'Summary table: the same few reports every day, and the orders table keeps growing'
+          - 'Warehouse: questions keep changing, or you need to slice by many columns'
+        avoid:
+          - 'Materialized view alone, once one refresh takes minutes on the primary'
+      - type: tips
+        items:
+          - 'Add an index on `orders(created_at)`, or yesterday''s query scans the whole table anyway.'
+      - type: refs
+        items:
+          - {to: 'data/data-platforms', label: 'Warehouses and pipelines'}
+    check:
+      q: 'The manager asks for revenue by city, per day, but the view groups by month and category. What happens, and what are the two ways out?'
+      a: 'The view can''t answer it, so the query hits the full orders table on the primary again. Add a finer summary table that includes city, or move the questions to a warehouse.'
+
   - slug: change-data-capture
     title: 'Change data capture: let the changes travel on their own'
     kind: pitfall
-    tldr: 'If the app writes to two places by hand, one write will eventually be missed. CDC reads the database''s own log and sends the changes to the reporting system.'
-    keywords: ['CDC', 'change data capture', 'Debezium', 'WAL', 'dual write', 'outbox']
+    tldr: 'If the app writes to two places by hand, one write will eventually be missed. CDC reads the database''s own log and sends the changes on, at the price of extra infrastructure and a log to watch.'
+    keywords: ['CDC', 'change data capture', 'Debezium', 'WAL', 'dual write', 'outbox', 'replication slot']
     blocks:
       - type: text
         body: |
@@ -217,23 +290,51 @@ slides:
           - {from: app, to: db, label: 'The app writes the order to the main database only'}
           - {from: db, to: cdc, label: 'The CDC tool reads new changes from the log', dashed: true}
           - {from: cdc, to: wh, label: 'Every change reaches reporting, in order', tone: good}
-      - type: quote
-        body: 'Write in one place; build every other copy from the log.'
+      - type: code
+        lang: json
+        file: 'orders-cdc.json (Debezium connector)'
+        variant: good
+        code: |
+          {
+            "name": "orders-cdc",
+            "config": {
+              "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+              "plugin.name": "pgoutput",
+              "database.hostname": "primary-db",
+              "database.dbname": "shop",
+              "table.include.list": "public.orders",
+              "slot.name": "orders_cdc",
+              "snapshot.mode": "initial",
+              "topic.prefix": "shop"
+            }
+          }
+        marks:
+          - {line: 9, tip: 'The slot is a bookmark in the log. PostgreSQL keeps all log files after it until this tool has read them.'}
+          - {line: 10, tip: 'Old rows were never in the log, so the first run copies whole tables once: a heavy read on the primary.'}
+      - type: points
+        title: 'What CDC costs'
+        style: cross
+        items:
+          - 'More machinery: Debezium plus a broker such as Kafka to run, monitor and upgrade.'
+          - 'The log grows if the tool stops. PostgreSQL keeps the WAL until the slot has read it, so a tool that is down for a weekend can fill the primary''s disk. Alert on slot lag.'
+          - 'The first run is a one-off snapshot of every existing row, so schedule it off-peak.'
+          - 'PostgreSQL needs `wal_level = logical`, and a schema change must be handled on the reporting side too.'
     aside:
       - type: remember
-        body: 'Writing to two places by hand means that one day you will have two truths.'
+        body: 'Write in one place; build every other copy from the log.'
       - type: when
         use:
           - 'A warehouse, search index or cache must stay in step with the main data'
         avoid:
-          - 'Small apps: a nightly materialized view is enough, and CDC is extra hassle'
+          - 'Small apps: a nightly summary is enough, and CDC is extra hassle'
+          - 'Nobody can watch the log: an unwatched slot is how disks fill up'
       - type: refs
         items:
           - {to: 'workflows/outbox-inbox', label: 'The outbox pattern'}
           - {to: 'data/data-platforms', label: 'Warehouses and pipelines'}
     check:
-      q: 'In a dual write, where does the gap open up between the two places, and how does CDC avoid it?'
-      a: 'If the first write succeeds and the second fails, they no longer match. With CDC the app writes once, and the copies get their changes from the database''s log.'
+      q: 'In a dual write, where does the gap open up, how does CDC avoid it, and what does CDC cost?'
+      a: 'If the first write succeeds and the second fails, the two no longer match. With CDC the app writes once and the log feeds the copies, but you run extra tools and must watch the log''s growth.'
 
 flashcards:
   - q: 'What is OLTP?'
@@ -264,12 +365,27 @@ flashcards:
   - q: 'What is change data capture (CDC)?'
     a: 'Reading the database''s transaction log (such as the WAL) and sending every INSERT, UPDATE and DELETE to another system as an event.'
     more: |
-      The app's code doesn't change, because the true list of changes is already in the database's log. Debezium is a popular tool for it. It avoids the dual-write gap, and copies receive the changes in order.
+      The app's code doesn't change, because the true list of changes is already in the database's log. Debezium is a popular tool for it. It avoids the dual-write gap, and copies receive the changes in order. It is not free: see the cost card.
     ref: change-data-capture
   - q: 'Why is a dual write dangerous?'
     a: 'If one app writes to two places, one write can succeed and the other fail, and the two quietly drift apart.'
     more: |
       The two writes are not in a single transaction, so there is no guarantee that both succeed or both fail. The fix: write in one place and build the other copies with CDC or an outbox.
+    ref: change-data-capture
+  - q: 'What does a materialized view still cost the primary, and what can it not do?'
+    a: 'Each refresh recomputes everything on the primary, and the view answers only the one question it was built for.'
+    more: |
+      On 50 million orders a refresh might mean minutes of heavy work, and it grows with the table. A new question, such as revenue by city per day, needs a new view or a finer summary table. Questions that keep changing belong in a warehouse.
+    ref: summary-table-limits
+  - q: 'How can a summary table be refreshed more cheaply than a materialized view?'
+    a: 'Each night, add only yesterday''s totals with an upsert (`ON CONFLICT DO UPDATE`). Months and years are sums of the daily rows.'
+    more: |
+      The nightly query reads one day of orders through an index on created_at, so the work no longer grows with the whole table. Running it twice for the same day just overwrites the row, so a retry is safe.
+    ref: summary-table-limits
+  - q: 'What are the costs and risks of CDC?'
+    a: 'Extra machinery (Debezium and a broker), an initial snapshot of old rows, and WAL that piles up on the primary if the tool stops reading.'
+    more: |
+      PostgreSQL keeps WAL files until the replication slot has read them. A CDC tool that is down for a weekend can fill the primary's disk, so alert on slot lag. Also set `wal_level = logical` and plan the first snapshot for a quiet hour.
     ref: change-data-capture
 
 quiz:
@@ -360,4 +476,33 @@ quiz:
       - text: 'Repairing data when something in the database gets corrupted'
         correct: false
         why: 'CDC only sends copies of changes; it doesn''t repair data.'
+    ref: change-data-capture
+  - q: 'The manager now wants revenue by city, per day. The view groups by month and category. What is the right reading?'
+    hint: 'What question was the view built to answer?'
+    options:
+      - text: 'The view can''t answer it; running the query on orders scans the whole table on the primary again'
+        correct: true
+        why: 'A materialized view stores the answer to one fixed query. Another question has to go back to the raw table.'
+      - text: 'REFRESH will add city and day to the view automatically'
+        correct: false
+        why: 'A refresh recomputes the same query; it never changes the view''s columns or grouping.'
+      - text: 'A finer summary table, or a warehouse if questions keep changing, is the way out'
+        correct: true
+        why: 'A daily table with city serves this question cheaply; a warehouse serves any question.'
+      - text: 'Refresh the view every minute so it is always fresh'
+        correct: false
+        why: 'Every refresh redoes the whole calculation on the primary, so a minute-by-minute refresh would hurt checkout more.'
+    ref: summary-table-limits
+  - q: 'A Debezium connector has been stopped for a weekend, but its replication slot still exists. What is the risk?'
+    hint: 'Who decides when the database may delete old log files?'
+    options:
+      - text: 'PostgreSQL keeps all WAL since the slot''s last position, so the primary''s disk can fill up'
+        correct: true
+        why: 'The slot tells PostgreSQL that someone still needs that log. Until the tool reads it, the files stay.'
+      - text: 'Nothing: the log is deleted after a few minutes anyway'
+        correct: false
+        why: 'Normally old WAL is recycled, but a slot holds it back until its reader catches up.'
+      - text: 'The reporting copy is deleted'
+        correct: false
+        why: 'The reporting copy simply falls behind; nothing there is deleted.'
     ref: change-data-capture

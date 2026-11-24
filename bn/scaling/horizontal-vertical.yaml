@@ -98,9 +98,9 @@ slides:
       a: 'session প্রথম সার্ভারের নিজের ফাইল বা মেমরিতে জমা ছিল। session-কে সবার জন্য এক জায়গায় (Redis বা ডেটাবেসে) সরাতে হবে।'
 
   - slug: sessions-in-redis
-    title: 'Symfony-তে session আর ফাইল সরাও'
+    title: 'Symfony-তে session আর ফাইল সরান'
     kind: howto
-    tldr: 'session-এর handler Redis-এ বদলাও, আর আপলোড লোকাল ডিস্কের বদলে object storage-এ লেখো — দুই জায়গায় দুই লাইনের বদলই অ্যাপকে horizontal-ready করে।'
+    tldr: 'session-এর handler Redis-এ বদলান, আর আপলোড লোকাল ডিস্কের বদলে object storage-এ লিখুন — দুই জায়গায় দুই লাইনের বদলই অ্যাপকে horizontal-ready করে।'
     keywords: ['Redis session', 'handler_id', 'Flysystem', 'object storage', 'upload', 'session ক্লাস্টার']
     blocks:
       - type: text
@@ -123,14 +123,14 @@ slides:
           - {line: 7, tip: 'Redis-এ session-এর TTL এই মান থেকে আসে, ফলে পুরনো session নিজে নিজেই মুছে যায়।'}
       - type: text
         body: |
-          এবার আপলোড। নিচের diff-এ লাল লাইন সার্ভারের ডিস্কে ফাইল রাখে — অন্য সার্ভার সেটা কখনো দেখবে না। সবুজ লাইন Flysystem দিয়ে object storage-এ লেখে, যেটা সব সার্ভারের কাছে একই।
+          এবার আপলোড। `config/packages/flysystem.yaml`-এ storage একবার ঘোষণা করুন (নাম `uploads.storage`, `aws` adapter আর আপনার bucket)। নিচের diff-এ লাল লাইন সার্ভারের ডিস্কে ফাইল রাখে — অন্য সার্ভার সেটা কখনো দেখবে না। সবুজ লাইন Flysystem দিয়ে object storage-এ লেখে, যেটা সব সার্ভারের কাছে একই।
       - type: code
         lang: diff
         file: 'src/Controller/AvatarController.php'
         code: |
           -    $file->move($this->getParameter('kernel.project_dir').'/public/uploads', $name);
           +    $stream = fopen($file->getPathname(), 'r');
-          +    $this->uploads->writeStream('avatars/'.$name, $stream);
+          +    $this->uploadsStorage->writeStream('avatars/'.$name, $stream);
           +    fclose($stream);
 
                // constructor:
@@ -141,12 +141,13 @@ slides:
     aside:
       - type: tips
         items:
-          - 'object storage-এর ঠিকানা (URL) ডেটাবেসে রাখো, সার্ভারের পাথ নয়।'
-          - 'Redis-এর session হারালে ব্যবহারকারী শুধু আবার login করে — তাই session-এ জরুরি ডেটা রেখো না, জরুরি ডেটা ডেটাবেসে।'
+          - 'object storage-এর ঠিকানা (URL) ডেটাবেসে রাখুন, সার্ভারের পাথ নয়।'
+          - 'Redis-এর session হারালে ব্যবহারকারী শুধু আবার login করে — তাই session-এ জরুরি ডেটা রাখবেন না, জরুরি ডেটা ডেটাবেসে।'
+          - 'দাম: প্রতি request-এ একটা Redis call, আর Redis বন্ধ থাকলে কেউ login করতে পারে না। তার একটা replica রাখুন বা failover-ওয়ালা managed Redis নিন।'
       - type: commands
         title: 'যাচাই করার কমান্ড'
         items:
-          - {cmd: 'php bin/console debug:config framework session', desc: 'কোন session handler সক্রিয় দেখো'}
+          - {cmd: 'php bin/console debug:config framework session', desc: 'কোন session handler সক্রিয় দেখুন'}
           - {cmd: 'redis-cli -n 1 --scan --pattern ''sf*'' | head', desc: 'Redis-এ session key জমছে কি না'}
     check:
       q: 'অ্যাপ দুই সার্ভারে চালানোর আগে Symfony-তে অন্তত কোন দুইটা জায়গা বদলাতে হবে?'
@@ -196,12 +197,17 @@ slides:
           - {line: 12, tip: 'CPU ৬০%-এর ওপরে গেলেই বাড়ানো শুরু। ৮০-৯০%-এর অপেক্ষা করলে নতুন সার্ভার আসার আগেই latency লাফিয়ে যাবে।'}
           - {line: 15, tip: 'নামার সময় ৫ মিনিট অপেক্ষা করে। না হলে ভিড় একটু কমলেই সার্ভার কেটে ফেলা হয়, আবার ঢেউ এলে ভুগতে হয়।'}
       - type: quote
-        body: 'Autoscaling দেরিতে জাগে। জানা ভিড়ের (ঈদ, সেল) জন্য সার্ভার আগে থেকেই বাড়িয়ে রাখো।'
+        body: 'Autoscaling দেরিতে জাগে। জানা ভিড়ের (ঈদ, সেল) জন্য সার্ভার আগে থেকেই বাড়িয়ে রাখুন।'
     aside:
       - type: pitfalls
         items:
           - 'max না দিলে ভুল loop বা আক্রমণে সার্ভার আর বিল দুটোই অসীম বাড়ে।'
           - 'readiness check ছাড়া নতুন pod ঠান্ডা অবস্থাতেই request পেয়ে যায়।'
+          - 'minReplicas দিনরাত খরচ টানে। এক রাতের সেলের জন্য এক ঘণ্টা আগে বাড়ান, পরে কমিয়ে দিন।'
+      - type: terms
+        items:
+          - {term: 'Pod', meaning: 'Kubernetes-এ আপনার অ্যাপের একটা চলমান কপি। বেশি pod মানে একই কাজ করা বেশি সার্ভার।'}
+          - {term: 'HPA', meaning: 'Kubernetes-এর autoscaler। CPU দেখে pod বাড়ায় বা কমায়।'}
       - type: remember
         body: 'Autoscaling ধীর ঢেউ সামলায়, ঠিক-ঝাঁপ নয়। ঝাঁপের জন্য আগে থেকে বাড়ানো সার্ভার আর সীমা (rate limit)।'
       - type: refs
@@ -212,7 +218,7 @@ slides:
       a: 'প্রায় ৪–৫ মিনিট পুরনো সার্ভারগুলো ভিড় সামলাবে, latency আর error বাড়বে। সেলের আগেই min সংখ্যা বাড়িয়ে রাখতে হবে।'
 
   - slug: database-last
-    title: 'ডেটাবেস স্কেল করো সবার শেষে'
+    title: 'ডেটাবেস স্কেল করুন সবার শেষে'
     kind: pitfall
     tldr: 'অ্যাপ সার্ভার বাড়ানো সহজ, ডেটাবেস নয়। সার্ভার বাড়ালে ডেটাবেসের connection আর চাপ বাড়ে, তাই আগে query, cache আর replica, সবশেষে shard।'
     keywords: ['database scaling', 'connection pool', 'PgBouncer', 'read replica', 'sharding', 'ডেটাবেস স্কেল']
@@ -224,7 +230,7 @@ slides:
           হোটেলের শাখা ৪টা থেকে ২০টা হলো, কিন্তু সবাই চাল-ডাল আনে সেই একটা কেন্দ্রীয় গুদাম থেকে। গুদামের দরজায় এখন ২০ শাখার লোকের ধাক্কাধাক্কি। ঠিক এভাবে অ্যাপ সার্ভার বাড়ালে সবার চাপ গিয়ে পড়ে একটা ডেটাবেসে।
       - type: text
         body: |
-          হিসাব করো: ২০টা অ্যাপ সার্ভার, প্রতিটায় ২৫টা PHP-FPM worker, প্রত্যেকে একটা করে connection ধরলে ৫০০ connection। Postgres-এর `max_connections` ২০০ হলে নতুন সার্ভারগুলো ডেটাবেসেই ঢুকতে পারবে না। সমাধান নতুন connection pooler, যেমন PgBouncer।
+          হিসাব করুন: ২০টা অ্যাপ সার্ভার, প্রতিটায় ২৫টা PHP-FPM worker, প্রত্যেকে একটা করে connection ধরলে ৫০০ connection। Postgres-এর `max_connections` ২০০ হলে নতুন সার্ভারগুলো ডেটাবেসেই ঢুকতে পারবে না। সমাধান একটা connection pooler, যেমন PgBouncer, যে আসল connection এক transaction করে ধার দেয়। তার সীমা আছে; পরের স্লাইডে দেখানো হয়েছে।
       - type: code
         lang: ini
         file: 'pgbouncer.ini'
@@ -239,26 +245,88 @@ slides:
           default_pool_size = 20        ; ডেটাবেসে আসল connection মাত্র ২০টা
         marks:
           - {line: 5, tip: 'প্রতিটা query-র জন্য connection ধরে রাখে না, transaction শেষ হলেই অন্যকে দেয়। তাই কম connection-এ অনেকের কাজ চলে।'}
-          - {line: 7, tip: '১০০০ client কিন্তু ডেটাবেস দেখছে মাত্র ২০টা। ডেটাবেসের RAM আর CPU-র ওপর চাপ নাটকীয়ভাবে কমে।'}
+          - {line: 7, tip: '১০০০ client কিন্তু ডেটাবেস দেখছে মাত্র ২০টা। প্রতিটা transaction connection ধরে মাত্র কয়েক মিলিসেকেন্ড, তাই ২০টা আসল connection ৫০০ worker-কে পালা করে সামলায় — ২০টা কাউন্টার যেমন লম্বা লাইন সামলায়।'}
       - type: visual
         kind: steps
-        caption: 'ডেটাবেস ধীর হলে এই ক্রমে এগোও'
+        caption: 'ডেটাবেস ধীর হলে এই ক্রমে এগোন'
         steps:
-          - {title: '১. Query ঠিক করো', body: 'index যোগ করো, N+1 সরাও', tip: 'সবচেয়ে সস্তা আর সবচেয়ে বেশি কাজের ধাপ। অনেক অ্যাপ এখানেই ১০ গুণ দ্রুত হয়ে যায়।'}
-          - {title: '২. Cache বসাও', body: 'বারবার পড়া ডেটা Redis-এ', tip: 'ডেটাবেসে পৌঁছানো request-ই কমিয়ে দেয়, ফলে ডেটাবেস ফাঁকা পায়।'}
+          - {title: '১. Query ঠিক করুন', body: 'index যোগ করুন, N+1 সরান', tip: 'সবচেয়ে সস্তা আর সবচেয়ে বেশি কাজের ধাপ। অনেক অ্যাপ এখানেই ১০ গুণ দ্রুত হয়ে যায়।'}
+          - {title: '২. Cache বসান', body: 'বারবার পড়া ডেটা Redis-এ', tip: 'ডেটাবেসে পৌঁছানো request-ই কমিয়ে দেয়, ফলে ডেটাবেস ফাঁকা পায়।'}
           - {title: '৩. Read replica', body: 'পড়া যাবে replica থেকে', tip: 'লেখা থাকে primary-তে, পড়ার চাপ ভাগ হয়। তবে replication lag মাথায় রাখতে হয়।'}
           - {title: '৪. বড় মেশিন (vertical)', body: 'ডেটাবেস সার্ভার আরও শক্তিশালী', tip: 'ডেটাবেসে vertical প্রায়ই সবচেয়ে সরল। সেই সীমা পর্যন্ত এটা ব্যবহার করা সম্পূর্ণ ঠিক।'}
-          - {title: '৫. Shard করো', body: 'ডেটা ভাগ করে অনেক ডেটাবেসে', tip: 'সবচেয়ে শক্তিশালী কিন্তু সবচেয়ে ব্যয়বহুল। cross-shard query আর transaction কঠিন হয়ে যায়।', tone: warn}
+          - {title: '৫. Shard করুন', body: 'ডেটা ভাগ করে অনেক ডেটাবেসে', tip: 'সবচেয়ে শক্তিশালী কিন্তু সবচেয়ে ব্যয়বহুল। cross-shard query আর transaction কঠিন হয়ে যায়।', tone: warn}
     aside:
+      - type: terms
+        items:
+          - {term: 'PHP-FPM worker', meaning: 'একটা PHP process, যে একসময়ে একটা request সামলায়। ২৫ worker মানে একসাথে ২৫টা request।'}
+          - {term: 'Connection pooler', meaning: 'মাঝের এমন একটা প্রক্রিয়া, যে অল্প কয়েকটা আসল ডেটাবেস connection ধরে রেখে অনেক client-কে ধার দেয়।'}
+          - {term: 'N+1', meaning: 'একটা query-তে তালিকা আনা, তারপর তালিকার প্রতিটা সারির জন্য আরও একটা করে query চালানো।'}
       - type: refs
         items:
           - {to: 'data/replication', label: 'Read replica ও replication'}
           - {to: 'data/sharding', label: 'Sharding কখন ও কীভাবে'}
       - type: remember
-        body: 'ডেটাবেসের চাপ বাড়ানোর আগে ডেটাবেসের কাজ কমাও।'
+        body: 'ডেটাবেসের চাপ বাড়ানোর আগে ডেটাবেসের কাজ কমান।'
     check:
       q: 'অ্যাপ সার্ভার ৪ থেকে ২০ করার পর ডেটাবেসে "too many connections" error আসছে। প্রথম সমাধান কী?'
       a: 'PgBouncer-এর মতো pooler বসানো, যাতে ডেটাবেসে আসল connection কম থাকে। শুধু max_connections বাড়ানো ডেটাবেসের RAM খেয়ে ফেলে।'
+
+  - slug: pgbouncer-limits
+    title: 'PgBouncer transaction mode: যা ভাঙে'
+    kind: pitfall
+    tldr: 'Transaction pooling connection ধার দেয় এক transaction-এর জন্য। তাই prepared statement, SET, advisory lock, LISTEN/NOTIFY ভাঙে। সমাধান: prepare emulate করুন, বাকিগুলো সরাসরি চালান।'
+    keywords: ['PgBouncer', 'transaction pooling', 'prepared statements', 'EMULATE_PREPARES', 'advisory lock', 'LISTEN NOTIFY', 'pool_mode']
+    blocks:
+      - type: metaphor
+        icon: wallet
+        title: 'কুড়িটা কাউন্টার, পাঁচশো ক্রেতা'
+        body: |
+          এক ক্রেতা চিরকুট লিখে ৭ নম্বর কাউন্টারে রেখে গেলেন, ভাবলেন পরেরবারও সেখানেই পাবেন। কিন্তু দোকান প্রতিবার যে কাউন্টার ফাঁকা সেখানে পাঠায়, তাই চিরকুট ৭ নম্বরে, আর ক্রেতা দাঁড়িয়ে ১২ নম্বরে। Transaction pooling ঠিক এমন: "নিজের" connection-এ যা রেখে যান, পরের transaction-এ তা নেই।
+      - type: text
+        body: |
+          PHP-র সবচেয়ে চেনা শিকার prepared statement। PDO এক connection-এ query prepare করে, চালায় আরেকটায়, আর Postgres বলে `SQLSTATE[26000]: prepared statement "pdo_stmt_00000001" does not exist`। PDO-কে বলুন সাধারণ query পাঠাতে; মানগুলো তখনও escape হয়।
+      - type: code
+        lang: yaml
+        file: 'config/packages/doctrine.yaml'
+        variant: good
+        code: |
+          doctrine:
+              dbal:
+                  # DATABASE_URL যায় PgBouncer-এ, port 6432
+                  url: '%env(resolve:DATABASE_URL)%'
+                  options:
+                      !php/const PDO::ATTR_EMULATE_PREPARES: true   # server-side prepare নয়
+        marks:
+          - {line: 6, tip: 'PDO নিজেই SQL বানিয়ে একবারে পাঠায়, তাই এমন কিছু পড়ে থাকে না যা পরের transaction হারাবে। PgBouncer 1.21+ চাইলে max_prepared_statements দিয়ে prepare নিজেই সামলাতে পারে।'}
+      - type: code
+        lang: bash
+        file: 'deploy.sh'
+        variant: good
+        code: |
+          # migration (আর LISTEN/NOTIFY, advisory lock) যায় সরাসরি Postgres-এ, port 5432
+          DATABASE_URL='postgresql://app:CHANGE_ME@10.0.0.5:5432/shop?serverVersion=16' \
+              php bin/console doctrine:migrations:migrate --no-interaction
+        marks:
+          - {line: 2, tip: 'শুধু এই কমান্ড সরাসরি URL পায়। চলমান অ্যাপ PgBouncer-ই ব্যবহার করে।'}
+      - type: points
+        title: 'Transaction mode-এ আরও যা হারায়'
+        style: cross
+        items:
+          - '`SET search_path` বা `SET timezone`: হারায়, নয়তো অন্য client-এ ফাঁস হয়। transaction-এর ভেতরে `SET LOCAL` ব্যবহার করুন।'
+          - 'Session-level advisory lock, `LISTEN`/`NOTIFY`, temporary table: সরাসরি connection নিন।'
+    aside:
+      - type: when
+        use:
+          - 'অনেক অ্যাপ সার্ভার: মোট worker `max_connections`-এর চেয়ে অনেক বেশি'
+        avoid:
+          - 'অল্প সার্ভার, worker-গুলো `max_connections`-এর মধ্যেই ধরে: pooler লাগে না'
+          - 'কোড session state-এর ওপর নির্ভর করলে: session mode বা সরাসরি connection'
+      - type: pitfalls
+        items:
+          - 'PgBouncer ডেটাবেসের সামনে আরেকটা process। দুটো চালান, নইলে সেটাই পরের single point of failure।'
+    check:
+      q: 'PgBouncer-এর transaction mode চালুর পর কিছু query "prepared statement does not exist" দিয়ে ব্যর্থ। কেন, আর সমাধান কী?'
+      a: 'PDO এক pooled connection-এ prepare করে আরেকটায় চালায়। PDO::ATTR_EMULATE_PREPARES চালু করুন (বা PgBouncer 1.21+ max_prepared_statements)।'
 
 flashcards:
   - q: 'Vertical আর horizontal scaling-এর পার্থক্য কী?'
@@ -279,7 +347,7 @@ flashcards:
   - q: 'আপলোড করা ফাইল `public/uploads`-এ রাখলে horizontal scaling-এ কী সমস্যা?'
     a: 'ফাইল শুধু যে সার্ভারে আপলোড হয়েছে সেখানেই থাকে; অন্য সার্ভারে request গেলে ৪০৪ আসে।'
     more: |
-      ফাইল রাখতে হবে object storage-এ (S3-compatible)। Symfony-তে Flysystem দিয়ে একই কোডে লোকাল ডিস্ক বা S3 বদলানো যায়। ডেটাবেসে রাখো ফাইলের key বা URL, সার্ভারের পাথ নয়।
+      ফাইল রাখতে হবে object storage-এ (S3-compatible)। Symfony-তে Flysystem দিয়ে একই কোডে লোকাল ডিস্ক বা S3 বদলানো যায়। ডেটাবেসে রাখুন ফাইলের key বা URL, সার্ভারের পাথ নয়।
     ref: sessions-in-redis
   - q: 'Autoscaling কেন হঠাৎ ঢেউ সামলাতে পারে না?'
     a: 'ভিড় মাপা, সিদ্ধান্ত নেওয়া, নতুন সার্ভার চালু আর warm-up — সব মিলিয়ে কয়েক মিনিট লাগে। তার মধ্যেই পুরনো সার্ভার ভেঙে পড়তে পারে।'
@@ -289,8 +357,18 @@ flashcards:
   - q: 'অ্যাপ সার্ভার বাড়ালে ডেটাবেসে "too many connections" আসে কেন?'
     a: 'প্রতিটা সার্ভারের প্রতিটা worker একটা করে connection নেয়। সার্ভার বাড়লে মোট connection ডেটাবেসের max_connections ছাড়িয়ে যায়।'
     more: |
-      ২০ সার্ভার × ২৫ worker = ৫০০ connection, অথচ ডেটাবেস হয়তো ২০০-এ আটকে। সমাধান PgBouncer-এর মতো pooler, যা অনেক client connection থেকে মাত্র অল্প কয়েকটা আসল connection বানায়।
+      ২০ সার্ভার × ২৫ worker = ৫০০ connection, অথচ ডেটাবেস হয়তো ২০০-এ আটকে। সমাধান PgBouncer-এর মতো pooler, যা অনেক client connection থেকে মাত্র অল্প কয়েকটা আসল connection বানায়। তার সীমাগুলো পরের কার্ডে।
     ref: database-last
+  - q: 'PgBouncer-এর transaction pooling mode-এ কী ভাঙে?'
+    a: 'যা ধরে নেয় connection আপনারই থাকবে: server-side prepared statement, SET, session advisory lock, LISTEN/NOTIFY, temp table।'
+    more: |
+      Transaction mode connection ধার দেয় শুধু একটা transaction-এর জন্য, তারপর অন্যকে দিয়ে দেয়। এক connection-এ করা prepared statement পরের connection-এ থাকে না। transaction-এর ভেতরে `SET LOCAL` ব্যবহার করুন, আর migration ও LISTEN/NOTIFY সরাসরি Postgres-এ পাঠান।
+    ref: pgbouncer-limits
+  - q: 'PgBouncer-এর পেছনে Symfony-তে "prepared statement does not exist" এলে সমাধান কী?'
+    a: 'Doctrine dbal options-এ PDO::ATTR_EMULATE_PREPARES true করুন, অথবা PgBouncer 1.21+ হলে max_prepared_statements দিন।'
+    more: |
+      Emulation চালু থাকলে PDO escape-করা মানসহ query বানিয়ে একবারে পাঠায়, তাই এমন কোনো statement পড়ে থাকে না যা পরের transaction পাবে না। দাম: Postgres আর parse-করা plan নতুন করে কাজে লাগাতে পারে না।
+    ref: pgbouncer-limits
   - q: 'ডেটাবেস ধীর হলে স্কেলিংয়ের সঠিক ক্রম কোনটা?'
     a: 'query ঠিক করা, cache, read replica, বড় মেশিন, সবশেষে shard। সবচেয়ে সস্তা ধাপ আগে।'
     more: |
@@ -368,6 +446,22 @@ quiz:
         correct: false
         why: 'worker না থাকলে অ্যাপই চলবে না।'
     ref: database-last
+  - q: 'PgBouncer-এর (pool_mode = transaction) পেছনে একটা Symfony অ্যাপ মাঝে মাঝে "prepared statement does not exist" error দেয়। সবচেয়ে ভালো সমাধান কোনটা?'
+    hint: 'statement এক connection-এ prepare হলো, চলল আরেকটায়। server-side prepare এড়াবেন কীভাবে?'
+    options:
+      - text: 'Doctrine dbal options-এ PDO::ATTR_EMULATE_PREPARES true করা'
+        correct: true
+        why: 'PDO তখন escape-করা মানসহ পুরো query একবারে পাঠায়, তাই এমন কিছু পড়ে থাকে না যা পরের transaction হারাতে পারে।'
+      - text: 'default_pool_size বাড়ানো, যাতে একই connection বেশিবার মেলে'
+        correct: false
+        why: 'connection বাড়ালেও আবার একই connection পাওয়ার নিশ্চয়তা নেই। Transaction mode প্রতি transaction-এ connection ভাগ করে।'
+      - text: 'অ্যাপকে আবার সরাসরি Postgres-এর সাথে জোড়া'
+        correct: false
+        why: 'কাজ করবে, কিন্তু pooler ফেলে দেওয়া হয়, আর "too many connections" সমস্যা ফিরে আসে।'
+      - text: 'ব্যর্থ প্রতিটা query তিনবার retry করা'
+        correct: false
+        why: 'retry আরেকটা connection-এ গিয়ে আবার ব্যর্থ হতে পারে। কারণ থেকেই যায়, আর লেখা দুবার চলে যেতে পারে।'
+    ref: pgbouncer-limits
   - q: 'ফ্ল্যাশ সেলের ভিড় ঠিক রাত ৮টায় ১০ গুণ হয়, আর অটোস্কেলিং চালু আছে। সবচেয়ে বুদ্ধিমান প্রস্তুতি কোনটা?'
     hint: 'ভিড় আসার পর সার্ভার কাজ ধরতে কত সময় লাগে?'
     options:

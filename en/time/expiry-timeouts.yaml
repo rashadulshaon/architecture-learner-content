@@ -12,7 +12,7 @@ slides:
           The ticket says "train leaves 10:05". Whatever the passenger's wristwatch says, the train leaves by the station's clock. The passenger thinks "there's still time", but the stationmaster closes the gate. Expiry works the same way: the server's clock decides what is still valid.
       - type: visual
         kind: sequence
-        caption: 'The phone''s clock is an hour fast: a fresh OTP is "expired" to the phone'
+        caption: 'A phone clock an hour fast "expires" a fresh OTP; sending it anyway lets the server judge'
         actors:
           - {id: phone, label: 'User''s phone', icon: phone, tip: 'Its clock is wrong, an hour ahead of real time.'}
           - {id: server, label: 'Server', icon: server, tip: 'Its clock is synced via NTP. It is the real authority on expiry.'}
@@ -21,6 +21,8 @@ slides:
           - {at: phone, note: 'Phone clock 11:01 > 10:05', tone: bad, tip: 'The phone thinks it expired 56 minutes ago. The real time is 10:01.'}
           - {at: phone, note: 'Shows "code expired", never sends it to the server', tone: bad, tip: 'The app never gave the server a chance. The user is stuck.'}
           - {at: server, note: 'In fact 4 more minutes remain', tone: warn, tip: 'A valid code was wasted by a decision made on the client''s clock.'}
+          - {from: phone, to: server, label: 'Fix: send 4821 anyway', tone: good, tip: 'The app no longer judges expiry. It just passes the code on.'}
+          - {from: server, to: phone, label: 'Server clock 10:01 < 10:05: accepted', dashed: true, tone: good, tip: 'The server compares expires_at with its own synced clock, so the fast phone clock changes nothing.'}
       - type: quote
         body: 'Expiry is decided on the server''s clock. The client only displays.'
     aside:
@@ -76,6 +78,9 @@ slides:
     tldr: 'Compare expires_at with the current time from the server''s Clock. Allow a small grace for network delay and slight clock differences between issue and verification.'
     keywords: ['OTP verification', 'ClockInterface', 'grace period', 'leeway', 'countdown', 'Vue']
     blocks:
+      - type: text
+        body: |
+          Why a grace at all? The code is valid until 10:05:00. Rina taps Send at 10:04:59.8, but the request crawls over a weak mobile network and reaches the server at 10:05:00.4. With no grace, someone who was on time is told "expired". A few seconds of grace forgives that delay. The price: a stolen code lives that much longer, so keep it tiny in security code.
       - type: code
         lang: php
         file: 'src/Service/OtpVerifier.php'
@@ -216,7 +221,7 @@ slides:
     blocks:
       - type: text
         body: |
-          The client gives up after 3 seconds. But inside the server, the gateway call has a 10-second timeout with 3 retries on top: 40 seconds in the worst case. The client has gone, yet the server keeps working, and the work may even succeed in the end. The user never finds out what happened.
+          The client gives up after 3 seconds. But inside the server, the gateway call has a 10-second timeout with 3 retries on top: 40 seconds in the worst case. The client has gone, yet the server keeps working, and the work may even succeed in the end. The user never finds out what happened. The third trap is a call with no sensible timeout at all: if the gateway hangs, each PHP worker that calls it just waits. With 20 workers, 20 stuck requests are enough for the whole site to stop answering.
       - type: code
         lang: yaml
         file: 'config/packages/framework.yaml'
@@ -315,7 +320,12 @@ flashcards:
   - q: 'How do retries affect a timeout?'
     a: 'They multiply the worst-case total: (retries + 1) × timeout per attempt + delays. Work it out first and keep it inside the budget.'
     more: |
-      3 retries × 10 seconds = 40 seconds, while the client is on 3. Reduce the attempts and shorten each attempt's limit. And if you must retry a call that charges money, you need an idempotency key.
+      3 retries means 4 attempts × 10 seconds = 40 seconds, while the client is on 3. Reduce the attempts and shorten each attempt's limit. And if you must retry a call that charges money, you need an idempotency key.
+    ref: timeout-traps
+  - q: 'What happens to your PHP workers when an outbound call has no timeout?'
+    a: 'Each worker that calls the hung service waits. Once all workers are stuck, the site stops answering. Set `timeout` and `max_duration` on every call.'
+    more: |
+      A PHP-FPM pool has a fixed number of workers, say 20. If a gateway hangs, 20 requests that touch it are enough to occupy them all, and even pages that never call the gateway stop loading. A budget-sized max_duration turns "hang" into a fast error.
     ref: timeout-traps
 
 quiz:

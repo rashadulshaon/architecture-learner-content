@@ -42,6 +42,9 @@ slides:
           - {at: app, note: 'process crash বা deploy', tone: bad, tip: 'ঠিক এই মুহূর্তে অ্যাপ বন্ধ হলে দ্বিতীয় লেখাটা হয়ই না। কেউ কোনো error-ও দেখে না।'}
           - {from: app, to: mq, label: 'OrderPlaced পাঠানো হলো না', tone: bad, dashed: true}
           - {at: mq, note: 'গুদাম জানেই না অর্ডার আছে', tone: bad, tip: 'ক্রেতা টাকা দিয়েছে, মাল পাঠানো হবে না। কয়েক দিন পরে অভিযোগে ধরা পড়ে।'}
+      - type: text
+        body: |
+          বেরোনোর দুটো পথ। হয় দুই সিস্টেমকে একসাথে পাকা করানো (two-phase commit, পরের slide), যা প্রায়ই ঝামেলার তুলনায় লাভজনক নয়। নয়তো খবরটা অর্ডারের একই ডেটাবেস transaction-এ লিখে রাখা (outbox, তার পরের slide)।
     aside:
       - type: terms
         items:
@@ -101,14 +104,14 @@ slides:
       a: 'অংশগ্রহণকারীরা commit না rollback জানে না, তাই lock ধরে আটকে থাকে। সমন্বয়কারী ফিরে না আসা পর্যন্ত এই সারিগুলোতে অন্য কেউ কাজ করতে পারে না।'
 
   - slug: outbox-pattern
-    title: 'Outbox: খবরটাও একই transaction-এ লেখো'
+    title: 'Outbox: খবরটাও একই transaction-এ লিখুন'
     kind: howto
-    tldr: 'অর্ডারের সাথে একই transaction-এ outbox টেবিলে খবরটাও লেখো; আলাদা relay সেটা পরে queue-তে পাঠায়। এতে খবর হারায় না।'
+    tldr: 'অর্ডারের সাথে একই transaction-এ outbox টেবিলে খবরটাও লিখুন; আলাদা relay সেটা পরে queue-তে পাঠায়। এতে খবর হারায় না।'
     keywords: ['outbox pattern', 'transactional outbox', 'relay', 'Messenger', 'Scheduler', 'at-least-once']
     blocks:
       - type: text
         body: |
-          সমাধান: দুই জায়গায় না লিখে একই ডেটাবেসে লেখো। অর্ডার আর “এই খবরটা পাঠাতে হবে” একই transaction-এ যায়, তাই দুটো একসাথে পাকা হয় বা একসাথেই বাতিল। তারপর একটা আলাদা relay outbox পড়ে খবর broker-এ পাঠায় আর “পাঠানো হয়েছে” চিহ্ন দেয়। ডাকপিয়নের তালিকার মতো।
+          সমাধান: দুই জায়গায় না লিখে একই ডেটাবেসে লিখুন। অর্ডার আর “এই খবরটা পাঠাতে হবে” একই transaction-এ যায়, তাই দুটো একসাথে পাকা হয় বা একসাথেই বাতিল। তারপর একটা আলাদা relay outbox পড়ে খবর broker-এ পাঠায় আর “পাঠানো হয়েছে” চিহ্ন দেয়। ডাকপিয়নের তালিকার মতো।
       - type: code
         lang: php
         file: 'src/Service/OrderService.php'
@@ -165,7 +168,9 @@ slides:
       - type: pitfalls
         items:
           - 'outbox কখনো exactly-once দেয় না; সে খবর হারাতে দেয় না, কিন্তু দুইবার পাঠাতে পারে। তাই পরের slide-এর idempotent consumer অপরিহার্য।'
-          - 'পুরনো প্রকাশিত সারি মুছে ফেলার কাজ রাখো, নইলে outbox টেবিল ফুলে ওঠে।'
+          - 'পুরনো প্রকাশিত সারি মুছে ফেলার কাজ রাখুন, নইলে outbox টেবিল ফুলে ওঠে।'
+          - 'দাম হলো দেরি। relay ৫ সেকেন্ড পরপর চললে গুদাম ৫ সেকেন্ড পর্যন্ত দেরিতে জানতে পারে। অর্ডার বা ইমেইলে চলে, তবে যা সঙ্গে সঙ্গে সাড়া দেওয়ার দরকার, সেখানে ভুল।'
+          - 'একটাই ডেটাবেসে সব থাকলে, বা খবর হারালে ক্ষতি নেই (যেমন “পেজ দেখা” গোনা), তখন outbox লাগে না।'
       - type: tips
         items:
           - 'ছোট অ্যাপে Messenger-এর Doctrine transport একই connection-এ থাকলে dispatch নিজেই ওই transaction-এর অংশ হয়ে যায়; এভাবেই সরল outbox মেলে।'
@@ -179,30 +184,30 @@ slides:
   - slug: saga-compensation
     title: 'Saga: প্রতিটা ধাপের একটা “উল্টো ধাপ”'
     kind: concept
-    tldr: 'অনেক সার্ভিস জুড়ে কাজটা ছোট ধাপে ভাঙো; কোনো ধাপ ফেল করলে আগের সফল ধাপগুলো উল্টো ক্রমে compensation দিয়ে ফেরাও।'
+    tldr: 'অনেক সার্ভিস জুড়ে কাজটা ছোট ধাপে ভাঙুন; কোনো ধাপ ফেল করলে আগের সফল ধাপগুলো উল্টো ক্রমে compensation দিয়ে ফেরানো হয়।'
     keywords: ['saga', 'compensation', 'orchestration', 'choreography', 'rollback', 'ধাপ']
     blocks:
       - type: text
         body: |
-          অনলাইনে অর্ডারে চারটা সার্ভিস জড়িত: অর্ডার, পেমেন্ট, স্টক, কুরিয়ার। সবাই আলাদা, একসাথে rollback সম্ভব নয়। তাই প্রতিটা সার্ভিস নিজের transaction শেষ করে পরের ধাপকে খবর দেয়। কোথাও আটকে গেলে আগের ধাপগুলো নিজের **compensation** চালায়, যেমন টাকা ফেরত। ডেটাবেসের rollback-এর বদলে এটা “ক্ষতিপূরণের উল্টো কাজ”।
+          অনলাইনে অর্ডারে চারটা সার্ভিস জড়িত: অর্ডার, পেমেন্ট, স্টক, কুরিয়ার। সবাই আলাদা, একসাথে rollback সম্ভব নয়। তাই প্রতিটা সার্ভিস নিজের transaction শেষ করে পরের ধাপকে খবর দেয়। কোথাও আটকে গেলে আগের ধাপগুলো নিজের **compensation** চালায়, যেমন টাকা ফেরত। ডেটাবেসের rollback-এর বদলে এটা “ক্ষতিপূরণের উল্টো কাজ”। কে ফেল ধরে উল্টো কাজ শুরু করে, আর উল্টো কাজ নিজেই ফেল করলে কী হয়? পরের slide-এ দেখুন।
       - type: visual
         kind: table
         caption: 'চার ধাপের saga, আর প্রতিটার উল্টো ধাপ'
-        headers: ['ধাপ', 'কী করে', 'ফেল হলে উল্টো কাজ']
+        headers: ['ধাপ', 'কী করে', 'পরে ফেল হলে উল্টো কাজ']
         rows:
-          - cells: ['১. অর্ডার তৈরি', 'অর্ডার pending বানায়', 'অর্ডার cancelled করো']
+          - cells: ['১. অর্ডার তৈরি', 'অর্ডার pending বানায়', 'অর্ডার cancelled করুন']
             tip: 'প্রথম ধাপ সফল। পরে কোনো ধাপ ফেল করলে অর্ডার বাতিল হিসেবে চিহ্নিত হয়।'
           - cells: ['২. পেমেন্ট নেওয়া', 'ক্রেতার টাকা কাটে', 'টাকা ফেরত (refund)']
             tip: 'টাকা কাটা অন্য ডেটাবেসে পাকা হয়ে গেছে। মুছে ফেলা যায় না, তাই উল্টো একটা refund লেনদেন লাগে।'
-          - cells: ['৩. স্টক আটকানো', 'স্টকে hold রাখে', 'hold ছেড়ে দাও']
+          - cells: ['৩. স্টক আটকানো', 'স্টকে hold রাখে', 'hold ছেড়ে দিন']
             tip: 'কুরিয়ার ফেল হলে স্টক আবার খালি করে দিতে হয়।'
           - cells: ['৪. কুরিয়ার বুক', 'কুরিয়ারে পিকআপ বলে', 'পিকআপ বাতিল']
-            tip: 'শেষ ধাপ। ফেল করলে আগের তিনটা উল্টো ক্রমে (৩, ২, ১) ফেরানো হয়।'
+            tip: 'শেষ ধাপ। এটা নিজে ফেল করলে ফেরানোর মতো নিজের কিছু নেই, তাই saga আগের তিনটা উল্টো ক্রমে (৩, ২, ১) ফেরায়।'
       - type: quote
         body: 'Saga-য় rollback নেই; আছে প্রতিটা ধাপের নিজস্ব উল্টো কাজ।'
     aside:
       - type: remember
-        body: 'ফেল হলে পেছনের ধাপগুলো উল্টো ক্রমে ফেরাও: ৩, ২, ১।'
+        body: 'ফেল হলে পেছনের ধাপগুলো উল্টো ক্রমে ফেরানো হয়: ৩, ২, ১।'
       - type: terms
         items:
           - {term: 'Orchestration', meaning: 'এক সমন্বয়কারী ধাপগুলো ক্রমে চালায়।'}
@@ -214,6 +219,78 @@ slides:
     check:
       q: 'কুরিয়ার বুক ফেল করল। saga কোন কোন ধাপ কোন ক্রমে ফেরায়?'
       a: 'উল্টো ক্রমে: আগে স্টকের hold ছাড়ে (৩), তারপর টাকা refund করে (২), শেষে অর্ডার cancelled করে (১)।'
+
+  - slug: saga-orchestrator
+    title: 'উল্টো ধাপ চালু করা, আর উল্টো ধাপই ফেল করলে'
+    kind: howto
+    tldr: 'orchestrator শেষ হওয়া প্রতিটা ধাপ লিখে রাখে; ফেল হলে শেষ থেকে একটা একটা message-এ ধাপ ফেরায়। উল্টো ধাপ ফেল করলে সফল না হওয়া পর্যন্ত retry হয়, তাই তা বারবার চালানো নিরাপদ হতে হবে।'
+    keywords: ['saga orchestrator', 'compensation failure', 'Messenger retry', 'failure transport', 'idempotent compensation', 'উল্টো কাজ']
+    blocks:
+      - type: text
+        body: |
+          ফেল ধরে উল্টো কাজ শুরু করার একজন লোক লাগে। এখানে একটা ছোট orchestrator ধাপগুলো চালায় আর শেষ হওয়া প্রতিটা ধাপ `saga` টেবিলে লিখে রাখে। কোনো ধাপ ফেল করলে সে saga-কে “compensating” করে একটা `CompensateNext` message পাঠায়। handler সবচেয়ে সাম্প্রতিক শেষ-হওয়া ধাপটা ফেরায়, তারপর পরের message পাঠায়; তাই ক্রম থাকে ৩, ২, ১। কোনো উল্টো কাজ exception ছুড়লে (পেমেন্ট প্রদানকারী বন্ধ) Messenger সেটা retry করে, আর সফল না হওয়া পর্যন্ত পরেরটা নড়ে না।
+      - type: code
+        lang: php
+        file: 'src/Saga/PlaceOrderSaga.php'
+        variant: good
+        code: |
+          public function run(string $sagaId, PlaceOrder $cmd): void
+          {
+              foreach ($this->steps as $step) {       // অর্ডার, পেমেন্ট, স্টক, কুরিয়ার
+                  try {
+                      $step->execute($sagaId, $cmd);  // saga id-ই idempotency key
+                  } catch (\Throwable) {
+                      $this->sagas->markCompensating($sagaId);
+                      $this->bus->dispatch(new CompensateNext($sagaId));
+
+                      return;
+                  }
+                  $this->sagas->recordDone($sagaId, $step::class);
+              }
+              $this->sagas->markCompleted($sagaId);
+          }
+        marks:
+          - {line: 7, tip: 'কিছু ফেরানোর আগেই এটা লেখা হয়। অ্যাপ এখন মরলেও restart-এর পরে “compensating” দেখে ফেরানো চালিয়ে যায়।'}
+          - {line: 8, tip: 'উল্টো ধাপের শিকল শুরু করে: একটাই message, যা শুধু সাম্প্রতিক শেষ-হওয়া ধাপটা ফেরায়।'}
+      - type: code
+        lang: php
+        file: 'src/Saga/CompensateNextHandler.php'
+        variant: good
+        code: |
+          #[AsMessageHandler]
+          final readonly class CompensateNextHandler
+          {
+              public function __invoke(CompensateNext $m): void
+              {
+                  $stepClass = $this->sagas->lastDoneStep($m->sagaId);  // ৩, তারপর ২, তারপর ১
+                  if ($stepClass === null) {
+                      $this->sagas->markCancelled($m->sagaId);          // সব ফেরানো শেষ
+                      return;
+                  }
+
+                  // refund, hold ছাড়া... exception ছুড়লে Messenger message-টা retry করে
+                  $this->steps->get($stepClass)->compensate($m->sagaId);
+
+                  $this->sagas->removeDone($m->sagaId, $stepClass);
+                  $this->bus->dispatch(new CompensateNext($m->sagaId));
+              }
+          }
+        marks:
+          - {line: 12, tip: 'এটা দুইবার চলতে পারে (এর ঠিক পরে, removeDone-এর আগে crash হলে)। তাই refund-এ saga id-কে idempotency key ধরুন, যাতে টাকা একবারই ফেরত যায়।'}
+          - {line: 14, tip: 'উল্টো কাজ সফল হওয়ার পরেই ধাপটা তালিকা থেকে কাটা হয়, তাই ফেল হলেও কোনো ধাপ বাদ যায় না।'}
+      - type: quote
+        body: 'উল্টো কাজও ফেল করতে পারে: সফল না হওয়া পর্যন্ত retry করুন, আর তা বারবার চালানো নিরাপদ রাখুন।'
+    aside:
+      - type: pitfalls
+        items:
+          - '`retry_strategy` দিন (max_retries ৫, multiplier ৩: অপেক্ষা ১, ৩, ৯, ২৭, ৮১ সেকেন্ড) আর `failure_transport`; সেখানে message পড়লে মানুষকে জানান। আটকে থাকা refund অদেখা রাখা চলবে না।'
+          - 'উল্টো কাজ পুরো ফেরত নয়: পাঠানো ইমেইল ফেরানো যায় না, তাই সংশোধনী পাঠাতে হয়। আর saga চলার সময় অন্যরা আধা-করা অবস্থা দেখতে পায় (অর্ডার pending, স্টক hold)।'
+      - type: when
+        use: ['অনেক সার্ভিস জুড়ে একটা ব্যবসায়িক কাজ, প্রতিটার নিজের ডেটাবেস']
+        avoid: ['একটা ডেটাবেসের transaction-এই সবটা ধরে: সেটাই সরল, সেটাই করুন']
+    check:
+      q: 'পেমেন্ট প্রদানকারী বন্ধ থাকায় refund-এর উল্টো কাজ exception ছুড়ল। saga-র কী হয়?'
+      a: 'CompensateNext message বাড়তে থাকা অপেক্ষায় retry হয় আর saga “compensating”-এ থাকে, তাই পরের কোনো উল্টো কাজ চলে না। retry শেষ হলে message failure transport-এ যায় আর একজন মানুষ খবর পান।'
 
   - slug: idempotent-consumer
     title: 'দুইবার এলেও একবারই কাজ: idempotent consumer'
@@ -257,7 +334,7 @@ slides:
                           ['id' => $event->messageId, 'h' => 'award-points'],
                       );
                       if ($fresh === 0) {
-                          return;                   // আগেই হয়েছে, কিছু করো না
+                          return;                   // আগেই হয়েছে, কিছু করবেন না
                       }
                       $this->points->award($event->customerId, 50);
                   });
@@ -269,8 +346,8 @@ slides:
     aside:
       - type: pitfalls
         items:
-          - 'ইমেইলের মতো বাইরের কাজ transaction-এর ভেতরে দিলে ডুপ্লিকেট আটকানো কঠিন। সম্ভব হলে প্রদানকারীর idempotency key ব্যবহার করো।'
-          - 'message-id প্রতিটা ঘটনার জন্য একবার বানাও (outbox সারির id), প্রতিবার পাঠানোর সময় নয়।'
+          - 'ইমেইলের মতো বাইরের কাজ transaction-এর ভেতরে দিলে ডুপ্লিকেট আটকানো কঠিন। সম্ভব হলে প্রদানকারীর idempotency key ব্যবহার করুন।'
+          - 'message-id প্রতিটা ঘটনার জন্য একবার বানান (outbox সারির id), প্রতিবার পাঠানোর সময় নয়।'
       - type: refs
         items:
           - {to: 'payments/idempotency-keys', label: 'Idempotency key পূর্ণ নকশা'}
@@ -296,7 +373,7 @@ flashcards:
       সবাই “হ্যাঁ” বলার পরে সমন্বয়কারী না ফিরলে অংশগ্রহণকারীরা আটকে থাকে। তাই ধীর, ভঙ্গুর আর অনেক সিস্টেমে অসম্ভব। একই কোম্পানির দুটো XA-সমর্থিত ডেটাবেসে কখনো কাজে লাগে, কিন্তু আধুনিক সিস্টেমে প্রায় ব্যবহার হয় না।
     ref: two-phase-commit
   - q: 'Transactional outbox কী?'
-    a: 'ডেটার সাথে একই transaction-এ “পাঠাতে হবে” খবরটাও একটা outbox টেবিলে লেখা; আলাদা relay পরে সেটা queue-তে পাঠায়।'
+    a: 'ডেটার সাথে একই transaction-এ “পাঠাতে হবে” খবরটাও একটা outbox টেবিলে লেখা হয়; আলাদা relay পরে সেটা queue-তে পাঠায়।'
     more: |
       দুই সিস্টেমে লেখার বদলে একই ডেটাবেসে দুটো লেখা, তাই একসাথে পাকা বা একসাথে বাতিল। relay outbox থেকে পাঠায় আর `published_at` বসায়। খবর কখনো হারায় না।
     ref: outbox-pattern
@@ -320,10 +397,20 @@ flashcards:
     more: |
       সার্ভিস নিজের transaction আগেই COMMIT করেছে, তাই মুছে ফেলা যায় না। refund একটা নতুন লেনদেন, ইতিহাসে দুটোই থাকে। তাই compensation-ও সফল না-ও হতে পারে, তাকেও retry আর নজরদারি লাগে।
     ref: saga-compensation
-  - q: 'Idempotent consumer কীভাবে বানাবে?'
-    a: 'প্রতিটা message-id একটা unique টেবিলে বসাও; বসানো না গেলে (আগেই আছে) কিছু না করে ফিরে যাও।'
+  - q: 'Saga কীভাবে উল্টো ধাপ চালু করে?'
+    a: 'orchestrator ফেল-হওয়া ধাপ ধরে saga-কে “compensating” করে, তারপর একটা message পাঠায় যা সাম্প্রতিক শেষ-হওয়া ধাপ ফেরায়; এভাবে শেষ থেকে শুরু পর্যন্ত চলে।'
     more: |
-      `INSERT … ON CONFLICT DO NOTHING` দিয়ে affected rows দেখো: ১ মানে প্রথমবার, ০ মানে ডুপ্লিকেট। কাজটা ডেটাবেসের হলে একই transaction-এ করো, যাতে “করা হয়েছে” চিহ্ন আর কাজ একসাথে পাকা হয়।
+      orchestrator শেষ হওয়া প্রতিটা ধাপ saga টেবিলে লিখে রাখে। ফেল হলে একটা `CompensateNext` handler মাত্র একটা ধাপ ফেরায়, তারপর পরের message পাঠায়। অবস্থা লেখা থাকে বলে মাঝপথে crash হলেও ফেরানো সেখান থেকেই চলে।
+    ref: saga-orchestrator
+  - q: 'Saga-র উল্টো কাজ (compensation) নিজেই ফেল করলে কী হয়?'
+    a: 'সফল না হওয়া পর্যন্ত বাড়তে থাকা অপেক্ষায় retry হয়, retry শেষ হলে একজন মানুষকে জানানো হয়। তাই প্রতিটা উল্টো কাজ বারবার চালানো নিরাপদ (idempotent) হতে হয়।'
+    more: |
+      refund ফেল হলে চুপ করে থাকা যায় না, ক্রেতার টাকা আটকে থাকে। Messenger-এর `retry_strategy` message আবার চালায়, আর যা কখনো সফল হয় না তা `failure_transport`-এ জমা থাকে। saga id-কে idempotency key ধরলে refund দুইবার চললেও টাকা একবারই যায়।
+    ref: saga-orchestrator
+  - q: 'Idempotent consumer কীভাবে বানাবেন?'
+    a: 'প্রতিটা message-id একটা unique টেবিলে বসান; বসানো না গেলে (আগেই আছে) কিছু না করে ফিরে যান।'
+    more: |
+      `INSERT … ON CONFLICT DO NOTHING` দিয়ে affected rows দেখুন: ১ মানে প্রথমবার, ০ মানে ডুপ্লিকেট। কাজটা ডেটাবেসের হলে একই transaction-এ করুন, যাতে “করা হয়েছে” চিহ্ন আর কাজ একসাথে পাকা হয়।
     ref: idempotent-consumer
 
 quiz:
@@ -388,7 +475,7 @@ quiz:
         why: 'at-least-once আচরণ। এজন্যই consumer-কে idempotent হতে হয়।'
       - text: 'ডেটাবেস নিজে সারিটা মুছে দেবে'
         correct: false
-        why: 'ডেটাবেস কখনো এমন করে না, কেবল তোমার কোড বদলায়।'
+        why: 'ডেটাবেস কখনো এমন করে না, কেবল আপনার কোড বদলায়।'
     ref: outbox-pattern
   - q: 'অর্ডার, পেমেন্ট, স্টক, কুরিয়ার চার সার্ভিসের saga-য় কুরিয়ার ফেল করলে সঠিক পদক্ষেপ কোনটা?'
     hint: 'পেমেন্টের টাকা কাটা তো অন্য ডেটাবেসে পাকা।'
@@ -406,6 +493,22 @@ quiz:
         correct: false
         why: 'টাকা আর স্টক hold ফেরানো হয়নি, ক্রেতা টাকা হারাল, স্টক আটকে রইল।'
     ref: saga-compensation
+  - q: 'Saga উল্টো ধাপ চালানোর সময় refund-এর call timeout হলো। সঠিক আচরণ কোনটা?'
+    hint: 'ক্রেতার টাকা এখনো কাটা। saga কি এগিয়ে যেতে পারে?'
+    options:
+      - text: 'বাড়তে থাকা অপেক্ষায় refund retry করা, retry শেষ হলে একজন মানুষকে জানানো'
+        correct: true
+        why: 'refund পাওনা থেকেই যায়, তাই চেষ্টা চালিয়ে যেতে হয়, আর চুপচাপ ফেল হতে দেওয়া যাবে না।'
+      - text: 'saga id-কে refund-এর idempotency key ধরা, যাতে বারবার চেষ্টাতেও টাকা দুইবার না যায়'
+        correct: true
+        why: 'retry-তে refund আবার চলতে পারে; key থাকলে দ্বিতীয়বার চলা নিরীহ।'
+      - text: 'refund বাদ দিয়ে বাকি উল্টো ধাপগুলো চালিয়ে যাওয়া'
+        correct: false
+        why: 'অর্ডার cancelled হবে, কিন্তু ক্রেতার টাকা কাটাই থেকে যাবে।'
+      - text: 'প্রথম timeout-এই চুপচাপ ছেড়ে দেওয়া'
+        correct: false
+        why: 'timeout সাধারণত সাময়িক। retry আর খবর ছাড়া ছেড়ে দিলে ক্রেতার ক্ষতি কারও চোখে পড়ে না।'
+    ref: saga-orchestrator
   - q: 'নিচের কোডে `$fresh === 0` হলে কী বোঝায়?'
     lang: php
     code: |

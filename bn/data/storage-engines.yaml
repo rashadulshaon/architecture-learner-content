@@ -27,7 +27,7 @@ slides:
             icon: send
             tip: 'প্রতি সেকেন্ডে হাজার হাজার নতুন row আসে, পড়া তুলনায় কম। এখানে জমিয়ে-লেখা ইঞ্জিন (LSM) ভালো মানায়।'
             items:
-              - 'sensor, log, chat message, event'
+              - 'sensor, log, chat, event: ১,০০০ sensor প্রতি সেকেন্ডে মাপ পাঠালে সেকেন্ডে ১,০০০ লেখা'
               - 'নতুন ডেটা শুধু যোগ হয়'
               - 'লেখার গতিই আসল বাধা'
       - type: quote
@@ -53,7 +53,7 @@ slides:
         icon: book
         title: 'মূল খাতা বনাম কাউন্টারের প্যাড'
         body: |
-          B-tree মানে সাজানো মূল খাতা: প্রতিটা নতুন লেখার জন্য পাতা খুঁজে সঠিক লাইনে বসাতে হয়, তাই লেখা তুলনায় ধীর; কিন্তু যেকোনো খদ্দেরের হিসাব এক পাতায় মেলে। LSM মানে কাউন্টারের প্যাড: যা আসে পরপর লিখে যাও, দ্রুত। পরে সন্ধ্যায় সাজাতে হয়, আর কিছু খুঁজতে হলে প্যাড আর পুরনো পাতা দুটোই দেখতে হতে পারে।
+          B-tree মানে সাজানো মূল খাতা: প্রতিটা নতুন লেখার জন্য পাতা খুঁজে সঠিক লাইনে বসাতে হয়, তাই লেখা তুলনায় ধীর; কিন্তু যেকোনো খদ্দেরের হিসাব এক পাতায় মেলে। LSM মানে কাউন্টারের প্যাড: যা আসে পরপর লিখে যান, দ্রুত। পরে সন্ধ্যায় সাজাতে হয়, আর কিছু খুঁজতে হলে প্যাড আর পুরনো পাতা দুটোই দেখতে হতে পারে।
       - type: visual
         kind: compare
         caption: 'একই কাজ, দুই ইঞ্জিনে'
@@ -66,7 +66,7 @@ slides:
               - 'লেখা: ঠিক পাতা খুঁজে সেখানে বসানো'
               - 'পড়া: গাছ বেয়ে নেমে সরাসরি পাওয়া'
               - 'ছড়ানো জায়গায় লেখা, তাই ডিস্কে random write'
-              - 'পাতা ভরে গেলে ভেঙে দুই ভাগ'
+              - 'পাতা ভরে গেলে ভেঙে দুই ভাগ, বাড়তি লেখা লাগে'
           - title: 'LSM-tree'
             tone: good
             icon: archive
@@ -80,7 +80,7 @@ slides:
         title: 'এই বিনিময়ের তিন নাম'
         style: dot
         items:
-          - 'Write amplification: একটা লেখার জন্য ডিস্কে আসলে কতবার লেখা হয়।'
+          - 'Write amplification: একটা লেখার জন্য ডিস্কে আসলে কতবার লেখা হয়। ১০০ বাইট বদলাতে B-tree পুরো পাতা (৮-১৬ KB) লেখে; LSM প্রতি compaction-এ আবার।'
           - 'Read amplification: একটা মান পেতে কতগুলো জায়গা দেখতে হয়।'
           - 'Space amplification: সত্যিকারের ডেটার চেয়ে কতটা বেশি জায়গা লাগে।'
     aside:
@@ -89,7 +89,7 @@ slides:
       - type: tips
         items:
           - 'LSM-এও পড়া দ্রুত করা যায় (Bloom filter দিয়ে "এই ফাইলে নেই" আগেই জেনে), তবে B-tree-র মতো সরল নয়।'
-          - 'সংখ্যা বড় কথা নয়, কাজের ধরনই বড়: নিজের access pattern দেখে বাছো।'
+          - 'সংখ্যা বড় কথা নয়, কাজের ধরনই বড়: নিজের access pattern দেখে বাছুন।'
     check:
       q: 'লেখা-প্রধান কাজে LSM-tree কেন সাধারণত দ্রুত লেখে?'
       a: 'কারণ নতুন লেখা মেমোরিতে জমে আর ডিস্কে শেষে যোগ হয়, ক্রমিক লেখা। B-tree-র মতো ছড়ানো পাতা খুঁজে বদলানোর দরকার হয় না।'
@@ -119,8 +119,11 @@ slides:
           - {from: app, to: mem, label: 'একই লেখা মেমোরির memtable-এও বসে'}
           - {from: mem, to: sst, label: 'memtable ভরলে সাজানো অবস্থায় SSTable ফাইল হয়ে নামে'}
           - {from: sst, to: comp, label: 'পরে compaction অনেক ফাইল মিলিয়ে একটা পরিষ্কার ফাইল বানায়', tone: good}
+      - type: text
+        body: |
+          ধরুন memtable-এ শেষ ১০,০০০ লেখা শুধু RAM-এ আছে, আর হঠাৎ বিদ্যুৎ গেল। WAL না থাকলে সব হারায়। WAL থাকলে সার্ভার চালু হয়ে লগ পড়ে ১০,০০০টাই ফিরিয়ে আনে।
       - type: quote
-        body: 'আগে WAL-এ লেখো, তারপর বাকি কাজ। ক্র্যাশের পরে WAL পড়েই ডেটাবেস ফিরে আসে।'
+        body: 'আগে WAL-এ লিখুন, তারপর বাকি কাজ। ক্র্যাশের পরে WAL পড়েই ডেটাবেস ফিরে আসে।'
     aside:
       - type: terms
         items:
@@ -129,7 +132,7 @@ slides:
           - {term: 'Compaction', meaning: 'অনেক ফাইল মিলিয়ে পুরনো ও মোছা ডেটা বাদ দিয়ে নতুন ফাইল বানানো।'}
       - type: story
         title: 'WAL B-tree-তেও আছে'
-        body: 'WAL শুধু LSM-এর জিনিস নয়। PostgreSQL আর MySQL (redo log নামে) প্রতিটা বদল আগে WAL-এ লেখে, তারপর পাতায়। replication-ও এই WAL ধরেই চলে।'
+        body: 'WAL শুধু LSM-এর জিনিস নয়। PostgreSQL প্রতিটা বদল পাতার আগে WAL-এ লেখে, MySQL InnoDB একই কাজ করে redo log দিয়ে। PostgreSQL-এর replication এই WAL ধরে চলে; MySQL চলে আলাদা binary log ধরে।'
     check:
       q: 'LSM-tree-তে লেখা মেমোরিতে জমা হয়, তবু সার্ভার ক্র্যাশ করলে ডেটা হারায় না কেন?'
       a: 'কারণ প্রতিটা লেখা আগে ডিস্কের WAL-এ শেষে যোগ হয়। ক্র্যাশের পরে ডেটাবেস WAL পড়ে memtable-এর ডেটা আবার বানিয়ে নেয়।'
@@ -159,9 +162,9 @@ slides:
         title: 'সিদ্ধান্তের নিয়ম'
         style: check
         items:
-          - 'সাধারণ ব্যবসায়িক অ্যাপ (অর্ডার, ব্যবহারকারী, payment): B-tree, মানে PostgreSQL বা MySQL।'
-          - 'বিশাল ক্রমাগত লেখা, query জানা (log, sensor, chat): LSM-ভিত্তিক ডেটাবেস ভাবো।'
-          - 'অনিশ্চিত থাকলে B-tree। আগে মাপো, তারপর বদলাও।'
+          - 'সাধারণ ব্যবসায়িক অ্যাপ (অর্ডার, ব্যবহারকারী, payment; সেকেন্ডে কয়েক দশ থেকে কয়েকশো লেখা): B-tree, মানে PostgreSQL বা MySQL।'
+          - 'বিশাল ক্রমাগত লেখা, query জানা (log, sensor, chat; সেকেন্ডে কয়েক হাজার থেকে বেশি): LSM-ভিত্তিক ডেটাবেস ভাবুন।'
+          - 'অনিশ্চিত থাকলে B-tree। আগে মাপুন, তারপর বদলান।'
     aside:
       - type: when
         use:
@@ -185,7 +188,7 @@ slides:
     blocks:
       - type: text
         body: |
-          INSERT ধীর লাগলে অনেকে `fsync = off` লিখে ফেলে, কারণ ডিস্কে জোর করে লেখা বন্ধ হলে সংখ্যা দারুণ দেখায়। কিন্তু তখন বিদ্যুৎ গেলে ডেটাবেসের ফাইলই অসম্পূর্ণ লেখা নিয়ে নষ্ট হতে পারে। `synchronous_commit` আলাদা: এটা বন্ধ করলে শুধু শেষের কয়েক মিলিসেকেন্ডের commit হারাতে পারে, ফাইল নষ্ট হয় না।
+          INSERT ধীর লাগলে অনেকে `fsync = off` লিখে ফেলে, কারণ ডিস্কে জোর করে লেখা বন্ধ হলে সংখ্যা দারুণ দেখায়। কিন্তু তখন বিদ্যুৎ গেলে ডেটাবেসের ফাইলই অসম্পূর্ণ লেখা নিয়ে নষ্ট হতে পারে। `synchronous_commit` আলাদা: এটা বন্ধ করলে শুধু শেষের এক সেকেন্ডেরও কম সময়ের commit হারাতে পারে (ডিফল্টে সর্বোচ্চ প্রায় ০.৬ সেকেন্ড), ফাইল নষ্ট হয় না।
       - type: code
         lang: ini
         file: 'postgresql.conf'
@@ -215,7 +218,7 @@ slides:
           - {line: 5, tip: 'SET LOCAL শুধু বর্তমান transaction-এ খাটে। বাকি অ্যাপে আগের নিরাপদ নিয়মই থাকে। শুধু ক্লিক-লগের মতো হারালে ক্ষতি নেই এমন ডেটার জন্য।'}
           - {line: 7, tip: 'একটা transaction-এ অনেক row লেখা, প্রতি row-এর আলাদা commit-এর চেয়ে অনেক সস্তা।'}
       - type: quote
-        body: 'টাকার ডেটায় durability বন্ধ কোরো না। লেখা ধীর হলে আগে batch করো, তারপর ঠিক করো।'
+        body: 'টাকার ডেটায় durability বন্ধ করবেন না। লেখা ধীর হলে আগে batch করুন, তারপর ঠিক করুন।'
     aside:
       - type: pitfalls
         items:
@@ -226,7 +229,61 @@ slides:
           - {to: 'concurrency/acid', label: 'Durability ACID-এর D'}
     check:
       q: 'fsync = off আর synchronous_commit = off-এর মধ্যে বড় পার্থক্য কী?'
-      a: 'fsync বন্ধ করলে ক্র্যাশে ডেটাবেসই নষ্ট হতে পারে। synchronous_commit বন্ধ করলে ফাইল ঠিক থাকে, শুধু শেষ কয়েক মিলিসেকেন্ডের commit হারাতে পারে।'
+      a: 'fsync বন্ধ করলে ক্র্যাশে ডেটাবেসই নষ্ট হতে পারে। synchronous_commit বন্ধ করলে ফাইল ঠিক থাকে, শুধু শেষ এক সেকেন্ডেরও কম সময়ের commit হারাতে পারে।'
+
+  - slug: batch-before-tuning
+    title: 'ধীর INSERT: আগে batch, তারপর tuning'
+    kind: pitfall
+    tldr: 'প্রতিটা commit একবার ডিস্ক flush-এর জন্য অপেক্ষা করে। ১,০০০ আলাদা commit মানে ১,০০০ বার অপেক্ষা; ১,০০০ row-র এক transaction মানে একবার, আর কোনো ঝুঁকি নেই।'
+    keywords: ['batch insert', 'transaction', 'commit', 'fsync cost', 'array_chunk', 'slow inserts', 'ধীর INSERT']
+    blocks:
+      - type: text
+        body: |
+          commit ততক্ষণ ফেরে না, যতক্ষণ তার WAL রেকর্ড ডিস্কে flush না হয়: দোকানি রোজনামচায় লাইন না লিখে যেমন রসিদ দেন না। সাধারণ ক্লাউড ডিস্কে একটা flush-এ কয়েক মিলিসেকেন্ড লাগে; ধরা যাক ৫ ms। ১,০০০টা ক্লিক row একটা একটা করে সেভ করলে ১,০০০ বার flush, প্রায় ৫ সেকেন্ড। এক transaction-এ সেভ করলে ১ বার flush, প্রায় ৫ ms, সঙ্গে insert-গুলোর নিজের সময়।
+      - type: visual
+        kind: bars
+        caption: 'একটা flush ৫ ms হলে ১,০০০ row সেভ করতে কত সময় লাগে'
+        items:
+          - {label: '১,০০০ commit', value: 5000, display: 'প্রায় ৫ সেকেন্ড', tone: bad, tip: 'Autocommit: প্রতিটা INSERT নিজেই একটা transaction, তাই প্রতিটা নিজের flush-এর অপেক্ষায়। ১,০০০ x ৫ ms।'}
+          - {label: '১ transaction', value: 60, display: 'প্রায় ০.০৬ সেকেন্ড', tone: good, tip: 'একবার flush (৫ ms) আর ১,০০০ insert-এর নিজের সময়। প্রায় ৮০ গুণ দ্রুত, আর durability ছাড়তে হয়নি।'}
+      - type: code
+        lang: php
+        file: 'src/Service/ClickLogger.php'
+        variant: bad
+        code: |
+          foreach ($events as $e) {
+              // autocommit: প্রতিটা insert নিজেই একটা transaction, নিজেরই flush
+              $this->connection->insert('click_event', ['page' => $e['page'], 'at' => $e['at']]);
+          }
+        marks:
+          - {line: 2, tip: 'লুপটা কোনো transaction-এ মোড়া নেই, তাই PostgreSQL প্রতিটা row-র পরেই commit করে।'}
+      - type: code
+        lang: php
+        file: 'src/Service/ClickLogger.php'
+        variant: good
+        code: |
+          // প্রতি chunk-এ এক transaction: প্রতি ১,০০০ row-তে একবার flush
+          foreach (array_chunk($events, 1000) as $chunk) {
+              $this->connection->transactional(function (Connection $c) use ($chunk): void {
+                  foreach ($chunk as $e) {
+                      $c->insert('click_event', ['page' => $e['page'], 'at' => $e['at']]);
+                  }
+              });
+          }
+        marks:
+          - {line: 2, tip: 'একটা বিশাল transaction নয়, chunk: বিশাল transaction অনেকক্ষণ lock ধরে রাখে, আর একটা খারাপ row সবকিছু rollback করে দেয়।'}
+    aside:
+      - type: tips
+        items:
+          - 'Doctrine-এর `$em->flush()` সব অপেক্ষমান বদল আগে থেকেই এক transaction-এ চালায়। batch-প্রতি একবার ডাকুন, entity-প্রতি নয়।'
+      - type: when
+        use:
+          - 'অনেক row একসাথে আসে: import, event batch, queue consumer।'
+        avoid:
+          - 'আলাদা অনুরোধে একটা করে row এলে batch চলে না। আগে queue-তে জমান, বা হারানো-চলে এমন ডেটায় synchronous_commit = off।'
+    check:
+      q: '১,০০০ আলাদা commit কেন ১,০০০ row-র এক transaction-এর চেয়ে অনেক ধীর?'
+      a: 'প্রতিটা commit নিজের ডিস্ক flush-এর অপেক্ষা করে। ১,০০০ commit মানে ১,০০০ বার অপেক্ষা (৫ ms করে প্রায় ৫ সেকেন্ড); এক transaction একবারই অপেক্ষা করে।'
 
 flashcards:
   - q: 'Storage engine কী?'
@@ -264,6 +321,11 @@ flashcards:
     more: |
       সাধারণ ব্যবসায়িক অ্যাপে B-tree-ভিত্তিক relational ডেটাবেস default। বিশাল ক্রমাগত লেখা আর জানা query থাকলে (log, sensor, chat) LSM-ভিত্তিক ডেটাবেস ভাবা যায়।
     ref: which-database-which-engine
+  - q: '১,০০০ row একটা একটা করে commit করা কেন ধীর, আর প্রথম সমাধান কী?'
+    a: 'প্রতিটা commit নিজের ডিস্ক flush-এর অপেক্ষা করে (৫ ms করে মোট প্রায় ৫ সেকেন্ড)। row-গুলো প্রায় ১,০০০টার chunk করে এক transaction-এ লিখুন।'
+    more: |
+      batch করলে durability পুরোটাই থাকে: transaction commit হলে ডেটা নিরাপদে ডিস্কে। batch করার পরেও ধীর প্রমাণিত হলে তবেই synchronous_commit = off ভাবুন, আর শুধু হারালে ক্ষতি নেই এমন ডেটায়।
+    ref: batch-before-tuning
 
 quiz:
   - q: 'একটা IoT কোম্পানির ১০ লাখ sensor প্রতি সেকেন্ডে মাপ পাঠায়। পড়া হয় কম, শুধু সময়ের জানালা ধরে। কোন ইঞ্জিন-পরিবার সবচেয়ে ভালো মানায়?'
@@ -321,6 +383,22 @@ quiz:
         correct: false
         why: 'ধীর-দ্রুতের প্রশ্ন নয়; প্রশ্ন হলো ডেটা হারানোর ঝুঁকি।'
     ref: durability-switch-pitfall
+  - q: 'একটা queue consumer ২০,০০০ audit row একটা একটা করে commit করে। flush ৫ ms হলে লাগে ১০০ সেকেন্ড। নাদিয়া আগে কী চেষ্টা করবেন?'
+    hint: 'কোন সমাধানে ডেটার ঝুঁকি ছাড়াই দ্রুত হয়?'
+    options:
+      - text: 'postgresql.conf-এ fsync = off করা'
+        correct: false
+        why: 'দ্রুত হয়, কিন্তু বিদ্যুৎ গেলে পুরো ডেটাবেস নষ্ট হতে পারে। একটা insert লুপের জন্য দামটা অনেক বেশি।'
+      - text: 'প্রায় ১,০০০টার chunk করে, প্রতি chunk-এ এক transaction-এ insert করা'
+        correct: true
+        why: '২০,০০০ flush হয়ে যায় ২০টা, মানে অপেক্ষা ১০০ সেকেন্ডের বদলে প্রায় ০.১ সেকেন্ড, আর commit হওয়া প্রতিটা row নিরাপদে ডিস্কে।'
+      - text: 'পুরো সার্ভারে synchronous_commit = off করা'
+        correct: false
+        why: 'কাজ হয়, কিন্তু ওই সার্ভারের প্রতিটা payment-ও শেষ commit হারাতে পারে। আগে batch; আর এই সেটিং বড়জোর একটা transaction-এ।'
+      - text: 'আরও RAM কেনা'
+        correct: false
+        why: 'অপেক্ষাটা প্রতি commit-এর ডিস্ক flush-এর জন্য, মেমোরির জন্য নয়।'
+    ref: batch-before-tuning
   - q: 'WAL ও ইঞ্জিন নিয়ে নিচের কোন কথাগুলো সত্য?'
     hint: 'WAL কী আগে লেখে আর কেন?'
     options:
@@ -337,19 +415,19 @@ quiz:
         correct: false
         why: 'compaction না হলে ফাইল জমে, আর পড়ার সময় অনেক ফাইল দেখতে হয়।'
     ref: wal-memtable-compaction
-  - q: 'একটা ছোট ই-কমার্স স্টার্টআপ বলছে, "Cassandra লেখায় দ্রুত, তাই অর্ডার ডেটাবেস ওটাতেই করি।" কী বলবে?'
+  - q: 'একটা ছোট ই-কমার্স স্টার্টআপ বলছে, "Cassandra লেখায় দ্রুত, তাই অর্ডার ডেটাবেস ওটাতেই করি।" কী বলবেন?'
     hint: 'অর্ডারে কী কী প্রশ্ন আর transaction লাগে?'
     options:
       - text: 'ঠিক, লেখা দ্রুত হলেই সব ঠিক'
         correct: false
         why: 'গতির জন্য join, transaction আর যেকোনো query ছেড়ে দেওয়া খারাপ বিনিময়।'
-      - text: 'PostgreSQL দিয়ে শুরু করো; ছোট অ্যাপের লেখার চাপ এক সার্ভারেই ধরবে, আর জড়ানো ডেটার জন্য B-tree সহজ'
+      - text: 'PostgreSQL দিয়ে শুরু করুন; ছোট অ্যাপের লেখার চাপ এক সার্ভারেই ধরবে, আর জড়ানো ডেটার জন্য B-tree সহজ'
         correct: true
         why: 'অর্ডারে join আর transaction লাগে। মাপা সমস্যা দেখা দিলে তখন বদলানো যাবে।'
-      - text: 'MongoDB নাও, কারণ সেটা আরও জনপ্রিয়'
+      - text: 'MongoDB নিন, কারণ সেটা আরও জনপ্রিয়'
         correct: false
         why: 'জনপ্রিয়তা সিদ্ধান্তের মাপকাঠি নয়, আর সমস্যাটা জড়ানো ডেটার।'
-      - text: 'SQLite নাও, কারণ ছোট অ্যাপ'
+      - text: 'SQLite নিন, কারণ ছোট অ্যাপ'
         correct: false
         why: 'SQLite এক ফাইলের ডেটাবেস, একাধিক সার্ভারের ওয়েব অ্যাপে মূল ডেটাবেস হিসেবে মানায় না।'
     ref: which-database-which-engine

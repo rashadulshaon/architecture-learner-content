@@ -119,15 +119,20 @@ slides:
               });
           }
         marks:
-          - {line: 4, tip: 'Locks the payment row. Another refund on the same payment waits until this transaction ends.'}
+          - {line: 3, tip: 'Locks the payment row. Another refund on the same payment waits until this transaction ends.'}
           - {line: 6, tip: 'If the client retries, the earlier Refund with the same key is returned; no second payout.'}
-          - {line: 10, tip: 'Remaining = original − sum of all earlier refunds. Calculated inside the lock, so the number is true right now.'}
-          - {line: 16, tip: 'The gateway call happens outside the transaction, via the outbox. Handling an unknown result from that call is a separate topic.'}
+          - {line: 9, tip: 'Remaining = original − sum of all earlier refunds. Calculated inside the lock, so the number is true right now.'}
+          - {line: 15, tip: 'The gateway call happens outside the transaction, via the outbox. Handling an unknown result from that call is a separate topic.'}
     aside:
       - type: tips
         items:
           - 'Always store money as integers (minor units), never floats. Keep a Refund amount positive; the type (Refund) already says it goes back.'
           - 'Add a unique constraint on `(payment_id, idem_key)` so the database stops a duplicate even if the lock is missed.'
+      - type: terms
+        items:
+          - {term: 'Row lock', meaning: 'While one transaction holds a payment''s lock, others who want it wait in line, like one person in a phone booth.'}
+          - {term: 'Idempotency key', meaning: 'A unique tag sent with a request, so the server can tell a retry from a new request.'}
+          - {term: 'Outbox', meaning: 'A table where "call the gateway" is written in the same transaction; a worker sends it afterwards.'}
       - type: refs
         items:
           - {to: 'payments/idempotency-keys', label: 'Idempotency keys'}
@@ -178,12 +183,12 @@ slides:
   - slug: hardcoded-fee
     title: 'Don''t hard-code the fee: compute it from rules'
     kind: pitfall
-    tldr: 'Hard-coding a refund fee in an `if` means a deploy for every rule change and float errors; keep the rules separate, calculate in integers, and record the fee as its own record.'
-    keywords: ['refund fee', 'rule-driven', 'ExpressionLanguage', 'basis points', 'restocking fee', 'config rules']
+    tldr: 'A hard-coded refund fee needs a deploy for every rule change and drifts on floats; keep the rules in a table staff can edit, calculate in integers, and record the fee separately.'
+    keywords: ['refund fee', 'rule-driven', 'ExpressionLanguage', 'basis points', 'restocking fee', 'fee rules table']
     blocks:
       - type: text
         body: |
-          "Returns after 7 days lose 10%." A rule like this changes a few times a year. Write `if ($days > 7) $fee = $amount * 0.1;` in code and every change needs a deploy, while floats make the cents drift. Keep the rules in config and calculate in integers (basis points, where 10% = 1000).
+          "Returns after 7 days lose 10%." A rule like this changes a few times a year. Write `if ($days > 7) $fee = $amount * 0.1;` in code and every change is a code change plus a deploy, while floats make the cents drift. Keep the rules in a database table instead, and calculate in integers (basis points, where 10% = 1000). Putting them in `services.yaml` is only half a fix: that file ships with the code, so changing it still means a deploy.
       - type: code
         lang: php
         file: 'src/Refund/RefundFeePolicy.php'
@@ -192,51 +197,63 @@ slides:
           final readonly class RefundFeePolicy
           {
               public function __construct(
-                  #[Autowire('%refund.fee_rules%')] private array $rules,
+                  private RefundFeeRuleRepository $rules,   // reads the refund_fee_rule table
                   private ExpressionLanguage $expr,
               ) {}
 
               /** @param array<string, mixed> $facts e.g. ['days' => 9, 'reason' => 'changed_mind'] */
-              public function feeFor(int $amount, array $facts): int
+              public function feeFor(int $amount, array $facts): Fee
               {
-                  foreach ($this->rules as $rule) {
-                      if ($this->expr->evaluate($rule['when'], $facts)) {
-                          return intdiv($amount * $rule['bp'], 10_000);   // in integers
+                  foreach ($this->rules->activeInOrder() as $rule) {
+                      if ($this->expr->evaluate($rule->when, $facts)) {
+                          return new Fee(intdiv($amount * $rule->bp, 10_000), $rule->name);
                       }
                   }
 
-                  return 0;
+                  return new Fee(0, 'no-fee');
               }
           }
         marks:
-          - {line: 4, tip: 'The list of rules comes from config, not from code. To change a rule, change only the config.'}
+          - {line: 4, tip: 'The rules come from a table, not from code or a config file. Changing a rule is one edited row.'}
           - {line: 12, tip: '`when` is an expression string such as "days > 7". It is run against the facts to see whether it matches.'}
-          - {line: 13, tip: 'Basis points: 1000 means 10%. Integer division, so there is no float noise.'}
+          - {line: 13, tip: 'Basis points: 1000 means 10%. Integer division, so there is no float noise. The rule''s name travels with the fee.'}
       - type: code
-        lang: yaml
-        file: 'config/services.yaml'
+        lang: sql
+        file: 'refund_fee_rule (created by a Doctrine migration)'
         variant: good
         code: |
-          parameters:
-              refund.fee_rules:                     # the first match applies
-                  - {when: 'reason == "defective"', bp: 0}
-                  - {when: 'days > 7',              bp: 1000}
-                  - {when: 'reason == "changed_mind"', bp: 500}
+          CREATE TABLE refund_fee_rule (
+              id        SERIAL PRIMARY KEY,
+              position  INT NOT NULL,           -- the first match wins
+              name      VARCHAR(40) NOT NULL,   -- stored on the fee record
+              when_expr VARCHAR(200) NOT NULL,
+              bp        INT NOT NULL CHECK (bp BETWEEN 0 AND 10000),
+              active    BOOLEAN NOT NULL DEFAULT TRUE
+          );
+
+          INSERT INTO refund_fee_rule (position, name, when_expr, bp) VALUES
+              (1, 'defective',    'reason == "defective"',     0),
+              (2, 'late-return',  'days > 7',               1000),
+              (3, 'changed-mind', 'reason == "changed_mind"', 500);
         marks:
-          - {line: 3, tip: 'No fee for a defective item. Because this rule comes first, it beats the rules below it.'}
+          - {line: 3, tip: 'Rules are tried in this order. Defective items come first, so they pay no fee even after 7 days.'}
+          - {line: 11, tip: 'To move the late-return fee from 10% to 15%, update this one row. No code, no deploy.'}
       - type: quote
         body: 'A fee never changes the original amount. The Refund record states the full amount, and the fee is a separate, linked record.'
     aside:
       - type: tips
         items:
+          - 'Price: an editable rule is live logic. Let only trusted staff edit it, validate each expression when it is saved, and log who changed what.'
+          - 'When not to: if rules change once a year, a reviewed config file is simpler and safer, but editing it is still a deploy.'
           - 'Show the user first: "Refund 1000, fee 100, you receive 900".'
           - 'Store which rule applied, by name, on the fee record. It will help in a later dispute.'
       - type: refs
         items:
           - {to: 'config/rules-engines', label: 'Rules engines and ExpressionLanguage'}
     check:
-      q: 'What do you gain by keeping fee rules in config and calculating in integers (bp)?'
-      a: 'Rule changes need no deploy, and there is no float noise. And because the fee is a separate record, history keeps which rule took how much.'
+      q: 'Why does moving the fee rules into `services.yaml` still need a deploy, and where can they live so it doesn''t?'
+      a: '`services.yaml` ships with the code, so any change is a deploy. In a database table that staff can edit, a rule change is one updated row.'
+
 
 flashcards:
   - q: 'Why is it wrong to change the original payment amount for a refund?'
@@ -274,10 +291,10 @@ flashcards:
     more: |
       In online shopping you authorize before the goods ship and capture when they ship. With partial shipments, each shipment captures exactly its share, and any share that will never ship is voided. All captures and voids together can never exceed the authorization.
     ref: partial-capture-shipment
-  - q: 'Why keep refund fee rules in config rather than in an `if` in code?'
-    a: 'Rules change often; config lets you change them without a deploy. Calculating in integers (basis points) also removes float errors.'
+  - q: 'Why keep refund fee rules in a table rather than in an `if` in code?'
+    a: 'Rules change often; a table staff can edit changes them without a deploy. Calculating in integers (basis points) also removes float errors.'
     more: |
-      With Symfony ExpressionLanguage you can write conditions like `days > 7` in config, and the first matching rule applies. The fee is a separate record too, so the original amount stays intact.
+      With Symfony ExpressionLanguage you can store conditions like `days > 7` in a row, and the first matching rule applies. `services.yaml` isn't enough: it ships with the code, so a change is still a deploy. The price is an edit screen, validation of each expression and a change log. The fee is a separate record too, so the original amount stays intact.
     ref: hardcoded-fee
 
 quiz:
@@ -356,9 +373,9 @@ quiz:
   - q: 'Which practices keep fee rules safe and easy to change?'
     hint: 'When a rule changes, how much code and arithmetic must you touch?'
     options:
-      - text: 'Keep the list of rules in config, such as a `days > 7` condition and a bp value'
+      - text: 'Keep the rules in a database table staff can edit, such as a `days > 7` condition and a bp value'
         correct: true
-        why: 'Rules can be changed without a deploy.'
+        why: 'A rule change is one updated row, with no deploy.'
       - text: 'Calculate in integers: `intdiv($amount * $bp, 10_000)`'
         correct: true
         why: 'No float noise, and the result is the same every time.'
@@ -368,4 +385,7 @@ quiz:
       - text: 'Hard-code `$fee = $amount * 0.1` in the code'
         correct: false
         why: 'Floats make the cents drift, and changing a rule means changing code.'
+      - text: 'List the rules in `services.yaml`, so changing them needs no deploy'
+        correct: false
+        why: 'That file ships with the code, so editing it is a deploy. Only a table (or similar store) changes at runtime.'
     ref: hardcoded-fee

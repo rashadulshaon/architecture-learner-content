@@ -79,9 +79,27 @@ slides:
             tip: 'The isolation level decides how separate concurrent transactions stay. The default level does not prevent every kind of mix-up.'
           - cells: ['D: Durability', 'Once committed, it is never lost', 'Even if the power fails after "success", the money is there']
             tip: 'Before answering the commit, the database writes the change to a log on disk (the WAL), so after a crash it can bring the change back.'
+      - type: code
+        lang: sql
+        file: 'a Doctrine migration (SQL)'
+        variant: good
+        code: |
+          -- the rule, written down once: the database now guards it on every write
+          ALTER TABLE wallet
+              ADD CONSTRAINT wallet_balance_not_negative CHECK (balance >= 0);
+
+          -- balance is 500 and a buggy debit tries to take 600
+          UPDATE wallet SET balance = balance - 600 WHERE id = 1;
+          -- ERROR: violates check constraint; the whole transaction rolls back
+        marks:
+          - {line: 3, tip: 'Without this line a buggy debit would commit a balance of -100 and nothing would stop it. A CHECK covers a rule about one row; rules across many rows stay in your code.'}
+          - {line: 7, tip: 'The database refuses the state itself, and with Atomicity the transaction''s other steps are undone too.'}
       - type: quote
         body: 'A transaction means: everything happens, or nothing does.'
     aside:
+      - type: terms
+        items:
+          - {term: 'Constraint', meaning: 'A rule you declare on a table, such as "balance >= 0", which the database checks on every write.'}
       - type: remember
         body: 'A = all or nothing. C = rules stay intact. I = I never see others'' half-done work. D = committed means committed.'
       - type: tips
@@ -119,15 +137,18 @@ slides:
               public function send(int $fromId, int $toId, int $amount): Transfer
               {
                   return $this->em->wrapInTransaction(function () use ($fromId, $toId, $amount) {
-                      $from = $this->em->find(Wallet::class, $fromId, LockMode::PESSIMISTIC_WRITE)
-                          ?? throw new WalletNotFound($fromId);
-                      $to = $this->em->find(Wallet::class, $toId, LockMode::PESSIMISTIC_WRITE)
-                          ?? throw new WalletNotFound($toId);
+                      $ids = [$fromId, $toId];
+                      sort($ids);                 // always lock the smaller id first
+                      $wallets = [];
+                      foreach ($ids as $id) {
+                          $wallets[$id] = $this->em->find(Wallet::class, $id, LockMode::PESSIMISTIC_WRITE)
+                              ?? throw new WalletNotFound($id);
+                      }
 
-                      $from->withdraw($amount);   // throws if the balance is too low
-                      $to->deposit($amount);
+                      $wallets[$fromId]->withdraw($amount);   // throws if the balance is too low
+                      $wallets[$toId]->deposit($amount);
 
-                      $transfer = new Transfer($from, $to, $amount);
+                      $transfer = new Transfer($wallets[$fromId], $wallets[$toId], $amount);
                       $this->em->persist($transfer);
 
                       return $transfer;           // then flush() and COMMIT happen on their own
@@ -136,9 +157,10 @@ slides:
           }
         marks:
           - {line: 9, tip: 'BEGIN happens here. Everything inside (reads, locks, writes) is part of one transaction. Whatever the closure returns is handed back to you.'}
-          - {line: 10, tip: 'SELECT … FOR UPDATE: until this transaction commits, no other transaction can change this row. Without it, two transfers could read the same stale balance and compute wrong results.'}
-          - {line: 15, tip: 'If an exception escapes from here, wrapInTransaction() issues ROLLBACK itself, so Rahim''s debit does not stay behind.'}
-          - {line: 21, tip: 'When the closure ends, Doctrine calls flush() itself and then COMMIT. You never write a separate flush().'}
+          - {line: 11, tip: 'The deadlock fix. If Rahim to Karim and Karim to Rahim run together, a fixed from-then-to order lets each grab one wallet and wait for the other forever. Sorted ids make both queue on the same wallet first.'}
+          - {line: 14, tip: 'SELECT … FOR UPDATE: until this transaction commits, no other transaction can change this row. Without it, two transfers could read the same stale balance and compute wrong results.'}
+          - {line: 18, tip: 'If an exception escapes from here, wrapInTransaction() issues ROLLBACK itself, so Rahim''s debit does not stay behind.'}
+          - {line: 24, tip: 'When the closure ends, Doctrine calls flush() itself and then COMMIT. You never write a separate flush().'}
       - type: points
         title: 'Three rules'
         style: check
@@ -153,11 +175,12 @@ slides:
           - {term: 'FOR UPDATE', meaning: 'Taking a lock on the row while reading it, so nobody else can change it until you commit.'}
       - type: pitfalls
         items:
-          - 'If Rahim→Karim and Karim→Rahim run at the same time, the two locks are taken in opposite order and can deadlock. Fix: always lock the smaller id first.'
+          - 'Without the sort() above, Rahim→Karim and Karim→Rahim at the same time take their two locks in opposite order and deadlock: each waits for the other.'
           - '"The EntityManager is closed" means an earlier transaction failed. Finish that request with an error response.'
       - type: tips
         items:
           - 'Messenger''s `doctrine_transaction` middleware wraps every message handler in a transaction automatically.'
+          - 'Locks make competing transfers on the same wallet wait their turn, so keep the transaction short. For a row nobody else touches, the lock is wasted effort.'
       - type: refs
         items:
           - {to: 'concurrency/locking', label: 'FOR UPDATE locks and deadlocks'}
@@ -228,7 +251,7 @@ slides:
     blocks:
       - type: text
         body: |
-          A transaction is powerful, but it isn't magic. Its four promises hold only inside its own database. This is where people get it wrong most often: two transactions can both read Rahim's balance as 500 at the same moment and both deduct 400. Each transaction is flawless on its own, yet the result is wrong.
+          A transaction is powerful, but it isn't magic. Its four promises hold only inside its own database. This is where people get it wrong most often: two transactions can both read Rahim's balance as 500 at the same moment and both deduct 400. Both write back 100, so 800 taka were paid out but the balance shows only 400 gone. Each transaction is flawless on its own, yet the result is wrong.
       - type: visual
         kind: compare
         caption: 'Where the power of a transaction ends'
@@ -251,6 +274,16 @@ slides:
               - 'Email, SMS, HTTP calls: they don''t roll back'
               - 'Data in another database or another service'
               - 'A wrong calculation in your code: it commits perfectly too'
+      - type: code
+        lang: sql
+        file: 'the shape of the fix'
+        variant: good
+        code: |
+          -- check and write in one statement: the second transfer cannot sneak in between
+          UPDATE wallet SET balance = balance - 400 WHERE id = 1 AND balance >= 400;
+          -- affected rows 1: done. 0: not enough money, this transfer loses and is refused
+        marks:
+          - {line: 2, tip: 'The database does the read and the write as one step, so a second request sees the already reduced balance. The next segments show this and locks in full.'}
       - type: quote
         body: 'A transaction prevents half-done work; it does not prevent the wrong arithmetic of two simultaneous requests.'
     aside:
@@ -300,6 +333,11 @@ flashcards:
     a: 'When one job mixes several steps, locks, DQL or raw SQL that must share a transaction. It flushes and commits for you at the end.'
     more: |
       It issues BEGIN, runs your closure, then calls flush() and COMMIT, and returns the closure's return value. On an exception it issues ROLLBACK, closes the EntityManager and rethrows. A pessimistic lock needs an open transaction, so it is mandatory in that case.
+    ref: doctrine-transactions
+  - q: 'A transfer locks two wallets. How do you stop two opposite transfers from deadlocking?'
+    a: 'Always lock the wallet with the smaller id first, for example by sorting the two ids before the loop that takes the locks.'
+    more: |
+      Rahim to Karim and Karim to Rahim at the same moment, each locking its own sender first, leaves each waiting for the wallet the other holds. With a fixed order both ask for the same wallet first, so one simply waits and then goes.
     ref: doctrine-transactions
   - q: 'Why is it dangerous to send an email, SMS or HTTP call inside a transaction?'
     a: 'A rollback can''t recall them, and the transaction stays open, holding locks, for as long as the call takes.'

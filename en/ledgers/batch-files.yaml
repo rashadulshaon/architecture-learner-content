@@ -64,7 +64,7 @@ slides:
           - {title: '1. Fully arrived?', body: 'Is there an end-of-upload marker (rename or .done)?', tip: 'The sender uploads the file as .tmp and renames it at the end. We pick up only files with the final name.'}
           - {title: '2. Checksum matches?', body: 'Is our own SHA-256 the same as the one sent?', tip: 'If even one bit changed on the way, the hash differs, so a damaged file is caught.'}
           - {title: '3. Control total matches?', body: 'Our own row count and sum = the trailer''s numbers', tip: 'This tells you whether the file was cut short or rows went missing.'}
-          - {title: '4. Seen before?', body: 'Has this hash already been loaded?', tip: 'If the same file arrives twice, the second one is quietly skipped.'}
+          - {title: '4. Seen before?', body: 'Has this hash already been fully loaded?', tip: 'A file marked loaded is quietly skipped. One stuck half-way is resumed, not skipped.'}
       - type: quote
         body: 'If the file''s own count and sum don''t match the trailer, the whole file goes back.'
     aside:
@@ -82,12 +82,12 @@ slides:
   - slug: ingest-command
     title: 'Past the gates, row by row: Symfony code'
     kind: howto
-    tldr: 'Verify the hash and control total, accept the file only once, then load row by row. Bad rows go to quarantine; parse CSV and fixed-width into integer minor units.'
+    tldr: 'Verify the hash and control total, claim the file, then load row by row. Bad rows go to quarantine; parse CSV and fixed-width into integer minor units.'
     keywords: ['fixed-width', 'CSV parse', 'hash_file', 'quarantine', 'SplFileObject', 'importer']
     blocks:
       - type: text
         body: |
-          The importer doesn't pull the whole file into memory at once; it reads one row at a time (a generator or `SplFileObject`). Each row is loaded in its own small transaction, and a bad row throws `InvalidRow` and goes to quarantine while the rest carry on.
+          The importer doesn't pull the whole file into memory at once; it reads one row at a time (a generator or `SplFileObject`). Each row is loaded in its own small transaction, and a bad row throws `InvalidRow` and goes to quarantine while the rest carry on. Any other crash stops the run, but the file stays marked `loading`, so the next run picks it up (next slide).
       - type: code
         lang: php
         file: 'src/Batch/PayoutImporter.php'
@@ -99,8 +99,8 @@ slides:
               if (!hash_equals($expectedSha, $hash)) {
                   throw new CorruptedFile($path);          // damaged on the way
               }
-              if (null === $fileId = $this->files->registerOnce($provider, basename($path), $hash)) {
-                  return;                                  // this file has come before
+              if (null === $fileId = $this->files->claim($provider, basename($path), $hash)) {
+                  return;                                  // already loaded (or rejected): skip
               }
 
               $file = $this->parser->parse($path);         // header, rows, trailer
@@ -121,7 +121,7 @@ slides:
           }
         marks:
           - {line: 4, tip: 'Does the SHA-256 we calculated match the one the sender gave? `hash_equals` is a timing-safe comparison.'}
-          - {line: 7, tip: 'With a UNIQUE on `(provider, sha256)`, the INSERT succeeds only once; the second time it returns null.'}
+          - {line: 7, tip: '`claim()` returns the file id for a new file, or for one still `loading` after a crash. For a `loaded` or `rejected` file it returns null.'}
           - {line: 13, tip: '`$file->count` and `totalMinor` are the numbers written in the trailer. If they differ from our own count, nothing is loaded.'}
           - {line: 22, tip: 'A bad row doesn''t stop the run; it goes elsewhere with its reason, and the rest of the file carries on.'}
       - type: code
@@ -158,6 +158,82 @@ slides:
     check:
       q: 'What is the risk if the importer reads the whole file at once with `file()`, and what should you do?'
       a: 'It can run out of memory. Read one row at a time (a generator or `SplFileObject`) and load each row in its own small transaction.'
+
+  - slug: resume-after-crash
+    title: 'Crash at row 4000? The re-run finishes the file'
+    kind: howto
+    tldr: 'Give the file a status (`loading` until done) and give every row a tick written with its credit. A re-run skips loaded files, resumes half-loaded ones and skips ticked rows.'
+    keywords: ['resume', 'idempotent import', 'row ledger', 'ON CONFLICT', 'crash recovery', 'batch status']
+    blocks:
+      - type: text
+        body: |
+          Back to the crash at row 4000. A re-run that skips every file it has seen would leave the file half loaded for ever. So the file carries a status: `loading` until its last row is done, then `loaded`. A re-run skips only `loaded` files. And each row gets a tick in `batch_row`, written in the same transaction as its credit, like the shopkeeper ticking each name on his payout list: after a power cut he never pays a ticked name twice.
+      - type: code
+        lang: sql
+        file: 'migrations — resume support'
+        variant: good
+        code: |
+          CREATE TABLE batch_row (
+            file_id bigint NOT NULL REFERENCES batch_file (id),
+            line_no int    NOT NULL,
+            PRIMARY KEY (file_id, line_no)   -- one tick per row that has been credited
+          );
+
+          -- claim(): a new file becomes 'loading'; an unfinished one is handed back
+          INSERT INTO batch_file (provider, name, sha256, status)
+          VALUES (:p, :n, :h, 'loading')
+          ON CONFLICT (provider, sha256) DO NOTHING;
+
+          SELECT id FROM batch_file
+           WHERE provider = :p AND sha256 = :h AND status = 'loading';
+        marks:
+          - {line: 4, tip: 'The tick table. Its primary key makes a second tick for the same row impossible.'}
+          - {line: 12, tip: 'Only `loading` files come back. `loaded` and `rejected` files return nothing, so they are skipped.'}
+      - type: code
+        lang: php
+        file: 'src/Batch/RowLoader.php'
+        variant: good
+        code: |
+          public function load(int $fileId, int $line, Row $row): void
+          {
+              $this->em->wrapInTransaction(function () use ($fileId, $line, $row): void {
+                  $ticked = $this->em->getConnection()->executeStatement(
+                      'INSERT INTO batch_row (file_id, line_no) VALUES (?, ?)
+                       ON CONFLICT DO NOTHING',
+                      [$fileId, $line],
+                  );
+                  if (0 === $ticked) {
+                      return;                         // credited before the crash: skip
+                  }
+                  $this->wallet->credit($row->userId, $row->amountMinor);   // same transaction
+              });
+          }
+        marks:
+          - {line: 8, tip: 'The tick was already there, so this row was credited in the earlier run. Do nothing.'}
+          - {line: 11, tip: 'The tick and the credit commit together or not at all. A crash can never leave one without the other.'}
+      - type: visual
+        kind: sequence
+        caption: 'The morning re-run, same file, same crash point'
+        actors:
+          - {id: cron, label: 'Our cron', icon: clock, tip: 'Runs the importer again on the same file.'}
+          - {id: files, label: 'batch_file', icon: archive, tip: 'Remembers each file''s status: loading, loaded or rejected.'}
+          - {id: wallet, label: 'Wallet', icon: wallet, tip: 'Credits money. Now guarded by the per-row tick.'}
+        messages:
+          - {from: cron, to: files, label: 'Same file again: claim it'}
+          - {from: files, to: cron, label: 'Status is loading: carry on', dashed: true, tip: 'The old code would have returned here and left the file half loaded.'}
+          - {from: cron, to: wallet, label: 'Rows 1-3999: already ticked, skipped', tone: good}
+          - {at: wallet, note: 'Nobody is paid twice', tone: good}
+          - {from: cron, to: wallet, label: 'Rows 4000 onwards: credited and ticked', tone: good}
+          - {from: cron, to: files, label: 'Last row done: status loaded'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'Price: one extra INSERT per row, and `batch_row` grows with every file. Delete the ticks of files loaded months ago.'
+          - 'If two cron runs can overlap, take a Symfony Lock on the file hash first; otherwise both run and the second just waits on the first''s ticks.'
+          - 'Skip the ticks when the credit is already idempotent on its own, for example an UPSERT keyed by `(file_id, line_no)`.'
+    check:
+      q: 'The importer crashed at row 4000 of 10,000. What does the next run do with rows 1-3999 and with row 4000?'
+      a: 'It claims the file because its status is still `loading`. Rows 1-3999 find their tick and are skipped; row 4000 onwards are credited and ticked.'
 
   - slug: quarantine-bad-rows
     title: 'Bad rows: not silently dropped, but set aside'
@@ -265,10 +341,15 @@ flashcards:
       A rename happens in an instant, so you see either the whole file or nothing. You have to agree this with the sender in advance.
     ref: file-gates
   - q: 'How do you prevent a double load when the same file arrives twice?'
-    a: 'Register the file with a UNIQUE on `(provider, sha256)`. The second INSERT fails and the file is skipped.'
+    a: 'Register the file with a UNIQUE on `(provider, sha256)` and a status. A file already `loaded` is skipped; the second INSERT does nothing.'
     more: |
-      At the row level, keeping `(file_id, line_no)` unique means no row is loaded twice even if the file crashes halfway and is run again.
+      The status matters: only `loaded` files are skipped. A file stuck in `loading` after a crash must be resumed, not skipped, or it stays half loaded.
     ref: ingest-command
+  - q: 'An importer crashed at row 4000. How does the re-run finish the file without paying anyone twice?'
+    a: 'The file stays `loading`, so the re-run resumes it. Each row''s tick in `batch_row` is written with its credit, so ticked rows are skipped.'
+    more: |
+      The tick (`(file_id, line_no)` primary key) and the credit sit in one transaction, so a crash leaves both or neither. A re-run skips only files marked `loaded`; it never skips a half-loaded one.
+    ref: resume-after-crash
   - q: 'What is the difference between a fixed-width file and a CSV?'
     a: 'A CSV separates fields with a delimiter (`,` or `|`). In fixed-width, every field has fixed character positions.'
     more: |
@@ -354,6 +435,32 @@ quiz:
         correct: false
         why: 'The name can be the same while the contents differ. The hash is what you can rely on.'
     ref: ingest-command
+  - q: 'What is wrong with this registration, if the importer crashes half-way and runs again?'
+    lang: php
+    code: |
+      $id = $this->files->registerOnce($provider, $name, $hash);
+      if (null === $id) {
+          return;          // seen this hash before: skip
+      }
+      foreach ($file->rows as $line => $row) {
+          $this->wallet->credit($row->userId, $row->amountMinor);
+      }
+      $this->files->markLoaded($id);
+    hint: 'What does the re-run see for a file that crashed half-way?'
+    options:
+      - text: 'The re-run sees a known hash and returns early, so the rest of the file is never loaded'
+        correct: true
+        why: 'It treats "seen" as "finished". The file needs a status, and only `loaded` files should be skipped.'
+      - text: 'The re-run starts from row 1 and pays the first rows again'
+        correct: false
+        why: 'It does the opposite here: it returns before touching any row. Paying again would be the risk if it did resume without row ticks.'
+      - text: '`markLoaded` should come before the loop'
+        correct: false
+        why: 'That would mark a file loaded before it is. A crash would then be skipped for good.'
+      - text: 'The hash should be compared with `==` instead of `===`'
+        correct: false
+        why: 'Comparison style has nothing to do with the crash problem.'
+    ref: resume-after-crash
   - q: 'In a file of 10,000 rows, 12 have a date in the wrong format. The other rows are independent transactions. What is the best behaviour?'
     hint: 'The rows don''t depend on each other.'
     options:

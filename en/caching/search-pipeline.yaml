@@ -166,13 +166,19 @@ slides:
                           retry_strategy:
                               max_retries: 5
                               delay: 2000      # first retry after 2 seconds
-                              multiplier: 3    # then 6, 18, 54, 162 seconds
+                              multiplier: 3    # then 6, 18, 54, 162 seconds (about 4 minutes in all)
                       failed: 'doctrine://default?queue_name=failed'
                   routing:
                       App\Message\IndexProduct: search_index
         marks:
           - {line: 6, tip: 'A separate queue. If you switch to RabbitMQ or Redis, only this dsn changes and the rest of the code stays the same.'}
-          - {line: 8, tip: 'If it still fails after five tries, the message is parked in the failed transport. It isn''t lost, and you can rerun it by hand later.'}
+          - {line: 8, tip: 'If it still fails after five tries (about 4 minutes in all), the message is parked in the failed transport. It isn''t lost, and you can rerun it by hand later.'}
+      - type: points
+        title: 'One gap is still open: a crash between flush and dispatch'
+        items:
+          - 'If the process dies between `flush()` and `dispatch()`, the product is saved but no message exists, so nothing will ever index it.'
+          - 'Cheap cure: a nightly job re-sends IndexProduct for everything changed in the last 24 hours (safe, the handler is idempotent). Price: a lost message waits up to a day, and hard-deleted rows are missed.'
+          - 'Strong cure: the outbox. Save the message in the same transaction as the product, and a relay sends it. Price: an extra table and a relay process.'
     aside:
       - type: commands
         title: 'Messenger commands'
@@ -180,9 +186,6 @@ slides:
           - {cmd: 'php bin/console messenger:consume search_index', desc: 'Start the search worker'}
           - {cmd: 'php bin/console messenger:stats', desc: 'How many messages are waiting in each queue'}
           - {cmd: 'php bin/console messenger:failed:retry', desc: 'Run the failed messages again'}
-      - type: pitfalls
-        items:
-          - 'If the process dies between flush and dispatch, the message is lost. The robust fix is to write the data and the message in the same transaction: the outbox pattern.'
       - type: refs
         items:
           - {to: 'workflows/outbox-inbox', label: 'Outbox: data and message together'}
@@ -229,12 +232,7 @@ slides:
                   }
 
                   $this->searchClient->request('PUT', $url, [
-                      'json' => [
-                          'name' => $product->getName(),
-                          'brand' => $product->getBrand(),
-                          'price' => $product->getPrice(),
-                          'updated_at' => $product->getUpdatedAt()->format(\DATE_ATOM),
-                      ],
+                      'json' => $product->toSearchDocument(),
                   ])->getContent();
               }
           }
@@ -242,8 +240,8 @@ slides:
           - {line: 13, tip: 'Whatever the message says, the truth is always re-read from the database.'}
           - {line: 15, tip: 'Product deleted or hidden? Then remove it from the index too. No separate message is needed for deletes.'}
           - {line: 17, tip: '404 means it was already gone, which counts as success. Anything else throws, so Messenger retries.'}
-          - {line: 24, tip: 'A PUT with an ID replaces the whole document. Run it ten times and the index still holds one document.'}
-          - {line: 31, tip: 'getContent() throws on a 4xx/5xx or a failed connection, and that one line is what switches retries on.'}
+          - {line: 24, tip: 'A PUT with an ID replaces the whole document. Run it ten times and the index still holds one document. toSearchDocument() also feeds the rebuild, so both always agree.'}
+          - {line: 26, tip: 'getContent() throws on a 4xx/5xx or a failed connection, and that one line is what switches retries on.'}
       - type: visual
         kind: table
         caption: 'What the handler does in four situations'
@@ -337,7 +335,7 @@ slides:
         steps:
           - {title: '1. Create the new index', body: 'products_v2 with the new mapping. The app still reads v1 through the alias.', tip: 'The old index isn''t touched, so search works normally the whole time.'}
           - {title: '2. Stop the worker', body: 'Stop the search_index worker; new messages pile up in the queue.', tip: 'This way no write is lost and no old state overwrites a new one while filling. The cost: search is a little stale for these few minutes.'}
-          - {title: '3. Fill from the database', body: 'Load every product into v2, 500 at a time, with _bulk.', tip: 'Sending one by one takes hours; bulk sends hundreds of documents in one request.'}
+          - {title: '3. Fill from the database', body: 'Load every product into v2, 500 at a time, with _bulk.', tip: 'One by one, 2 million products means 2 million requests. At 500 per bulk it is 4,000 requests.'}
           - {title: '4. Verify', body: 'Compare the database count with v2 and run a few familiar searches.', tip: 'This is the last chance before the flip. If you find a mistake, delete v2 and start over, and no customer will have noticed.'}
           - {title: '5. Flip the alias', body: 'In one atomic step, products → v2.', tone: accent, tip: 'The very next search request uses the new index. There is no moment in between when the alias is empty.'}
           - {title: '6. Start the worker', body: 'Queued messages now go to v2. Delete v1 a few days later.', tip: 'The worker reads fresh state from the database, so replaying the queued messages brings v2 up to date. While v1 exists, a rollback is just flipping the alias back.'}
@@ -412,7 +410,6 @@ slides:
       - type: tips
         items:
           - 'If filling takes hours, don''t stop the worker; have the handler write to both indexes and use external versions.'
-          - 'Run a nightly job that sends IndexProduct again for every product changed in the last 24 hours. It heals the scars of lost messages on its own.'
       - type: refs
         items:
           - {to: 'recovery/bulk-reprocessing', label: 'Safe bulk reprocessing'}
@@ -444,7 +441,12 @@ flashcards:
   - q: 'What happens to indexing messages while Elasticsearch is down?'
     a: 'The handler throws, Messenger retries with growing delays, and if every try fails the message is parked in the failed transport.'
     more: |
-      The database write still succeeds and customers notice nothing. Only search stays stale for a while. When Elasticsearch is back, the retries bring the index up to date, and messages parked in the failed transport can be rerun with `messenger:failed:retry`.
+      The database write still succeeds and customers notice nothing. Only search stays stale for a while. With the retry settings shown, the retries cover about 4 minutes. A longer outage parks the messages in the failed transport, and `messenger:failed:retry` runs them again once Elasticsearch is back.
+    ref: dispatch-index-message
+  - q: 'What can still go wrong between flush() and dispatch(), and how do you cover it?'
+    a: 'The process can die between them: the product is saved but no message exists. Cover it with a nightly re-send job, or the outbox pattern.'
+    more: |
+      The nightly job re-sends IndexProduct for every product changed in the last 24 hours. It is safe because the handler is idempotent, but a lost message can wait up to a day. The outbox writes the message in the same transaction as the product, so it can't be lost, at the cost of an extra table and a relay.
     ref: dispatch-index-message
   - q: 'What does eventual consistency mean for search?'
     a: 'After a database write, the index runs a second or two behind, then catches up on its own.'
@@ -558,19 +560,35 @@ quiz:
         correct: false
         why: 'A restart doesn''t change the stored terms; an analyzer only runs at index time.'
     ref: reindex-with-alias
-  - q: 'The indexing pipeline is running. Elasticsearch went down for 10 minutes, then came back. What happened to customers saving products during that time?'
+  - q: 'The indexing pipeline is running. Elasticsearch went down for 2 minutes, then came back. What happened to customers saving products during that time?'
     hint: 'Does the write code talk to Elasticsearch at all?'
     options:
       - text: 'Saves succeeded as normal; the messages waited in retries, and the index caught up afterwards'
         correct: true
-        why: 'The write side only touches the database and the queue. Search was stale for a while, but no data was lost.'
+        why: 'The write side only touches the database and the queue. The retries (about 2, 8, 26, 80 and 242 seconds after the first failure) outlast a 2-minute outage, so no data was lost.'
       - text: 'Every save returned a 500 error'
         correct: false
         why: 'That would happen if the controller wrote to Elasticsearch directly. In the pipeline, the write path doesn''t depend on search.'
-      - text: 'Products from those 10 minutes will never appear in search'
+      - text: 'Products from those 2 minutes will never appear in search'
         correct: false
         why: 'The messages weren''t lost. Even once the retries run out, they sit in the failed transport and can be rerun.'
       - text: 'The database transactions were rolled back'
         correct: false
         why: 'The database commit had already finished; a worker failure can''t touch it.'
+    ref: dispatch-index-message
+  - q: 'A deploy killed the PHP process right after flush() and before dispatch(). 30 saved products are missing from search and no message is in the queue. What covers this, now and in future?'
+    hint: 'Can Messenger retry a message that was never sent?'
+    options:
+      - text: 'A nightly job that re-sends IndexProduct for products changed in the last 24 hours'
+        correct: true
+        why: 'It finds the products whose message was lost and re-queues them. It is safe to repeat because the handler is idempotent.'
+      - text: 'Raising max_retries'
+        correct: false
+        why: 'Retries only repeat a message that exists. Here no message was ever sent.'
+      - text: 'Dispatching the message before flush()'
+        correct: false
+        why: 'The worker could then read the database before the commit and index the old state. It also doesn''t help if the process dies.'
+      - text: 'Making the handler idempotent'
+        correct: false
+        why: 'It already is. Idempotency makes repeats safe; it can''t create a message that was never sent.'
     ref: dispatch-index-message

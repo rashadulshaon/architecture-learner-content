@@ -7,7 +7,7 @@ slides:
     blocks:
       - type: text
         body: |
-          Rahim has 1000 taka in his wallet. From two phones, within the same second, he sends 800 taka each time. The code does check the balance on every request, yet both transfers succeed. Testing alone will never catch this, because the bug only appears when the **timing of two requests lines up**.
+          Rahim has 1000 taka in his wallet. From two phones, within the same second, he sends 800 taka each time. The code does check the balance on every request, yet both transfers succeed. Testing alone will never catch this, because the bug only appears when the **timing of two requests lines up**. The fix, shown below the diagram, is to let the database check and subtract in one statement.
       - type: code
         lang: php
         file: 'src/Service/WalletService.php'
@@ -42,6 +42,23 @@ slides:
           - {from: p1, to: db, label: 'balance = 1000 − 800 = 200'}
           - {from: p2, to: db, label: 'balance = 1000 − 800 = 200', tone: bad, tip: 'Phone 2 has no idea phone 1 already changed the balance.'}
           - {at: db, note: '1600 taka left, balance is 200', tone: bad, tip: 'Correctly, the second transfer should have failed. 600 taka were created out of thin air.'}
+      - type: code
+        lang: php
+        file: 'src/Service/WalletService.php'
+        variant: good
+        code: |
+          // One statement: the check and the subtraction happen together
+          $changed = $this->em->getConnection()->executeStatement(
+              'UPDATE wallet SET balance = balance - ? WHERE id = ? AND balance >= ?',
+              [$amount, $walletId, $amount],
+          );
+
+          if ($changed === 0) {           // phone 2: balance is now 200, so no row matches
+              throw new InsufficientFunds();
+          }
+        marks:
+          - {line: 3, tip: 'The WHERE is the check, the SET is the write. The database does both on one row, one request at a time, so phone 2 finds 200 < 800 and matches nothing.'}
+          - {line: 7, tip: '0 rows changed means the check failed. Phone 1 changed 1 row and succeeded; phone 2 changed 0 and is refused.'}
     aside:
       - type: story
         title: 'The coupon on campaign night'
@@ -51,6 +68,10 @@ slides:
         items:
           - {term: 'Race condition', meaning: 'A bug where the result depends on how two operations happen to be timed: fine when run alone, wrong when run together.'}
           - {term: 'Double-spend', meaning: 'The same money being spent twice.'}
+      - type: refs
+        items:
+          - {to: 'concurrency/atomic-operations', label: 'Atomic updates in depth, and where they stop working'}
+          - {to: 'concurrency/locking', label: 'Locks, for decisions that span several rows'}
     check:
       q: 'Both requests ran exactly as the code says, so why is the balance wrong?'
       a: 'Both read the same stale balance before either wrote. The other request slipped into the gap between the check and the write.'
@@ -69,15 +90,15 @@ slides:
       - type: visual
         kind: table
         caption: 'One gap, four faces'
-        headers: ['Name', 'What it looks like in code', 'Result']
+        headers: ['Name', 'What it looks like in code', 'Result', 'The fix']
         rows:
-          - cells: ['Check-then-act', 'if (free) { book it }', 'The same seat booked twice']
+          - cells: ['Check-then-act', 'if (free) { book it }', 'The same seat booked twice', 'One statement that checks and acts, or lock first']
             tip: 'The state can change after the condition is checked, but the code carries on as if the earlier look were still true.'
-          - cells: ['Read-modify-write', '$n = read; write $n + 1', 'Counter or stock updates are lost']
+          - cells: ['Read-modify-write', '$n = read; write $n + 1', 'Counter or stock updates are lost', 'Atomic UPDATE: SET stock = stock - 1']
             tip: 'Two requests read the same value and each writes its own result; the last write wipes out the earlier one. This is called a lost update.'
-          - cells: ['Double-spend', 'Check the balance, then deduct', 'Money that doesn''t exist gets spent']
+          - cells: ['Double-spend', 'Check the balance, then deduct', 'Money that doesn''t exist gets spent', 'UPDATE … WHERE balance >= the amount']
             tip: 'The money version of check-then-act. Wallets, points, credits, coupons: it is the same everywhere.'
-          - cells: ['Double-booking', 'Check a seat or slot, then take it', 'One thing assigned to two people']
+          - cells: ['Double-booking', 'Check a seat or slot, then take it', 'One thing assigned to two people', 'Unique constraint on the seat or slot']
             tip: 'Seats, doctor slots, meeting rooms, delivery slots: anything meant for one person can suffer this.'
       - type: quote
         body: 'Another request can get in between the read and the write.'
@@ -90,6 +111,7 @@ slides:
         items:
           - {to: 'concurrency/isolation-levels', label: 'Isolation levels and lost updates'}
           - {to: 'concurrency/acid', label: 'What a transaction does not protect'}
+          - {to: 'concurrency/atomic-operations', label: 'The fixes in depth'}
     check:
       q: 'The counter code `$n = $row->count; $row->count = $n + 1;` is which kind of race, and why?'
       a: 'Read-modify-write. Two requests read the same `$n` and both write `$n + 1`, so the counter goes up once where it should have gone up twice.'
@@ -110,7 +132,7 @@ slides:
           - 'A comment beside the code saying "two people won''t do this at once". They will.'
       - type: text
         body: |
-          If you suspect a race, prove it. Send many identical requests at the same time, then reconcile the numbers in the database. If you fire twenty 100-taka transfers at once from a 1000-taka wallet, exactly 10 should succeed. If more than 10 succeed, or the balance isn't 0, there is a race.
+          If you suspect a race, prove it. Send many identical requests at the same time, then reconcile the numbers in the database. If you fire twenty 100-taka transfers at once from a 1000-taka wallet, exactly 10 should succeed. If more than 10 succeed, or the balance isn't 0, there is a race. After you fix the code, run the same script again: exactly 10 successes and a balance of 0 is your proof.
       - type: code
         lang: bash
         file: 'scripts/race-test.sh'
@@ -197,6 +219,7 @@ slides:
         items:
           - 'A PHP static variable, a file flag or a session lock can''t stop this race. With several servers or workers, they never see each other.'
           - 'Disabling the button is only UX. It does nothing when someone sends the request straight with curl, or when a retry happens.'
+          - 'A unique constraint only stops duplicates. A rule like "balance never below 0" needs an atomic UPDATE or a lock instead.'
       - type: refs
         items:
           - {to: 'concurrency/atomic-operations', label: 'Atomic updates and unique constraints'}
@@ -231,6 +254,11 @@ flashcards:
     more: |
       Two signs are especially telling: reading with a getter and putting a new value into a setter, and a `findOneBy` followed by `if (!$x) { persist }`. When you see either, stop and ask, "what if two people arrive at once?"
     ref: spot-and-reproduce
+  - q: 'How do you fix the wallet double-spend with one SQL statement?'
+    a: 'UPDATE wallet SET balance = balance - 800 WHERE id = 1 AND balance >= 800. If 0 rows changed, the balance was too low: refuse the transfer.'
+    more: |
+      The WHERE is the check and the SET is the write, done together on one row by the database. With 1000 taka and two phones, phone 1 changes 1 row (balance 200); phone 2 finds 200 < 800, matches nothing and gets 0 rows. It works for one row's arithmetic; a rule across several rows needs a lock or SERIALIZABLE.
+    ref: two-phones
   - q: 'How do you test for a race condition?'
     a: 'Send 20 identical requests at the same time (for example with xargs -P) and reconcile the final numbers. Running them one after another won''t reveal a race.'
     more: |
@@ -269,6 +297,22 @@ quiz:
         correct: false
         why: 'A transaction prevents half-done work, but it doesn''t stop two transactions from reading the same stale value.'
     ref: read-modify-write
+  - q: 'Which change closes the gap in the wallet code from the first slide?'
+    hint: 'Which version leaves no moment between the check and the write?'
+    options:
+      - text: 'One UPDATE … SET balance = balance - ? WHERE id = ? AND balance >= ?, treating 0 changed rows as "insufficient funds"'
+        correct: true
+        why: 'The check and the subtraction happen in one statement, so phone 2 sees 200, matches no row and is refused.'
+      - text: 'Read the balance a second time just before writing'
+        correct: false
+        why: 'A second read is just another gap. Someone can still write between it and your write.'
+      - text: 'Keep the PHP check and add usleep() before the write'
+        correct: false
+        why: 'Waiting only shifts the timing; both requests can still read the same stale balance.'
+      - text: 'Add a unique constraint on wallet.id'
+        correct: false
+        why: 'The id is already unique, and no duplicate row is involved. The trouble is two writes to the same row.'
+    ref: two-phones
   - q: 'Which of these are examples of a check-then-act race condition?'
     hint: 'Ask of each one: is there a "look first, then act" in it?'
     options:
@@ -307,12 +351,12 @@ quiz:
       - text: 'Exactly 0'
         correct: false
         why: 'The correct arithmetic would give 0, but more than 10 successes means some requests wrote from the same stale value, so the balance usually isn''t 0.'
-      - text: 'Above zero, even though 1300 taka went out'
+      - text: 'Most likely above zero, even though 1300 taka went out'
         correct: true
         why: 'Some requests wiped out each other''s writes (lost updates), so the balance shows more than it should: 300 taka were created from nothing.'
       - text: 'Definitely −300'
         correct: false
-        why: 'The result is unpredictable, because it depends on timing which stale value the last write was based on.'
+        why: 'It can''t go below 0: every request checked for at least 100 before writing, so no write is negative. Lost updates push the balance up, not down.'
     ref: spot-and-reproduce
   - q: 'To keep emails unique, a colleague says "just check with findOneBy before registering". Which view is right?'
     hint: 'Where would a guard have to sit for all requests to meet at one place?'

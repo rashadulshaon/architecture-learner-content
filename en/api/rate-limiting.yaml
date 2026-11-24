@@ -7,7 +7,7 @@ slides:
     blocks:
       - type: text
         body: |
-          A script at one of Rahim's partner companies accidentally got a `while(true)` loop, and it started calling Rahim's API 30 times a second. Within minutes the database ran out of connections, and ordinary users' pages wouldn't open even after 30 seconds. Nobody attacked anything: one person's mistake hurt everybody.
+          A script at one of Rahim's partner companies accidentally got a `while(true)` loop, and it started calling Rahim's API 30 times a second. Each call held a database connection for about a second, and the pool had only a few dozen, so within minutes none were left and ordinary users' pages wouldn't open even after 30 seconds. Nobody attacked anything: one person's mistake hurt everybody. The fix is a per-client cap, shown in the last bar.
       - type: visual
         kind: bars
         caption: 'Requests per minute by client (example)'
@@ -15,7 +15,8 @@ slides:
           - {label: 'User A', value: 12, display: '12', tone: good, tip: 'An ordinary user, making a handful of requests a minute.'}
           - {label: 'User B', value: 15, display: '15', tone: good, tip: 'Another ordinary user. Both are far below any limit.'}
           - {label: 'User C', value: 8, display: '8', tone: good, tip: 'Even fewer. All of these are just going about their work.'}
-          - {label: 'Partner''s loop', value: 1800, display: '1800', tone: bad, tip: 'Because of the buggy loop, this one client alone is hundreds of times everyone else''s combined load. A limit would have stopped it right here.'}
+          - {label: 'Partner''s loop', value: 1800, display: '1800', tone: bad, tip: 'Because of the buggy loop, this one client alone is about 50 times the three users'' combined load (35 a minute).'}
+          - {label: 'Same loop, 100/min limit', value: 100, display: '100', tone: good, tip: 'The same loop with a per-client limit: 100 requests get through each minute and the rest are refused with a 429. The three users above never notice.'}
       - type: quote
         body: 'An API without limits leaves its door open to everyone, so one person''s mistake or bad faith hurts all.'
     aside:
@@ -112,7 +113,7 @@ slides:
                       return;
                   }
 
-                  $key = $request->headers->get('X-Api-Key') ?? $request->getClientIp();
+                  $key = $request->headers->get('X-Api-Key') ?? $request->getClientIp() ?? 'anonymous';
                   $limit = $this->apiPerClientLimiter->create($key)->consume();
 
                   if (!$limit->isAccepted()) {
@@ -124,7 +125,7 @@ slides:
           }
         marks:
           - {line: 4, tip: 'The limiter is named api_per_client in the config, so the autowired argument is called $apiPerClientLimiter.'}
-          - {line: 15, tip: 'The key decides who is counted separately. Use the API key or user id if you can, the IP if you can''t.'}
+          - {line: 15, tip: 'The key decides who is counted separately. Use a key you have checked (a known API key or the user id), else the IP. A header nobody verified can be invented anew on every request.'}
           - {line: 16, tip: 'consume() tries to take one token. If the bucket is empty, isAccepted() is false.'}
           - {line: 21, tip: 'This exception produces a response with a 429 and a Retry-After header.'}
     aside:
@@ -134,6 +135,7 @@ slides:
           - {cmd: 'php bin/console debug:container --env-vars', desc: 'Check that the Redis env vars are right'}
       - type: pitfalls
         items:
+          - 'An API key read from a header without checking it is not a safe key: a client can invent a new one on every request and get a fresh bucket each time. Look the key up first, or fall back to the IP.'
           - 'Behind a load balancer without trusted_proxies, getClientIp() gives the same IP for everyone, and the limit blocks everybody at once.'
       - type: refs
         items:
@@ -247,6 +249,21 @@ slides:
           - {line: 3, tip: 'A small limit for users who don''t pay.'}
           - {line: 7, tip: 'A large limit for partners, as agreed in the contract. Each plan gets its own limiter.'}
           - {line: 11, tip: 'A sliding window on login: no more than 5 in any 15-minute window. It stops brute force.'}
+      - type: code
+        lang: php
+        file: 'src/EventListener/ApiRateLimitListener.php'
+        variant: good
+        code: |
+          // logged in: count the person; anonymous: count the IP
+          $key = $user !== null ? 'user-'.$user->getUserIdentifier() : 'ip-'.$request->getClientIp();
+          $this->apiFreeLimiter->create($key)->consume()->ensureAccepted();
+
+          // login: IP + email, so an attacker can't lock the victim out from the victim's own IP
+          $loginKey = $request->getClientIp().'|'.mb_strtolower($email);
+          $this->loginLimiter->create($loginKey)->consume()->ensureAccepted();
+        marks:
+          - {line: 2, tip: 'A prefix keeps user and IP counters apart. A person on mobile data is counted as themselves, not as the thousand people sharing their IP.'}
+          - {line: 6, tip: 'The email alone would let an attacker burn a victim''s 5 tries. With the IP in the key, only the attacker''s own bucket fills up.'}
       - type: quote
         body: 'A rate limit is the rate per minute; a quota is the total allowance for the month. You need both, and they are different things.'
     aside:
@@ -257,6 +274,7 @@ slides:
       - type: tips
         items:
           - 'For login, turn on Symfony Security''s `login_throttling` and you get much of this ready-made.'
+          - 'Price of a strict login limit: a real user who mistypes 5 times is locked out for 15 minutes. Show a clear message and a reset link.'
       - type: refs
         items:
           - {to: 'security/authn-authz', label: 'Login and stopping password guessing'}
@@ -289,6 +307,11 @@ flashcards:
     a: '`429 Too Many Requests` and a `Retry-After` header saying how many seconds to wait before trying again.'
     more: |
       In Symfony, throwing `TooManyRequestsHttpException($retryAfterSeconds)` produces both. The client reads Retry-After and returns at the right time. If it is missing, the client backs off by itself.
+    ref: symfony-rate-limiter
+  - q: 'Why must a rate-limit key be something a client can''t invent for free?'
+    a: 'If the key is an unchecked header, a client sends a new random value on every request and gets a fresh bucket each time. Use a verified key, the user id or the IP.'
+    more: |
+      Each distinct key gets its own bucket, so a limit only holds if a client can't mint keys at will. Look the API key up in your database first; if it isn't known, fall back to the IP. The same thinking applies to any value the client controls.
     ref: symfony-rate-limiter
   - q: 'Why use exponential backoff and jitter together?'
     a: 'Backoff doubles the wait each time. Jitter makes it random, so a thousand clients don''t return at the same instant.'
@@ -339,6 +362,26 @@ quiz:
       - text: '100 requests in total a day, and 20 a minute'
         correct: false
         why: 'There is no mention of a day here. Counting over days or months is a quota, not the rate limiter.'
+    ref: symfony-rate-limiter
+  - q: 'The listener below keys the limit on the raw X-Api-Key header. How can a scripted client get around the limit?'
+    lang: php
+    code: |
+      $key = $request->headers->get('X-Api-Key') ?? $request->getClientIp();
+      $limit = $this->apiPerClientLimiter->create($key)->consume();
+    hint: 'What does each new key value get?'
+    options:
+      - text: 'Send a different made-up X-Api-Key on every request, so each one lands in a fresh, full bucket'
+        correct: true
+        why: 'The header is never checked, and every distinct key has its own bucket. Verify the key before using it.'
+      - text: 'Send the requests more slowly than the refill rate'
+        correct: false
+        why: 'That is just obeying the limit, not getting around it.'
+      - text: 'Use a very long header value so the limiter overflows'
+        correct: false
+        why: 'The key length does not change how the bucket is counted.'
+      - text: 'It can''t, because the limit also applies to the IP'
+        correct: false
+        why: 'The IP is used only when the header is missing, so sending any header value skips it.'
     ref: symfony-rate-limiter
   - q: 'A client gets a 429 and sees `Retry-After: 3`. What should it do?'
     hint: 'Has the server said anything itself?'

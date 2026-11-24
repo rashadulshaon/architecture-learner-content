@@ -186,7 +186,7 @@ slides:
     blocks:
       - type: text
         body: |
-          Even with timeouts, 20 workers can each be stuck for 4 seconds. So the restaurant's second rule: at most 5 waiters at the kebab counter at once, and the sixth doesn't wait but tells the customer straight away. In code, Symfony's **Semaphore** does this: a counted set of tokens that limits how many can enter at the same time.
+          Even with a 4-second timeout, 5 checkouts a second (5 × 4 = 20) still stick all 20 workers. So the restaurant's second rule: at most 5 waiters at the kebab counter at once, and the sixth doesn't wait but tells the customer straight away. In code, Symfony's **Semaphore** does this: a counted set of tokens that limits how many can enter at the same time.
       - type: visual
         kind: compare
         caption: 'The same 20 workers, unshared and shared'
@@ -273,6 +273,7 @@ slides:
           - 'To enable Symfony Semaphore: composer require symfony/semaphore, then give framework.semaphore a Redis DSN.'
           - 'Send admin and report URLs to a separate PHP-FPM pool (its own pm.max_children) so heavy exports can''t eat customers'' workers.'
           - 'Size the compartments by arithmetic: the sum of all of them should stay below the total number of workers.'
+          - 'Too low a limit turns healthy calls away. Calls per second × normal reply time, plus headroom: 5 × 0.2 s = 1, so 5 slots is plenty.'
       - type: refs
         items:
           - {to: 'messaging/background-jobs', label: 'Background jobs and priorities'}
@@ -306,6 +307,25 @@ slides:
         marks:
           - {line: 4, tip: 'Without a timeout, the idle limit is PHP''s default_socket_timeout = 60 seconds, and there is no limit on total time at all.'}
           - {line: 8, tip: 'If the courier fails, the exception goes straight to the user as a 500. Nobody thought about what should happen on failure.'}
+      - type: code
+        lang: php
+        file: 'src/Shipping/CourierRateProvider.php'
+        variant: good
+        code: |
+          public function chargeFor(string $district, int $weightGrams): ?int
+          {
+              try {
+                  // courierClient is the scoped client with the 2 s / 4 s limits
+                  return (int) $this->courierClient->request('GET', '/v1/rates', [
+                      'query' => ['district' => $district, 'weight' => $weightGrams],
+                  ])->toArray()['charge_paisa'];   // the read stays inside the try
+              } catch (ExceptionInterface $e) {
+                  return null;   // the caller shows a default charge
+              }
+          }
+        marks:
+          - {line: 5, tip: 'The limits now come from courier.client, so a stuck call ends after 4 seconds at most instead of holding the worker for a minute.'}
+          - {line: 7, tip: 'The response is read inside the try, so a timeout lands in the catch and the user gets a default charge, not a 500.'}
       - type: visual
         kind: table
         caption: 'The limits you get if you change nothing'
@@ -388,6 +408,11 @@ flashcards:
     more: |
       Queueing up in front of the compartment brings back the very problem of stuck workers. Symfony Semaphore's acquire() returns false at once when there is no room. Then you show a default value or drop the feature for now: [[resilience/graceful-degradation|graceful degradation]].
     ref: bulkheads
+  - q: 'How do you choose the limit of a semaphore bulkhead?'
+    a: 'Calls per second × the normal reply time, plus headroom. Too low turns healthy calls away, too high protects nothing.'
+    more: |
+      At 5 checkouts a second and a 0.2 s reply, about 1 call is in flight at any moment, so 5 slots leaves comfortable room. If the courier slows to 4 s, those 5 slots admit only about 1 call a second and the other 15 workers stay free.
+    ref: bulkheads
 
 quiz:
   - q: 'Rimi''s app calls an SMS gateway after each order. Today the gateway is slow. The monitor shows a healthy database and 8% server CPU, but the whole site returns 504. What is the most likely cause?'
@@ -455,7 +480,7 @@ quiz:
     options:
       - text: 'Around 2 seconds'
         correct: true
-        why: 'Just above p99: nearly all healthy calls get through, and when it is sick the worker is freed after 2 seconds.'
+        why: 'Comfortably above p99 (900 ms): nearly all healthy calls get through, and when it is sick the worker is freed after 2 seconds.'
       - text: '300 ms'
         correct: false
         why: 'Plenty of calls take longer than that even when healthy, so you would create failures for nothing.'
@@ -498,3 +523,19 @@ quiz:
         correct: true
         why: 'Redis is across the network too. Without limits on connect and read, a slow Redis can jam the whole site.'
     ref: default-timeouts-lie
+  - q: 'Checkouts arrive at 5 a second and the courier normally replies in 0.2 s. There are 20 workers. Which semaphore limit for the courier makes the most sense?'
+    hint: 'Calls in flight = calls per second × reply time. Leave room for bursts, but not for the whole pool.'
+    options:
+      - text: '1: that is exactly the average need, so nothing is wasted'
+        correct: false
+        why: 'There is no headroom. Any small burst of checkouts is turned away even though the courier is healthy.'
+      - text: '5: about 1 is needed on average, with plenty of room, and 15 workers stay free'
+        correct: true
+        why: '5 × 0.2 = 1 call in flight, so 5 slots absorbs bursts. If the courier slows down, it can hold at most 5 workers.'
+      - text: '20: every worker may call the courier'
+        correct: false
+        why: 'That is the same as having no bulkhead. A slow courier can still take every worker.'
+      - text: '0: never call the courier and always use the default charge'
+        correct: false
+        why: 'This drops the feature completely. The bulkhead should limit the damage, not remove the feature while the courier is healthy.'
+    ref: bulkheads

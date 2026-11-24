@@ -7,7 +7,7 @@ slides:
     blocks:
       - type: text
         body: |
-          A phone costs 10,000 taka, with a 10% discount running. On Rahim's website the discount calculation is in JavaScript, in the iOS app it is in separate code (by mistake it says 12%), and on the partner's site the calculation doesn't exist at all. In one month support got: "I saw 9,000 on the website, why is checkout 10,000?" On top of that, one buyer opened DevTools, changed `total` to 1 taka and sent it, and the server accepted it.
+          A phone costs 10,000 taka, with a 10% discount running. On Rahim's website the discount calculation is in JavaScript, in the iOS app it is in separate code (by mistake it says 12%), and on the partner's site the calculation doesn't exist at all. In one month support got: "The website said 9,000, why does the partner's site say 10,000?" On top of that, one buyer opened DevTools, changed `total` to 1 taka and sent it, and the server accepted it.
       - type: visual
         kind: table
         caption: 'The price four clients show for the same cart'
@@ -160,6 +160,65 @@ slides:
       q: 'In a checkout API, what does the client send and what doesn''t it, and who calculates the price?'
       a: 'The client sends the product id and quantity. It does not send total or discount. The server calculates the price from the real prices in the database and its own rules.'
 
+  - slug: checkout-end-to-end
+    title: 'Checkout end to end: the tampered total is ignored'
+    kind: howto
+    tldr: 'The controller reads only product ids and quantities, gets a Quote from PriceCalculator, saves it and returns the numbers; a total changed in DevTools is never read.'
+    keywords: ['MapRequestPayload', 'Quote', 'checkout API', 'tampered total', 'quote endpoint', 'server-side price']
+    blocks:
+      - type: text
+        body: |
+          Now the same phone, end to end. The request class declares only `items`, so an extra `total` in the JSON has nowhere to land. The controller asks `PriceCalculator` for a `Quote`, saves it and returns the numbers for the client to display.
+      - type: code
+        lang: php
+        file: 'src/Controller/OrderController.php'
+        variant: good
+        code: |
+          #[Route('/api/orders', methods: ['POST'])]
+          public function create(
+              #[MapRequestPayload] CreateOrderRequest $input,
+              PriceCalculator $calculator,
+              EntityManagerInterface $em,
+          ): JsonResponse {
+              $quote = $calculator->quote($input->items);
+
+              $order = Order::place($this->getUser(), $quote);
+              $em->persist($order);
+              $em->flush();
+
+              return $this->json([
+                  'id' => $order->getId(),
+                  'subtotal' => $quote->subtotal,
+                  'discount' => $quote->discount,
+                  'total' => $quote->total,
+              ], 201);
+          }
+        marks:
+          - {line: 3, tip: 'CreateOrderRequest holds only the list of items (product id and quantity). A total or discount in the JSON is never read.'}
+          - {line: 7, tip: 'Every number comes from this quote, built from the database prices.'}
+          - {line: 17, tip: 'The client displays this total. It never works it out.'}
+      - type: visual
+        kind: table
+        caption: 'The 10,000-taka phone, with a tampered request'
+        headers: ['Step', 'Who', 'Result']
+        rows:
+          - cells: ['Request body', 'Browser', 'items: product 42 x 1, total: 1']
+            tip: 'The user changed total to 1 in DevTools. The request still carries it.'
+          - cells: ['Price lookup', 'Server', '10,000 taka from the database']
+            tip: 'The product''s real price, 1,000,000 paisa, from the products table.'
+          - cells: ['Discount', 'DiscountPolicy', '10% = 1,000 taka']
+            tip: 'The rule lives in one class on the server.'
+          - cells: ['Stored and returned', 'Server', 'total 9,000 taka']
+            tip: 'The 1 taka sent by the client was never read, so it cannot be stored.'
+    aside:
+      - type: tips
+        items:
+          - 'Price: the client can no longer show a total instantly while the user changes quantity. Add a quote endpoint that calls the same PriceCalculator, and show the last quote while it loads.'
+          - 'Prices can change between the quote and the order, so the order must be built from a fresh quote, never from the one the client saw earlier.'
+    check:
+      q: 'The JSON says `total: 1`, but the controller above stores 9,000 taka. Why?'
+      a: 'The request class has no `total`, and the order is built from a Quote the server calculated from the database prices and DiscountPolicy.'
+
   - slug: abilities-flag
     title: 'Who decides whether to show the button'
     kind: howto
@@ -195,8 +254,8 @@ slides:
               return $this->json(null, Response::HTTP_NO_CONTENT);
           }
         marks:
-          - {line: 7, tip: 'The decision is made by calling the same Voter. The client gets only the result, not the rule.'}
-          - {line: 13, tip: 'The real cancel uses the same Voter too. Whatever the client''s flag says, the server checks again.'}
+          - {line: 8, tip: 'The decision is made by calling the same Voter. The client gets only the result, not the rule.'}
+          - {line: 14, tip: 'The real cancel uses the same Voter too. Whatever the client''s flag says, the server checks again.'}
       - type: code
         lang: vue
         file: 'src/components/CancelButton.vue'
@@ -219,6 +278,10 @@ slides:
         items:
           - 'Hiding a button with a flag is not security, only good UX. If the real action''s endpoint has no permission check, anyone can call the API directly.'
           - 'When the permission rule changes, say "cancelling is allowed for 1 hour even after shipping", change the server''s Voter; the client stays untouched.'
+      - type: tips
+        items:
+          - 'A flag can be stale: the order may ship a minute after the page loaded. The real action''s 403 is the final word, so show a clear message when it comes.'
+          - 'In a list of 50 orders the Voter runs 50 times. Keep it cheap and load what it needs once.'
       - type: refs
         items:
           - {to: 'security/authorization-models', label: 'Voters and permission models'}
@@ -288,6 +351,11 @@ flashcards:
     more: |
       The right design: the client sends only the product id and quantity. The server takes the real prices from the database, works out the subtotal, discount and total, and returns them. The client just displays them.
     ref: server-computes-price
+  - q: 'A client sends {"items": [...], "total": 1}. Why is the stored total still correct?'
+    a: 'The request class declares only items, so total is never read. The order is built from a Quote that the server calculates from database prices.'
+    more: |
+      This is the whole fix in one line: no field the client controls ever reaches the price. If the client needs a live total while the user edits the cart, give it a quote endpoint that calls the same PriceCalculator, and build the real order from a fresh quote.
+    ref: checkout-end-to-end
   - q: 'Which checks are fine in the client, and which aren''t?'
     a: 'Fine: up-front checks for the user''s convenience (does the email contain @). Wrong: having the client as the only check.'
     more: |
@@ -333,6 +401,22 @@ quiz:
         correct: false
         why: 'Changing the order fixes nothing, the main problem is the source.'
     ref: server-computes-price
+  - q: 'Karim''s phone costs 10,000 taka with a 10% discount. A user sends `{"items": [{"productId": 42, "quantity": 1}], "total": 1}` to the checkout controller above. What total is stored?'
+    hint: 'Does the request class have a `total` field?'
+    options:
+      - text: '9,000 taka, calculated by the server from the database price and the discount rule'
+        correct: true
+        why: 'The client''s total is never read. The Quote is built from the real price (10,000) minus 10%.'
+      - text: '1 taka, because the client sent it'
+        correct: false
+        why: 'That was the old code. Here no client-controlled value reaches the price.'
+      - text: '10,000 taka, because the server ignores the discount for API calls'
+        correct: false
+        why: 'The discount rule lives in DiscountPolicy and applies to every caller, web, mobile or direct.'
+      - text: 'An error, because the JSON has an unexpected field'
+        correct: false
+        why: 'The serializer ignores fields the request class does not declare, so the call succeeds with the real price.'
+    ref: checkout-end-to-end
   - q: 'Which of these jobs can safely stay in the client?'
     hint: 'Which is only display and convenience, and which is a business decision?'
     options:

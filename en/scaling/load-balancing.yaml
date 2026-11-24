@@ -2,7 +2,7 @@ slides:
   - slug: single-point-of-failure
     title: 'When one box dies, everyone dies'
     kind: story
-    tldr: 'A single point of failure (SPOF) is any part that stops the whole system when it dies. Two app servers aren''t enough: the load balancer can be a SPOF too.'
+    tldr: 'A single point of failure (SPOF) is any part that stops the whole system when it dies. Two app servers aren''t enough: the load balancer can be a SPOF too, and a standby twin fixes it.'
     keywords: ['SPOF', 'single point of failure', 'high availability', 'redundancy', 'keepalived', 'reliability']
     blocks:
       - type: metaphor
@@ -13,15 +13,15 @@ slides:
       - type: visual
         kind: table
         caption: 'What happens when each part of Ratul''s shop dies'
-        headers: ['Part', 'How many', 'What happens if it dies']
+        headers: ['Part', 'How many', 'What happens if it dies', 'The fix']
         rows:
-          - cells: ['App server', '2', 'The other carries on, slower']
+          - cells: ['App server', '2', 'The other carries on, slower', 'Already fine: 2 copies']
             tip: 'There are several copies, so when one dies another keeps working. That is redundancy.'
-          - cells: ['Load balancer (nginx)', '1', 'The whole site is down']
+          - cells: ['Load balancer (nginx)', '1', 'The whole site is down', 'A standby twin (next slide)']
             tip: 'Every request passes through it, yet there is only one copy. This is the biggest mistake.'
-          - cells: ['Database primary', '1', 'Writes stop, the site half-works']
+          - cells: ['Database primary', '1', 'Writes stop, the site half-works', 'A replica promoted automatically']
             tip: 'Even with replicas, when the primary dies writes stay down until a new primary is chosen. You need failover.'
-          - cells: ['A single data center', '1', 'A power cut takes everything down']
+          - cells: ['A single data center', '1', 'A power cut takes everything down', 'Spread over 2+ zones']
             tip: 'If servers, LB and database all sit in one place, one incident takes them all. You need multiple availability zones.'
       - type: quote
         body: 'Ask every box: what happens when you die? If the answer is "everything stops", that box is a SPOF.'
@@ -31,7 +31,7 @@ slides:
         body: 'A small online shop figured that two app servers made it safe. One night the disk on its only nginx server filled up. Both app servers were healthy, yet the site was down for 40 minutes.'
       - type: tips
         items:
-          - 'Run two load balancers. When one dies, the other takes over the same IP (keepalived/VRRP), or use your cloud''s managed LB.'
+          - 'Run two load balancers. When one dies, the other takes over the same IP (the next slide shows how), or use your cloud''s managed LB.'
           - 'When you draw a new system, write "how many copies?" next to every box.'
       - type: refs
         items:
@@ -39,6 +39,79 @@ slides:
     check:
       q: 'With two app servers and one nginx, which one is the SPOF, and how do you remove it?'
       a: 'The nginx. Make it two as well, using a floating IP like keepalived, or use a cloud managed load balancer, which already runs in several places.'
+
+  - slug: active-standby-lb
+    title: 'A standby twin that takes over the IP'
+    kind: howto
+    tldr: 'Run two load balancers that share one IP. The active one holds it and sends heartbeats; if they stop, the standby claims the IP within seconds. keepalived does this with VRRP.'
+    keywords: ['keepalived', 'VRRP', 'floating IP', 'virtual IP', 'active standby', 'failover', 'split brain']
+    blocks:
+      - type: text
+        body: |
+          Give the two load balancers one shared address, a **virtual IP**, and point DNS at it. LB A holds it and sends a heartbeat every second over **VRRP**, a tiny "I'm alive" message. If LB B hears nothing for about 3 seconds, B claims the IP and visitors never notice the address changed.
+      - type: visual
+        kind: sequence
+        caption: 'LB A crashes at 2am: the same address keeps working'
+        actors:
+          - {id: visitor, label: 'Visitor', icon: user, tip: 'Knows only one address, 203.0.113.10. Never learns which box answers.'}
+          - {id: lba, label: 'LB A (active)', icon: lb, tip: 'Holds the virtual IP and sends a heartbeat every second.'}
+          - {id: lbb, label: 'LB B (standby)', icon: lb, tip: 'Does no work, only listens for A''s heartbeat.'}
+        messages:
+          - {from: visitor, to: lba, label: 'Request to 203.0.113.10', tip: 'In normal times every request lands on A.'}
+          - {from: lba, to: lbb, label: 'Heartbeat: I''m alive', dashed: true, tip: 'Sent once a second. B stays quiet as long as these keep coming.'}
+          - {at: lba, note: 'A crashes, no more heartbeats', tone: bad}
+          - {at: lbb, note: '3 seconds of silence: B claims the IP', tone: good}
+          - {from: visitor, to: lbb, label: 'Retry to the same 203.0.113.10', tip: 'The address is unchanged; it simply points at B now.'}
+          - {from: lbb, to: visitor, label: 'Response', dashed: true}
+      - type: code
+        lang: text
+        file: '/etc/keepalived/keepalived.conf'
+        variant: good
+        code: |
+          vrrp_script chk_nginx {
+              script "/usr/bin/pgrep nginx"   # unhealthy if nginx is not running
+              interval 2
+              fall 2                          # 2 failures in a row = give up the IP
+          }
+
+          vrrp_instance shop_vip {
+              state MASTER                    # on LB B write: state BACKUP
+              interface eth0
+              virtual_router_id 51            # must be the same on both boxes
+              priority 150                    # on LB B write 100; higher number wins
+              advert_int 1                    # heartbeat every second
+              virtual_ipaddress {
+                  203.0.113.10/24             # the one address DNS points to
+              }
+              track_script {
+                  chk_nginx
+              }
+          }
+        marks:
+          - {line: 2, tip: 'Without this check, a box whose nginx died but whose machine is alive would keep the IP and drop every request.'}
+          - {line: 11, tip: 'When the higher-priority box dies, the lower one wins. When it returns, it takes the IP back.'}
+      - type: points
+        title: 'What it costs, and when it fails'
+        style: cross
+        items:
+          - 'The standby sits idle, so you pay for a second box and get no extra capacity.'
+          - 'Requests in flight when A dies are lost; only new ones succeed, after about 3 seconds.'
+          - 'If the link between A and B breaks but both live, both claim the IP (split brain).'
+    aside:
+      - type: when
+        use:
+          - 'Your own servers or VMs in one network, where you control the IPs'
+        avoid:
+          - 'Most clouds block VRRP; use the provider''s managed load balancer instead'
+          - 'You need more capacity, not just survival: that needs several active LBs'
+      - type: terms
+        items:
+          - {term: 'Virtual IP', meaning: 'An address that belongs to no single machine; whoever is active holds it.'}
+          - {term: 'VRRP', meaning: 'The protocol where boxes in a pair keep telling each other "I''m alive".'}
+          - {term: 'Split brain', meaning: 'Both boxes think they are the active one and both claim the IP.'}
+    check:
+      q: 'LB A''s machine is up but its nginx has crashed. Which line of the config makes B take over?'
+      a: 'The `track_script` that runs pgrep nginx. After 2 failed checks A gives up the IP and B claims it.'
 
   - slug: balancing-algorithms
     title: 'Three rules for splitting the crowd'
@@ -62,6 +135,26 @@ slides:
             tip: 'It counts open connections, so a slow server automatically receives fewer requests.'
           - cells: ['Weighted', 'Shares by capacity', 'Servers are unequal (old 2-core, new 8-core)', 'A wrong weight drowns one server']
             tip: 'A weight is really a capacity ratio. Some people combine it with round robin or least connections.'
+      - type: visual
+        kind: compare
+        caption: 'Six requests, three servers; every third one is a 30-second report'
+        columns:
+          - title: 'Round robin'
+            tone: bad
+            icon: cross
+            tip: 'Takes turns blindly. The heavy requests are 1 and 4, and turn 4 lands on server A again.'
+            items:
+              - 'Turns go A, B, C, A, B, C'
+              - 'Both 30s reports land on A'
+              - 'A is busy for a minute; B and C idle'
+          - title: 'Least connections'
+            tone: good
+            icon: check
+            tip: 'Asks who is least busy right now. When report 4 arrives, A is already holding one, so it goes elsewhere.'
+            items:
+              - 'Report 1 goes to A'
+              - 'Report 4 sees A busy and goes to B'
+              - 'Each server holds one report'
       - type: points
         title: 'A simple way to choose'
         style: check
@@ -83,12 +176,12 @@ slides:
   - slug: nginx-upstream
     title: 'nginx upstream and health checks'
     kind: howto
-    tldr: 'Write the rule, weights, failure limits and a backup server in an nginx upstream. Add a cheap /healthz to the app that tells the LB whether this server can take requests.'
+    tldr: 'Write the rule, weights, failure limits and a backup server in an nginx upstream. Add a cheap /healthz that an active checker (HAProxy, a cloud LB) calls; free nginx only checks passively.'
     keywords: ['nginx upstream', 'least_conn', 'max_fails', 'health check', 'healthz', 'drain', 'backup server']
     blocks:
       - type: text
         body: |
-          A load balancer takes just a few lines of config. Here `max_fails` and `fail_timeout` give you a **passive health check**: when real requests fail, nginx sidelines the server for a while. Poking the server ahead of time, an **active health check**, isn't in free nginx; you'll find it in HAProxy, nginx Plus or a cloud LB.
+          A load balancer takes just a few lines of config. Here `max_fails` and `fail_timeout` give you a **passive health check**: when real requests fail, nginx sidelines the server for a while. Poking the server ahead of time, an **active health check**, isn't in free nginx. That is what the `/healthz` endpoint below is for: HAProxy (`option httpchk GET /healthz`), nginx Plus or a cloud LB calls it every few seconds.
       - type: code
         lang: nginx
         file: '/etc/nginx/conf.d/shop.conf'
@@ -149,6 +242,7 @@ slides:
       - type: pitfalls
         items:
           - 'If the health check calls the database or an outside API, the moment that gets slow every server turns "sick" at once and the whole site goes down.'
+          - 'Free nginx never calls /healthz and never reads the drain file; it only reacts to real failures. Pair it with an active checker for drains.'
           - 'Behind a proxy, set `framework.trusted_proxies` in Symfony, or the user''s IP will always show up as the LB''s IP.'
       - type: refs
         items:
@@ -199,7 +293,7 @@ slides:
           location /api/    { proxy_pass http://shop_api; }
           location /images/ { proxy_pass http://image_cache; }
 
-          # L4: plain TCP, never looks inside
+          # L4: plain TCP, never looks inside (read replicas only; writes go to the primary)
           stream {
               upstream pg_replicas { server 10.0.2.11:5432; server 10.0.2.12:5432; }
               server { listen 5433; proxy_pass pg_replicas; }
@@ -217,6 +311,7 @@ slides:
           - 'L4: when you must split by path or cookie'
       - type: terms
         items:
+          - {term: 'TCP', meaning: 'The reliable pipe that most programs use to send bytes to each other, web or database.'}
           - {term: 'TLS termination', meaning: 'Opening the HTTPS encryption at the load balancer, so the servers behind it receive plain HTTP.'}
     check:
       q: 'On one domain, /api should run on 3 servers and /admin on a separate one. L4 or L7?'
@@ -253,16 +348,30 @@ slides:
           - {label: 'Server 1 (office NAT)', value: 520, display: '520', tone: bad, tip: 'The 500 people of one company come from a single IP, and all of them are stuck on this one server.'}
           - {label: 'Server 2', value: 90, display: '90', tone: muted, tip: 'Almost empty. Capacity is going to waste.'}
           - {label: 'Server 3', value: 85, display: '85', tone: muted, tip: 'Nearly empty too, while server 1 is about to collapse.'}
+      - type: code
+        lang: yaml
+        file: 'config/packages/framework.yaml'
+        variant: good
+        code: |
+          framework:
+              session:
+                  # the session lives in Redis, so any server can read it
+                  handler_id: 'redis://redis.internal:6379'
+                  cookie_secure: auto
+                  cookie_samesite: lax
+        marks:
+          - {line: 4, tip: 'Every server now looks up the session in the same Redis. A server dying loses nobody''s login, and ip_hash can go, replaced by least_conn.'}
       - type: quote
         body: 'Sticky sessions hide the symptom and leave the disease. The disease is state kept inside the server.'
     aside:
       - type: pitfalls
         items:
           - 'When a server dies or is deployed, all its users lose their session.'
+          - 'The price of the fix: one extra network call per request, and Redis itself becomes a SPOF, so give it a replica.'
           - 'With autoscaling, new servers join but the existing users stay stuck on the old ones, so the new servers sit almost idle.'
       - type: tips
         items:
-          - 'If you can''t move the state right now, use cookie-based stickiness deliberately and only temporarily, not ip_hash. And put moving the session on your to-do list.'
+          - 'If you can''t move the state right now, stick by cookie, not IP (free nginx: `hash $cookie_PHPSESSID consistent;`), and only temporarily. Put moving the session on your to-do list.'
       - type: refs
         items:
           - {to: 'scaling/horizontal-vertical', label: 'How to move sessions to Redis'}
@@ -279,8 +388,13 @@ flashcards:
   - q: 'How do you stop the load balancer itself from being a SPOF?'
     a: 'Run two LBs and let the survivor take over the same IP (keepalived/VRRP), or use a cloud managed load balancer.'
     more: |
-      In an active-passive pair one LB works while the other watches. If the main one stops answering, the second grabs the floating IP. A cloud managed LB already runs in several places, so it is usually the easy route.
-    ref: single-point-of-failure
+      In an active-passive pair one LB works while the other sends and listens for heartbeats. If the main one goes quiet for about 3 seconds, the second grabs the floating IP. A cloud managed LB already runs in several places, so on a cloud it is usually the easy route.
+    ref: active-standby-lb
+  - q: 'What does an active/standby load balancer pair cost, and how can it fail?'
+    a: 'You pay for an idle second box with no extra capacity. Requests in flight are lost, and a broken link between the two can make both claim the IP.'
+    more: |
+      The standby only waits, so a pair gives survival, not more throughput. Failover takes a few seconds, and anything in flight at that moment is dropped. If A and B lose contact but both are alive, both claim the IP (split brain). Many clouds also block VRRP, so use the managed LB there.
+    ref: active-standby-lb
   - q: 'Round robin, least connections, weighted: which one when?'
     a: 'Round robin takes turns, so it piles up on long requests. Least connections suits uneven request times, weighted suits unequal servers.'
     more: |
@@ -305,6 +419,11 @@ flashcards:
     a: 'Always sending the same user to the same server. It unbalances the load and loses sessions when a server dies.'
     more: |
       Sticky sessions really just hide the symptom of state kept inside the server. Move the session to Redis and stickiness isn't needed, so the LB can split the load truly evenly. With ip_hash there is also the risk of thousands of users behind a NAT landing on one server.
+    ref: sticky-sessions-trap
+  - q: 'How do you remove the need for sticky sessions in Symfony?'
+    a: 'Set `framework.session.handler_id` to a Redis URL, so any server can read any session. Then use least_conn instead of ip_hash.'
+    more: |
+      The price is one extra network call to Redis per request, and Redis becomes a new single point of failure, so give it a replica. With the session outside, a server can die or be deployed and nobody gets logged out.
     ref: sticky-sessions-trap
 
 quiz:
@@ -372,6 +491,22 @@ quiz:
         correct: false
         why: 'The LB doesn''t reduce the database''s load. If every server is removed, users simply can''t reach the site.'
     ref: nginx-upstream
+  - q: 'Two nginx boxes share one IP via keepalived. LB A''s machine stays up but its nginx crashes. What keeps the site alive?'
+    hint: 'The machine answers heartbeats; what tells keepalived nginx itself is dead?'
+    options:
+      - text: 'A track_script that checks nginx, so A gives up the IP after repeated failures and B claims it'
+        correct: true
+        why: 'Heartbeats only prove the machine is alive. The script makes keepalived judge the thing that matters, nginx.'
+      - text: 'Nothing: B takes over only when the whole machine of A is down'
+        correct: false
+        why: 'Without a script check that is true, and the site would stay down while A keeps the IP and drops every request.'
+      - text: 'DNS automatically points visitors to B'
+        correct: false
+        why: 'DNS never changes here. Both boxes share one IP, and DNS caching would make a DNS switch slow anyway.'
+      - text: 'The app servers notice and restart nginx'
+        correct: false
+        why: 'App servers sit behind the LB and know nothing about it. The two LBs have to watch each other.'
+    ref: active-standby-lb
   - q: '300 office staff visit a site that uses ip_hash, and one server is close to collapse while the others sit idle. Which are correct fixes?'
     hint: 'What is the root cause: the IP, or the state inside the server?'
     options:

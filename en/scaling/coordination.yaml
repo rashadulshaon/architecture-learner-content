@@ -14,7 +14,7 @@ slides:
         kind: sequence
         caption: 'A payroll cron on two servers: both believed they were the leader'
         actors:
-          - {id: a, label: 'Server A', icon: server, tip: 'It was the leader before. Now it is stuck for a while on the network or a GC pause.'}
+          - {id: a, label: 'Server A', icon: server, tip: 'It was the leader before. Now it is stuck for a while on the network, or in a GC pause (the program freezes while it cleans up its memory).'}
           - {id: b, label: 'Server B', icon: server, tip: 'Hearing nothing from A, it concluded that A had died.'}
           - {id: db, label: 'Payroll table', icon: db, tip: 'The database won''t object by itself, whoever writes.'}
         messages:
@@ -53,7 +53,7 @@ slides:
         headers: ['Nodes (N)', 'Quorum', 'Can lose']
         rows:
           - cells: ['1', '1', '0']
-            tip: 'With a single node, its death stops everything. That is a SPOF.'
+            tip: 'With a single node, its death stops everything. That is a SPOF (single point of failure): one thing breaks and all of it stops.'
           - cells: ['3', '2', '1']
             tip: 'The smallest realistic cluster. Even if one dies, the other two still make a majority.'
           - cells: ['4', '3', '1']
@@ -70,6 +70,7 @@ slides:
       - type: tips
         items:
           - 'Put the nodes in different racks or availability zones, so that a single incident can''t take out the majority.'
+          - 'The price: if the cluster loses its majority, it stops accepting writes rather than risk two leaders. It picks safety over staying up.'
     check:
       q: 'A 5-node cluster splits into 3 and 2 by a network fault. Which side can accept writes?'
       a: 'The side with 3 nodes, because it holds a majority (quorum = 3). The 2-node side can''t make any new decisions.'
@@ -106,6 +107,12 @@ slides:
         items:
           - {term: 'Term', meaning: 'The number of an election round; it goes up with each new election. Nobody obeys a leader from an old term.'}
           - {term: 'Committed', meaning: 'Written to a majority of nodes, so it can''t be lost any more.'}
+      - type: when
+        use:
+          - 'Small but critical data: config, who the leader is, locks (through etcd, ZooKeeper or Consul)'
+        avoid:
+          - 'Big data or heavy write rates: every write waits for a majority, and one leader takes them all'
+          - 'Writing Raft yourself: there are too many subtle bugs, so use a ready-made service'
       - type: refs
         items:
           - {to: 'data/consistency-models', label: 'Linearizable and other consistency models'}
@@ -116,7 +123,7 @@ slides:
   - slug: distributed-lock
     title: '"Only one runs it" with Symfony Lock'
     kind: howto
-    tldr: 'For ordinary cases, give a job to one runner at a time with Symfony Lock''s LockFactory. Always set a TTL, call refresh() during long jobs, and release() at the end.'
+    tldr: 'For ordinary cases, give a job to one runner at a time with Symfony Lock''s LockFactory. Set a short TTL, call refresh() during long jobs, and release() at the end.'
     keywords: ['Symfony Lock', 'LockFactory', 'distributed lock', 'TTL', 'refresh', 'cron', 'mutual exclusion']
     blocks:
       - type: text
@@ -156,7 +163,7 @@ slides:
               }
           }
         marks:
-          - {line: 3, tip: 'Thanks to the ttl, even if the server dies mid-job, the lock frees itself after 60 seconds. Without a ttl the lock would stay stuck forever.'}
+          - {line: 3, tip: 'Thanks to the ttl, even if the server dies mid-job, the lock frees itself after 60 seconds. Leave it out and Symfony uses 300 seconds, so a crash would block payroll for 5 minutes.'}
           - {line: 12, tip: 'It extends the lease on every step. But this alone is not safety: after a pause you can still lose the lock (next slide).'}
     aside:
       - type: tips
@@ -168,8 +175,8 @@ slides:
           - {to: 'concurrency/locking', label: 'Kinds of locks and how to use them'}
           - {to: 'payments/idempotency-keys', label: 'Idempotency keys'}
     check:
-      q: 'What happens if createLock() gets no ttl, or a very large one, and the server dies?'
-      a: 'The lock stays held for a long time or forever, and nobody else can pick up the job. So give a short TTL and call refresh() while the work runs.'
+      q: 'What goes wrong if the lock''s ttl is far too long, or shorter than the job?'
+      a: 'Too long: if the server dies, nobody can take the job until the ttl runs out. Too short: the lock expires mid-job and a second server starts. So use a short ttl and call refresh() while the work runs.'
 
   - slug: fencing-token
     title: 'When a lock expires: the fencing token'
@@ -225,11 +232,13 @@ slides:
         items:
           - 'A single Redis lock can be lost on failover: if the primary dies before the write reaches the replica, the new primary doesn''t know the lock.'
           - 'etcd''s revision, ZooKeeper''s zxid and sequence nodes naturally give an increasing token; the storage still has to check it.'
+          - 'Symfony Lock hands out no token. For fencing, keep a counter in your own table as above, or take etcd''s revision.'
       - type: when
         use:
           - 'If doing the job twice only costs a little: a plain Symfony Lock is enough'
         avoid:
           - 'If money or stock changes: don''t trust a lock alone without a fencing token or idempotency'
+          - 'If the target is an outside service that can''t check a token (email, payments): use an idempotency key instead'
       - type: refs
         items:
           - {to: 'time/clocks-lie', label: 'Why you can''t trust a clock to time out a lease'}
@@ -264,7 +273,7 @@ flashcards:
       Kubernetes keeps all its state in etcd. You won't write Raft yourself; you use these for leader election, locks and service discovery. They aren't a place for big data: little data, high reliability.
     ref: raft-election
   - q: 'What are the three rules for using Symfony Lock?'
-    a: 'Set a TTL, call refresh() during long jobs, and release() in a finally block. Without a TTL, a dead server leaves the lock held forever.'
+    a: 'Set a TTL, call refresh() during long jobs, and release() in a finally block. Leave the TTL out and Symfony uses 300 seconds, so a dead server blocks the job for 5 minutes.'
     more: |
       Create the lock with `$factory->createLock($name, ttl: 60)` and return if `acquire()` fails. A lock only gives the "don't run it twice" convenience; where money or stock is involved you need a fencing token or idempotency.
     ref: distributed-lock
@@ -273,6 +282,11 @@ flashcards:
     more: |
       A lock holder stuck in a pause doesn't know its lock is gone. So the final check lives in the storage: `WHERE last_token <= :token`. The token must be bumped in the same atomic step as the lock grant. etcd's revision and ZooKeeper's zxid give exactly this kind of token.
     ref: fencing-token
+  - q: 'What happens to a consensus cluster that loses its majority?'
+    a: 'It stops accepting writes. It prefers being unavailable to risking two leaders, so a 5-node cluster needs at least 3 nodes alive.'
+    more: |
+      This is the price of the quorum rule. With 5 nodes, 2 can die and it carries on. With 3 dead, the 2 survivors can't form a majority, so they wait until enough nodes come back. Stopping is safe; deciding on their own would risk split brain.
+    ref: quorum-majority
 
 quiz:
   - q: 'A 5-node etcd cluster splits into 3 and 2 nodes because of a network problem. What happens?'

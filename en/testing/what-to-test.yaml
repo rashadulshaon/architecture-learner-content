@@ -12,17 +12,17 @@ slides:
           A family keeps its jewellery in a trunk and a broom on the veranda. Sensible people put a strong lock on the trunk, not on the broom. But one person decides "everything gets the same lock", fits 400 boxes with locks, and leaves the trunk with an old rusty one. Tests work the same way: put the most of them where a break hurts most. Piling tests onto easy code just to raise coverage doesn't help.
       - type: visual
         kind: table
-        caption: 'Coverage is 95%, yet tests and bugs are spread in exactly opposite ways'
-        headers: ['Code', 'Tests', 'Bugs last year']
+        caption: 'Coverage is 95%, yet tests and bugs are spread in exactly opposite ways, and the last column moves the effort'
+        headers: ['Code', 'Tests now', 'Bugs last year', 'Better split']
         rows:
-          - cells: ['Entity getters/setters', '400', '0']
-            tip: 'There is nothing in this code to break. It has the most lines, though, so it inflates the coverage number.'
-          - cells: ['Price and discount calculation', '3', '7']
-            tip: 'Thresholds, percentages and conditions are tangled together here. Money is directly involved, yet there are almost no tests.'
-          - cells: ['Payment webhook', '0', '4']
-            tip: 'This is where you join an outside service. Nobody wrote tests because it looked hard to mock.'
-          - cells: ['Database migrations', '0', '3']
-            tip: 'Migrations are never tested, yet one mistake puts the whole database at risk.'
+          - cells: ['Entity getters/setters', '400', '0', 'A handful']
+            tip: 'There is nothing in this code to break. It has the most lines, though, so it inflates the coverage number. Keep a few and move the effort.'
+          - cells: ['Price and discount calculation', '3', '7', 'Dozens of boundary cases']
+            tip: 'Thresholds, percentages and conditions are tangled together here, and money is directly involved. Cheap unit tests on both sides of every threshold.'
+          - cells: ['Payment webhook', '0', '4', 'One test per outcome']
+            tip: 'This is where you join an outside service. Nobody wrote tests because it looked hard to mock. Test paid, failed and duplicate deliveries.'
+          - cells: ['Database migrations', '0', '3', 'Run on old-shaped data']
+            tip: 'One migration mistake puts the whole database at risk. Run each one on old-shaped, messy data.'
       - type: quote
         body: 'Coverage tells you which lines ran, not which lines are safe.'
     aside:
@@ -46,7 +46,7 @@ slides:
     blocks:
       - type: text
         body: |
-          There are three kinds of tests. A **unit test** checks one small piece in isolation, with no database or network, so it runs in milliseconds. An **integration test** runs several pieces together, with a real database or real HTTP. An **end-to-end (E2E) test** walks the whole journey from the browser to the database. The higher you go, the closer to reality the test gets, but the slower and more brittle it becomes.
+          There are three kinds of tests. A **unit test** checks one small piece in isolation, with no database or network, so it runs in milliseconds. An **integration test** runs several pieces together, with a real database or real HTTP. An **end-to-end (E2E) test** walks the whole journey from the browser to the database. The higher you go, the closer to reality the test gets, but the slower and more brittle it becomes (brittle: it breaks for small, unrelated reasons).
       - type: visual
         kind: layers
         caption: 'The pyramid: many at the bottom, few at the top'
@@ -61,7 +61,7 @@ slides:
           - 'Big damage: money, data loss, security (payments, discounts, permissions)'
           - 'Changes often: a rule everyone keeps touching'
           - 'Complex: many conditions, or values close to a boundary'
-          - 'Seams: queries, config, outside APIs'
+          - 'Seams (where two parts join): queries, config, outside APIs'
       - type: quote
         body: 'Write tests in proportion to the risk, not in proportion to the lines of code.'
     aside:
@@ -69,6 +69,11 @@ slides:
         body: 'The higher the layer, the more real but the slower. So: few on top, many at the bottom.'
       - type: problem
         body: 'Test everything end to end and the suite takes an hour, breaks all the time, and nobody runs it. Write only unit tests and you miss mistakes at the seams (a wrong query, a wrong config).'
+      - type: when
+        use:
+          - 'Logic-heavy code (prices, rules, calculations): many unit tests, a few integration tests.'
+        avoid:
+          - 'Thin glue with little logic, like plain CRUD: unit tests there mostly test mocks, so lean on integration tests.'
       - type: refs
         items:
           - {to: 'testing/test-types', label: 'Contract, load and chaos tests'}
@@ -84,7 +89,7 @@ slides:
     blocks:
       - type: text
         body: |
-          The pricing rule is an ordinary class, so you can test it without any framework. Put the values near the boundary in a `DataProvider`, so one test function runs dozens of cases. Where you need the container and a database, such as a Doctrine query, use `KernelTestCase`.
+          The pricing rule is an ordinary class, so you can test it without any framework. Put the values near the boundary in a `DataProvider`, so one test function runs dozens of cases. Where you need the container (the box that holds all your services) and a database, such as a Doctrine query, use `KernelTestCase`. The boundary cases matter most: if the code wrongly says `>` where the rule says "100,000 or more", an order of exactly 100,000 gets no discount. The case at 100,000 below fails with `Failed asserting that 0 is identical to 10000`; tests at 50,000 and 200,000 would pass either way.
       - type: code
         lang: php
         file: 'tests/Unit/DiscountCalculatorTest.php'
@@ -218,6 +223,7 @@ slides:
         items:
           - 'Keep E2E tests to a handful: login, placing an order, payment. Everything else goes in the lower layers.'
           - 'In WebTestCase, put a MockHttpClient in the test environment for outside APIs, or calls will hit the real service.'
+          - 'Cart ids like ''empty-cart'' are fixtures: create them in the test (or load fixtures) so each test sets up exactly the data it needs.'
       - type: refs
         items:
           - {to: 'api/error-design', label: 'Designing error responses'}
@@ -233,7 +239,7 @@ slides:
     blocks:
       - type: text
         body: |
-          In the test below, everything is mocked. It only checks that `save()` was called once. But `save()` is called even when the price is wrong, so the test always passes. It doesn't break when the real code changes, and it doesn't catch broken code. Both are bad.
+          In the test below, everything is mocked. It only checks that `save()` was called once. But `save()` is called even when the price is wrong, so the test stays green on broken code. And it breaks when you refactor the insides, even though the behaviour is right. Both are bad.
       - type: code
         lang: php
         file: 'tests/Unit/PlaceOrderTest.php'
@@ -256,9 +262,26 @@ slides:
         file: 'tests/Unit/PlaceOrderTest.php'
         variant: good
         code: |
+          // tests/Support/InMemoryOrderRepository.php: a fake, small but it really works
+          final class InMemoryOrderRepository implements OrderRepository
+          {
+              private array $orders = [];
+
+              public function save(Order $order): void
+              {
+                  $this->orders[] = $order;
+              }
+
+              public function last(): Order
+              {
+                  return end($this->orders) ?: throw new \LogicException('nothing saved');
+              }
+          }
+
+          // tests/Unit/PlaceOrderTest.php
           public function testPlaceOrderAppliesTenPercentDiscount(): void
           {
-              $repo = new InMemoryOrderRepository();   // fake: really works, just in memory
+              $repo = new InMemoryOrderRepository();
 
               $service = new PlaceOrder($repo, new DiscountCalculator());
               $service(new PlaceOrderCommand('cart-1', 100_000));
@@ -266,8 +289,8 @@ slides:
               self::assertSame(90_000, $repo->last()->totalPaisa());   // verify the outcome
           }
         marks:
-          - {line: 3, tip: 'A fake is a small real implementation. How it works is not your concern, only whether the result is right.'}
-          - {line: 8, tip: '100,000 - 10% = 90,000. If the price is wrong, the test fails on this line, which is exactly what you want.'}
+          - {line: 20, tip: 'A fake is a small real implementation. How it works is not your concern, only whether the result is right.'}
+          - {line: 26, tip: '100,000 - 10% = 90,000. If the price is wrong, the test fails on this line, which is exactly what you want.'}
       - type: points
         title: 'How to look at coverage'
         style: dot
@@ -280,6 +303,7 @@ slides:
         items:
           - 'Infection (mutation testing) plants small bugs in your code on purpose and checks whether the tests catch them. Run it now and then on your most valuable code.'
           - 'You need a mock when the call itself is the result (for example, sending an email exactly once). Even then, use a fake if you can.'
+          - 'The price of a fake: it can drift from the real thing. Keep one integration test on the real repository (the KernelTestCase slide) so the two stay in step.'
       - type: when
         use: ['fake: for simple dependencies like a repository, a clock or an email inbox']
         avoid: ['mocking every internal method call', 'blocking merges at 90% coverage']
@@ -306,7 +330,7 @@ flashcards:
   - q: 'When is a DataProvider useful in PHPUnit?'
     a: 'When one piece of logic has many input and output cases: a single test method runs dozens of cases, especially boundary values.'
     more: |
-      Attach a static method with the `#[DataProvider('cases')]` attribute. If you `yield 'name' => [inputs..., expected]`, a failing case shows its name. Always include the values exactly on either side of a boundary (for example 99,999 and 100,000).
+      Attach a static method with the `#[DataProvider('cases')]` attribute. If you `yield 'name' => [inputs..., expected]`, a failing case shows its name. Always include the values exactly on either side of a boundary (for example 99,999 and 100,000). A wrong `>` instead of `>=` fails only the case exactly on the boundary.
     ref: unit-and-kernel-tests
   - q: 'What is the difference between KernelTestCase and WebTestCase?'
     a: 'KernelTestCase boots the container so you can test services directly. WebTestCase adds a client that sends HTTP requests on top.'
@@ -317,6 +341,11 @@ flashcards:
     a: 'A mock verifies which methods were called. A fake is a small real implementation. Prefer fakes, because you can verify the result.'
     more: |
       A fake like InMemoryOrderRepository does the real work, just in memory. The test checks the outcome, not how it was reached, so it survives a refactor. You need a mock only when the call itself is the result, such as sending an email exactly once.
+    ref: coverage-and-mocks-trap
+  - q: 'What is the risk of using a fake instead of the real repository, and how do you cover it?'
+    a: 'A fake can drift from the real implementation. Cover the real one with its own integration test (KernelTestCase).'
+    more: |
+      The unit test with the fake checks the business result fast. The integration test on the real repository checks that the real queries behave the way the fake pretends. Together they close the gap that neither covers alone.
     ref: coverage-and-mocks-trap
 
 quiz:
@@ -389,6 +418,22 @@ quiz:
       - text: '10 cases for the price percentage thresholds'
         correct: false
         why: 'That is a job for a unit test and a DataProvider, which runs in milliseconds.'
+    ref: unit-and-kernel-tests
+  - q: 'The rule is "10% off from 100,000 paisa". The code wrongly uses `>` instead of `>=`. Which test values catch it?'
+    hint: 'Which values would give the same answer with `>` and with `>=`?'
+    options:
+      - text: '50,000 and 200,000'
+        correct: false
+        why: 'Both versions give the same answer for each of these, so the bug stays hidden.'
+      - text: '100,001 and 500,000'
+        correct: false
+        why: 'Both are above the threshold, so `>` and `>=` agree on them.'
+      - text: '99,999 and 100,000'
+        correct: true
+        why: 'At exactly 100,000 the correct code gives 10,000 off and the buggy code gives 0, so the test fails.'
+      - text: 'Ten random amounts'
+        correct: false
+        why: 'The chance of hitting exactly 100,000 is tiny. Boundary values have to be chosen on purpose.'
     ref: unit-and-kernel-tests
   - q: 'A team wrote every test as an E2E (browser) test. The suite takes 45 minutes and often breaks for no reason. Which decisions are right?'
     hint: 'Think of the pyramid.'

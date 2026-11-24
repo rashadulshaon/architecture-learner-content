@@ -23,6 +23,17 @@ slides:
           - {from: old, to: api, label: 'Give me my profile'}
           - {from: api, to: old, label: '{"mobile": "01711..."}', dashed: true, tip: 'The new name. The old app doesn''t recognise it.'}
           - {at: old, note: 'user.phone = null, phone box empty', tone: bad, tip: 'With luck you just get an empty box; with bad luck, a crash.'}
+      - type: code
+        lang: text
+        file: 'The same rename, done safely (what the API returns)'
+        variant: good
+        code: |
+          week 0   {"phone": "01711-000001"}                          old name only
+          week 1   {"phone": "01711-000001", "mobile": "01711-000001"}   send both
+          week 3   {"mobile": "01711-000001"}                         old name dropped
+        marks:
+          - {line: 2, tip: 'For the weeks when both app versions are in use, the response carries both names, so each version finds the one it knows. The price: a little extra data and two fields to keep equal.'}
+          - {line: 3, tip: 'Remove `phone` only after your logs show that no old app still asks for it. The same steps, with the other kinds of change, are on slide 3.'}
       - type: quote
         body: 'Readers and writers never change at the same moment. Make every change work in both directions.'
     aside:
@@ -60,6 +71,8 @@ slides:
             tip: 'With a schema, a compiler or registry catches breaking changes early.'
           - cells: ['Identifies fields by', 'Name', 'Number', 'Schema order']
             tip: 'In Protobuf, renaming a field is safe and changing its number is disastrous.'
+          - cells: ['The same small order', '54 bytes', '11 bytes', '9 bytes']
+            tip: 'Counted for order_id 9001, total_amount 2500, currency BDT. The binary formats leave out every field name, which is where most of the saving comes from.'
           - cells: ['Typically used for', 'Public APIs, browsers', 'gRPC, service to service', 'Kafka, data pipelines']
             tip: 'Each has its place; for browsers, JSON is almost always the answer.'
       - type: code
@@ -79,6 +92,9 @@ slides:
     aside:
       - type: remember
         body: 'In JSON the name is the identity; in Protobuf the number is.'
+      - type: terms
+        items:
+          - {term: 'On the wire', meaning: 'The bytes exactly as they travel between two machines, as opposed to the objects inside your program.'}
       - type: when
         use:
           - 'JSON: browser-facing APIs, or when easy debugging matters'
@@ -87,7 +103,7 @@ slides:
           - 'Picking a binary format only because it sounds "fast"; measure first'
     check:
       q: 'In Protobuf, renaming a field is safe but changing its number is not. Why?'
-      a: 'Names never go over the wire, only numbers do. Change a number and old readers will interpret that data as the value of a different field.'
+      a: 'Names never go over the wire, only numbers do. Change a number and old data is either not recognised (the value is lost) or read as a different field.'
 
   - slug: safe-schema-changes
     title: 'Safe changes: adding, removing and renaming fields'
@@ -167,7 +183,7 @@ slides:
     blocks:
       - type: text
         body: |
-          The `phone` field (number 4) was removed. A few months later someone gives the same number 4 to a new field, `discount_percent`. But old messages are still on disk or in a queue, and in them 4 means a phone number. The new reader will happily treat that phone number as a discount rate, with no error at all. It's a mistake of meaning, not of spelling, which makes it the most dangerous kind.
+          The `phone` field (a string, number 4) was removed. A few months later someone gives the same number 4 to a new string field, `coupon_code`. But old messages are still on disk or in a queue, and in them 4 holds a phone number. The new reader will happily treat "01711-000001" as a coupon code, with no error at all. It's a mistake of meaning, not of spelling, which makes it the most dangerous kind.
       - type: code
         lang: protobuf
         file: 'proto/order.proto'
@@ -178,10 +194,10 @@ slides:
             int64  total_amount     = 2;
             string currency         = 3;
             // phone = 4 was removed; number 4 is now free
-            int32  discount_percent = 4;   // old data has a phone number here!
+            string coupon_code      = 4;   // old data has a phone number here!
           }
         marks:
-          - {line: 6, tip: 'In old messages, 4 is a phone number (a string). Reading it as an int32 gives a wrong or meaningless value.'}
+          - {line: 6, tip: 'In old messages, 4 holds a phone number. Read as `coupon_code`, it is a plausible-looking string, so nothing complains and the wrong value flows on.'}
       - type: code
         lang: protobuf
         file: 'proto/order.proto'
@@ -194,7 +210,7 @@ slides:
             int64  order_id         = 1;
             int64  total_amount     = 2;
             string currency         = 3;
-            int32  discount_percent = 5;   // a new field gets a new number
+            string coupon_code      = 5;   // a new field gets a new number
           }
         marks:
           - {line: 2, tip: 'With `reserved`, the compiler refuses to let that number or name be used again. The mistake is caught before deploy.'}
@@ -204,6 +220,7 @@ slides:
       - type: pitfalls
         items:
           - 'Adding a new required field makes messages from old senders get rejected. This is why proto3 dropped `required`.'
+          - 'If the new field had a different type (an int32), old string data would be dropped instead of misread. Still wrong, only quieter; `reserved` guards against both.'
           - 'When you add a new enum value, old readers don''t recognise it; decide up front what they should do with an unknown value.'
       - type: remember
         body: 'Bury a field number; never resurrect it.'
@@ -220,6 +237,15 @@ slides:
       - type: text
         body: |
           When many teams share one queue or Kafka topic, any of them can change a schema without asking the others. A **schema registry** is a central ledger that stores every version of every schema. When you submit a new version, it first checks whether it fits with the old ones. If it doesn't, the registry refuses it, so a breaking schema can't reach production. Instead of embedding the whole schema in each message, the message carries just a small **schema id**.
+      - type: code
+        lang: text
+        file: 'What the registry says (compatibility = BACKWARD)'
+        code: |
+          v1  order_id, total_amount, currency
+          v2  + coupon_code, required, no default  -> REJECTED: v2 cannot read v1 messages
+          v2  + coupon_code, default null          -> accepted: v1 messages still readable
+        marks:
+          - {line: 2, tip: 'Old messages have no coupon_code, so a reader on this schema would have nothing to fill the required field with. The registry refuses the schema before any message is sent.'}
       - type: visual
         kind: flow
         caption: 'Producer to consumer: where the registry sits'
@@ -243,6 +269,7 @@ slides:
     aside:
       - type: tips
         items:
+          - 'The price: one more service to run and keep available. Clients cache schemas, but a registry that is down blocks new schemas from being registered.'
           - 'The idea works even without a registry: keep schema files in git and run a compatibility check in CI (for example `buf breaking`).'
       - type: terms
         items:
@@ -291,6 +318,17 @@ flashcards:
     more: |
       Messages carry a small schema id rather than the whole schema; the consumer uses it to fetch the schema from the registry. The rules can be set to BACKWARD, FORWARD or FULL mode.
     ref: schema-registry
+  - q: 'About how big is one small order message in JSON, Protobuf and Avro?'
+    a: 'Roughly 54 bytes in JSON, 11 in Protobuf and 9 in Avro. The binary formats skip the field names.'
+    more: |
+      The example is order_id 9001, total_amount 2500, currency BDT. JSON repeats every field name in every message. At 1,000 messages a second that is about 54 KB against 11 KB. For a browser-facing API the readability of JSON usually wins anyway; measure before switching.
+    ref: json-protobuf-avro
+  - q: 'Why does a reused Protobuf field number go unnoticed?'
+    a: 'If the new field has the same kind of type, old data parses without error and is simply read with the new meaning.'
+    more: |
+      Old phone numbers (strings in field 4) read as a new string `coupon_code` in field 4 look like valid data. Writing `reserved 4;` makes the compiler refuse the reuse before it ships.
+    ref: reuse-field-number
+
 quiz:
   - q: 'Thousands of `OrderPlaced` messages are sitting in the queue. A new deploy adds a required `string $currency` (no default) to the constructor. What happens?'
     hint: 'The old messages have no `currency` field.'
@@ -327,7 +365,7 @@ quiz:
   - q: 'Someone changes a field''s number in the `.proto` from 2 to 7 "to keep the order tidy". What''s the problem?'
     hint: 'Only the number goes over the wire.'
     options:
-      - text: 'Old messages and old readers will read that data as a different field''s value, silently wrong'
+      - text: 'Old data is no longer recognised (the amount reads as missing) or lands in a different field, silently wrong'
         correct: true
         why: 'The number is the field''s identity. Changing the number means changing the field.'
       - text: 'Nothing; the number only affects ordering'
@@ -372,3 +410,19 @@ quiz:
         correct: false
         why: 'That is the job of an API gateway, not a registry.'
     ref: schema-registry
+  - q: 'Field 4 was `string phone`, now removed. A teammate adds `string coupon_code = 4`. What happens with old messages?'
+    hint: 'Same number, same wire type.'
+    options:
+      - text: 'Old phone numbers are read as coupon codes, with no error'
+        correct: true
+        why: 'The number is the identity and both are strings, so the data parses cleanly with the wrong meaning.'
+      - text: 'The compiler rejects the new field'
+        correct: false
+        why: 'Only a `reserved 4;` line makes it do that. Without it, this compiles.'
+      - text: 'Old messages are deleted from the queue'
+        correct: false
+        why: 'Messages stay as they are; only their interpretation changes.'
+      - text: 'The coupon_code is simply empty for old messages'
+        correct: false
+        why: 'That would be the safe outcome, but the stored value sits under number 4 and gets read.'
+    ref: reuse-field-number

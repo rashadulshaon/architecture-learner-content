@@ -122,35 +122,36 @@ slides:
       a: 'accountId. All messages of one account then reach one worker, in order, on one partition, while different accounts run in parallel.'
 
   - slug: messenger-ack-and-order
-    title: 'Handling ack and order in Messenger'
+    title: 'Handling ack, duplicates and order in Messenger'
     kind: howto
-    tldr: 'Messenger acks only after the handler succeeds, so the guarantee is at-least-once. If you need order, set a group id and let the handler drop stale messages.'
-    keywords: ['Symfony Messenger', 'AmazonSqsFifoStamp', 'message group id', 'stale message', 'version check', 'ordering']
+    tldr: 'Messenger acks only after the handler succeeds, so delivery is at-least-once. Skip repeats by message id, and set a group id only where order matters.'
+    keywords: ['Symfony Messenger', 'AmazonSqsFifoStamp', 'message group id', 'applied events', 'idempotent consumer', 'ordering']
     blocks:
       - type: text
         body: |
-          Messenger acks **after** the handler finishes, and doesn't ack when an exception is thrown. So the default behaviour is at-least-once. If you need order, set a message group on the SQS FIFO transport, and make the handler quietly drop any message that turns out to be stale.
+          Messenger acks **after** the handler finishes, and doesn't ack when an exception is thrown. So the default is at-least-once, and the same `AccountCredited` message can reach the handler twice. The handler therefore writes each message's id into an `applied_events` table in the same transaction as the balance change. A repeat finds its id already there and does nothing. Order is a separate matter: set a message group only where it matters.
       - type: code
         lang: php
         file: 'src/Service/AccountEvents.php'
         variant: good
         code: |
-          public function credited(Account $account, int $amount, int $version): void
+          public function credited(Account $account, int $amount): void
           {
+              $eventId = Uuid::v7()->toRfc4122();
               $this->bus->dispatch(
-                  new AccountCredited($account->getId(), $amount, $version),
+                  new AccountCredited($eventId, $account->getId(), $amount),
                   [
                       // same account = same group = processed in order
                       new AmazonSqsFifoStamp(
                           messageGroupId: (string) $account->getId(),
-                          messageDeduplicationId: 'credit-'.$account->getId().'-'.$version,
+                          messageDeduplicationId: $eventId,
                       ),
                   ],
               );
           }
         marks:
-          - {line: 8, tip: 'The group id is SQS''s version of a partition key. Messages in one group run one after another.'}
-          - {line: 9, tip: 'For a window of time (5 minutes), SQS FIFO drops a second message that carries the same deduplication id.'}
+          - {line: 9, tip: 'The group id is SQS''s version of a partition key. Messages in one group run one after another.'}
+          - {line: 10, tip: 'SQS FIFO drops a second send with this id for 5 minutes. It does not stop a redelivery to the consumer, so the handler still needs its own check.'}
       - type: code
         lang: php
         file: 'src/MessageHandler/AccountCreditedHandler.php'
@@ -159,36 +160,124 @@ slides:
           #[AsMessageHandler]
           final readonly class AccountCreditedHandler
           {
-              public function __construct(private ReadModelRepository $readModels) {}
+              public function __construct(private Connection $db) {}
 
               public function __invoke(AccountCredited $m): void
               {
-                  $applied = $this->readModels->applyIfNewer(
-                      $m->accountId, $m->amount, $m->version,
-                  );
-                  // applied = false means this version was already applied: duplicate or stale
+                  $this->db->transactional(function () use ($m): void {
+                      $new = $this->db->executeStatement(
+                          'INSERT INTO applied_events (id) VALUES (?) ON CONFLICT DO NOTHING',
+                          [$m->eventId],
+                      );
+                      if ($new === 0) {
+                          return; // seen before: a redelivery, skip it
+                      }
+                      $this->db->executeStatement(
+                          'UPDATE accounts SET balance = balance + ? WHERE id = ?',
+                          [$m->amount, $m->accountId],
+                      );
+                  });
               }
           }
         marks:
-          - {line: 8, tip: 'The query inside has `WHERE version < :version`, so a stale or duplicate message changes nothing.'}
+          - {line: 8, tip: 'Id row and balance change commit together or not at all. Split them and a crash in between loses the credit or repeats it.'}
+          - {line: 10, tip: '`id` is the primary key. 0 rows inserted means the id was already there. `ON CONFLICT DO NOTHING` is PostgreSQL and SQLite; MySQL uses `INSERT IGNORE`.'}
+          - {line: 15, tip: 'A skipped repeat returns normally, so Messenger acks it. It is not a failure.'}
       - type: points
         title: 'The rules behind this code'
         style: check
         items:
-          - 'The ack comes after the handler succeeds, so no work is lost.'
-          - 'If you need order, set a group id. Never assume messages arrive in order.'
-          - 'The handler uses the version to reject stale or duplicate messages itself.'
+          - 'The ack comes after the handler succeeds, so work is never lost, only repeated.'
+          - 'A change like "+50" is made safe by storing its id in the same transaction as its effect.'
+          - 'Use a group id only where order changes the result, such as "withdraw only if the balance covers it".'
+          - 'The price is one extra insert per message, and old ids must be deleted after a few days.'
     aside:
       - type: tips
         items:
-          - 'First ask whether you really need order. Many jobs (emails, PDFs) work fine without it.'
-          - 'Put a version or sequence number in the message, and the handler stays correct even when order breaks.'
+          - 'First ask whether you need order at all. Credits that only add up give the same total in any order, and emails or PDFs need none.'
+          - 'Delete `applied_events` rows older than the longest a message can still be redelivered, or the table grows forever.'
       - type: refs
         items:
           - {to: 'messaging/dlq-retries', label: 'Stopping duplicates: the idempotent consumer'}
     check:
       q: 'What goes wrong if you give every message the same group id to guarantee order?'
       a: 'All messages end up in one line with one worker, so parallelism drops to zero. The group id should be a small unit such as one account or one order.'
+
+  - slug: newer-check-loses-deltas
+    title: '"Apply only if newer" is for snapshots, not changes'
+    kind: pitfall
+    tldr: 'A version check drops late messages. That is right when a message carries the whole new state, and silently loses money when it carries only a change.'
+    keywords: ['stale message', 'version check', 'delta event', 'snapshot', 'out-of-order', 'lost update']
+    blocks:
+      - type: text
+        body: |
+          A tempting rule is "ignore any message whose version is older than the last one I applied". Try it on an account holding 100 taka. Credit +50 (version 1) and credit +30 (version 2) are sent, but version 2 arrives first. The handler applies it (130), then drops version 1 as stale. The balance stays 130 instead of 180, and no error appears anywhere.
+      - type: visual
+        kind: compare
+        caption: 'Same two credits, arriving out of order, with three handlers'
+        columns:
+          - title: 'Change + version check'
+            tone: bad
+            icon: cross
+            tip: 'The handler treats a late change as stale and throws it away. The change was real, so its money is gone.'
+            items:
+              - 'Version 2 (+30) arrives first: 130'
+              - 'Version 1 (+50) arrives late: dropped as stale'
+              - 'Balance ends at 130, not 180'
+              - '50 taka vanish and nothing fails'
+          - title: 'Change + stored ids'
+            tone: good
+            icon: check
+            tip: 'Each change is applied once, whatever the order. Adding is order-independent, so the total comes out right.'
+            items:
+              - 'Version 2 (+30) arrives first: new id, 130'
+              - 'Version 1 (+50) arrives late: new id, 180'
+              - 'A redelivered +30: id already stored, skipped'
+              - 'Balance ends at 180, correct'
+          - title: 'Snapshot + version check'
+            tone: good
+            icon: check
+            tip: 'The newest snapshot already contains everything older ones said, so dropping a late one loses nothing.'
+            items:
+              - 'Version 2 says "balance is 180": applied'
+              - 'Version 1 says "balance is 150": late, dropped'
+              - 'Balance ends at 180, correct'
+      - type: code
+        lang: sql
+        file: 'bad: a change guarded by a version'
+        variant: bad
+        code: |
+          -- message = "+50, version 1"; the row is already at version 2
+          UPDATE accounts
+          SET balance = balance + :amount, version = :version
+          WHERE id = :id AND version < :version;   -- 0 rows: the +50 is lost
+        marks:
+          - {line: 4, tip: 'For a change message this WHERE clause turns "arrived late" into "never happened".'}
+      - type: code
+        lang: sql
+        file: 'good: a snapshot guarded by a version'
+        variant: good
+        code: |
+          -- message = "balance is 150, version 1"; the row is already at version 2
+          UPDATE account_summaries
+          SET balance = :balance, version = :version
+          WHERE id = :id AND version < :version;   -- 0 rows: version 2 already says more
+      - type: quote
+        body: 'Drop a message as stale only if a newer message already contains it.'
+    aside:
+      - type: when
+        use:
+          - 'A version check, for messages that carry the whole new state, like "address is now X" or "balance is now 180".'
+          - 'Stored message ids, for changes like "+50", "stock -3" or "1 point earned".'
+        avoid:
+          - 'A version check on a change message. It loses data and no error shows.'
+      - type: terms
+        items:
+          - {term: 'Snapshot', meaning: 'A message that says what the state is now.'}
+          - {term: 'Delta', meaning: 'A message that says only what changed, such as "+50".'}
+    check:
+      q: 'From a balance of 100, "+50" (version 1) arrives after "+30" (version 2). A handler that drops older versions ends at what balance, and why?'
+      a: '130. It drops version 1 as stale, so the +50 is lost. A change must be deduplicated by its id, never dropped for being old.'
 
 flashcards:
   - q: 'What is the core difference between at-most-once, at-least-once and exactly-once?'
@@ -226,6 +315,16 @@ flashcards:
     more: |
       Parallelism and order pull in opposite directions, and you can't raise one for free. So ask for order only where you need it, such as within one account.
     ref: ordering-by-key
+  - q: 'Why is "apply only if newer" wrong for a change message like "+50"?'
+    a: 'A late change is dropped as stale, so its effect is lost for good. Only a snapshot, which carries the whole new state, can be dropped safely.'
+    more: |
+      Take a balance of 100 and two credits, +50 (version 1) and +30 (version 2). If version 2 arrives first, the check drops version 1 and the balance ends at 130, not 180. A snapshot such as "balance is 180" is different: the newest one already holds everything older ones said.
+    ref: newer-check-loses-deltas
+  - q: 'How do you make a handler for "+50"-style messages safe against redelivery?'
+    a: 'Insert the message id into a table with a unique key, in the same transaction as the change. If the insert adds no row, skip the work.'
+    more: |
+      The price is one extra insert per message, and the id table needs a clean-up job that deletes ids older than the longest possible redelivery. It also needs a database transaction, so it doesn't cover outside work such as an email, where you pass the provider an idempotency key instead.
+    ref: messenger-ack-and-order
 
 quiz:
   - q: 'A handler sends an email and dies before the ack. What happens next?'
@@ -293,9 +392,9 @@ quiz:
       - text: 'Because it is `final readonly`, the handler won''t work'
         correct: false
         why: 'That is fine. `readonly` works on Messenger handlers.'
-      - text: 'If an old message arrives later, this code can''t catch it'
+      - text: 'Two workers can read the same balance and overwrite each other''s credit'
         correct: true
-        why: 'There is no version, so there is no way to tell an out-of-order or duplicate message apart.'
+        why: 'Both read 100 and write 100 plus their own amount, so one credit is lost. A single `UPDATE ... SET balance = balance + :amount` avoids that.'
       - text: 'Reading the entity with `find()` is wrong'
         correct: false
         why: 'Reading a fresh entity by id is the right approach.'
@@ -313,3 +412,19 @@ quiz:
         correct: false
         why: 'The deduplication id prevents duplicates, not the group id, and only for a limited time.'
     ref: ordering-by-key
+  - q: 'A handler skips any message whose version is not newer than the stored one. Which messages can it safely skip?'
+    hint: 'Skip a message only if a newer one already says everything it says.'
+    options:
+      - text: 'AddressChanged: the customer''s complete new address, version 7'
+        correct: true
+        why: 'It carries the whole state, so a newer address message replaces it entirely.'
+      - text: 'StockDecreased: 3 units sold, version 12'
+        correct: false
+        why: 'It carries only a change. Skipping it because it is late leaves stock 3 too high.'
+      - text: 'BalanceSnapshot: the account balance is now 180, version 4'
+        correct: true
+        why: 'A snapshot of the full balance. If version 5 already arrived, version 4 holds nothing new.'
+      - text: 'PointsEarned: +20 loyalty points, version 9'
+        correct: false
+        why: 'Another change message. Dropping it silently removes 20 points. Store its id instead.'
+    ref: newer-check-loses-deltas

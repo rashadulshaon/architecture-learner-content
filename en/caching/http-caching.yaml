@@ -167,6 +167,7 @@ slides:
       - type: tips
         items:
           - 'When a session is used, Symfony makes the response private by itself; still, state it explicitly on a personal API.'
+          - 'Price: with s-maxage=600 a changed product can look old for up to 10 minutes; for prices and stock use short lifetimes or purge.'
           - 'Can an answer change in many ways? Put every ingredient (ID, updatedAt, language) into the ETag.'
       - type: commands
         title: 'Check it yourself'
@@ -198,7 +199,29 @@ slides:
           - {from: user, to: cdn, label: 'When the next person asks for the same file, the CDN serves it directly (hit)', tone: good}
       - type: text
         body: |
-          A CDN's cache key is usually the URL. `/app.js?v=1` and `/app.js?v=2` are different keys. And with `Vary: Accept-Language`, it keeps a separate copy per language. Cache busting means putting a hash of the file's contents in its name (`app-3f9a1c.js`). When the contents change, the name changes, so the old cache simply drops out of use.
+          A CDN's cache key is usually the URL, so `/app.js?v=1` and `/app.js?v=2` are different keys. With `Vary: Accept-Language` it keeps a separate copy per language. Now Rahim gives `/assets/app.js` a one-year lifetime and deploys a fix on Friday under the same name. Every browser thinks its copy is fresh for 360 more days, so it never asks, and users keep running the buggy file. **Cache busting** fixes this: put a hash of the contents in the name (`app-3f9a1c.js`).
+      - type: visual
+        kind: compare
+        caption: 'The same Friday deploy, with and without a hash in the name'
+        columns:
+          - title: 'Same name, 1-year lifetime'
+            tone: bad
+            icon: cross
+            tip: 'The URL is the cache key. Same URL means the browser sees nothing new.'
+            items:
+              - 'Monday: browsers store /assets/app.js for a year'
+              - 'Friday: the fixed file is deployed under the same URL'
+              - 'Browsers think their copy is fresh, so no request is sent'
+              - 'Result: old, buggy JS for up to a year'
+          - title: 'Hashed name, 1-year lifetime'
+            tone: good
+            icon: check
+            tip: 'The name changes with the contents, so the URL (and cache key) changes too.'
+            items:
+              - 'Monday: browsers store app-3f9a1c.js for a year'
+              - 'Friday: the fix is app-9b2e7d.js, and the HTML now links to it'
+              - 'The short-lived HTML is re-fetched and shows the new name'
+              - 'Result: the new file on the next page view'
       - type: code
         lang: nginx
         file: 'nginx.conf'
@@ -221,7 +244,13 @@ slides:
       - type: tips
         items:
           - 'Symfony AssetMapper, Webpack Encore and Vite all add a hash to file names in production. You don''t have to do it yourself.'
+          - 'Keep the previous hashed files on the server for a while after a deploy; a page opened just before it may still ask for them.'
           - 'If a file gets stuck in the CDN by mistake and it is urgent, delete it with the CDN''s purge/invalidate feature.'
+      - type: when
+        use:
+          - 'Files built from your own code (JS, CSS, images), where a build tool can hash the name.'
+        avoid:
+          - 'URLs that must stay fixed, like robots.txt or a script partners embed: use a short max-age plus an ETag.'
       - type: pitfalls
         items:
           - '`Vary: Cookie`, or a different query string on every request, gives every request its own key, and the hit rate drops to almost zero.'
@@ -314,6 +343,11 @@ flashcards:
     more: |
       A new hashed file name is a new URL, which means a new cache key. That makes it safe to give the file a one-year `immutable` lifetime. HTML pages must stay on a short lifetime, because the links to the new names live in the HTML.
     ref: cdn-keys-busting
+  - q: 'Why is a one-year max-age on /assets/app.js dangerous if the file name never changes?'
+    a: 'Browsers keep the old copy as fresh for a year and never ask again, so users keep running the old file after a deploy. Put a content hash in the name.'
+    more: |
+      The URL is the cache key: a fixed name means the browser sees nothing new. With a hashed name, each deploy is a new URL, so the long lifetime is safe. The price is that the HTML must stay short-lived, and files that need a fixed URL (robots.txt) get a short max-age plus an ETag instead.
+    ref: cdn-keys-busting
   - q: 'What decides the cache key in a CDN?'
     a: 'Usually the URL (query string included), plus the request headers named in the Vary header (such as Accept-Language).'
     more: |
@@ -392,6 +426,22 @@ quiz:
       - text: 'Use no-store'
         correct: false
         why: 'Then 2.4MB would be downloaded every time, creating waste right where the problem is.'
+    ref: cdn-keys-busting
+  - q: 'Rahim hashes his JS file names and gives them a one-year lifetime, but also gives the HTML page max-age=1 year. After a deploy, what do returning users get?'
+    hint: 'Where do the links to the new hashed names live?'
+    options:
+      - text: 'The old HTML from their cache, which still links to the old JS file'
+        correct: true
+        why: 'The new names appear only in the new HTML, which the browser never fetches while its copy is fresh.'
+      - text: 'The new JS file, because its name is new'
+        correct: false
+        why: 'The browser only asks for a new name if it reads new HTML that mentions it.'
+      - text: 'An error, because the old file was deleted'
+        correct: false
+        why: 'The old file is still served, which is why it keeps working, just outdated.'
+      - text: 'Nothing changes, because the hash protects the HTML too'
+        correct: false
+        why: 'The hash is in the JS name only; the HTML keeps the same URL, so it needs a short lifetime or no-cache.'
     ref: cdn-keys-busting
   - q: 'What is wrong with the Symfony code below?'
     lang: php

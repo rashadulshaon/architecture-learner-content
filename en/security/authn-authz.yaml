@@ -116,7 +116,7 @@ slides:
           - {from: req, to: fw, label: 'The request arrives, carrying a session cookie or token'}
           - {from: fw, to: e401, label: 'No proof, or invalid proof: answer 401', tone: bad}
           - {from: fw, to: ac, label: 'Identity found: the user is now Rahim'}
-          - {from: ac, to: ctrl, label: 'URL rule passed: under /api a login is enough'}
+          - {from: ac, to: ctrl, label: 'URL rule passed: a login is enough here'}
           - {from: ctrl, to: voter, label: 'The action asks: may Rahim see this invoice?'}
           - {from: voter, to: e403, label: 'If the invoice isn''t Rahim''s, answer 403', tone: bad}
           - {from: voter, to: ctrl, label: 'Only if he owns it does the action run: 200', tone: good, dashed: true}
@@ -137,14 +137,18 @@ slides:
               access_control:                      # AuthZ: coarse, by URL
                   - { path: ^/api/login, roles: PUBLIC_ACCESS }
                   - { path: ^/api/admin, roles: ROLE_ADMIN }
-                  - { path: ^/api,       roles: IS_AUTHENTICATED_FULLY }
+                  - { path: ^/,          roles: IS_AUTHENTICATED_FULLY }
         marks:
           - {line: 6, tip: 'This is an authenticator. After a successful login Symfony stores the identity in the session and recognizes later requests by their cookie.'}
           - {line: 12, tip: 'Only the first rule that matches from the top applies. So specific paths go first and general ones last.'}
-          - {line: 14, tip: 'The default is closed: any new route you add under /api can''t be entered without a login.'}
+          - {line: 14, tip: 'The catch-all. A URL that matches no rule is open to everyone, so this last rule is what makes the default closed: a new route can''t be entered without a login.'}
       - type: quote
         body: 'The default answer is "no". Permission must be granted separately, on purpose.'
     aside:
+      - type: pitfalls
+        items:
+          - 'Symfony''s access_control is open by default: a URL that matches no rule is allowed. End the list with a catch-all, and list public pages (login, health check) above it.'
+          - 'The price of a closed default: forget to list a public page and it answers 401. You notice at once, which is the safe way to fail.'
       - type: commands
         title: 'See what is configured'
         items:
@@ -171,7 +175,7 @@ slides:
     blocks:
       - type: text
         body: |
-          Put the courier clerk's question, "is this parcel in this person's name?", in one place: a **voter**. Every action that touches an invoice then calls that same rule through `#[IsGranted]`. When the rule changes, you change one file, not forty controllers.
+          Put the courier clerk's question, "is this parcel in this person's name?", in one place: a **voter**. Every action that touches an invoice then calls that same rule through `#[IsGranted]`. When the rule changes, you change one file, not forty controllers. With it in place, Karim's request for invoice 1043 ends in a 403 before the action even runs.
       - type: code
         lang: php
         file: 'src/Security/Voter/InvoiceVoter.php'
@@ -314,6 +318,66 @@ slides:
       q: 'The invoice id is now a UUID, nearly impossible to guess. Why can''t you skip the ownership check?'
       a: 'A UUID is hard to guess but not secret: it leaks through links, emails, logs and screenshots. Without the check, whoever gets hold of an id gets the data.'
 
+  - slug: forgotten-methods
+    title: 'The read is guarded, the delete is not'
+    kind: pitfall
+    tldr: 'Guard every method of an endpoint, not just GET. A hidden button only hides the way in; the DELETE route is still open to anyone with curl.'
+    keywords: ['DELETE endpoint', 'HTTP methods', 'IsGranted', 'hidden button', 'function level authorization', 'curl']
+    blocks:
+      - type: text
+        body: |
+          After the fix, Karim can no longer read invoice 1043. So he tries a different door: `DELETE /api/invoices/1043`. The delete button isn't in his screen, but curl doesn't need a button. The team had put a voter on the read action and forgotten the other one.
+      - type: code
+        lang: php
+        file: 'src/Controller/InvoiceController.php'
+        variant: bad
+        code: |
+          #[Route('/api/invoices/{id}', methods: ['GET'])]
+          #[IsGranted(InvoiceVoter::VIEW, subject: 'invoice')]   // guarded
+          public function show(Invoice $invoice): JsonResponse { /* ... */ }
+
+          #[Route('/api/invoices/{id}', methods: ['DELETE'])]
+          #[IsGranted('ROLE_USER')]                              // only "logged in"
+          public function delete(Invoice $invoice, EntityManagerInterface $em): Response
+          {
+              $em->remove($invoice);                             // any company's invoice
+              $em->flush();
+
+              return new Response(status: 204);
+          }
+        marks:
+          - {line: 6, tip: 'The same URL, a different method, a different guard. The role check says "logged in" and nothing about whose invoice this is.'}
+          - {line: 9, tip: 'Karim deletes another company''s invoice, and the server answers 204 like any normal success.'}
+      - type: code
+        lang: php
+        file: 'src/Controller/InvoiceController.php'
+        variant: good
+        code: |
+          #[Route('/api/invoices/{id}', methods: ['DELETE'])]
+          #[IsGranted(InvoiceVoter::DELETE, subject: 'invoice')]
+          public function delete(Invoice $invoice, EntityManagerInterface $em): Response
+          {
+              $em->remove($invoice);
+              $em->flush();
+
+              return new Response(status: 204);
+          }
+        marks:
+          - {line: 2, tip: 'Its own attribute, INVOICE_DELETE. Add it to the voter''s supports() with a stricter rule than viewing, such as same company and a billing role.'}
+      - type: quote
+        body: 'Every method of every endpoint needs its own check.'
+    aside:
+      - type: tips
+        items:
+          - 'List your routes with `php bin/console debug:router` and check that each one with a write method has an #[IsGranted] or a denyAccessUnlessGranted() call.'
+          - 'Test the other methods too: log in as company A and try PATCH and DELETE on company B''s invoice. Expect 403.'
+      - type: pitfalls
+        items:
+          - 'A Vue `v-if="user.isAdmin"` on the Delete button is design, not security. The server must refuse the request itself.'
+    check:
+      q: 'The Delete button is hidden for ordinary users in Vue. Why can Karim still delete another company''s invoice?'
+      a: 'Hiding a button only hides the way in. He can send DELETE directly with curl, and the endpoint checked only that he was logged in, not whose invoice it was.'
+
 flashcards:
   - q: 'What is the difference between authentication and authorization?'
     a: 'Authentication checks who you are. Authorization decides whether you may do a particular action on a particular thing.'
@@ -350,6 +414,11 @@ flashcards:
     more: |
       The user has full control over everything that runs in their browser: they can open DevTools and reveal a hidden button, or call the endpoint with curl. Hiding something in the UI only hides it from view. The server should treat every request as if a stranger wrote it.
     ref: classic-authz-mistakes
+  - q: 'You put a voter on the GET action of an invoice. What else must you guard?'
+    a: 'Every other method too: PATCH, PUT and DELETE each need their own check. Attackers try every method on the same URL.'
+    more: |
+      It is very common to guard the read and forget the write. Give writes their own attributes (INVOICE_EDIT, INVOICE_DELETE) with rules at least as strict as viewing, and test them by trying the other methods as a different company.
+    ref: forgotten-methods
   - q: 'Does using a UUID as the id solve IDOR?'
     a: 'No. A UUID makes guessing harder, but once an id leaks the data is open. You still need an ownership check.'
     more: |
@@ -358,7 +427,7 @@ flashcards:
   - q: 'What does deny by default mean?'
     a: 'If no rule matches, the answer is "no". A new route is closed automatically, and opening it takes a deliberate decision.'
     more: |
-      With `^/api` → `IS_AUTHENTICATED_FULLY` as the last `access_control` rule, a new endpoint can't be left open by mistake. The opposite approach, everything open and closing routes one by one, creates a hole the moment you forget a route. The same goes for voters: when in doubt, return `false`.
+      Symfony's `access_control` is open when no rule matches, so you end the list with a catch-all (`^/` → `IS_AUTHENTICATED_FULLY`). Then a new endpoint can't be left open by mistake. The opposite approach, everything open and closing routes one by one, creates a hole the moment you forget a route. The same goes for voters: when in doubt, return `false`.
     ref: where-in-symfony
 
 quiz:
@@ -453,6 +522,28 @@ quiz:
         correct: false
         why: 'The client could then send any companyId, which is exactly the IDOR problem.'
     ref: object-level-check
+  - q: 'The team put `INVOICE_VIEW` on GET. Which route is still open to a logged-in stranger?'
+    lang: php
+    code: |
+      #[Route('/api/invoices/{id}', methods: ['GET'])]
+      #[IsGranted(InvoiceVoter::VIEW, subject: 'invoice')]
+      public function show(Invoice $invoice): JsonResponse { /* ... */ }
+
+      #[Route('/api/invoices/{id}', methods: ['DELETE'])]
+      #[IsGranted('ROLE_USER')]
+      public function delete(Invoice $invoice): Response { /* ... */ }
+    hint: 'Same URL, different method. Which one checks whose invoice it is?'
+    options:
+      - text: 'DELETE: it only checks that the user is logged in'
+        correct: true
+        why: 'ROLE_USER says nothing about ownership. Give it its own voter attribute and test it.'
+      - text: 'GET: voters don''t work on read actions'
+        correct: false
+        why: 'The voter on GET is exactly what protects the read.'
+      - text: 'Neither: the voter on GET also covers DELETE'
+        correct: false
+        why: 'Attributes belong to one action each. A guard on one method protects only that method.'
+    ref: forgotten-methods
   - q: 'A team did the following to stop IDOR. Which ones actually protect?'
     hint: 'Which ones check on the server, and which just make things harder or hide them?'
     options:

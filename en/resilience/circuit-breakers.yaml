@@ -53,7 +53,7 @@ slides:
         nodes:
           - {id: closed, label: 'CLOSED', sub: 'all calls go through', icon: check, tone: good, col: 0, row: 2, tip: 'The normal state. Every call goes to the service, and the breaker quietly counts failures.'}
           - {id: open, label: 'OPEN', sub: 'no call goes through', icon: cross, tone: bad, col: 4, row: 2, tip: 'Calls return at once (fail fast) with a fallback answer. The load on the service is zero.'}
-          - {id: half, label: 'HALF-OPEN', sub: 'one test call', icon: switch, tone: warn, col: 2, row: 0, tip: 'A few calls are let through to see whether the service has recovered. Not all of them, so it isn''t flooded again.'}
+          - {id: half, label: 'HALF-OPEN', sub: 'one test call', icon: switch, tone: warn, col: 2, row: 0, tip: 'One call (or a very few) is let through to see whether the service has recovered. Not all of them, so it isn''t flooded again.'}
         edges:
           - {from: closed, to: open, label: '5 failures in a row', tone: bad, tip: 'At the threshold the fuse trips. The threshold is set by a number of failures or a percentage.'}
           - {from: open, to: half, label: 'after 30 seconds', tone: warn, tip: 'The service is given time to recover. Not a single call goes through meanwhile.'}
@@ -71,6 +71,9 @@ slides:
           - {term: 'Threshold', meaning: 'How many failures it takes before the breaker trips: for example 5 in a row, or a 50% rate.'}
       - type: remember
         body: 'CLOSED runs, OPEN is cut, HALF-OPEN is a test: on success it switches back on, otherwise it is cut again.'
+      - type: when
+        use: ['Calls to a remote service that can hang or fail: payment gateway, courier, SMS']
+        avoid: ['Calls inside your own process: nothing to protect', 'Tiny traffic: 5 failures in a row may take hours. Price: users get the fallback while it is open']
       - type: refs
         items:
           - {to: 'resilience/graceful-degradation', label: 'What to answer while OPEN'}
@@ -201,7 +204,7 @@ slides:
                   try {
                       $result = $action();                 // CLOSED, or the HALF-OPEN test
                       $item->set(['fails' => 0, 'until' => 0]);
-                  } catch (ExceptionInterface) {           // network errors only
+                  } catch (TransportExceptionInterface|ServerExceptionInterface) { // network, 5xx only
                       ++$fails;
                       $until = $fails >= $this->threshold ? time() + $this->openSeconds : 0;
                       $item->set(['fails' => $fails, 'until' => $until]);
@@ -217,7 +220,7 @@ slides:
           - {line: 16, tip: 'If until is in the future, the breaker is OPEN. The fallback returns at once and the network is never touched.'}
           - {line: 20, tip: 'Once until has passed, execution comes through this path: this is half-open. fails is still at the threshold, so a single failure cuts it again.'}
           - {line: 21, tip: 'One success resets the count: it counts consecutive failures, not the total.'}
-          - {line: 22, tip: 'Symfony\Contracts\HttpClient\Exception\ExceptionInterface. A bug in your own code (a TypeError) is not counted here.'}
+          - {line: 22, tip: 'Only network failures and 5xx answers count. A 4xx (ClientException) means our own request was wrong, and a bug such as a TypeError is not counted either.'}
       - type: code
         lang: php
         file: 'src/Shipping/ShippingCalculator.php'
@@ -266,6 +269,20 @@ slides:
           - {label: 'Vue app', sub: '4 attempts', tone: warn, tip: 'When the browser call fails, it sends again by itself. Every attempt is a new request to the API.'}
           - {label: 'Symfony API', sub: '4 attempts for each one', tone: warn, tip: 'For every request, the API may itself call the gateway 4 times. Here 4 × 4 = 16.'}
           - {label: 'Gateway client', sub: '4 attempts for each one', tone: bad, tip: 'All the retries below add up to 16 × 4 = 64. The sick gateway takes the most pressure here.'}
+      - type: visual
+        kind: compare
+        caption: 'The same click: retries in every layer, or in one layer only'
+        columns:
+          - title: 'Retries in all 3 layers'
+            tone: bad
+            icon: cross
+            tip: 'Each layer retries on its own, so the counts multiply.'
+            items: ['Vue 4 × API 4 × client 4 attempts', 'Up to 64 calls reach the sick gateway']
+          - title: 'Retries in one layer'
+            tone: good
+            icon: check
+            tip: 'Only the layer next to the gateway retries. The layers above try once.'
+            items: ['Vue 1 × API 1 × client 4 attempts', 'At most 4 calls reach the gateway', 'Price: upper layers fail sooner, so they need a fallback']
       - type: code
         lang: php
         file: 'src/Resilience/BudgetedRetryStrategy.php'
@@ -311,6 +328,10 @@ slides:
         items:
           - 'Wire the strategy in with `new RetryableHttpClient($inner, new BudgetedRetryStrategy(new GenericRetryStrategy(), $limiter), 3)`.'
           - 'When the budget''s tokens run out, return the fallback straight away. A breaker and a budget work well together.'
+      - type: pitfalls
+        items:
+          - 'Keep the limiter''s storage shared (Redis). Otherwise each server gets its own budget and the cap is multiplied by the server count.'
+          - 'A budget only caps retries, it doesn''t heal the gateway. Once tokens run out a temporary error goes unretried, so keep a fallback ready.'
       - type: when
         use: ['Retry in the lowest layer (the one closest to the gateway)', 'The upper layers try once, then fail fast or use a fallback']
         avoid: ['Retries at every layer "for its own safety"', 'Retries with no budget']
@@ -357,6 +378,16 @@ flashcards:
     more: |
       With retries at every layer, calls multiply: 4 × 4 × 4 = 64. So keep retries in one layer, and stop retrying when the budget's tokens run out. You can add a budget by building a custom RetryStrategyInterface with Symfony RateLimiter.
     ref: retry-multiplication
+  - q: 'Which failures should a circuit breaker count?'
+    a: 'Network errors and 5xx answers: the service is sick. Not 4xx: that means our own request was wrong, and counting it would shut off a healthy service.'
+    more: |
+      Imagine users keep mistyping a district and the courier answers 404 each time. The courier is fine, but if those 404s counted, 5 typos in a row would cut it off for everyone. In the code, catch only the transport and server exceptions.
+    ref: simple-breaker-symfony
+  - q: 'What does a circuit breaker cost you?'
+    a: 'While it is open, users get the fallback even if the service has already recovered. On low traffic it can take hours to reach the threshold.'
+    more: |
+      A breaker is not free protection. Every open period is a stretch where real users see the degraded answer, so keep openSeconds short, and use a breaker only on calls to remote services that can hang or fail.
+    ref: circuit-breaker-states
 
 quiz:
   - q: 'Rina''s app immediately retries every failed gateway call 5 times. Today 60% of gateway calls fail, and 120 clicks arrive per second. The gateway''s capacity is 150/second. What happens?'
@@ -449,3 +480,19 @@ quiz:
         correct: false
         why: 'That is the count for a single layer. With retries in three layers, it multiplies to 64.'
     ref: retry-multiplication
+  - q: 'Users keep mistyping their district, so the courier API answers 404 again and again. Should those 404s count towards the breaker''s threshold?'
+    hint: 'Is the courier sick, or was our request wrong?'
+    options:
+      - text: 'Yes: any answer other than 200 is a failure'
+        correct: false
+        why: 'A 404 here is the courier working correctly and rejecting a bad request. Counting it would trip the breaker on a healthy service.'
+      - text: 'No: only network errors and 5xx answers show a sick service'
+        correct: true
+        why: 'A 4xx means our request was wrong. Counting only transport errors and 5xx keeps the breaker honest.'
+      - text: 'Yes, but only if 5 of them come in a row'
+        correct: false
+        why: 'Five typos in a row can still happen on a busy day. The courier would be cut off for everyone although nothing is wrong with it.'
+      - text: 'No: nothing should be counted, because only timeouts matter'
+        correct: false
+        why: 'Connection errors and 5xx answers also show a sick service. Ignoring them leaves the breaker closed while the service is down.'
+    ref: simple-breaker-symfony

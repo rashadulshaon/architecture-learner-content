@@ -40,7 +40,7 @@ slides:
     blocks:
       - type: text
         body: |
-          The fare chart is data, but the rule "a fare is never zero or negative" is part of the procedure. Ask four questions about every rule. The more answers that point towards data, the safer it is to move the rule out of the code.
+          The fare chart is data, but the rule "a fare is never zero or negative" is part of the procedure. Ask four questions about every rule. The more answers that point towards data, the safer it is to move the rule out of the code. And if you do, testing, versioning and audit become your job; the next slides show how.
       - type: visual
         kind: table
         caption: 'Four questions to decide'
@@ -54,8 +54,6 @@ slides:
             tip: 'If a mistake is expensive, keep the rule in code, or at least put a hard ceiling in code.'
           - cells: ['How complex is it?', 'Many branches, loops, states', 'Simple conditions and numbers']
             tip: 'Put a complex rule into data and the data slowly turns into a poor programming language.'
-          - cells: ['Testing and audit?', 'Normal CI and review are enough', 'Needs separate versions, approval, replay']
-            tip: 'Choose data and that burden is yours: you have to build it.'
       - type: quote
         body: 'In code: risk, complexity and hard limits. In data: numbers, lists and simple conditions that change often.'
     aside:
@@ -136,9 +134,14 @@ slides:
         items:
           - 'Don''t parse the string on every request. Give ExpressionLanguage a cache pool (a constructor argument) so the parsed result is kept.'
           - 'Keep the group of people who can change rules small, and log every change.'
+          - 'Money in rules is whole poisha (100 poisha = 1 taka), so 200000 means 2,000 taka. Never store money as a float.'
       - type: pitfalls
         items:
           - 'Never run user input (for example, text a customer typed) as an expression. Only trusted staff may write them.'
+      - type: terms
+        items:
+          - {term: 'DTO', meaning: 'A plain object that only carries a few values and does no work of its own.'}
+          - {term: 'lint', meaning: 'Checking that a text is written correctly without running it.'}
       - type: refs
         items:
           - {to: 'security/input-validation', label: 'Input validation'}
@@ -191,6 +194,30 @@ slides:
         marks:
           - {line: 1, tip: 'One test, many cases. Include values on both sides of every boundary: 2,000 and 1,999.'}
           - {line: 15, tip: 'Dropping the exact boundary (≥) is the most common mistake, and this is where the test catches it.'}
+      - type: code
+        lang: php
+        file: 'src/Discount/DryRun.php'
+        variant: good
+        code: |
+          public function dryRun(array $candidateRules, int $days = 30): DryRunReport
+          {
+              $changed = 0;
+              $extraTaka = 0;
+
+              foreach ($this->orders->placedWithinDays($days) as $order) {
+                  $given = $order->discountPercent();      // what customers really got
+                  $would = $this->engine->percentUsing($candidateRules, $order->cart(), $order->user());
+                  if ($would !== $given) {
+                      ++$changed;
+                      $extraTaka += intdiv($order->totalInPoisha() * ($would - $given), 10_000);
+                  }
+              }
+
+              return new DryRunReport($changed, $extraTaka);
+          }
+        marks:
+          - {line: 7, tip: 'Replay real past orders: what the old rules gave, against what the new rules would have given.'}
+          - {line: 11, tip: 'Poisha times percent points, divided by 10,000, gives taka. Say it prints 412 orders changed and 1,830,000 taka more: a typo is now visible before anyone sees it.'}
     aside:
       - type: tips
         items:
@@ -246,8 +273,8 @@ slides:
         title: 'Safeguards for rules in data'
         style: check
         items:
-          - 'Hard limits (maximum discount, minimum price) live in code.'
-          - 'Validate, lint and test when saving.'
+          - 'Hard limits (maximum discount) live in code. Raising one needs a deploy; that is the price, on purpose.'
+          - 'Validate when saving: lint the condition and reject a percent above the cap.'
           - 'Keep only small rules in data; complex branching, loops and state stay in code.'
       - type: quote
         body: 'Move rules into data and the risk goes with them. Keep the limits in code, and require a separate approval for changes.'
@@ -295,6 +322,11 @@ flashcards:
     a: 'Write a new version, test it, dry-run it on old orders, get approval, go live on a date, and record the version on the order.'
     more: |
       Never delete old versions: then you can audit and you can go back. A dry run shows how much discount the rule would suddenly give. With the version on the order, you can answer "why this discount?".
+    ref: version-and-test-rules
+  - q: 'What does a dry run of a changed rule tell you?'
+    a: 'It replays real past orders (say the last 30 days) with the new rule and shows how many orders and how much money would change.'
+    more: |
+      It catches the rule that suddenly gives everyone a discount, before a single customer sees it. Example-based tests prove the rule is written correctly; a dry run proves it behaves sensibly on real data.
     ref: version-and-test-rules
   - q: 'How do you stop a rule typo from causing big damage?'
     a: 'Keep a hard limit in code, such as min($percent, 30), and validate and lint when saving to the data.'

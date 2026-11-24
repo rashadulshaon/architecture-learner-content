@@ -33,7 +33,7 @@ slides:
     aside:
       - type: story
         title: 'The scale-out the night before a sale'
-        body: 'To prepare for the crowd, a team added one Redis node to their 4. Within a minute the hit rate fell from 95% to 20%, and the database, suddenly getting 5 times the queries, slowed to a crawl. The move meant to ease the load made it worse.'
+        body: 'To prepare for the crowd, a team added one Redis node to their 4. Within a minute the hit rate fell from 95% to 20%, and the database went from 5 misses in every 100 requests to 80, sixteen times the queries, and slowed to a crawl. The move meant to ease the load made it worse.'
       - type: refs
         items:
           - {to: 'caching/cache-stampede', label: 'What happens when everything misses at once'}
@@ -75,6 +75,7 @@ slides:
     aside:
       - type: terms
         items:
+          - {term: 'Hash', meaning: 'A function that turns any key, like cart:17, into a number. The same key always gives the same number.'}
           - {term: 'Hash ring', meaning: 'Treating the whole hash range (say 0 to 2^32) as a circle, where the end connects back to the start.'}
           - {term: 'Wrap-around', meaning: 'Reaching the end of the circle and carrying on from the node at the start.'}
       - type: remember
@@ -91,7 +92,7 @@ slides:
     blocks:
       - type: text
         body: |
-          The inner workings are small. Hash each node many times as `node#i` and keep the results in a sorted list. When a key arrives, hash it and binary-search that list for the first position that's larger. If you run off the end of the list, go back to the start.
+          The inner workings are small. Hash each node many times as `node#i` and keep the results in a sorted list. When a key arrives, hash it and binary-search that list for the first position that's larger. If you run off the end of the list, go back to the start. `remove()` just deletes that node's positions, and every other key keeps its owner.
       - type: code
         lang: php
         file: 'src/Cache/HashRing.php'
@@ -99,27 +100,32 @@ slides:
         code: |
           final class HashRing
           {
-              /** @var array<int, string> position => node */
+              /** @var array<int, string> position => node, kept sorted */
               private array $ring = [];
-              /** @var list<int> sorted positions */
-              private array $positions = [];
+              private array $positions = [];       // the same positions, as a list
 
               public function __construct(private readonly int $vnodes = 150) {}
 
-              public function add(string $node): void
+              public function add(string $node, float $weight = 1.0): void
               {
-                  for ($i = 0; $i < $this->vnodes; $i++) {
+                  $count = (int) round($this->vnodes * $weight);
+                  for ($i = 0; $i < $count; $i++) {
                       $this->ring[crc32($node.'#'.$i)] = $node;
                   }
                   ksort($this->ring);
                   $this->positions = array_keys($this->ring);
               }
 
+              public function remove(string $node): void
+              {
+                  $this->ring = array_filter($this->ring, fn (string $n) => $n !== $node);
+                  $this->positions = array_keys($this->ring);
+              }
+
               public function nodeFor(string $key): string
               {
                   $h = crc32($key);
-                  $lo = 0;
-                  $hi = count($this->positions);
+                  [$lo, $hi] = [0, count($this->positions)];
                   while ($lo < $hi) {                       // binary search
                       $mid = intdiv($lo + $hi, 2);
                       if ($this->positions[$mid] < $h) { $lo = $mid + 1; } else { $hi = $mid; }
@@ -129,9 +135,11 @@ slides:
               }
           }
         marks:
-          - {line: 8, tip: '150 virtual positions per node. Too few and the split is uneven; too many and memory use grows and add() gets slower.'}
+          - {line: 7, tip: '150 virtual positions per node. Too few and the split is uneven; too many and memory use grows and add() gets slower.'}
+          - {line: 11, tip: 'A bigger machine gets a bigger weight, so it gets more positions and a bigger share. add(''big-1'', 2) means twice as many.'}
           - {line: 13, tip: 'Each position is tied to the name of the real node. The positions of one node end up scattered around the circle.'}
-          - {line: 29, tip: '% count(...) is the wrap-around: when h is larger than every position, $lo reaches the end, and the % turns it into 0 so you return to the first position.'}
+          - {line: 21, tip: 'Drops only this node''s positions. array_filter keeps the order, so no re-sort is needed, and every other key keeps its owner.'}
+          - {line: 34, tip: '% count(...) is the wrap-around: when h is larger than every position, $lo reaches the end, and the % turns it into 0 so you return to the first position.'}
       - type: code
         lang: php
         file: 'tests/HashRingTest.php'
@@ -139,15 +147,16 @@ slides:
           $ring = new HashRing();
           foreach (['redis-1', 'redis-2', 'redis-3', 'redis-4'] as $n) { $ring->add($n); }
 
-          $before = [];
-          foreach (range(1, 10000) as $i) { $before[$i] = $ring->nodeFor("cart:$i"); }
+          $owners = fn () => array_map(fn ($i) => $ring->nodeFor("cart:$i"), range(1, 10000));
+          $moved = fn (array $a, array $b) => count(array_diff_assoc($a, $b));
 
+          $before = $owners();
           $ring->add('redis-5');
-          $moved = 0;
-          foreach ($before as $i => $node) {
-              if ($ring->nodeFor("cart:$i") !== $node) { $moved++; }
-          }
-          // $moved is about 2000 (about 20%); with hash % N it would be about 8000
+          $afterAdd = $owners();
+          echo $moved($before, $afterAdd);        // about 2000 (20%); hash % N gives about 8000
+
+          $ring->remove('redis-3');
+          echo $moved($afterAdd, $owners());      // about 2000: only redis-3's keys move
     aside:
       - type: tips
         items:
@@ -204,7 +213,7 @@ slides:
   - slug: where-its-used
     title: 'Where you meet it in the real world'
     kind: compare
-    tldr: 'Cache clusters, nginx upstreams and partitioned stores like Cassandra and DynamoDB use consistent hashing. Redis Cluster is close but different: 16384 fixed hash slots.'
+    tldr: 'Cache clusters, nginx upstreams and partitioned stores like Cassandra and the Dynamo design use consistent hashing. Redis Cluster is close but different: 16384 fixed hash slots.'
     keywords: ['nginx hash consistent', 'Redis Cluster', 'hash slot', 'Cassandra', 'DynamoDB', 'ketama', 'memcached']
     blocks:
       - type: visual
@@ -216,7 +225,7 @@ slides:
             tip: 'The client runs the ring itself; the server nodes don''t know about each other.'
           - cells: ['nginx upstream', 'hash $key consistent', 'The same URL goes to the same cache server']
             tip: 'To keep each server''s cache separate, the same request has to go to the same server.'
-          - cells: ['Cassandra, DynamoDB', 'A hash ring over the partition key', 'Data is split and replicated across many nodes']
+          - cells: ['Cassandra, Dynamo-style stores', 'A hash ring over the partition key', 'Data is split and replicated across many nodes']
             tip: 'Here the ring decides where the actual data is stored, not just a cache.'
           - cells: ['Redis Cluster', '16384 fixed hash slots', 'Slots can be moved, instead of a ring']
             tip: 'The slot is CRC16(key) % 16384, and each slot belongs to one node. When nodes change, whole slots move.'
@@ -236,9 +245,31 @@ slides:
         title: 'What consistent hashing does not do'
         style: cross
         items:
-          - 'Hot keys: one famous key still lives on a single node.'
+          - 'Hot keys: one famous key still lives on a single node (fix below).'
           - 'Moving data: for permanent data, the data really has to be copied to the new node (rebalancing).'
           - 'Replication: keeping several copies of a key is a separate job; the ring only names the first node.'
+      - type: code
+        lang: php
+        file: 'src/Cache/HotKeyCache.php'
+        variant: good
+        code: |
+          private const COPIES = 8;
+
+          public function getHot(string $key): mixed
+          {
+              // read one of 8 copies; each suffix hashes to a different node
+              return $this->cache->get($key.'#'.random_int(0, self::COPIES - 1));
+          }
+
+          public function setHot(string $key, mixed $value): void
+          {
+              for ($i = 0; $i < self::COPIES; $i++) {      // a write must update every copy
+                  $this->cache->set($key.'#'.$i, $value);
+              }
+          }
+        marks:
+          - {line: 6, tip: 'product:iphone#0 to #7 land on up to 8 different nodes, so the reads are shared out instead of hitting one.'}
+          - {line: 11, tip: 'The price: 8 writes per update, and for a moment the copies can disagree. Use it for the few hot keys only.'}
     aside:
       - type: when
         use:
@@ -276,6 +307,11 @@ flashcards:
     more: |
       With one position per node, luck with the gaps makes the split uneven. Give each node 100-200 positions and the law of averages evens it out. When a node dies its keys spread over all the nodes, and a bigger machine can be given more vnodes for a bigger share.
     ref: virtual-nodes
+  - q: 'How can a bigger machine take a bigger share on the ring?'
+    a: 'Give it more virtual nodes, for example weight 2 means 300 positions instead of 150. It then owns about twice as many keys.'
+    more: |
+      A weight is just a vnode count. In the HashRing above, `add('big-1', 2)` places twice as many positions for that node. Nothing else changes: lookups, wrap-around and removal work as before.
+    ref: hash-ring-in-php
   - q: 'When looking up a key on the ring, what do you do with the sorted list?'
     a: 'Binary-search for the first position greater than or equal to the key''s hash; if there is none, wrap back to the start of the list.'
     more: |
@@ -289,7 +325,7 @@ flashcards:
   - q: 'Why doesn''t consistent hashing fix the hot key problem?'
     a: 'A key always goes to one single node. The ring spreads keys evenly but doesn''t look at how often each key is read.'
     more: |
-      If every user reads one viral product key, that node burns. The fixes: a short-lived local cache inside the app, several copies of the key (spread with a key suffix), or a separate hot-key path.
+      If every user reads one viral product key, that node burns. The fixes: a short-lived local cache inside the app, or several copies of the key (`key#0` to `key#7`, each landing on a different node; reads pick one at random, writes update all). The price is more writes and copies that can briefly disagree.
     ref: where-its-used
 
 quiz:

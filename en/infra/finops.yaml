@@ -7,7 +7,7 @@ slides:
     blocks:
       - type: text
         body: |
-          The bill is normally about $820 a month. This month it came to $2,140. Nobody had built anything new, yet the bill was almost two and a half times higher. Finding out why took two days: one service was fetching images through the NAT gateway, and a developer had left debug-level logging switched on.
+          The bill is normally about $820 a month. This month it came to $2,140. Nobody had built anything new, yet the bill was more than two and a half times higher. Finding out why took two days: one service was fetching images through the NAT gateway, and a developer had left debug-level logging switched on.
       - type: visual
         kind: bars
         caption: 'This month''s $2,140 bill: where the money went'
@@ -25,6 +25,7 @@ slides:
       - type: terms
         items:
           - {term: 'FinOps', meaning: 'Financial Operations: engineers, finance and the business working together to understand and control cloud costs.'}
+          - {term: 'NAT gateway', meaning: 'A doorway that lets private servers reach the internet. It is billed per hour and again for every GB that passes through.'}
     check:
       q: 'Why can the cloud bill go up even when no new feature has shipped?'
       a: 'Because cloud cost grows with usage. Extra data transfer, debug logs or a resource left running all cost money, even if nobody built anything.'
@@ -156,6 +157,11 @@ slides:
             limit_unit   = "USD"
             time_unit    = "MONTHLY"
 
+            cost_filter {
+              name   = "TagKeyValue"
+              values = ["user:service$shop-api"]
+            }
+
             notification {
               comparison_operator        = "GREATER_THAN"
               threshold                  = 80
@@ -166,8 +172,8 @@ slides:
           }
         marks:
           - {line: 3, tip: 'default_tags: every resource created through this provider gets these tags automatically. Nobody has to remember.'}
-          - {line: 15, tip: 'A monthly limit of $900, just above the normal $820 bill, so any extra is noticed.'}
-          - {line: 23, tip: 'FORECASTED: you are warned as soon as the forecast passes $720 mid-month, without waiting for month end.'}
+          - {line: 15, tip: 'A monthly limit of $900, just above the normal $820 bill, so any extra is noticed. The tag filter below limits it to shop-api.'}
+          - {line: 28, tip: 'FORECASTED: you are warned as soon as the forecast passes $720 mid-month, without waiting for month end.'}
       - type: visual
         kind: steps
         caption: 'From tag to alert: the cost-watching routine'
@@ -192,12 +198,12 @@ slides:
   - slug: save-without-risk
     title: 'Cutting cost without cutting reliability'
     kind: compare
-    tldr: 'Cut waste (idle resources, oversized instances, too many logs), but not the safety net (backups, multi-AZ, monitoring).'
-    keywords: ['cost optimization', 'right-sizing', 'autoscaling', 'savings plan', 'spot']
+    tldr: 'Cut waste (idle resources, oversized instances, too many logs, needless NAT traffic) but not the safety net (backups, multi-AZ, monitoring).'
+    keywords: ['cost optimization', 'right-sizing', 'autoscaling', 'savings plan', 'spot', 'VPC endpoint', 'NAT gateway cost', 'log level']
     blocks:
       - type: text
         body: |
-          There are two kinds of cost cutting: **cutting waste** and **cutting protection**. Waste is whatever nobody is using. Protection is what isn't used today but will save your life in an emergency: backups, a second availability zone, monitoring. The first is always good. The second is never cheap.
+          There are two kinds of cost cutting: **cutting waste** and **cutting protection**. Waste is whatever nobody is using. Protection is what isn't used today but will save your life in an emergency: backups, a second availability zone, monitoring. The first is always good. The second is never cheap. Both spikes in the $2,140 bill were waste, and the two code blocks below fix them.
       - type: visual
         kind: table
         caption: 'What each step saves, and how risky it is'
@@ -217,6 +223,42 @@ slides:
             tip: 'Not all logs are equal: audit and payment logs must be kept longer.'
           - cells: ['Deleting idle resources', 'Unused disks, IPs, old snapshots', 'Low']
             tip: 'Check the owner tag and ask first, then delete.'
+      - type: code
+        lang: text
+        file: 'infra/network.tf (HCL)'
+        variant: good
+        code: |
+          # S3 traffic from the private subnets now skips the NAT gateway
+          resource "aws_vpc_endpoint" "s3" {
+            vpc_id            = aws_vpc.main.id
+            service_name      = "com.amazonaws.ap-southeast-1.s3"
+            vpc_endpoint_type = "Gateway"
+            route_table_ids   = [aws_route_table.private.id]
+          }
+
+          # Debug logs are kept for 7 days, not forever
+          resource "aws_cloudwatch_log_group" "app" {
+            name              = "/shop/app"
+            retention_in_days = 7
+          }
+        marks:
+          - {line: 2, tip: 'The $780 extra on the NAT line was roughly 15 TB at about 5 cents per GB. A gateway endpoint for S3 is free and sends that traffic around the NAT. It covers only S3 and DynamoDB in the same region.'}
+          - {line: 12, tip: 'Old log lines expire on their own, so the logs bill stops growing. Audit logs need a longer period in their own group.'}
+      - type: code
+        lang: yaml
+        file: 'config/packages/monolog.yaml'
+        variant: good
+        code: |
+          when@prod:
+              monolog:
+                  handlers:
+                      main:
+                          type: stream
+                          path: php://stderr
+                          level: info   # a developer had left this on debug
+                          formatter: monolog.formatter.json
+        marks:
+          - {line: 7, tip: 'info keeps the useful lines and drops the flood. The price: debug detail is gone. Switch to debug for one incident, then put it back.'}
       - type: quote
         body: 'Cut the waste, never the safety net.'
     aside:
@@ -225,6 +267,10 @@ slides:
         avoid: ['Spot or single-AZ on a production database']
       - type: remember
         body: 'What isn''t used is waste; what will save you in a crisis is insurance.'
+      - type: terms
+        items:
+          - {term: 'Pod', meaning: 'One running copy of your app in Kubernetes. Autoscaling adds and removes Pods.'}
+          - {term: 'Savings Plan', meaning: 'A promise to use a set amount for 1 to 3 years, in return for a lower price. You pay even if you use less.'}
       - type: refs
         items:
           - {to: 'scaling/horizontal-vertical', label: 'The basics of autoscaling'}
@@ -318,6 +364,16 @@ flashcards:
     more: |
       Waste is whatever nobody is using (idle disks, oversized instances, too many logs). Protection is what rescues you in a crisis. One incident can cost more than a whole year of savings.
     ref: bad-savings
+  - q: 'A private app pulls many GB from S3 and the NAT gateway line explodes. What is the cheap fix?'
+    a: 'Add an S3 gateway VPC endpoint. S3 traffic then skips the NAT gateway, so its per-GB charge disappears.'
+    more: |
+      The gateway endpoint for S3 is free. It works only for S3 and DynamoDB in the same region, so other internet traffic still uses the NAT gateway. In the story, the extra $780 was roughly 15 TB at about 5 cents per GB.
+    ref: save-without-risk
+  - q: 'How do you stop debug logs from inflating the bill in a Symfony app?'
+    a: 'Set the production Monolog handler to level info, and give the log group a short retention such as 7 days.'
+    more: |
+      The price is losing debug detail, so switch to debug only while investigating one incident. Keep audit and payment logs in a separate group with a longer retention.
+    ref: save-without-risk
 
 quiz:
   - q: 'Last month''s bill was $820 and this month''s is $2,140, with no code changes. What do you do first?'
@@ -414,4 +470,30 @@ quiz:
       - text: 'The only web Pod serving customer requests'
         correct: false
         why: 'The moment it is reclaimed, customers'' requests fail.'
+    ref: save-without-risk
+  - q: 'Private app servers read 15 TB a month from S3 through the NAT gateway, at about 5 cents per GB. What is the cheapest fix?'
+    hint: 'Can the traffic avoid the NAT gateway altogether?'
+    options:
+      - text: 'Add an S3 gateway VPC endpoint to the private route table'
+        correct: true
+        why: 'S3 traffic then goes straight to S3, skipping the NAT gateway and its per-GB charge. The endpoint itself is free.'
+      - text: 'Buy a bigger NAT gateway'
+        correct: false
+        why: 'NAT gateways are billed per GB passing through, so a bigger one does not lower the bill.'
+      - text: 'Move the app servers to a public subnet'
+        correct: false
+        why: 'It removes the NAT charge but exposes the servers to the internet. That trades money for safety.'
+    ref: save-without-risk
+  - q: 'The logs bill rose from $110 to $650 after a developer left debug logging on. Which changes fix it without losing safety?'
+    hint: 'Cut the volume, and let old lines expire.'
+    options:
+      - text: 'Set the Monolog production handler to level info'
+        correct: true
+        why: 'Far fewer lines are written, and the useful ones stay.'
+      - text: 'Set log retention to 7 days (audit logs kept longer, elsewhere)'
+        correct: true
+        why: 'Old lines expire by themselves, so stored GB stops growing.'
+      - text: 'Switch monitoring off'
+        correct: false
+        why: 'Monitoring is protection, not waste. Turning it off hides the next problem.'
     ref: save-without-risk

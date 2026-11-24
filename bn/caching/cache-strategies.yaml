@@ -12,7 +12,7 @@ slides:
           হোটেলে প্রতিটা অর্ডারে নতুন করে বিরিয়ানি রান্না হলে খদ্দের ঘণ্টাখানেক বসে থাকবে। তাই দুপুরের আগেই বড় ডেকচিতে রান্না হয়, আর কাউন্টারে প্যাকেট করা বিরিয়ানি সাজানো থাকে। খদ্দের আসে, প্যাকেট নেয়, চলে যায়। রান্নাঘর হলো ডেটাবেস, কাউন্টারের প্যাকেট হলো **cache**।
       - type: text
         body: |
-          রহিমের হোমপেজে "সবচেয়ে বেশি বিক্রি হওয়া ১০ পণ্য" দেখানো হয়। হিসাবটা চালাতে ডেটাবেসের ৮০০ms লাগে, আর পেজ খোলে দিনে ৫০ হাজার বার। উত্তরটা প্রতি ১০ মিনিটেও প্রায় বদলায় না, তবু প্রতিবার নতুন করে রান্না হচ্ছে।
+          রহিমের হোমপেজে "সবচেয়ে বেশি বিক্রি হওয়া ১০ পণ্য" দেখানো হয়। হিসাবটা চালাতে ডেটাবেসের ৮০০ms লাগে, আর পেজ খোলে দিনে ৫০ হাজার বার। উত্তরটা প্রতি ১০ মিনিটেও প্রায় বদলায় না, তবু প্রতিবার নতুন করে রান্না হচ্ছে। হিসাব দাঁড়ায় ৫০ হাজার × ৮০০ms, মানে দিনে প্রায় ১১ ঘণ্টার ডেটাবেসের কাজ। উত্তরটা ১০ মিনিট cache করলে দিনে বড়জোর ১৪৪ বার রান্না হয়, মোট ২ মিনিটেরও কম কাজ।
       - type: visual
         kind: bars
         caption: 'একই উত্তর: ডেটাবেস থেকে হিসাব বনাম cache থেকে তোলা'
@@ -57,7 +57,7 @@ slides:
           - {from: db, to: app, label: 'ডেটাবেস উত্তর ফেরত দেয়', dashed: true}
           - {from: app, to: cache, label: 'অ্যাপ উত্তরটা মেয়াদ দিয়ে cache-এ রেখে যায়', tone: good}
       - type: quote
-        body: 'Cache-aside: আগে cache, না পেলে ডেটাবেস, তারপর cache ভরো।'
+        body: 'Cache-aside: আগে cache, না পেলে ডেটাবেস, তারপর cache ভরুন।'
     aside:
       - type: when
         use:
@@ -67,6 +67,9 @@ slides:
           - 'প্রতি সেকেন্ডে বদলায় এমন ডেটা, যা ভুল দেখানো চলে না।'
       - type: remember
         body: 'প্রথম request ধীর (miss), পরের সবগুলো দ্রুত (hit)।'
+      - type: pitfalls
+        items:
+          - 'পিক সময়ে cache মরলে প্রতিটা request miss হয়ে ডেটাবেসে একসাথে পুরো চাপ আসে। ছোট সাইট টিকে যায়; ব্যস্ত সাইটের ডেটাবেস পড়েও যেতে পারে।'
     check:
       q: 'Cache বন্ধ হয়ে গেলে cache-aside অ্যাপ কী করে?'
       a: 'প্রতিবার miss ধরে ডেটাবেস থেকে উত্তর আনে। অ্যাপ ধীর হয়, কিন্তু চালু থাকে — কারণ সত্য ডেটাবেসেই আছে।'
@@ -74,12 +77,12 @@ slides:
   - slug: symfony-cache-get
     title: 'Symfony-তে cache-aside: একটা get() কল'
     kind: howto
-    tldr: 'Symfony Cache contracts-এর get(key, callback) একসাথে খোঁজা, miss-এ callback চালানো আর ফল রাখা করে; backend হিসেবে Redis বসাও।'
+    tldr: 'Symfony Cache contracts-এর get(key, callback) একসাথে খোঁজা, miss-এ callback চালানো আর ফল রাখা করে; backend হিসেবে Redis বসান।'
     keywords: ['CacheInterface', 'Symfony Cache', 'Redis', 'expiresAfter', 'ItemInterface', 'cache.adapter.redis']
     blocks:
       - type: text
         body: |
-          Symfony-তে `CacheInterface`-এর `get()` মেথডে তুমি চাবি আর একটা callback দাও। চাবি পেলে সাথে সাথে মান ফেরত আসে। না পেলে callback চলে, তার ফল জমা হয় আর ফেরত আসে। মেয়াদ `$item->expiresAfter()` দিয়ে বলতে হয়।
+          Symfony-তে `CacheInterface`-এর `get()` মেথডে আপনি চাবি আর একটা callback দেন। চাবি পেলে সাথে সাথে মান ফেরত আসে। না পেলে callback চলে, তার ফল জমা হয় আর ফেরত আসে। মেয়াদ `$item->expiresAfter()` দিয়ে বলতে হয়। এ ছাড়া প্রতিবার পেজ খুললেই `findTopSelling(10)` চলত, প্রতিবার ৮০০ms।
       - type: code
         lang: php
         file: 'src/Catalog/TopProducts.php'
@@ -106,7 +109,7 @@ slides:
         marks:
           - {line: 12, tip: 'চাবি এমন হবে যা দেখেই বোঝা যায় ভেতরে কী আছে। নামের শেষে v1 পরে কাজে লাগবে।'}
           - {line: 13, tip: 'callback শুধু miss হলে চলে। hit হলে এই কোড ছোঁয়াই হয় না।'}
-          - {line: 15, tip: 'ফেরত মান ছোট আর serialize করার মতো রাখো: array বা DTO। Doctrine entity নয়।'}
+          - {line: 15, tip: 'ফেরত মান ছোট আর serialize করার মতো রাখুন: array বা DTO। Doctrine entity নয়।'}
       - type: code
         lang: yaml
         file: 'config/packages/cache.yaml'
@@ -122,16 +125,17 @@ slides:
     aside:
       - type: tips
         items:
-          - 'Redis-এ maxmemory আর eviction policy (যেমন allkeys-lru) ঠিক করো, নইলে মেমোরি ভরে গেলে লেখা ব্যর্থ হয়।'
-          - 'Entity নয়, ছোট DTO বা array cache করো — entity serialize করলে বাসি রিলেশন আর বিপুল আকার ঢোকে।'
+          - 'Redis-এ maxmemory আর eviction policy (যেমন allkeys-lru) ঠিক করুন, নইলে মেমোরি ভরে গেলে লেখা ব্যর্থ হয়।'
+          - 'Entity নয়, ছোট DTO বা array cache করুন — entity serialize করলে বাসি রিলেশন আর বিপুল আকার ঢোকে।'
       - type: commands
         title: 'Cache কমান্ড'
         items:
-          - {cmd: 'php bin/console cache:pool:clear cache.app', desc: 'অ্যাপের cache পুরো খালি করো'}
-          - {cmd: 'php bin/console cache:pool:delete cache.app top_products.v1', desc: 'একটা চাবি মুছো'}
+          - {cmd: 'php bin/console cache:pool:clear cache.app', desc: 'অ্যাপের cache পুরো খালি করুন'}
+          - {cmd: 'php bin/console cache:pool:delete cache.app top_products.v1', desc: 'একটা চাবি মুছুন'}
       - type: refs
         items:
           - {to: 'caching/cache-invalidation', label: 'TTL আর invalidation'}
+          - {to: 'caching/cache-stampede', label: 'গরম entry-র মেয়াদ ফুরালে'}
     check:
       q: 'get() কলের callback কখন চলে, আর কখন চলে না?'
       a: 'শুধু miss হলে চলে — চাবি না থাকলে বা মেয়াদ ফুরালে। hit হলে সরাসরি জমা মান ফেরত আসে।'
@@ -163,7 +167,7 @@ slides:
             tip: 'লেখা একসাথে দুই জায়গায় যায় আর দুটো শেষ হলে তবেই সফল ধরা হয়। cache সবসময় তাজা থাকে।'
             items:
               - 'লেখা cache আর ডেটাবেস দুটোতেই যায়'
-              - 'cache কখনো বাসি হয় না'
+              - 'cache তাজা থাকে'
               - 'প্রতিটা লেখা ধীর হয়'
           - title: 'Write-behind'
             tone: warn
@@ -178,8 +182,9 @@ slides:
     aside:
       - type: tips
         items:
-          - 'Symfony-র get(key, callback) দেখতে read-through-এর মতো, কিন্তু আসলে cache-aside: callback তোমার অ্যাপের কোড, cache-এর নয়।'
+          - 'Symfony-র get(key, callback) দেখতে read-through-এর মতো, কিন্তু আসলে cache-aside: callback আপনার অ্যাপের কোড, cache-এর নয়।'
           - 'PHP অ্যাপে write-behind প্রায় কেউ হাতে বানায় না। টাকা বা অর্ডারের মতো ডেটায় তো নয়ই।'
+          - 'যেখানে মানায়: সেকেন্ডে ৫০০০ লাইক cache-এ গুনে সেকেন্ডে একবার "+৫০০০" লিখলে ৫০০০ লেখার বদলে ১টা। cache মরলে ওই সেকেন্ডের লাইক হারায়।'
       - type: terms
         items:
           - {term: 'Loader', meaning: 'miss হলে উৎস থেকে মান আনার কোড; read-through-এ এটা cache-এর ভেতরে থাকে।'}
@@ -188,10 +193,10 @@ slides:
       a: 'Write-behind। লেখা আগে cache-এ যায় আর ডেটাবেসে পরে; ডেটাবেসে পৌঁছানোর আগে cache মরলে সেই লেখা হারিয়ে যায়।'
 
   - slug: what-not-to-cache
-    title: 'কী cache করবে না, আর একটা ভয়ংকর ভুল'
+    title: 'কী cache করবেন না, আর একটা ভয়ংকর ভুল'
     kind: pitfall
     tldr: 'ব্যবহারকারীভেদে আলাদা ডেটা একই চাবিতে cache করলে একজনের তথ্য আরেকজন দেখে ফেলে; টাকা-স্টকের মতো সঠিকতা-নির্ভর ডেটা cache করাও ঝুঁকির।'
-    keywords: ['cache key', 'data leak', 'per-user cache', 'what to cache', 'কী cache করবে না']
+    keywords: ['cache key', 'data leak', 'per-user cache', 'what to cache', 'কী cache করবেন না']
     blocks:
       - type: text
         body: |
@@ -227,19 +232,20 @@ slides:
               });
           }
         marks:
-          - {line: 3, tip: 'যার জন্য উত্তর আলাদা, তার পরিচয় চাবিতে ঢোকাও।'}
+          - {line: 3, tip: 'যার জন্য উত্তর আলাদা, তার পরিচয় চাবিতে ঢোকান।'}
           - {line: 6, tip: 'ব্যক্তিগত ডেটার মেয়াদ ছোট রাখা নিরাপদ। অথবা এমন ডেটা cache না করাই ভালো।'}
       - type: points
-        title: 'এগুলো cache করবে না'
+        title: 'এগুলো cache করবেন না'
         style: cross
         items:
           - 'টাকার ব্যালেন্স আর checkout-এর স্টক — ভুল মানে সরাসরি ক্ষতি।'
           - 'যে ডেটা কেউ দ্বিতীয়বার চায় না।'
           - 'যা বানাতে সস্তা, অথচ cache-এর ঝামেলা বেশি।'
+          - 'যে query শুধু index না থাকায় বা N+1-এর (প্রতি সারিতে একটা বাড়তি query) জন্য ধীর: আগে সেটা সারান, তারপর দেখুন cache লাগে কি না।'
     aside:
       - type: pitfalls
         items:
-          - 'cache ছাড়া ধীর এমন query ঠিক না করে cache দিয়ে ঢাকলে মূল সমস্যা (index নেই, N+1) থেকে যায়।'
+          - 'লগইন করা ব্যবহারকারীর নাম বা CSRF token-ওয়ালা পুরো পাতা সবার চাবিতে cache করবেন না; কার্টের মতোই ফাঁস হবে।'
       - type: remember
         body: 'উত্তর যার জন্য আলাদা, চাবিতে তার পরিচয় থাকতেই হবে।'
     check:
@@ -272,15 +278,15 @@ slides:
         style: number
         items:
           - 'সন্দেহ হলে cache-aside, ছোট TTL সহ।'
-          - 'পড়ার পর সাথে সাথে তাজা মান লাগলে লেখার সময় cache বদলাও বা মুছো।'
+          - 'পড়ার পর সাথে সাথে তাজা মান লাগলে লেখার সময় cache বদলান বা মুছুন।'
           - 'হারানো চলে না এমন ডেটায় write-behind কখনো নয়।'
     aside:
       - type: refs
         items:
-          - {to: 'caching/cache-invalidation', label: 'বাসি cache কীভাবে সারাবে'}
+          - {to: 'caching/cache-invalidation', label: 'বাসি cache কীভাবে সারাবেন'}
           - {to: 'caching/cache-stampede', label: 'miss-এর ঝড় ঠেকানো'}
     check:
-      q: 'একটা সাধারণ পণ্যের পাতার জন্য কোন কৌশল দিয়ে শুরু করবে, আর কেন?'
+      q: 'একটা সাধারণ পণ্যের পাতার জন্য কোন কৌশল দিয়ে শুরু করবেন, আর কেন?'
       a: 'Cache-aside, একটা ছোট TTL সহ। এটা সহজ, Symfony-র get() দিয়েই হয়, আর cache বন্ধ থাকলেও অ্যাপ ডেটাবেস দিয়ে চলে।'
 
 flashcards:
@@ -289,15 +295,25 @@ flashcards:
     more: |
       হিটের হার যত বেশি, cache তত কাজের। প্রথমবার চাইলে সবসময় miss হয়; সেই miss-এর পরে উত্তর cache-এ বসে, আর পরের request-গুলো hit পায়।
     ref: same-answer-again
+  - q: 'একটা পেজ দিনে ৫০ হাজার বার খোলে, query-র সময় ৮০০ms। cache কী বাঁচায়?'
+    a: 'দিনে প্রায় ১১ ঘণ্টার ডেটাবেসের কাজ। ১০ মিনিটের cache-এ query বড়জোর ১৪৪ বার চলে, ২ মিনিটেরও কম।'
+    more: |
+      ৫০ হাজার × ৮০০ms মানে ৪০ হাজার সেকেন্ড। ১০ মিনিট cache করলে query ঘণ্টায় বড়জোর ৬ বার, দিনে ১৪৪ বার চলে, মোট প্রায় ১১৫ সেকেন্ড। আর প্রতিটা দর্শক ৮০০ms-এর বদলে প্রায় ৩ms অপেক্ষা করে।
+    ref: same-answer-again
   - q: 'Cache-aside কৌশল কীভাবে কাজ করে?'
     a: 'অ্যাপ আগে cache-এ খোঁজে; না পেলে নিজে ডেটাবেস থেকে এনে cache-এ রেখে দেয়।'
     more: |
       cache নিজে কিছু আনে না; খোঁজা, আনা আর ভরা তিনটাই অ্যাপের কোডে। তাই cache বন্ধ থাকলেও অ্যাপ চলে, শুধু ধীর হয়। একে lazy loading-ও বলে, কারণ cache ভরে শুধু চাওয়া হলে।
     ref: cache-aside
+  - q: 'পিক সময়ে cache বন্ধ হয়ে গেলে cache-aside অ্যাপের কী হয়?'
+    a: 'প্রতিটা request miss হয়ে ডেটাবেসে যায়। অ্যাপ ঠিক থাকে, কিন্তু ব্যস্ত সাইটের ডেটাবেস পড়ে যেতে পারে।'
+    more: |
+      অ্যাপ চলে কারণ সত্য ডেটাবেসেই আছে। কিন্তু ডেটাবেস ভরসা করছিল cache বেশিরভাগ পড়া সামলাবে। ছোট সাইট বাড়তি চাপ সামলে নেয়; ব্যস্ত সাইট নাও পারতে পারে। তাই cache-এর দিকে নজর রাখুন, আর ঠান্ডা cache নিয়ে অন্তত কিছুক্ষণ চলার সামর্থ্য ডেটাবেসকে দিন।
+    ref: cache-aside
   - q: 'Symfony-র CacheInterface::get($key, $callback) কী করে?'
     a: 'চাবি থাকলে জমা মান ফেরায়; না থাকলে callback চালিয়ে ফল জমা করে আর ফেরায়।'
     more: |
-      callback-এর ভেতরে `$item->expiresAfter(600)` দিয়ে মেয়াদ বলা হয়। এটা cache-aside-এর Symfony রূপ। এতে "খোঁজো, না পেলে বানাও, রাখো" তিন ধাপ এক কলেই হয়ে যায়, হাতে আলাদা if লিখতে হয় না।
+      callback-এর ভেতরে `$item->expiresAfter(600)` দিয়ে মেয়াদ বলা হয়। এটা cache-aside-এর Symfony রূপ। এতে "খোঁজা, না পেলে বানানো, রাখা" তিন ধাপ এক কলেই হয়ে যায়, হাতে আলাদা if লিখতে হয় না।
     ref: symfony-cache-get
   - q: 'Write-through কৌশলে লেখা কীভাবে যায়?'
     a: 'একসাথে cache আর ডেটাবেস দুই জায়গাতেই; দুটো শেষ হলে তবে সফল ধরা হয়।'
@@ -312,7 +328,7 @@ flashcards:
   - q: 'ব্যবহারকারীভেদে আলাদা উত্তর cache করলে চাবিতে কী থাকতে হবে?'
     a: 'ব্যবহারকারীর আইডি বা পরিচয়। নইলে একজনের তথ্য আরেকজন দেখে ফেলে।'
     more: |
-      যেমন `cart` নয়, `cart.user.42`। এটা শুধু cache-এর ভুল নয়, নিরাপত্তার ভুল: ব্যক্তিগত তথ্য ফাঁস হয়। সন্দেহ থাকলে ব্যক্তিগত ডেটা cache না করে ছোট মেয়াদ দাও।
+      যেমন `cart` নয়, `cart.user.42`। এটা শুধু cache-এর ভুল নয়, নিরাপত্তার ভুল: ব্যক্তিগত তথ্য ফাঁস হয়। সন্দেহ থাকলে ব্যক্তিগত ডেটা cache না করুন, অথবা ছোট মেয়াদ দিন।
     ref: what-not-to-cache
   - q: 'কোন ধরনের ডেটা cache না করাই ভালো?'
     a: 'টাকার ব্যালেন্স, checkout-এর স্টক, আর যা বানাতে সস্তা বা কেউ দ্বিতীয়বার চায় না।'
@@ -397,7 +413,7 @@ quiz:
     options:
       - text: 'এটা আসলে cache-aside-এর একটা রূপ'
         correct: true
-        why: 'callback তোমার অ্যাপের কোড; আনার দায়িত্ব অ্যাপেরই।'
+        why: 'callback আপনার অ্যাপের কোড; আনার দায়িত্ব অ্যাপেরই।'
       - text: 'callback শুধু miss হলে চলে'
         correct: true
         why: 'hit হলে জমা মানই ফেরে, ধীর কাজ চলে না।'

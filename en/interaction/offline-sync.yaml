@@ -104,12 +104,25 @@ slides:
           - cells: ['CRDT', 'A structure that merges to the same result in any order', 'Complex, more memory', 'Counters, text editors']
             tip: 'The merge rule lives in the structure itself, so conflicts never arise. But you can''t build one for every kind of data.'
       - type: points
+        title: 'The same stock, two ways'
+        style: number
+        items:
+          - 'Stock is 10 cartons. Offline, Rahim sells 2 and Nadia sells 1.'
+          - 'Send totals: Rahim says 8, Nadia says 9. The last one wins, so stock = 9. The truth is 7.'
+          - 'Send changes: -2 and -1. The server applies both: 10 - 2 - 1 = 7, in any order.'
+          - 'Price: the server must keep every change, and still check the result, because two sales can push stock below 0.'
+      - type: points
         title: 'How to choose'
         style: check
         items:
           - 'In an ordinary CRUD app, start here: catch conflicts with a version, merge by field, and show the user what can''t be merged.'
           - 'CRDTs are mainly for documents edited together (Google Docs style). An ordinary app doesn''t need that complexity.'
     aside:
+      - type: terms
+        items:
+          - {term: 'Concurrent', meaning: 'Two changes made without either person having seen the other''s.'}
+          - {term: 'CRDT', meaning: 'A data structure built so that merging in any order gives the same result.'}
+          - {term: 'P2P', meaning: 'Peer-to-peer: devices sync directly with each other, with no central server.'}
       - type: when
         use: ['Money amounts or stock going up and down: send "+2"-style deltas, not the total']
         avoid: ['Last-write-wins on money or stock; it gives plainly wrong numbers']
@@ -128,53 +141,59 @@ slides:
     blocks:
       - type: text
         body: |
-          A sync protocol has three steps. When the user edits, write to the phone first (the **outbox**). When back online, `push` the changes in order. Then `pull` the server's new changes to refresh the phone's copy. Each change carries its own `id`, so if the connection drops and you send it again, the server can recognize the duplicate.
+          A sync protocol has three steps. When the user edits, write to the phone first, into the **outbox**: a to-do list of changes kept in the browser's own database (IndexedDB), so it survives a closed tab. When back online, `push` the changes in order. Then `pull` the server's new changes. Each change carries its own `id`, so a resend is recognised, and the `baseVersion` it was written against. When the server accepts a change it returns the new version, and the code hands that version to the same note's later edits (the next slide shows why).
       - type: code
-        lang: vue
-        file: 'src/composables/useOutbox.vue'
+        lang: ts
+        file: 'src/outbox/useOutbox.ts'
         variant: good
         code: |
-          <script setup lang="ts">
-          import { ref, onMounted, onUnmounted } from 'vue'
+          import { ref } from 'vue'
           import { get, set } from 'idb-keyval'
-
           interface Mutation { id: string; noteId: string; baseVersion: number; title: string }
-          const pending = ref<Mutation[]>([])
-          const conflicts = ref<Mutation[]>([])
+          export const pending = ref<Mutation[]>([])
+          export const conflicts = ref<Mutation[]>([])
+          const persist = () => set('outbox', JSON.parse(JSON.stringify(pending.value)))
 
-          async function save(noteId: string, baseVersion: number, title: string) {
+          export async function save(noteId: string, baseVersion: number, title: string) {
             pending.value.push({ id: crypto.randomUUID(), noteId, baseVersion, title })
-            await set('outbox', JSON.parse(JSON.stringify(pending.value)))
+            await persist()
             if (navigator.onLine) await flush()
           }
 
           async function flush() {
             while (pending.value.length) {
               const m = pending.value[0]
-              const res = await fetch('/api/sync', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(m),
-              })
-              if (res.status === 409) conflicts.value.push(m)
-              else if (!res.ok) return
-              pending.value.shift()
-              await set('outbox', JSON.parse(JSON.stringify(pending.value)))
+              const res = await fetch('/api/sync', { method: 'POST', body: JSON.stringify(m),
+                headers: { 'Content-Type': 'application/json' } })
+              if (!res.ok && res.status !== 409) return   // server down: retry later
+              const mine = pending.value.filter(p => p.noteId === m.noteId)
+              if (res.status === 409) {   // park this edit and the later ones built on it
+                conflicts.value.push(...mine)
+                pending.value = pending.value.filter(p => !mine.includes(p))
+              } else {
+                const { version } = await res.json()
+                pending.value.shift()
+                mine.forEach(p => { p.baseVersion = version })   // later edits build on it
+              }
+              await persist()
             }
           }
 
-          onMounted(async () => {
+          export async function startOutbox() {
             pending.value = (await get('outbox')) ?? []
             window.addEventListener('online', flush)
-          })
-          onUnmounted(() => window.removeEventListener('online', flush))
-          </script>
+          }
         marks:
-          - {line: 10, tip: 'A change has its own id and a base version. The server uses both, to catch conflicts and to catch duplicates.'}
-          - {line: 11, tip: 'Write to the phone''s IndexedDB first. Even with no network, the change isn''t lost.'}
-          - {line: 23, tip: 'On a 409 the change moves to conflicts and the user is shown both copies. It is not retried.'}
-          - {line: 24, tip: 'On any other failure (server down) the outbox stays as it is and is tried again later.'}
+          - {line: 9, tip: 'A change has its own id and a base version. The server uses both, to catch duplicates and to catch conflicts.'}
+          - {line: 10, tip: 'Write to the phone''s IndexedDB first. Even with no network, the change isn''t lost.'}
+          - {line: 19, tip: 'On any failure other than 409 (server down) the outbox stays as it is and is tried again later.'}
+          - {line: 21, tip: 'On a 409 the edit moves to conflicts together with every later edit of the same note. None is retried.'}
+          - {line: 27, tip: 'Accepted: the later edits of this note now say they were written against the version the server just returned.'}
     aside:
+      - type: terms
+        items:
+          - {term: 'IndexedDB', meaning: 'A small database built into the browser. It keeps data after the tab is closed.'}
+          - {term: 'Outbox', meaning: 'The phone''s to-do list of changes that the server has not yet accepted.'}
       - type: tips
         items:
           - '`navigator.onLine` is only a guess. The real truth is whether a fetch succeeds.'
@@ -185,6 +204,57 @@ slides:
     check:
       q: 'Why give every change an id with `crypto.randomUUID()`?'
       a: 'If the connection drops and the reply is lost, the client sends the same change again. The server recognizes the id, knows it was already applied, and doesn''t write it twice.'
+
+  - slug: own-edits-chain
+    title: 'Your own second edit can conflict with your first'
+    kind: pitfall
+    tldr: 'Two offline edits of one note both say "written against v5". After the first is accepted the second looks stale, so rebase it onto the new version.'
+    keywords: ['rebase', 'outbox', 'self conflict', 'base version', 'queued edits', 'optimistic locking']
+    blocks:
+      - type: text
+        body: |
+          In the village Rahim edits one note's title twice, and the phone has only ever seen version 5. So both edits go out saying "I wrote this against v5". The first is accepted and the server moves to v6. The second then arrives still saying v5, and the server refuses it. Nobody else touched the note: Rahim has conflicted with himself.
+      - type: visual
+        kind: sequence
+        caption: 'Without rebasing, edit 2 is refused because of edit 1'
+        actors:
+          - {id: phone, label: 'Rahim''s phone', icon: mobile, tip: 'Holds two waiting edits of the same note, both written while the phone knew only v5.'}
+          - {id: server, label: 'Server', icon: server, tip: 'Accepts a change only if its base version equals the note''s current version.'}
+        messages:
+          - {at: phone, note: 'Offline: edit 1 and edit 2, both base v5'}
+          - {from: phone, to: server, label: 'Edit 1 (base v5)', tip: 'The server''s note is v5 too, so this one matches.'}
+          - {from: server, to: phone, label: 'Applied, the note is now v6', dashed: true, tone: good}
+          - {from: phone, to: server, label: 'Edit 2 (base v5)', tone: bad, tip: 'The phone never updated edit 2 after edit 1 was accepted.'}
+          - {from: server, to: phone, label: '409: you wrote on v5, I am at v6', dashed: true, tone: bad}
+          - {at: server, note: 'Rahim is in conflict with himself', tone: bad}
+      - type: visual
+        kind: sequence
+        caption: 'With rebasing, edit 2 follows edit 1 and goes through'
+        actors:
+          - {id: phone, label: 'Rahim''s phone', icon: mobile, tip: 'After each accepted edit it rewrites the base version of the waiting edits of that note.'}
+          - {id: server, label: 'Server', icon: server, tip: 'Same rule as before: base version must equal the current version.'}
+        messages:
+          - {from: phone, to: server, label: 'Edit 1 (base v5)'}
+          - {from: server, to: phone, label: 'Applied, the note is now v6', dashed: true, tone: good}
+          - {at: phone, note: 'Rebase: edit 2 now says base v6', tone: good}
+          - {from: phone, to: server, label: 'Edit 2 (base v6)', tip: 'It now matches the server''s version.'}
+          - {from: server, to: phone, label: 'Applied, the note is now v7', dashed: true, tone: good}
+      - type: points
+        title: 'The rules, and their price'
+        items:
+          - 'After the server accepts an edit, copy the version it returned into every later edit of that note.'
+          - 'If an edit gets 409, park the later edits of that note too: they were built on top of it.'
+          - 'Price: one note''s edits go out one at a time, and a parked chain waits until the user settles it.'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Rebase', meaning: 'Re-point a waiting edit at the newest version, as if it had been written after the edit just accepted.'}
+      - type: when
+        use: ['Several edits of one note can queue up offline']
+        avoid: ['Never guess the next version on the phone (base + 1) while offline: if Karim also edited, you would overwrite him']
+    check:
+      q: 'Edit 1 was accepted and the server says v6. Edit 2 still says base v5. What does the phone do before sending it?'
+      a: 'It rebases: it sets edit 2''s base to the v6 the server returned. Without that, the server answers 409 and Rahim conflicts with himself.'
 
   - slug: server-sync-endpoint
     title: 'The Symfony server: match the version, send changes back'
@@ -229,14 +299,14 @@ slides:
           #[Route('/api/sync', methods: ['POST'])]
           public function sync(#[MapRequestPayload] SyncMutation $m): JsonResponse
           {
-              if ($this->applied->has($m->id)) {
-                  return $this->json(['status' => 'duplicate']);   // already applied
+              if ($version = $this->applied->versionOf($m->id)) {   // already applied
+                  return $this->json(['status' => 'duplicate', 'version' => $version]);
               }
 
               try {
                   $note = $this->em->find(Note::class, $m->noteId, LockMode::OPTIMISTIC, $m->baseVersion);
                   $note->rename($m->title);
-                  $this->applied->record($m->id);
+                  $this->applied->record($m->id, $m->baseVersion + 1);
                   $this->em->flush();
               } catch (OptimisticLockException) {
                   $server = $this->em->find(Note::class, $m->noteId);
@@ -252,7 +322,8 @@ slides:
       - type: tips
         items:
           - 'For pull, build `GET /api/changes?since=<cursor>`, where the cursor is a server-side counter that keeps growing, not a clock.'
-          - 'Record `applied->record()` in the same transaction as the data change.'
+          - 'Record `applied->record()` in the same transaction as the data change. It stores the version the edit produced (`baseVersion + 1`), so a resend gets the same answer.'
+          - 'Every reply that accepts an edit, `applied` or `duplicate`, carries the version: the client needs it to rebase its next edit.'
       - type: refs
         items:
           - {to: 'payments/idempotency-keys', label: 'Idempotency keys'}
@@ -296,6 +367,11 @@ flashcards:
     more: |
       When the connection drops and the reply is lost, the client sends the same change again. The server recognizes the id and says "already applied", so the change isn't applied twice. The outbox lives in IndexedDB, not in memory.
     ref: client-outbox
+  - q: 'Why can one user''s second offline edit conflict with their own first edit?'
+    a: 'Both edits were written against the same base version. Once the first is accepted the server moves on, so the second looks stale and gets a 409.'
+    more: |
+      The fix is to rebase: when the server accepts an edit it returns the new version, and the phone copies it into every later edit of that note. If the first edit is refused, the later ones are parked with it, because they were built on top of it.
+    ref: own-edits-chain
 
 quiz:
   - q: 'Rahim changed a customer''s address offline, but meanwhile the server''s copy has changed. What should happen?'
@@ -378,3 +454,19 @@ quiz:
         correct: false
         why: 'It ruins usability, and the problem returns anyway once that person comes back online.'
     ref: resolve-strategies
+  - q: 'Rahim edited one note twice offline, both edits with base v5. The server accepted edit 1 and replied "version 6". What should the phone do with edit 2?'
+    hint: 'Edit 2 was written on top of edit 1. Where does the phone get the true version number?'
+    options:
+      - text: 'Send it as it is, with base v5'
+        correct: false
+        why: 'The note is v6 now, so the server answers 409 and Rahim conflicts with himself.'
+      - text: 'Set its base version to 6, the number the server returned, then send it'
+        correct: true
+        why: 'Edit 2 is now written against the version that already contains edit 1, so it matches and goes through.'
+      - text: 'Have the phone guess base + 1 for edit 2 at the moment Rahim writes it, offline'
+        correct: false
+        why: 'If Karim also changed the note meanwhile, the guess hides the conflict and silently overwrites Karim.'
+      - text: 'Throw edit 2 away, since the server already has a newer version'
+        correct: false
+        why: 'That loses Rahim''s work; the edit was fine, only its base version was out of date.'
+    ref: own-edits-chain

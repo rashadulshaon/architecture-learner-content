@@ -24,6 +24,21 @@ slides:
         marks:
           - {line: 3, tip: '3306 is the MySQL door. The only thing that should ever come through it is the app server.'}
           - {line: 6, tip: '0.0.0.0/0 means every address on the internet. Anyone in the world can knock on this door.'}
+      - type: code
+        lang: text
+        file: 'network.tf (HCL)'
+        variant: good
+        code: |
+          resource "aws_security_group_rule" "db_from_app" {
+            type                     = "ingress"
+            from_port                = 3306
+            to_port                  = 3306
+            protocol                 = "tcp"
+            source_security_group_id = aws_security_group.app.id
+            security_group_id        = aws_security_group.db.id
+          }
+        marks:
+          - {line: 6, tip: 'The source is the app''s security group, not an address. Only servers wearing that badge can knock, and the database itself sits in a private subnet.'}
       - type: quote
         body: 'A database must never be reachable directly from the internet.'
     aside:
@@ -143,7 +158,7 @@ slides:
   - slug: compute-and-managed
     title: 'Three kinds of compute, and managed services'
     kind: compare
-    tldr: 'With VMs, containers and serverless, your responsibility shrinks step by step. Managed services (RDS, S3, SQS) hand even more work to the cloud.'
+    tldr: 'With VMs, containers and serverless, your responsibility shrinks step by step, and each step has a price. Managed services (RDS, S3, SQS) hand over even more work.'
     keywords: ['compute', 'VM', 'EC2', 'serverless', 'managed service', 'RDS']
     blocks:
       - type: metaphor
@@ -164,13 +179,15 @@ slides:
             tip: 'Serverless is cheaper for light use; a VM or container is cheaper if it runs flat out all day.'
           - cells: ['Good for', 'Legacy apps, special needs', 'A typical Symfony API', 'Sudden small jobs']
             tip: 'For most new Symfony apps, containers are the default choice.'
+          - cells: ['The price', 'Patching, paying while idle', 'Learning an orchestrator', 'Cold starts, time limit, lock-in']
+            tip: 'Every column has a catch. The next slide puts numbers on the serverless one.'
       - type: points
         title: 'When to choose a managed service'
         style: check
         items:
           - 'Databases, caches, queues, file storage: running them yourself isn''t worth it'
           - 'They handle backups, patching and failover; you just turn them on and test them'
-          - 'Slightly pricier, but nobody wakes you at 3 a.m.'
+          - 'The price: a bigger bill and fewer knobs. If you need a setting it hides, run it yourself'
     aside:
       - type: when
         use: ['Whatever isn''t your business''s specialty, take it managed', 'Small teams with few people for operations']
@@ -182,12 +199,79 @@ slides:
           - {term: 'SQS', meaning: 'A managed queue. It holds the messages and you run the workers.'}
     check:
       q: 'Usage is very low at night, but now and then you suddenly need to resize images. Which compute fits?'
-      a: 'Serverless. The bill is zero while idle and it runs when work arrives, so you don''t pay hourly for a VM sitting on all day.'
+      a: 'Serverless. The bill is near zero while idle and it runs when work arrives. An occasional slow first call (a cold start) is fine for a background resize.'
+
+  - slug: compute-costs-and-rule
+    title: 'What serverless costs, and a rule to choose'
+    kind: pitfall
+    tldr: 'Serverless is cheap when idle but slow on the first call, dearer under steady load and tied to one cloud. Pick by the shape of your traffic.'
+    keywords: ['cold start', 'serverless cost', 'lock-in', 'Lambda', 'Bref', 'decision rule']
+    blocks:
+      - type: points
+        title: 'The catches behind "pay only when it runs"'
+        style: cross
+        items:
+          - 'Cold start: after a quiet spell the first call waits while the function boots, from a fraction of a second to several seconds'
+          - 'Steady load: per-run billing adds up, so a function that never rests costs more than twice a container doing the same work'
+          - 'Lock-in: the trigger and handler format belong to one cloud, so leaving means rewriting that glue'
+      - type: visual
+        kind: bars
+        caption: 'One month of the same image resizer, roughly, at list prices'
+        items:
+          - {label: 'Serverless, light use', value: 1, display: '$0.19', tone: good, tip: '100,000 resizes of 200 ms each on a 512 MB function. Under a dollar, and nothing is billed while it sleeps.'}
+          - {label: 'Container, always on', value: 35, display: '$35', tip: 'One small container (1 vCPU, 2 GB) on a flat hourly fee. It costs the same whether it is busy or asleep.'}
+          - {label: 'Serverless, always busy', value: 76, display: '$76', tone: bad, tip: 'The same one vCPU of work, but every second of the month billed per run. Over twice the container.'}
+      - type: code
+        lang: php
+        file: 'src/Service/InvoiceThumbnailer.php'
+        variant: good
+        code: |
+          // Plain PHP: knows nothing about any cloud, so it runs anywhere
+          final readonly class InvoiceThumbnailer
+          {
+              public function __construct(private FilesystemOperator $storage) {}
+
+              public function thumbnail(string $path): string
+              {
+                  $image = (new ImageManager(new Driver()))->read($this->storage->read($path));
+                  $small = $path.'.thumb.jpg';
+                  $this->storage->write($small, (string) $image->scaleDown(width: 400)->toJpeg());
+
+                  return $small;
+              }
+          }
+
+          // The only Lambda-specific file (Bref): a thin handler that calls it
+          final readonly class ResizeHandler implements Handler
+          {
+              public function __construct(private InvoiceThumbnailer $thumbnailer) {}
+
+              public function handle(mixed $event, Context $context): array
+              {
+                  return ['thumbnail' => $this->thumbnailer->thumbnail($event['path'])];
+              }
+          }
+        marks:
+          - {line: 1, tip: 'All the real work lives here. Move to containers tomorrow and this class does not change.'}
+          - {line: 18, tip: 'Leaving serverless means rewriting only these few lines of glue, not the business logic.'}
+      - type: quote
+        body: 'Rare or bursty and a slow first call is fine: serverless. Steady, or a user waits: container.'
+    aside:
+      - type: when
+        use: ['Bursty or rare work: webhooks, nightly reports, image resizing', 'A slow first call is acceptable']
+        avoid: ['Steady traffic all day', 'Pages where a cold start hurts, or jobs past the time limit (15 minutes on AWS Lambda)']
+      - type: tips
+        items:
+          - 'You can pay to keep functions warm (AWS calls it provisioned concurrency), but then you are paying for idle time again.'
+          - 'Prices change and differ by region: treat the bars as a shape, and check the current price page before deciding.'
+    check:
+      q: 'A Symfony API gets steady traffic all day and shoppers wait on every response. Serverless or container, and why?'
+      a: 'A container. Steady load makes per-run billing cost more than a flat hourly fee, and a cold start would make some shoppers wait.'
 
   - slug: shared-responsibility
     title: 'Shared responsibility: whose job is it?'
     kind: pitfall
-    tldr: 'The cloud looks after the building and the machines. Your data, access and configuration are always yours, even on managed services.'
+    tldr: 'The cloud looks after the building and the machines. Your data, access and backup settings are always yours, even on managed services.'
     keywords: ['shared responsibility', 'cloud security', 'backup', 'responsibility model']
     blocks:
       - type: text
@@ -208,6 +292,40 @@ slides:
             tip: 'You can''t blame the cloud for an open security group or over-broad permissions.'
           - cells: ['Data and code security', 'You', 'You', 'You']
             tip: 'SQL injection or a leaked password is a flaw in your code.'
+      - type: code
+        lang: text
+        file: 'database.tf (HCL)'
+        variant: good
+        code: |
+          resource "aws_db_instance" "main" {
+            identifier                  = "shop-db"
+            engine                      = "mysql"
+            instance_class              = "db.t3.medium"
+            allocated_storage           = 50
+            db_subnet_group_name        = aws_db_subnet_group.private.name
+            manage_master_user_password = true
+            backup_retention_period     = 14
+            publicly_accessible         = false
+            deletion_protection         = true
+          }
+        marks:
+          - {line: 8, tip: '14 days of restore points. The team in the story, with 1 day, lost everything before the bad migration. With 14 they could roll back even three days late.'}
+          - {line: 9, tip: 'No public address. Combined with the right security group, only the app can reach it.'}
+      - type: code
+        lang: bash
+        file: 'restore-test.sh'
+        variant: good
+        code: |
+          # Once a month: restore to a throwaway copy, then check the data
+          aws rds restore-db-instance-to-point-in-time \
+            --source-db-instance-identifier shop-db \
+            --target-db-instance-identifier shop-db-restore-test \
+            --restore-time 2025-03-01T09:00:00Z
+          # connect, count the rows in orders, then delete the copy
+          aws rds delete-db-instance --skip-final-snapshot \
+            --db-instance-identifier shop-db-restore-test
+        marks:
+          - {line: 2, tip: 'A backup nobody has restored is only a hope. This command proves it works, and shows how long a real restore takes.'}
       - type: quote
         body: 'Managed doesn''t mean "not my job". It means "less of my job".'
     aside:
@@ -266,6 +384,26 @@ flashcards:
     a: 'The cloud: the building, hardware and hypervisor. You: data, IAM, network rules and backup testing.'
     more: |
       The more managed a service, the more layers the cloud handles (OS patches, DB patches). But responsibility for your data and access never becomes the cloud's.
+    ref: shared-responsibility
+  - q: 'What is a cold start in serverless?'
+    a: 'The extra wait on the first call after a quiet spell, while the cloud boots your function from scratch.'
+    more: |
+      It can last from a fraction of a second to several seconds, depending on the runtime and the size of the code. You can pay to keep functions warm, but then you pay for idle time again. A container that is always on has no cold start.
+    ref: compute-costs-and-rule
+  - q: 'When is serverless more expensive than a container?'
+    a: 'When it is busy all the time. Per-run billing adds up, and a function that never rests can cost more than twice a container.'
+    more: |
+      As a rough picture at list prices: one vCPU of work for a whole month costs about 76 dollars on serverless and about 35 on an always-on container. The same function used lightly costs under a dollar. Check the current price page, because the shape matters more than the exact numbers.
+    ref: compute-costs-and-rule
+  - q: 'How do you keep serverless lock-in small?'
+    a: 'Keep the business logic in plain PHP classes, and make the cloud-specific handler a thin wrapper that only calls them.'
+    more: |
+      The trigger and handler format belong to one provider. If only a few lines of glue know about it, moving to containers means rewriting those lines, not the application.
+    ref: compute-costs-and-rule
+  - q: 'What backup settings must you choose yourself on a managed database?'
+    a: 'How many days of backups to keep, and a regular test restore. The cloud takes the backups, but these choices are yours.'
+    more: |
+      A retention of 1 day cannot undo a bad migration noticed after 3 days. Pick a retention longer than the time you might take to notice a mistake, and restore into a throwaway copy once a month to prove the backup works.
     ref: shared-responsibility
 
 quiz:
@@ -356,4 +494,46 @@ quiz:
       - text: 'The data center''s power and hardware'
         correct: false
         why: 'This layer always belongs to the cloud.'
+    ref: shared-responsibility
+  - q: 'A Symfony API serves about 40 requests a second all day, and shoppers wait on every response. Which compute fits best?'
+    hint: 'Is the load bursty or steady, and does a slow first call matter?'
+    options:
+      - text: 'Serverless, because you pay only when it runs'
+        correct: false
+        why: 'It never stops running here, so there is no idle time to save, and per-run billing costs more than a flat fee under steady load.'
+      - text: 'A container (two for safety), always on'
+        correct: true
+        why: 'Steady load is exactly where a flat hourly price wins, and there is no cold start to make shoppers wait.'
+      - text: 'Serverless, because it scales to zero at night'
+        correct: false
+        why: 'Scaling to zero helps only if nights are really quiet. A cold start on the first morning request would also hurt shoppers.'
+    ref: compute-costs-and-rule
+  - q: 'Which are real costs of choosing serverless?'
+    hint: 'Think about the first call, the handler format and who is billed.'
+    options:
+      - text: 'The first call after a quiet spell is slow (cold start)'
+        correct: true
+        why: 'The cloud has to boot the function from scratch before it can answer.'
+      - text: 'The handler and trigger format tie you to one cloud'
+        correct: true
+        why: 'Leaving means rewriting that glue. Keeping business logic in plain classes keeps the rewrite small.'
+      - text: 'You must patch the operating system every month'
+        correct: false
+        why: 'The cloud patches the runtime. Taking that job off you is the whole point of serverless.'
+      - text: 'It cannot run PHP at all'
+        correct: false
+        why: 'PHP runs on AWS Lambda through layers such as Bref.'
+    ref: compute-costs-and-rule
+  - q: 'A managed database keeps 1 day of backups. A bad migration is noticed 3 days later. What should have been set?'
+    hint: 'How long might it take you to notice a mistake?'
+    options:
+      - text: 'Nothing: the cloud keeps backups forever by itself'
+        correct: false
+        why: 'Retention is your setting, and the default can be as short as the 1 day in the story.'
+      - text: 'A longer retention (say 14 days) and a monthly test restore'
+        correct: true
+        why: 'With 14 days a restore point from before the migration still exists, and the test restore proves it works.'
+      - text: 'A bigger database instance'
+        correct: false
+        why: 'Instance size has no effect on how long backups are kept.'
     ref: shared-responsibility

@@ -46,7 +46,7 @@ slides:
         icon: mail
         title: 'The postman and the dead letter office'
         body: |
-          The postman goes back after 1 hour, then after 2 hours, then after 4. The gap grows each time, and some postmen go a little earlier or later so they don't all arrive at the same house at the same moment. If the letter still isn't delivered after three tries, it goes to the **dead letter office**, where a person looks at it and decides what to do.
+          The postman goes back after a short wait, then after twice as long, then twice as long again. The gap grows each time, and some postmen go a little earlier or later so they don't all arrive at the same house at the same moment. If the letter still isn't delivered after three tries, it goes to the **dead letter office**, where a person looks at it and decides what to do.
       - type: visual
         kind: bars
         caption: 'Messenger''s default backoff: starts at 1s and doubles each time'
@@ -55,6 +55,9 @@ slides:
           - {label: '2nd retry', value: 2, display: '2s', tone: good, tip: 'The gap doubles, giving the failing service time to catch its breath.'}
           - {label: '3rd retry', value: 4, display: '4s', tone: warn, tip: 'If it still fails, the problem probably isn''t temporary.'}
           - {label: 'Failure transport', value: 8, display: 'DLQ', tone: bad, tip: 'max_retries is used up and the message is parked in a separate place. A human looks at it next.'}
+      - type: text
+        body: |
+          Add up the waits: 1s + 2s + 4s is 7 seconds of patience. That rides out a blip, but not the 10-minute gateway outage from the story: every message would use up its retries and land in the DLQ. To ride out 10 minutes, start at 1 minute and keep doubling: waits of 1, 2, 4 and 8 minutes (`delay: 60000`, `max_retries: 4`) cover 15 minutes. The price is that a truly broken message now circles for 15 minutes before a human hears about it.
       - type: visual
         kind: steps
         caption: 'The life of one message: from failure to resolution'
@@ -144,6 +147,8 @@ slides:
         items:
           - 'Raise an alert when messages pile up in the failure transport. A DLQ that fills silently is lost work.'
           - 'Fix the root cause before retrying, or the same message will fail and come back again.'
+          - 'A 4xx answer from an API, like the 400 in the story, is usually permanent: rethrow it as UnrecoverableMessageHandlingException. 5xx, timeouts and 429 are temporary.'
+          - 'The config above shows Messenger''s defaults, 7 seconds of retrying in all. Choose `delay` and `max_retries` from the longest outage you want to survive.'
     check:
       q: 'Which exception should you throw for a message with an invalid phone number, and what does it do?'
       a: '`UnrecoverableMessageHandlingException`. Messenger skips the retries and sends the message straight to the failure transport, because retrying can''t fix the number.'
@@ -173,7 +178,7 @@ slides:
               );
           }
         marks:
-          - {line: 3, tip: 'Every time this code runs it adds points. A duplicate message means double points.'}
+          - {line: 3, tip: 'Every run adds points. A user on 100 points who should get +50 ends on 200, not 150, when the message arrives twice.'}
       - type: code
         lang: php
         file: 'src/MessageHandler/AwardPointsHandler.php'
@@ -200,7 +205,7 @@ slides:
               }
           }
         marks:
-          - {line: 6, tip: 'With a UNIQUE constraint on (message_id, handler), one message gets into one handler only once.'}
+          - {line: 6, tip: 'With `PRIMARY KEY (message_id, handler)` on the table, one message gets into one handler only once.'}
           - {line: 8, tip: '0 rows inserted means it was already done, so quietly return. This is not a failure.'}
           - {line: 15, tip: 'The work and the ledger entry are in one transaction, so one can''t happen without the other.'}
       - type: quote
@@ -210,6 +215,12 @@ slides:
         items:
           - 'External work like email or a payment API can''t join your DB transaction. Give the provider an idempotency key there.'
           - 'The producer creates the message id (`Uuid::v7()`). The id must stay the same across retries; make a new one and the check is useless.'
+          - 'The table only grows. Delete rows older than the longest a message can still be redelivered, or it becomes a storage bill.'
+      - type: when
+        use:
+          - 'Handlers that add, charge, send or create something, where running twice does harm.'
+        avoid:
+          - 'Handlers that set a value, like "status = paid". They are already safe to repeat, and the table adds a write per message.'
       - type: refs
         items:
           - {to: 'payments/idempotency-keys', label: 'Idempotency keys and replay'}
@@ -253,6 +264,16 @@ flashcards:
     a: 'Every message has an id. While doing the work, the handler writes that id into a processed_message table with a UNIQUE constraint, in the same transaction.'
     more: |
       If the insert conflicts, the message was already processed, so the handler returns without doing anything. With the work and the ledger entry in one transaction, one can't happen without the other.
+    ref: idempotent-consumer
+  - q: 'How long should Messenger keep retrying a failing message?'
+    a: 'Long enough to outlast the outages you expect. The default 1s, 2s, 4s gives only 7 seconds, so a 10-minute outage sends everything to the DLQ.'
+    more: |
+      Add up the waits to know your budget. `delay: 60000` with `multiplier: 2` and `max_retries: 4` waits 1, 2, 4 and 8 minutes, 15 in all. The price is that a message that is really broken circles for those 15 minutes before a human sees it.
+    ref: backoff-and-dlq
+  - q: 'When can you skip the processed_message table?'
+    a: 'When the handler is already safe to repeat, such as "set status to paid". Add the table for work that adds, charges or sends.'
+    more: |
+      The table costs one write per message and needs pruning. A handler that sets a value gives the same result the second time, so it needs none. Use the table where a repeat would double an effect.
     ref: idempotent-consumer
 
 quiz:
@@ -338,3 +359,16 @@ quiz:
         correct: false
         why: 'The message gets into the queue anyway. The duplicate is caught inside the handler, not on the way in.'
     ref: idempotent-consumer
+  - q: 'A payment gateway is down for about 10 minutes. Messenger is on its defaults: 3 retries at 1s, 2s and 4s. What happens to the messages?'
+    hint: 'Add up how long the retries last.'
+    options:
+      - text: 'They use up their retries in about 7 seconds and land in the failure transport'
+        correct: true
+        why: '1 + 2 + 4 is 7 seconds, far short of 10 minutes. Raise `delay` and `max_retries` to cover the outage.'
+      - text: 'They wait quietly until the gateway is back, then succeed'
+        correct: false
+        why: 'Retries stop after `max_retries`. Nothing waits for the gateway.'
+      - text: 'Messenger notices the outage and pauses all retries'
+        correct: false
+        why: 'Messenger does not know why a handler failed. Each message follows its own retry schedule.'
+    ref: backoff-and-dlq

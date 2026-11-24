@@ -39,9 +39,25 @@ slides:
           - {label: 'ইমেইল', value: 1800, display: '1.8s', tip: 'বাইরের ইমেইল সার্ভারের উত্তরের অপেক্ষা। পরে পাঠালেও চলে।'}
           - {label: 'SMS', value: 1200, display: '1.2s', tip: 'SMS gateway-র অপেক্ষা। gateway ধীর হলে এই সময় ৩০ সেকেন্ডও হতে পারে।'}
           - {label: 'ইনভয়েস PDF', value: 900, display: '0.9s', tip: 'CPU-র ভারী কাজ; ক্রেতা PDF-টা এই মুহূর্তে খুলছেও না।'}
-          - {label: 'কুরিয়ার API', value: 2500, display: '2.5s', tone: bad, tip: 'সবচেয়ে ধীর এবং সবচেয়ে ভঙ্গুর ধাপ — অন্য কোম্পানির সার্ভার, যার ওপর তোমার কোনো হাত নেই।'}
+          - {label: 'কুরিয়ার API', value: 2500, display: '2.5s', tone: bad, tip: 'সবচেয়ে ধীর এবং সবচেয়ে ভঙ্গুর ধাপ — অন্য কোম্পানির সার্ভার, যার ওপর আপনার কোনো হাত নেই।'}
+      - type: code
+        lang: php
+        file: 'src/Controller/OrderController.php'
+        variant: good
+        code: |
+          #[Route('/orders', methods: ['POST'])]
+          public function create(#[MapRequestPayload] CreateOrder $dto): JsonResponse
+          {
+              $order = $this->orders->place($dto, $this->getUser());    // 40ms
+
+              $this->bus->dispatch(new OrderPlaced($order->getId()));   // প্রায় 2ms: queue-তে চিরকুট
+
+              return $this->json(['id' => $order->getId()], 201);       // মোট প্রায় 42ms
+          }
+        marks:
+          - {line: 6, tip: 'চারটা ধীর কাজের জায়গায় একটা চিরকুট। ইমেইল, SMS, PDF আর কুরিয়ার এখন handler, যা worker পরে চালায়; তাই কুরিয়ার API ধীর হলেও অর্ডার ভাঙে না।'}
       - type: quote
-        body: 'ব্যবহারকারীকে শুধু সেটুকুর জন্য অপেক্ষা করাও, যেটুকু ছাড়া উত্তর দেওয়াই যায় না।'
+        body: 'ব্যবহারকারীকে শুধু সেটুকুর জন্য অপেক্ষা করান, যেটুকু ছাড়া উত্তর দেওয়াই যায় না।'
     aside:
       - type: story
         title: 'সেলের রাতে তিনগুণ অর্ডার'
@@ -59,7 +75,7 @@ slides:
       a: 'শুধু অর্ডার save — ওটা ছাড়া ক্রেতাকে অর্ডার নম্বরই দেওয়া যায় না। ইমেইল, SMS, PDF আর কুরিয়ার বুকিং কয়েক সেকেন্ড পরে হলেও কারো ক্ষতি নেই।'
 
   - slug: command-vs-event
-    title: 'Command বলে "এটা করো", event বলে "এটা ঘটেছে"'
+    title: 'Command বলে "এটা করুন", event বলে "এটা ঘটেছে"'
     kind: concept
     tldr: 'Command একজন নির্দিষ্ট handler-কে কাজের আদেশ দেয়; event শুধু জানায় কী ঘটেছে, আর শূন্য থেকে অনেক listener নিজের মতো সাড়া দেয়।'
     keywords: ['command', 'event', 'message', 'pub/sub', 'decoupling', 'ইভেন্ট', 'কমান্ড']
@@ -68,7 +84,7 @@ slides:
         icon: bell
         title: 'রান্নাঘরের স্লিপ আর কাউন্টারের ঘণ্টা'
         body: |
-          ক্যাশিয়ার রান্নাঘরে স্লিপ পাঠান: "টেবিল ৫-এ দুই প্লেট কাচ্চি দাও"। এটা **command** — একজন নির্দিষ্ট লোকের জন্য আদেশ, আর কাজটা হওয়া চাই। আবার তিনি ঘণ্টা বাজিয়ে ঘোষণাও করতে পারেন: "অর্ডার ৪২ নেওয়া হয়েছে"। এটা **event** — রাঁধুনি, হিসাবরক্ষক, ডেলিভারি বয়, যার দরকার সে শুনে নিজের কাজ ধরে; ক্যাশিয়ার জানেনও না কে কে শুনছে।
+          ক্যাশিয়ার রান্নাঘরে স্লিপ পাঠান: "টেবিল ৫-এ দুই প্লেট কাচ্চি দিন"। এটা **command** — একজন নির্দিষ্ট লোকের জন্য আদেশ, আর কাজটা হওয়া চাই। আবার তিনি ঘণ্টা বাজিয়ে ঘোষণাও করতে পারেন: "অর্ডার ৪২ নেওয়া হয়েছে"। এটা **event** — রাঁধুনি, হিসাবরক্ষক, ডেলিভারি বয়, যার দরকার সে শুনে নিজের কাজ ধরে; ক্যাশিয়ার জানেনও না কে কে শুনছে।
       - type: visual
         kind: compare
         caption: 'একই অর্ডার, দুই রকম বার্তা'
@@ -92,19 +108,39 @@ slides:
               - 'নতুন কাজ মানে শুধু নতুন একটা handler'
       - type: text
         body: |
-          আসল পার্থক্য নামে নয়, **কে কাকে চেনে** তাতে। Command পাঠালে অর্ডারের কোড ইমেইল, কুরিয়ার, ইনভয়েস — সবার কথা জানে। Event ছড়ালে অর্ডারের কোড কাউকেই চেনে না; কাল "লয়্যালটি পয়েন্ট" যোগ করতে হলে অর্ডারের কোডে হাতই দিতে হয় না।
+          আসল পার্থক্য নামে নয়, **কে কাকে চেনে** তাতে। Command পাঠালে অর্ডারের কোড ইমেইল, কুরিয়ার, ইনভয়েস — সবার কথা জানে। Event ছড়ালে অর্ডারের কোড কাউকেই চেনে না; কাল "লয়্যালটি পয়েন্ট" যোগ করতে হলে অর্ডারের কোডে হাতই দিতে হয় না। দাম: অর্ডার কী কী ঘটায় তা এক জায়গায় পড়া যায় না, তাই `debug:messenger` দিয়ে listener-এর তালিকা দেখুন।
+      - type: code
+        lang: php
+        file: 'src/Controller/OrderController.php'
+        code: |
+          // Command: অর্ডারের কোড প্রতিটা কাজের নাম জানে। কাল লয়্যালটি পয়েন্ট মানে এই কোড বদলানো।
+          $this->bus->dispatch(new SendInvoiceEmail($id));
+          $this->bus->dispatch(new BookCourier($id));
+          $this->bus->dispatch(new AddLoyaltyPoints($id));   // অর্ডারের কোডে নতুন লাইন
+
+          // Event: একটাই ঘোষণা। কাল লয়্যালটি পয়েন্ট মানে নতুন একটা handler class।
+          $this->bus->dispatch(new OrderPlaced($id));
+        marks:
+          - {line: 4, tip: 'প্রতিটা নতুন কাজ প্রেরকের কোডে বদল, আর এখানকার একটা bug অর্ডার নেওয়াই ভেঙে দিতে পারে।'}
+          - {line: 7, tip: 'প্রেরক কখনো বদলায় না। প্রতিটা listener নিজের আলাদা handler class, যা `OrderPlaced` শোনে।'}
       - type: quote
-        body: 'Command বলে "এটা করো"। Event বলে "এটা ঘটেছে"।'
+        body: 'Command বলে "এটা করুন"। Event বলে "এটা ঘটেছে"।'
     aside:
       - type: tips
         items:
-          - 'Command-এর নাম ক্রিয়াপদ দিয়ে শুরু করো: `GenerateInvoicePdf`, `BookCourier`।'
-          - 'Event-এর নাম অতীত কালে রাখো: `OrderPlaced`, `PaymentFailed`।'
-          - 'Event-এ রাখো কী ঘটেছে আর তার id — কে কী করবে সেই নির্দেশ নয়।'
+          - 'Command-এর নাম ক্রিয়াপদ দিয়ে শুরু করুন: `GenerateInvoicePdf`, `BookCourier`।'
+          - 'Event-এর নাম অতীত কালে রাখুন: `OrderPlaced`, `PaymentFailed`।'
+          - 'Event-এ রাখুন কী ঘটেছে আর তার id — কে কী করবে সেই নির্দেশ নয়।'
+      - type: when
+        use:
+          - 'Event: যখন একটা ঘটনায় কয়েকটা স্বাধীন কাজ সাড়া দেয়, বা পরে আরও সাড়া যোগ হওয়ার সম্ভাবনা আছে।'
+          - 'Command: যখন একটা নির্দিষ্ট কাজ হতেই হবে আর প্রেরক তা নিয়ে ভাবে।'
+        avoid:
+          - 'যে ধাপ ছাড়া flow এগোতে পারে না, সেটার জন্য event। লুকানো listener-এ জরুরি ধাপ সহজে হারায়।'
       - type: pitfalls
         items:
           - '`OrderPlacedSendEmail` নামের event আসলে ছদ্মবেশী command — প্রেরক আবার listener-এর কাজ ঠিক করে দিচ্ছে।'
-          - 'প্রেরক যদি কোনো listener-এর ফলের অপেক্ষায় থাকে, সেটা আর event নয়; সরাসরি method call বা command ব্যবহার করো।'
+          - 'প্রেরক যদি কোনো listener-এর ফলের অপেক্ষায় থাকে, সেটা আর event নয়; সরাসরি method call বা command ব্যবহার করুন।'
       - type: refs
         items:
           - {to: 'thinking/event-driven-cqrs', label: 'Event-driven আর্কিটেকচার এক নজরে'}
@@ -120,7 +156,7 @@ slides:
     blocks:
       - type: text
         body: |
-          Messenger-এ চারটা অংশ। Controller শুধু `$bus->dispatch(new OrderPlaced($order->getId()))` ডাকে আর সাথে সাথে ফিরে আসে। বার্তাটা **transport**-এ (queue) জমা হয়; আলাদা একটা process, **worker**, সেটা তুলে **handler** চালায়। মনে রেখো: `routing` না লিখলে handler-টা request-এর ভেতরেই চলে — কিছুই async হয় না।
+          Messenger-এ চারটা অংশ। Controller শুধু `$bus->dispatch(new OrderPlaced($order->getId()))` ডাকে আর সাথে সাথে ফিরে আসে। বার্তাটা **transport**-এ (queue) জমা হয়; আলাদা একটা process, **worker**, সেটা তুলে **handler** চালায়। মনে রাখুন: `routing` না লিখলে handler-টা request-এর ভেতরেই চলে — কিছুই async হয় না।
       - type: visual
         kind: flow
         caption: 'একটা OrderPlaced বার্তার যাত্রা'
@@ -188,21 +224,21 @@ slides:
                       # এই লাইন না থাকলে handler request-এর ভেতরেই চলবে
                       'App\Message\OrderPlaced': async
         marks:
-          - {line: 5, tip: 'transport বদলাতে শুধু `.env`-এর DSN বদলাও। ছোট অ্যাপে Doctrine transport দিয়ে শুরু করাই যথেষ্ট — আলাদা সার্ভার লাগে না।'}
+          - {line: 5, tip: 'transport বদলাতে শুধু `.env`-এর DSN বদলান। ছোট অ্যাপে Doctrine transport দিয়ে শুরু করাই যথেষ্ট, আলাদা সার্ভার লাগে না; তবে এটা ডেটাবেসে poll করে, তাই volume বাড়লে RabbitMQ বা SQS-এ যান।'}
           - {line: 9, tip: 'বার্তার class → transport। এখানে নাম না থাকলে Messenger বার্তাটা কোথাও পাঠায় না, সাথে সাথে handler চালিয়ে দেয়।'}
     aside:
       - type: commands
         title: 'Messenger কমান্ড'
         items:
-          - {cmd: 'php bin/console messenger:consume async -vv', desc: 'worker চালু করো; -vv দিলে প্রতিটা বার্তা পর্দায় দেখায়'}
+          - {cmd: 'php bin/console messenger:consume async -vv', desc: 'worker চালু করুন; -vv দিলে প্রতিটা বার্তা পর্দায় দেখায়'}
           - {cmd: 'php bin/console debug:messenger', desc: 'কোন বার্তার কোন handler, তার তালিকা'}
           - {cmd: 'php bin/console messenger:stats', desc: 'কোন transport-এ কয়টা বার্তা জমে আছে'}
-          - {cmd: 'php bin/console messenger:stop-workers', desc: 'deploy-এর পর worker-দের থামাও, যাতে নতুন কোড নিয়ে আবার ওঠে'}
+          - {cmd: 'php bin/console messenger:stop-workers', desc: 'deploy-এর পর worker-দের থামান, যাতে নতুন কোড নিয়ে আবার ওঠে'}
       - type: pitfalls
         items:
-          - 'Worker লম্বা সময় চলে, তাই deploy করলেও পুরনো কোড মেমোরিতে থেকে যায়। প্রতি deploy-এ `messenger:stop-workers` চালাও।'
-          - 'প্রোডাকশনে worker চালাও Supervisor বা systemd দিয়ে, যাতে বন্ধ হলে নিজে থেকে আবার ওঠে।'
-          - '`--time-limit=3600` বা `--memory-limit=128M` দিয়ে worker-কে নিয়মিত নতুন করে চালু হতে দাও।'
+          - 'Worker লম্বা সময় চলে, তাই deploy করলেও পুরনো কোড মেমোরিতে থেকে যায়। প্রতি deploy-এ `messenger:stop-workers` চালান।'
+          - 'প্রোডাকশনে worker চালান Supervisor বা systemd দিয়ে, যাতে বন্ধ হলে নিজে থেকে আবার ওঠে।'
+          - '`--time-limit=3600` বা `--memory-limit=128M` দিয়ে worker-কে নিয়মিত নতুন করে চালু হতে দিন।'
       - type: refs
         items:
           - {to: 'messaging/dlq-retries', label: 'handler ব্যর্থ হলে কী হয়: retry ও DLQ'}
@@ -239,12 +275,12 @@ slides:
           - cells: ['সবচেয়ে মানানসই', 'ব্যাকগ্রাউন্ড কাজ বিলি', 'অনেক সার্ভিসে ঘটনার ইতিহাস']
             tip: 'Queue কাজ ভাগ করে দেয়, প্রতিটা বার্তায় আলাদা retry চলে। Stream ঘটনার ধারাবাহিক ইতিহাস রাখে — analytics, CDC, event sourcing-এ লাগে।'
       - type: points
-        title: 'কোনটা নেবে'
+        title: 'কোনটা নেবেন'
         style: check
         items:
-          - 'ইমেইল, PDF, API call-এর মতো "একবার করে ফেলো" কাজ → queue। বেশিরভাগ অ্যাপের জন্য এটুকুই যথেষ্ট।'
+          - 'ইমেইল, PDF, API call-এর মতো "একবারে সেরে ফেলা" কাজ → queue। বেশিরভাগ অ্যাপের জন্য এটুকুই যথেষ্ট।'
           - 'একই ঘটনা অনেক সার্ভিস আলাদাভাবে পড়বে, বা পুরনো ঘটনা replay করতে হবে → stream।'
-          - 'Kafka চালানো আলাদা একটা দক্ষতা। দরকার প্রমাণ না হওয়া পর্যন্ত queue দিয়েই চালাও।'
+          - 'Kafka চালানো আলাদা একটা দক্ষতা। দরকার প্রমাণ না হওয়া পর্যন্ত queue দিয়েই চালান।'
     aside:
       - type: terms
         items:
@@ -255,7 +291,7 @@ slides:
       - type: pitfalls
         items:
           - 'শুধু ইমেইল পাঠানোর জন্য Kafka বসানো — কামান দিয়ে মশা মারা।'
-          - 'Queue-কে ঘটনার স্থায়ী ইতিহাস ভাবা। কাজ শেষ হলেই বার্তা নেই; ইতিহাস লাগলে ডেটাবেসে বা stream-এ রাখো।'
+          - 'Queue-কে ঘটনার স্থায়ী ইতিহাস ভাবা। কাজ শেষ হলেই বার্তা নেই; ইতিহাস লাগলে ডেটাবেসে বা stream-এ রাখুন।'
       - type: refs
         items:
           - {to: 'messaging/delivery-guarantees', label: 'Ordering ও partition'}
@@ -272,7 +308,7 @@ slides:
     blocks:
       - type: text
         body: |
-          async-এর দাম আছে: কাজটা **কখন** শেষ হবে তুমি জানো না, ব্যর্থ হলে ব্যবহারকারী আর পাতায় নেই, আর একই বার্তা দুইবারও আসতে পারে। তাই যে ফল ব্যবহারকারীর এই মুহূর্তেই জানা দরকার, সেটা queue-তে ফেলে "হয়ে গেছে" বলা যায় না। নিচের প্রথম কোড টাকা কাটার আগেই বলে দিচ্ছে "paid"।
+          async-এর দাম আছে: কাজটা **কখন** শেষ হবে আপনি জানেন না, ব্যর্থ হলে ব্যবহারকারী আর পাতায় নেই, আর একই বার্তা দুইবারও আসতে পারে। তাই যে ফল ব্যবহারকারীর এই মুহূর্তেই জানা দরকার, সেটা queue-তে ফেলে "হয়ে গেছে" বলা যায় না। নিচের প্রথম কোড টাকা কাটার আগেই বলে দিচ্ছে "paid"।
       - type: code
         lang: php
         file: 'src/Controller/PaymentController.php'
@@ -290,7 +326,7 @@ slides:
           - {line: 7, tip: 'worker হয়তো ৩ সেকেন্ড পরে চলবে, হয়তো ব্যর্থ হবে। ততক্ষণে ক্রেতা "পেমেন্ট সফল" দেখে পাতা বন্ধ করে দিয়েছে।'}
       - type: code
         lang: php
-        file: 'src/Controller/PaymentController.php'
+        file: 'PaymentController.php এবং ChargeOrderHandler.php'
         variant: good
         code: |
           #[Route('/orders/{id}/pay', methods: ['POST'])]
@@ -308,14 +344,31 @@ slides:
                   Response::HTTP_ACCEPTED,                        // 202: পেয়েছি, কাজ চলছে
               );
           }
+
+          // worker পরে অর্ডারটাকে "pending" থেকে বের করে
+          #[AsMessageHandler]
+          final readonly class ChargeOrderHandler
+          {
+              public function __construct(
+                  private PaymentGateway $gateway,
+                  private OrderService $orders,
+              ) {}
+
+              public function __invoke(ChargeOrder $m): void
+              {
+                  $result = $this->gateway->charge($m->orderId);   // ধীর, ব্যর্থও হতে পারে
+                  $this->orders->settle($m->orderId, $result);     // pending হয় paid বা failed
+              }
+          }
         marks:
-          - {line: 8, tip: 'আগে ডেটাবেসে সত্যি অবস্থাটা লেখো আর commit করো, তারপর dispatch। উল্টো করলে worker এমন অর্ডার খুঁজবে যা এখনো save-ই হয়নি।'}
+          - {line: 8, tip: 'আগে ডেটাবেসে সত্যি অবস্থাটা লিখুন আর commit করুন, তারপর dispatch। উল্টো করলে worker এমন অর্ডার খুঁজবে যা এখনো save-ই হয়নি।'}
           - {line: 13, tip: '`202 Accepted` মানে "অনুরোধ পেয়েছি, এখনো শেষ হয়নি"। client `statusUrl` দেখে বা live আপডেট পেয়ে চূড়ান্ত ফল জানবে।'}
+          - {line: 29, tip: 'অবস্থা চিরকাল "pending" থাকে না: handler সেটাকে paid বা failed করে দেয়, আর status URL যা হলো তা-ই দেখায়।'}
       - type: visual
         kind: compare
         caption: 'কোন কাজ queue-তে যাবে, কোনটা request-এ থাকবে'
         columns:
-          - title: 'Async-এ পাঠাও'
+          - title: 'Async-এ পাঠান'
             tone: good
             icon: queue
             tip: 'এই কাজগুলো একটু পরে হলে ব্যবহারকারীর ক্ষতি নেই, আর আলাদা করলে একটার ভাঙন অর্ডারকে ছোঁয় না।'
@@ -324,7 +377,7 @@ slides:
               - 'বাইরের API, যা যখন-তখন বন্ধ থাকতে পারে'
               - 'যার ফল কয়েক সেকেন্ড পরে জানলেও চলে'
               - 'ব্যর্থ হলে যা নিজে থেকে আবার চেষ্টা করা যায়'
-          - title: 'Request-এই রাখো'
+          - title: 'Request-এই রাখুন'
             tone: warn
             icon: stopwatch
             tip: 'এগুলোর উত্তর ছাড়া ব্যবহারকারীকে সত্যি কথা বলা যায় না — তাই একটু অপেক্ষা করানোই ঠিক।'
@@ -342,6 +395,7 @@ slides:
         items:
           - 'transaction commit হওয়ার আগে dispatch করলে worker এমন সারি খুঁজতে পারে, যা তার চোখে এখনো নেই। আগে commit, পরে dispatch।'
           - 'async করলেই handler-কে দুইবার চলার জন্য তৈরি থাকতে হয় — একই বার্তা আবার আসতে পারে।'
+          - 'Commit-এর পরে dispatch-এর মাঝে অ্যাপ মরলে বার্তা হারায়, আর অর্ডার চিরকাল "pending" থাকে। Outbox pattern এই ফাঁক বন্ধ করে।'
       - type: refs
         items:
           - {to: 'workflows/outbox-inbox', label: 'commit আর dispatch একসাথে নিশ্চিত করা: outbox'}
@@ -352,9 +406,9 @@ slides:
 
 flashcards:
   - q: 'Command আর event-এর মূল পার্থক্য কী?'
-    a: 'Command একটা কাজের আদেশ ("এটা করো"), handler ঠিক একটা। Event ঘটে যাওয়া ঘটনার ঘোষণা ("এটা ঘটেছে"), handler শূন্য থেকে অনেক।'
+    a: 'Command একটা কাজের আদেশ ("এটা করুন"), handler ঠিক একটা। Event ঘটে যাওয়া ঘটনার ঘোষণা ("এটা ঘটেছে"), handler শূন্য থেকে অনেক।'
     more: |
-      Command-এ প্রেরক জানে কে কাজটা করবে এবং আশা করে সেটা হবে। Event-এ প্রেরক শুধু ঘটনাটা জানায়; কে শুনছে তা তার জানার দরকার নেই। তাই event দিয়ে নতুন কাজ যোগ করা যায় প্রেরকের কোড না বদলে — শুধু নতুন একটা handler লিখে।
+      Command-এ প্রেরক জানে কে কাজটা করবে এবং আশা করে সেটা হবে। Event-এ প্রেরক শুধু ঘটনাটা জানায়; কে শুনছে তা তার জানার দরকার নেই। তাই event দিয়ে নতুন কাজ যোগ করা যায় প্রেরকের কোড না বদলে — শুধু নতুন একটা handler লিখে। দাম: একটা event কী কী ঘটায় তা এক জায়গায় পড়া যায় না, তাই `debug:messenger` দিয়ে listener-এর তালিকা দেখুন।
     ref: command-vs-event
   - q: 'Command আর event-এর নাম কীভাবে রাখা হয়?'
     a: 'Command আদেশের সুরে: `SendInvoiceEmail`, `BookCourier`। Event অতীত কালে: `OrderPlaced`, `PaymentFailed`।'
@@ -374,7 +428,7 @@ flashcards:
   - q: 'Messenger-এ routing-এ বার্তার নাম না থাকলে কী হয়?'
     a: 'বার্তা কোনো transport-এ যায় না; handler `dispatch()`-এর ভেতরেই, অর্থাৎ request-এর মধ্যেই চলে।'
     more: |
-      এটা নতুনদের সবচেয়ে পরিচিত ভুল: handler লেখা হলো, worker-ও চলছে, কিন্তু request আগের মতোই ধীর। কারণ `messenger.yaml`-এর `routing`-এ `'App\Message\OrderPlaced': async` লাইনটা নেই। `debug:messenger` আর `messenger:stats` দিয়ে যাচাই করো বার্তা সত্যিই queue-তে যাচ্ছে কি না।
+      এটা নতুনদের সবচেয়ে পরিচিত ভুল: handler লেখা হলো, worker-ও চলছে, কিন্তু request আগের মতোই ধীর। কারণ `messenger.yaml`-এর `routing`-এ `'App\Message\OrderPlaced': async` লাইনটা নেই। `debug:messenger` আর `messenger:stats` দিয়ে যাচাই করুন বার্তা সত্যিই queue-তে যাচ্ছে কি না।
     ref: messenger-basics
   - q: 'Queue আর stream-এর মূল পার্থক্য কী?'
     a: 'Queue-তে একটা বার্তা একজন worker পায়, কাজ শেষে মুছে যায়। Stream-এ বার্তা ক্রমে জমা থাকে, অনেক পাঠক আলাদাভাবে পড়ে, আবারও পড়া যায়।'
@@ -394,12 +448,12 @@ flashcards:
   - q: 'কাজ queue-তে পাঠানোর পর API-র সৎ উত্তর কী?'
     a: '`202 Accepted`, অবস্থা `pending`, আর অবস্থা জানার একটা URL — কারণ কাজটা তখনো হয়নি।'
     more: |
-      `dispatch()` শুধু বার্তাটা queue-তে লেখে। worker কয়েক সেকেন্ড পরে চলতে পারে, ব্যর্থও হতে পারে। তাই "সফল" বলা মিথ্যা। আগে ডেটাবেসে `pending` অবস্থা লেখো, তারপর dispatch করো; client পরে status URL বা live আপডেট থেকে চূড়ান্ত ফল জানে।
+      `dispatch()` শুধু বার্তাটা queue-তে লেখে। worker কয়েক সেকেন্ড পরে চলতে পারে, ব্যর্থও হতে পারে। তাই "সফল" বলা মিথ্যা। আগে ডেটাবেসে `pending` অবস্থা লিখুন, তারপর dispatch করুন; client পরে status URL বা live আপডেট থেকে চূড়ান্ত ফল জানে। handler পরে অবস্থাটা paid বা failed করে দেয়।
     ref: async-is-not-done
 
 quiz:
   - q: 'একটা অর্ডার controller একই request-এ নিচের কাজগুলো করে। কোনগুলো queue-তে সরানো নিরাপদ?'
-    hint: 'প্রতিটার জন্য ভাবো: এটা দশ সেকেন্ড পরে হলে ক্রেতার কি কোনো ক্ষতি হবে?'
+    hint: 'প্রতিটার জন্য ভাবুন: এটা দশ সেকেন্ড পরে হলে ক্রেতার কি কোনো ক্ষতি হবে?'
     options:
       - text: 'অর্ডার কনফার্মেশন ইমেইল পাঠানো'
         correct: true
@@ -422,7 +476,7 @@ quiz:
     options:
       - text: 'SendInvoiceEmail'
         correct: false
-        why: 'এটা একটা আদেশ: "ইমেইল পাঠাও"। কাজটা এখনো হয়নি — তাই command।'
+        why: 'এটা একটা আদেশ: "ইমেইল পাঠান"। কাজটা এখনো হয়নি — তাই command।'
       - text: 'PaymentFailed'
         correct: true
         why: 'অতীত কালে বলা একটা ঘটনা। কে শুনে কী করবে — ক্রেতাকে জানাবে, নাকি অর্ডার বাতিল করবে — তা প্রেরক ঠিক করে না।'
@@ -431,7 +485,7 @@ quiz:
         why: 'ক্রিয়াপদ দিয়ে শুরু হওয়া আদেশ; ঠিক একটা handler এটা করবে — command।'
       - text: 'BookCourier'
         correct: false
-        why: '"কুরিয়ার বুক করো" — নির্দিষ্ট একটা কাজের আদেশ, অর্থাৎ command।'
+        why: '"কুরিয়ার বুক করুন" — নির্দিষ্ট একটা কাজের আদেশ, অর্থাৎ command।'
     ref: command-vs-event
   - q: 'ChargeOrder বার্তাটা async transport-এ route করা আছে। এই controller-এ ভুলটা কী?'
     lang: php
@@ -491,7 +545,7 @@ quiz:
         why: 'করে। Doctrine transport ডেটাবেসের একটা টেবিলকেই queue হিসেবে ব্যবহার করে, আর ছোট অ্যাপের জন্য যথেষ্ট।'
     ref: messenger-basics
   - q: 'কাজ async করার দাম হিসেবে নিচের কোনগুলো সত্যি?'
-    hint: 'queue-তে দেওয়ার পর কাজটার ওপর তোমার নিয়ন্ত্রণ কতটা থাকে, ভাবো।'
+    hint: 'queue-তে দেওয়ার পর কাজটার ওপর আপনার নিয়ন্ত্রণ কতটা থাকে, ভাবুন।'
     options:
       - text: 'কাজটা ঠিক কখন শেষ হবে তা আগে থেকে বলা যায় না'
         correct: true

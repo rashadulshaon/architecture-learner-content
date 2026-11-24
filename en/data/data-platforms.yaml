@@ -84,19 +84,19 @@ slides:
   - slug: elt-pipeline
     title: 'The ELT pipeline: bring it in first, cook in the warehouse'
     kind: howto
-    tldr: 'With ELT, raw data goes into the warehouse first (Extract, Load), then SQL cleans and shapes it there (Transform). Data sits in three layers: raw, staging, mart.'
-    keywords: ['ETL', 'ELT', 'watermark', 'incremental extract', 'raw staging mart', 'dbt', 'idempotent']
+    tldr: 'With ELT, raw data goes into the warehouse first (Extract, Load), then SQL cleans and shapes it there (Transform). Symfony extracts to a file in the lake and the warehouse loads that file into the raw layer.'
+    keywords: ['ETL', 'ELT', 'watermark', 'incremental extract', 'LOAD DATA', 'COPY INTO', 'raw staging mart', 'idempotent']
     blocks:
       - type: text
         body: |
-          In old-style **ETL**, you bought goods at the market and cooked them at home before putting them in the warehouse. In modern **ELT**, the raw goods go straight into the warehouse, and the cooking happens on its big stove (the warehouse's SQL). The benefits: raw data stays intact, and if the cooking rules change you can cook again. Symfony only handles the first step: it picks up changed rows using a **watermark** (a marker for how far we got) and drops them in the raw layer.
+          In old-style **ETL**, you bought goods at the market and cooked them at home before putting them in the warehouse. In modern **ELT**, the raw goods go straight into the warehouse, and the cooking happens on its big stove (the warehouse's SQL). The benefits: raw data stays intact, and if the cooking rules change you can cook again. Symfony does the first two steps. It picks up changed rows using a **watermark** (a marker for how far we got), writes them as a file in the lake, then tells the warehouse to load that file into the raw layer. The watermark moves only after the load succeeds, so a crash can cause duplicates, never lost rows.
       - type: visual
         kind: layers
         caption: 'The warehouse''s three layers: from raw to business-ready'
         layers:
           - {label: 'mart: mart_daily_sales', sub: 'Answers business questions; dashboards read from here', tone: good, tip: 'Shaped for the owner. Definitions are settled here, and everyone reads this table.'}
           - {label: 'staging: stg_orders', sub: 'Duplicates removed, names and types fixed', tip: 'Raw data gets cleaned in this layer; the latest row is picked.'}
-          - {label: 'raw: raw_orders', sub: 'Exactly as it arrived, unchanged', tone: muted, tip: 'Never modified. If something goes wrong, you can rebuild from here.'}
+          - {label: 'raw: raw_orders', sub: 'Exactly as it arrived, unchanged', tone: muted, tip: 'Never modified. Every loaded file lands here, and if something goes wrong you can rebuild from here.'}
       - type: code
         lang: php
         file: 'src/Etl/ExtractOrdersCommand.php'
@@ -108,7 +108,7 @@ slides:
                   "SELECT value FROM etl_watermark WHERE name = 'orders'"
               );
               $rows = $this->replica->iterateAssociative(
-                  'SELECT id, user_id, total_amount, status, updated_at FROM orders
+                  'SELECT id, user_id, total_amount, status, created_at, updated_at FROM orders
                    WHERE updated_at >= :s ORDER BY updated_at',
                   ['s' => $since],
               );
@@ -121,7 +121,12 @@ slides:
               rewind($stream);
 
               $key = sprintf('raw/orders/dt=%s/%s.jsonl', date('Y-m-d'), Uuid::v7());
-              $this->lakeStorage->writeStream($key, $stream);
+              $this->lakeStorage->writeStream($key, $stream);   // E: the file lands in the lake
+
+              $uri = 'gs://shop-lake/'.$key;
+              $this->warehouse->runQuery($this->warehouse->query(   // L: the warehouse loads it
+                  "LOAD DATA INTO raw.raw_orders FROM FILES (format = 'JSON', uris = ['$uri'])",
+              ));
               $this->db->executeStatement(
                   "UPDATE etl_watermark SET value = :v WHERE name = 'orders'",
                   ['v' => $max ?? $since],
@@ -132,33 +137,37 @@ slides:
         marks:
           - {line: 8, tip: 'With `>=`, rows with the same timestamp come again. Some duplicates will arrive, but no row gets lost (at-least-once).'}
           - {line: 6, tip: 'It reads from a read replica, not the transactional database, so the OLTP side isn''t put under load.'}
-          - {line: 21, tip: 'The watermark moves only after the file has been written. If it fails midway, the next run starts from the same place.'}
+          - {line: 23, tip: 'The load is a bulk file copy by the warehouse itself, not row-by-row inserts from PHP. If it throws, the watermark stays put.'}
+          - {line: 26, tip: 'The watermark moves only after the file is written and loaded. If anything fails midway, the next run starts from the same place.'}
       - type: code
         lang: sql
-        file: 'warehouse/transform.sql'
+        file: 'warehouse/raw.sql (BigQuery syntax)'
         variant: good
         code: |
-          -- staging: the latest row for each id (duplicates removed)
-          CREATE OR REPLACE VIEW stg_orders AS
-          SELECT DISTINCT ON (id) id, user_id, total_amount, status, updated_at
-          FROM raw_orders
-          ORDER BY id, updated_at DESC;
+          -- run once: the raw layer keeps every row exactly as extracted
+          CREATE TABLE IF NOT EXISTS raw.raw_orders (
+            id           INT64,
+            user_id      INT64,
+            total_amount NUMERIC,
+            status       STRING,
+            created_at   TIMESTAMP,
+            updated_at   TIMESTAMP
+          );
 
-          -- mart: the business definition is settled here, once
-          CREATE OR REPLACE VIEW mart_daily_sales AS
-          SELECT date_trunc('day', updated_at AT TIME ZONE 'Asia/Dhaka') AS day,
-                 SUM(total_amount) AS revenue
-          FROM stg_orders
-          WHERE status = 'paid'
-          GROUP BY 1;
+          -- what the command runs for each file; JSON keys match the column names
+          LOAD DATA INTO raw.raw_orders
+          FROM FILES (
+            format = 'JSON',
+            uris = ['gs://shop-lake/raw/orders/dt=2026-03-01/0192-example.jsonl']
+          );
         marks:
-          - {line: 3, tip: '`DISTINCT ON (id)` keeps one row per id, the one with the newest `updated_at`.'}
-          - {line: 9, tip: 'The day boundary uses Dhaka time, not UTC. This ends the arguments about "month end".'}
+          - {line: 7, tip: 'Both timestamps are kept: `created_at` says which day the sale belongs to, `updated_at` picks the newest version of a row.'}
+          - {line: 12, tip: 'It appends. Loading the same file twice gives duplicate rows, which the staging layer removes on the next slide.'}
     aside:
       - type: tips
         items:
-          - 'Keep ELT steps idempotent: running one twice gives the same result. Then rerunning is the fix when something fails.'
-          - 'Keep the transform SQL in git; a tool like dbt can run it and test it too.'
+          - 'Every warehouse has a native bulk load: BigQuery `LOAD DATA`, Snowflake and Redshift `COPY`. Use it instead of inserting rows one by one.'
+          - 'Keep ELT steps idempotent in effect: running one twice gives the same final result. Then rerunning is the fix when something fails.'
       - type: pitfalls
         items:
           - 'Rows that were DELETEd can''t be caught by `updated_at`. Use soft delete, or CDC.'
@@ -166,8 +175,61 @@ slides:
         items:
           - {to: 'data/oltp-olap', label: 'CDC and derived data'}
     check:
+      q: 'The load fails after the file was written. Why is it safe to simply run the command again?'
+      a: 'The watermark moves only after a successful load, so the rerun extracts the same rows again. If a load had succeeded before a crash, the duplicates are removed in staging.'
+
+  - slug: transform-in-warehouse
+    title: 'Transform: clean and define inside the warehouse'
+    kind: howto
+    tldr: 'Staging removes duplicates by keeping the newest row per id. The mart settles the business definition once, in SQL, so every dashboard reads the same number.'
+    keywords: ['staging', 'mart', 'dbt', 'transform', 'ROW_NUMBER', 'metric definition', 'Asia/Dhaka']
+    blocks:
+      - type: text
+        body: |
+          Raw has duplicates, because the load appends and the extract can repeat rows. **Staging** keeps one row per order: the newest. The **mart** then applies the business rules once: only paid orders count, and the day is the order's day in Dhaka time. This is where the three numbers from the first slide stop happening, because Finance, Marketing and the product team all read this one table.
+      - type: code
+        lang: sql
+        file: 'warehouse/transform.sql (BigQuery syntax)'
+        variant: good
+        code: |
+          -- staging: the newest version of each order (duplicates removed)
+          CREATE OR REPLACE VIEW staging.stg_orders AS
+          SELECT * EXCEPT (rn) FROM (
+            SELECT *, ROW_NUMBER() OVER (PARTITION BY id ORDER BY updated_at DESC) AS rn
+            FROM raw.raw_orders
+          )
+          WHERE rn = 1;
+
+          -- mart: the business definition is settled here, once
+          CREATE OR REPLACE VIEW mart.mart_daily_sales AS
+          SELECT DATE(created_at, 'Asia/Dhaka') AS day,
+                 SUM(total_amount) AS revenue
+          FROM staging.stg_orders
+          WHERE status = 'paid'
+          GROUP BY day;
+        marks:
+          - {line: 4, tip: 'Number each id''s rows from newest to oldest, then keep number 1. A re-loaded file just adds older copies that are dropped.'}
+          - {line: 11, tip: 'The day is the order''s creation day in Dhaka time, not UTC and not the last update. This ends the arguments about "month end".'}
+      - type: points
+        title: 'What this settles'
+        style: check
+        items:
+          - 'One definition: paid orders only, refunds excluded, day in Dhaka time.'
+          - 'One place: every dashboard reads `mart_daily_sales`, not its own copy.'
+          - 'Rebuildable: change the rule, rerun the SQL, and the mart is recomputed from raw.'
+    aside:
+      - type: tips
+        items:
+          - 'Keep the transform SQL in git; a tool like dbt can run it in order and test it too.'
+      - type: pitfalls
+        items:
+          - 'The transforms run on the warehouse''s paid compute, and a view recomputes on every read. For a heavy mart, store it as a table rebuilt on a schedule.'
+      - type: refs
+        items:
+          - {to: 'data/oltp-olap', label: 'Why summaries are derived data'}
+    check:
       q: 'What is the benefit of keeping the raw data untouched in ELT?'
-      a: 'If a mistake turns up in a transformation rule, you can rebuild from raw without going back to the source system.'
+      a: 'If a mistake turns up in a transformation rule, you can rebuild staging and the mart from raw, without going back to the source system.'
 
   - slug: batch-vs-streaming
     title: 'Batch or streaming: how fast do you need it?'
@@ -262,7 +324,7 @@ slides:
           UNION ALL
           SELECT 'stale_data', max(day)
           FROM mart_daily_sales
-          HAVING max(day) < CURRENT_DATE - 1;
+          HAVING max(day) < DATE_SUB(CURRENT_DATE('Asia/Dhaka'), INTERVAL 1 DAY);
         marks:
           - {line: 1, tip: 'In this convention a check means "look for bad rows"; zero rows means all is well.'}
           - {line: 10, tip: 'The freshness check: if the latest day is older than yesterday, the pipeline is surely stuck.'}
@@ -309,8 +371,18 @@ flashcards:
   - q: 'What does a watermark do in an incremental extract?'
     a: 'It marks how far data was last taken (such as an `updated_at` value), so the next run picks up only new rows.'
     more: |
-      The watermark moves only after the file has been written successfully. Using `>=` brings some duplicates but loses no rows; remove duplicates by id in the staging layer. To catch DELETEs you need soft delete or CDC.
+      The watermark moves only after the file has been written and loaded successfully. Using `>=` brings some duplicates but loses no rows; the staging layer keeps the newest row per id. To catch DELETEs you need soft delete or CDC.
     ref: elt-pipeline
+  - q: 'In ELT, how do the extracted files get into the warehouse?'
+    a: 'The extract writes a file to the lake, then the warehouse''s own bulk load (BigQuery `LOAD DATA`, Snowflake or Redshift `COPY`) copies it into the raw table.'
+    more: |
+      A bulk load is far cheaper and faster than inserting rows one by one from PHP. It appends, so loading a file twice duplicates rows; staging removes them. Run the load before moving the watermark, so a failed load is simply retried.
+    ref: elt-pipeline
+  - q: 'What do the staging and mart layers each do?'
+    a: 'Staging removes duplicates (newest row per id). The mart applies the business definition once, such as paid orders by Dhaka day.'
+    more: |
+      Raw is never edited, so you can rebuild staging and the mart from it if a rule changes. Every dashboard reads the mart, which is how one metric stops having three numbers.
+    ref: transform-in-warehouse
   - q: 'When should you use batch and when streaming?'
     a: 'Batch when data that is hours or a day old is fine; streaming when you must act the moment an event happens.'
     more: |
@@ -409,3 +481,32 @@ quiz:
         correct: false
         why: 'If it isn''t written down and in the catalogue, everyone assumes their own version.'
     ref: data-governance
+  - q: 'The extract loads the file into the warehouse first and moves the watermark afterwards. Why that order?'
+    hint: 'What should happen if the load fails?'
+    options:
+      - text: 'If the load fails, the watermark hasn''t moved, so the rerun covers the same rows'
+        correct: true
+        why: 'The worst case after a crash is duplicates, which staging removes. No row is skipped.'
+      - text: 'Moving the watermark first is faster, and the order makes no difference'
+        correct: false
+        why: 'If the load then fails, the watermark has already passed those rows and they are never extracted again.'
+      - text: 'Staging can restore rows that were never loaded'
+        correct: false
+        why: 'Staging only removes duplicates. A row that never reached raw can''t be recovered from it.'
+      - text: 'The warehouse refuses a file until the watermark has moved'
+        correct: false
+        why: 'The warehouse knows nothing about the watermark; it just loads the file it is given.'
+    ref: elt-pipeline
+  - q: 'The mart sums revenue per day using updated_at. An order placed on 1 March ships on 3 March. What goes wrong?'
+    hint: 'Which date says when the sale happened?'
+    options:
+      - text: 'Its revenue lands on 3 March, so the daily numbers are wrong; group by created_at'
+        correct: true
+        why: 'updated_at changes whenever the order changes. The sale belongs to the day it was created.'
+      - text: 'Nothing: the newest date is always the right one'
+        correct: false
+        why: 'The newest date picks the latest version of a row, not the day of the sale.'
+      - text: 'The order is counted twice'
+        correct: false
+        why: 'Staging keeps one row per order, so it is counted once, just on the wrong day.'
+    ref: transform-in-warehouse

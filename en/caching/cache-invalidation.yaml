@@ -12,7 +12,7 @@ slides:
           A board outside the shop says "Sugar 120 taka". In the morning the price rises to 130, but nobody changes the board. A customer reads 120, comes to the counter and hears 130. The board is the cache, and the shopkeeper's ledger is the database. When the real ledger changes, someone has to change the board too.
       - type: text
         body: |
-          In Rahim's app, product prices are cached for 1 hour. A seller drops a price from 500 taka to 450, and it is saved in the database just fine. But for another 50 minutes, buyers still see 500 taka. Some see 500 and buy anyway, others see 450 and complain.
+          In Rahim's app, product prices are cached for 1 hour. A seller drops a price from 500 taka to 450, and it is saved in the database just fine. But for another 50 minutes, buyers still see 500 taka. Buyers see 500 and many walk away, though the real price is 450.
       - type: visual
         kind: sequence
         caption: 'Even after the price change, the cache shows the old price'
@@ -74,6 +74,7 @@ slides:
         items:
           - 'The question for setting a TTL: "What is the longest this data can be out of date?" That is the upper bound for the TTL.'
           - 'If you rely on TTL alone, every change shows wrong data until expiry; so add invalidation for important data.'
+          - 'Short TTL means fresher data but more misses. An entry read 100 times a minute costs 1 query a minute at a 1-minute TTL, but about 100 at a 1-second TTL.'
       - type: pitfalls
         items:
           - 'Using one TTL for everything, say 1 hour: too long for some data and far too short for others.'
@@ -117,6 +118,7 @@ slides:
         items:
           - 'Don''t use PSR-6''s reserved characters `{ } ( ) / \ @ :` in keys. Dots and underscores are safe.'
           - 'If a key is built from user input, hash it, or you will end up with long or odd keys.'
+          - 'A version bump starts that key family with an empty cache, so the first requests all miss together. Protect hot keys (see the stampede lesson).'
       - type: when
         use:
           - 'Bump the version when the shape inside the cache changes (a new field, a rename).'
@@ -165,11 +167,23 @@ slides:
               {
                   $this->cache->invalidateTags(["product_$id"]);  // call it after the flush
               }
+
+              public function categoryList(int $catId): array
+              {
+                  return $this->cache->get("cat.v1.$catId", function (ItemInterface $item) use ($catId) {
+                      $rows = $this->products->summariesIn($catId);   // one page, 20 products
+                      $item->expiresAfter(300);
+                      $item->tag(array_map(fn (array $r) => 'product_'.$r['id'], $rows));
+
+                      return $rows;
+                  });
+              }
           }
         marks:
           - {line: 4, tip: 'You need TagAwareCacheInterface, not the plain CacheInterface; it is the one with invalidateTags().'}
           - {line: 14, tip: 'The list of things this entry depends on. One entry can have several tags.'}
           - {line: 22, tip: 'Call it after the database flush has finished. Called earlier, the old value could get cached again.'}
+          - {line: 30, tip: 'The list depends on every product in it, so it carries each product''s tag. Without this, changing product 42 would leave the list stale.'}
       - type: code
         lang: yaml
         file: 'config/packages/cache.yaml'
@@ -183,14 +197,14 @@ slides:
     aside:
       - type: tips
         items:
-          - 'When a product''s price changes, both its own page and its category list should go. Bind both to one tag and a single call does it.'
+          - 'A category list is tagged with the id of every product in it, so one invalidateTags([''product_42'']) removes both the product page and the list.'
           - 'Shape tag names like keys: product_42, category_7.'
       - type: commands
         items:
           - {cmd: 'php bin/console cache:pool:invalidate-tags product_42', desc: 'Delete every entry with a tag, from the console'}
       - type: pitfalls
         items:
-          - 'Piling on tags adds extra data to every entry; tag only as much as you will need to delete.'
+          - 'Every tag is stored extra data: a list tagged with 500 products carries 500 tags. Tag short lists, such as one page of 20, and only what you will need to delete.'
     check:
       q: 'When a product changes, you want to delete both its own page and its category list from the cache. How do you do it with tags?'
       a: 'Give both entries ->tag([''product_42'']), then call invalidateTags([''product_42'']) once after the product changes.'
@@ -243,8 +257,8 @@ slides:
         body: 'Truth first, copy after: for writing and for deleting alike.'
       - type: pitfalls
         items:
-          - 'Even this order leaves a tiny gap (an old read being stored after the delete). That is exactly why a cache without a TTL is a mistake.'
-          - 'Delete after the commit, not during the transaction; otherwise a rollback empties the cache for nothing.'
+          - 'A slow reader can still re-cache the old value: it reads before your commit and stores after your delete. Rare, but real. The TTL cleans it up.'
+          - 'flush() commits only if no outer transaction is open. Inside one (say Messenger''s doctrine_transaction middleware), delete after that outer commit.'
       - type: refs
         items:
           - {to: 'caching/cache-stampede', label: 'The storm of misses after a delete'}
@@ -278,10 +292,20 @@ flashcards:
     more: |
       The new code looks up v2 keys, so nobody reads the v1 entries and they die at their TTL. You never delete them one by one. During a deploy that changes the shape this is nearly essential, otherwise new code that finds old-shaped entries can break.
     ref: cache-keys
+  - q: 'What does bumping a cache key version cost you?'
+    a: 'The new keys start empty, so the first requests all miss and hit the database together.'
+    more: |
+      Old entries are never read again, so there is nothing to delete, but nothing is warm either. For a hot key such as the homepage list, many requests miss at once. Protect it with jitter, a lock or stale-while-revalidate (see the stampede lesson). For a rarely read key it hardly matters.
+    ref: cache-keys
   - q: 'What is a cache tag good for in Symfony?'
     a: 'Tag several entries with one tag and a single invalidateTags() call deletes them all.'
     more: |
       Use `TagAwareCacheInterface` and call `$item->tag(['product_42'])` in the callback. When the product changes, call `invalidateTags(['product_42'])`. You don't have to remember which entries contain the product. With Redis, use `cache.adapter.redis_tag_aware`.
+    ref: tag-invalidation
+  - q: 'How can a category list be cleared when one of its products changes?'
+    a: 'Tag the list with the id of every product inside it. Then invalidateTags([''product_42'']) removes the product page and the list together.'
+    more: |
+      Without that tag on the list, only the product''s own entry goes and the list keeps showing the old price. The price: a list of 500 products carries 500 tags, so do this for short lists, such as one page of 20. The list is rebuilt on its next read.
     ref: tag-invalidation
   - q: 'When a database change must also clear the cache, what is the right order?'
     a: 'Write to the database and commit first, then delete from the cache.'
@@ -374,4 +398,20 @@ quiz:
       - text: 'Write the three keys by hand in the code and call delete()'
         correct: false
         why: 'When the product is cached in a new place, you will forget to add it here; tags protect you from that mistake.'
+    ref: tag-invalidation
+  - q: 'A category page lists 20 products. Product 42''s price changes, but invalidateTags([''product_42'']) leaves the old price on the list. What is missing?'
+    hint: 'invalidateTags() removes only entries that carry the tag.'
+    options:
+      - text: 'The list entry was never tagged with product_42'
+        correct: true
+        why: 'Only entries carrying that tag are removed. Tag the list with each product it contains.'
+      - text: 'The TTL of the list is too long'
+        correct: false
+        why: 'A shorter TTL would only hide the problem; the real gap is the missing tag.'
+      - text: 'invalidateTags() works only on single-product entries'
+        correct: false
+        why: 'It deletes every entry with the tag, whatever its shape.'
+      - text: 'The list should have been cached with the plain CacheInterface'
+        correct: false
+        why: 'The plain CacheInterface has no tags at all.'
     ref: tag-invalidation

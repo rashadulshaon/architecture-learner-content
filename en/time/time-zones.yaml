@@ -82,12 +82,12 @@ slides:
   - slug: dst-gap-overlap
     title: 'The DST gap and the doubled hour'
     kind: pitfall
-    tldr: 'In spring one hour of local time doesn''t exist (a gap); in autumn one hour happens twice (an overlap). Put an event in that time and the code quietly picks one.'
+    tldr: 'In spring one hour of local time doesn''t exist (a gap); in autumn one hour happens twice (an overlap). Put an event in that time and the code quietly guesses; detect both cases and decide on purpose.'
     keywords: ['DST gap', 'DST overlap', 'ambiguous time', 'nonexistent time', 'Europe/London', 'PHP DateTime']
     blocks:
       - type: text
         body: |
-          In London on 29 March 2026, at 1 am the clock jumps straight to 2 am. So **01:30 simply doesn't exist**. On 25 October the clock goes from 2 am back to 1 am, so **01:30 happens twice**. Ask for something to happen in those moments, and the code either moves it by guesswork or picks the earlier or the later one.
+          In London on 29 March 2026, at 1 am the clock jumps straight to 2 am. So **01:30 simply doesn't exist**. On 25 October the clock goes from 2 am back to 1 am, so **01:30 happens twice**. Ask for something to happen in those moments, and the code either moves it by guesswork or picks the earlier or the later one, and you never get told. The fix is to list every real moment that could match the wall time, then choose.
       - type: visual
         kind: table
         caption: 'The two DST boundaries in London, 2026'
@@ -108,18 +108,54 @@ slides:
           $a = new DateTimeImmutable('2026-03-29 01:30', $london);
           echo $a->format('H:i T');       // 02:30 BST
 
-          // overlap: two 01:30s, PHP picks one (usually the earlier)
+          // overlap: two 01:30s, PHP silently picks one (which one depends on the PHP version)
           $b = new DateTimeImmutable('2026-10-25 01:30', $london);
-          echo $b->format('H:i T P');     // 01:30 BST +01:00
+          echo $b->format('H:i T P');     // 01:30 BST +01:00 or 01:30 GMT +00:00
         marks:
           - {line: 4, tip: 'Invalid input raises no error; the time just moves an hour. The user never knows.'}
-          - {line: 8, tip: 'It picks one of the two possible moments, silently. The other can never come out.'}
+          - {line: 8, tip: 'It picks one of the two possible moments, silently, and the choice can change with the PHP version. The other can never come out.'}
+      - type: code
+        lang: php
+        file: 'src/Time/LocalTimeResolver.php'
+        variant: good
+        code: |
+          /** @return list<DateTimeImmutable> 0 = gap, 1 = normal, 2 = overlap (earlier first) */
+          function instantsFor(string $wall, DateTimeZone $zone): array
+          {
+              $naive = new DateTimeImmutable($wall, new DateTimeZone('UTC'));
+              $found = [];
+              foreach ([-86400, 86400] as $shift) {   // the offset a day before and a day after
+                  $probe = $naive->setTimestamp($naive->getTimestamp() + $shift);
+                  $utc = $naive->setTimestamp($naive->getTimestamp() - $zone->getOffset($probe));
+                  $local = $utc->setTimezone($zone);
+                  // keep a candidate only if it reads back as the same wall time
+                  if ($local->format('Y-m-d H:i') === $naive->format('Y-m-d H:i')) {
+                      $found[$utc->getTimestamp()] = $local;
+                  }
+              }
+              ksort($found);
+              return array_values($found);
+          }
+
+          function resolve(string $wall, DateTimeZone $zone, bool $earlier = true): DateTimeImmutable
+          {
+              $all = instantsFor($wall, $zone);
+              return match (count($all)) {
+                  0 => throw new DomainException("$wall does not exist in {$zone->getName()}"),
+                  1 => $all[0],
+                  default => $earlier ? $all[0] : $all[1],
+              };
+          }
+        marks:
+          - {line: 6, tip: 'Around a DST change the zone has two offsets (+00:00 and +01:00). Try both and see which UTC moments produce the wall time you were given.'}
+          - {line: 16, tip: 'Zero candidates: the time falls in the gap. Two candidates: it is in the overlap. One: an ordinary time.'}
+          - {line: 23, tip: 'You choose the rule on purpose. A gap is refused, so the user can pick another time; an overlap needs the earlier-or-later flag.'}
       - type: points
-        title: 'What to do'
+        title: 'What the fixed version does'
         style: check
         items:
-          - 'For a gap, decide the rule: usually move to the next valid time (02:00).'
-          - 'For an overlap, decide which one you want (earlier or later) and store that in UTC.'
+          - 'A gap gives zero candidates: refuse it and ask the user for another time (or pick a rule, such as the next valid time).'
+          - 'An overlap gives two: you choose the earlier or the later one, then store it in UTC.'
           - 'For daily jobs, don''t use "+24 hours"; use `modify(''+1 day'')` in the local zone.'
     aside:
       - type: remember
@@ -274,6 +310,11 @@ flashcards:
     more: |
       The local time becomes ambiguous. PHP picks one, and the user doesn't know which. Store UTC and the ambiguity disappears, because the two moments have different UTC times.
     ref: dst-gap-overlap
+  - q: 'How can PHP code tell whether a local time falls in a DST gap or overlap?'
+    a: 'Try the zone''s offsets from the day before and after; keep each UTC moment that reads back as the same local time. Zero matches = gap, two = overlap.'
+    more: |
+      PHP won't tell you: it just shifts or picks. So list the real candidates yourself. With none, ask the user for another time. With two, choose earlier or later on purpose and store that UTC moment.
+    ref: dst-gap-overlap
   - q: 'What is the right way to compute "next week" for a weekly local event?'
     a: 'Add `+1 week` in the local zone, then convert to UTC. Adding 168 hours in UTC shifts the time by an hour across DST.'
     more: |
@@ -361,6 +402,19 @@ quiz:
       - text: 'PHP throws an exception'
         correct: false
         why: 'PHP''s DateTimeImmutable raises no error here; it just shifts the time.'
+    ref: dst-gap-overlap
+  - q: 'A user books 01:30 on 25 October 2026 in Europe/London. What should your code do?'
+    hint: 'How many real moments read 01:30 on that clock?'
+    options:
+      - text: 'List both moments (00:30Z and 01:30Z), pick earlier or later on purpose, and store the UTC'
+        correct: true
+        why: 'The wall time matches two instants. Choosing one deliberately, and storing it in UTC, removes the guesswork.'
+      - text: 'Pass it to DateTimeImmutable and store whatever comes back'
+        correct: false
+        why: 'PHP silently picks one of the two, and the pick can differ between PHP versions.'
+      - text: 'Refuse it, because the time does not exist'
+        correct: false
+        why: 'That is the spring gap. In autumn the time exists twice.'
     ref: dst-gap-overlap
   - q: 'Which of these are good practices?'
     hint: 'Think about ways to reduce ambiguity.'

@@ -26,7 +26,7 @@ slides:
           - {from: db, to: v1, label: 'ERROR: column phone does not exist', dashed: true, tone: bad}
           - {from: v1, to: user, label: '500 Internal Server Error', dashed: true, tone: bad}
       - type: quote
-        body: 'While a deploy runs, old and new code use the same database at the same time.'
+        body: 'While a deploy runs, old and new code share one database. So never rename in one step: add the new, move over, then drop the old.'
     aside:
       - type: story
         title: 'The Friday evening deploy'
@@ -98,20 +98,21 @@ slides:
   - slug: expand-contract
     title: 'Expand-contract: the safe way to change a column'
     kind: howto
-    tldr: 'Not in one go but across several releases: first add the new column (expand), write to both, move reads to the new one, and finally drop the old one (contract). At every step old code survives.'
+    tldr: 'Not in one go but across several releases: add the new column (expand), write to both, backfill old rows, move reads to the new one, and drop the old one last (contract). At every step old code survives.'
     keywords: ['expand contract', 'parallel change', 'Doctrine Migrations', 'dual write', 'backfill', 'rename column']
     blocks:
       - type: text
         body: |
-          The `phone` column has to become `mobile`. Instead of a single rename, do it like setting up the new stove next to the old: first add the new column (**expand**), and only after everything has moved over, drop the old one (**contract**). Each step is its own release, so at every step both old and new code keep working.
+          The `phone` column has to become `mobile`. Instead of a single rename, do it like setting up the new stove next to the old: first add the new column (**expand**), and only after everything has moved over, drop the old one (**contract**). Each step is its own release, so at every step both old and new code keep working. The order matters, and the next slide shows why.
       - type: visual
         kind: steps
-        caption: 'From phone to mobile: four steps, four separate releases'
+        caption: 'From phone to mobile: five steps, in this order, each its own release or run'
         steps:
-          - {title: '1. Expand', body: 'Add a mobile column (nullable). The code doesn''t change.', tip: 'Adding a column is always safe: old code doesn''t even know the new column exists.'}
-          - {title: '2. Write to both', body: 'New code writes to phone and mobile. Backfill the old data.', tip: 'On a big table, run the backfill in small batches, not one huge UPDATE.'}
-          - {title: '3. Move reads', body: 'New code reads from mobile. Nobody reads phone any more.', tip: 'Before this, make sure no old server or job still reads phone.'}
-          - {title: '4. Contract', body: 'Drop the phone column, in the next release.', tone: warn, tip: 'This is the only step you can''t undo. So it comes last, and only after enough time has passed.'}
+          - {title: '1. Expand', body: 'Add a nullable mobile column. The code doesn''t change.', tip: 'Adding a column is always safe: old code doesn''t even know the new column exists.'}
+          - {title: '2. Write to both', body: 'Release code that writes phone and mobile.', tip: 'Wait for the rollout to end: servers still on the old code write only phone.'}
+          - {title: '3. Backfill', body: 'Once step 2 is fully live, copy phone into the old rows, in batches.', tip: 'The next slide has the command, and shows why this must come after step 2.'}
+          - {title: '4. Move reads', body: 'Release code that reads mobile. Keep writing both.', tip: 'Keep writing phone for now: if this release is rolled back, the old code still finds fresh numbers in phone.'}
+          - {title: '5. Contract', body: 'Stop using phone in code. Drop the column in a later release.', tone: warn, tip: 'The only step you can''t undo. Code first, the drop later, and take a backup before it.'}
       - type: code
         lang: php
         file: 'migrations/Version20261120100000.php'
@@ -168,29 +169,111 @@ slides:
         items:
           - 'Adding a NOT NULL column with no default breaks INSERTs from old code. Keep it nullable first, and add the constraint after the backfill.'
           - 'On a big table, one UPDATE holds locks on every row. Run the backfill in batches of 1,000 rows.'
+          - 'The price: one rename becomes five steps over several days, with two columns living side by side.'
+      - type: when
+        use: ['Any column or table that live users read or write while you deploy']
+        avoid: ['A small internal tool where 10 minutes of planned downtime is fine: five steps cost more', 'A rename you can skip by simply keeping the old name']
       - type: refs
         items:
           - {to: 'data/zero-downtime-migrations', label: 'Lock details in database migrations'}
     check:
-      q: 'Why does expand-contract take four steps instead of a rename? Which step can''t be undone?'
+      q: 'Why does expand-contract take five steps instead of a rename? Which step can''t be undone?'
       a: 'At every step both the old and the new version run fine, so nothing breaks in the middle of a deploy. Only the last step (contract), dropping the column, can''t be undone.'
+
+  - slug: backfill-order
+    title: 'Backfill in the right order, in small batches'
+    kind: howto
+    tldr: 'Dual-write goes live first, the backfill runs after that rollout ends, a check proves no gaps remain, and only then do reads move. Copy in batches; the command is safe to re-run.'
+    keywords: ['backfill', 'batch update', 'dual write order', 'Doctrine DBAL', 'console command', 'data migration']
+    blocks:
+      - type: text
+        body: |
+          Say the `user` table has 10,000 rows and rolling out the new code takes 2 minutes. The order is not a matter of taste: each step makes the next one safe. Look at what happens to new sign-ups when the backfill (copying old values into the new column) runs too early.
+      - type: visual
+        kind: compare
+        caption: 'The same two steps, in the wrong and in the right order'
+        columns:
+          - title: 'Backfill first'
+            tone: bad
+            icon: cross
+            tip: 'The copy happens while the old code is still saving everything to phone only.'
+            items: ['The backfill copies the 10,000 existing users', 'Until the write-to-both release goes out, 300 more sign up: saved to phone only', 'Reads move to mobile: those 300 users show no number, and nothing ever fixes it']
+          - title: 'Write-to-both first'
+            tone: good
+            icon: check
+            tip: 'From the moment the rollout ends, every save fills both columns. The backfill only has to cover the past.'
+            items: ['Release write-to-both. During the 2-minute rollout, old servers save about 40 rows to phone only', 'When the rollout has ended, the backfill copies those 40 and the 10,000 old rows', 'Check that zero rows are left, then move reads']
+      - type: code
+        lang: php
+        file: 'src/Command/BackfillMobileCommand.php'
+        variant: good
+        code: |
+          #[AsCommand(name: 'app:backfill-mobile')]
+          final class BackfillMobileCommand extends Command
+          {
+              public function __construct(private readonly Connection $connection)
+              {
+                  parent::__construct();
+              }
+
+              protected function execute(InputInterface $input, OutputInterface $output): int
+              {
+                  do {
+                      $copied = $this->connection->executeStatement(<<<'SQL'
+                          UPDATE "user" SET mobile = phone WHERE id IN (
+                              SELECT id FROM "user"
+                              WHERE mobile IS NULL AND phone IS NOT NULL
+                              LIMIT 1000
+                          )
+                          SQL);
+                      $output->writeln(sprintf('%d rows copied', $copied));
+                      usleep(200_000);   // a short pause so the database and replicas keep up
+                  } while ($copied > 0);
+
+                  return Command::SUCCESS;
+              }
+          }
+        marks:
+          - {line: 15, tip: 'Only rows not yet copied are picked. That is what makes the command safe to stop, restart or run twice.'}
+          - {line: 16, tip: 'Each batch holds its locks for milliseconds. One UPDATE over millions of rows would hold them for minutes and stall sign-ups.'}
+          - {line: 21, tip: 'The loop ends when a round copies nothing: no row is left to copy.'}
+      - type: code
+        lang: sql
+        variant: good
+        code: |
+          -- must return 0 before reads move to mobile
+          SELECT count(*) FROM "user" WHERE mobile IS NULL AND phone IS NOT NULL;
+        marks:
+          - {line: 2, tip: 'Counts rows that have a number in phone but nothing in mobile. Anything above 0 means a gap that would show up as a missing number.'}
+    aside:
+      - type: commands
+        items:
+          - {cmd: 'php bin/console app:backfill-mobile', desc: 'Copies phone into mobile, 1,000 rows at a time, until none are left'}
+      - type: pitfalls
+        items:
+          - 'Do not start the backfill while the write-to-both rollout is still running: old servers keep adding phone-only rows.'
+          - 'The price: the table is busier for the duration, and the pause makes it slower on purpose. Run it off-peak.'
+          - 'Do not add NOT NULL on mobile until the check returns 0 and nothing writes only phone.'
+    check:
+      q: 'Nadia runs the backfill first and releases write-to-both an hour later. What goes wrong, and for whom?'
+      a: 'Everyone who signed up in that hour is saved to phone only, so after reads move to mobile they show no number. Write-to-both first, then backfill, closes that gap.'
 
   - slug: graceful-shutdown
     title: 'Shut the old server down politely'
     kind: howto
-    tldr: 'Before shutting an old server down, tell the load balancer to stop sending new requests, let work in progress finish, then stop. A worker that gets SIGTERM finishes its current message and stops.'
+    tldr: 'Take the old server off the load balancer, then send the stop signal that means "finish up": SIGQUIT for php-fpm, SIGTERM for a Messenger worker. php-fpm stops on the spot if it gets SIGTERM.'
     keywords: ['graceful shutdown', 'SIGTERM', 'readiness probe', 'messenger worker', 'drain', 'connection draining']
     blocks:
       - type: text
         body: |
-          At the tea stall, before you take away the old stove you let the cups already poured be finished, or the customer's cup gets dropped. A server is the same: shut it down abruptly and the requests in flight are cut off halfway. Here are the five steps of a polite shutdown.
+          At the tea stall, before you take away the old stove you let the cups already poured be finished, or the customer's cup gets dropped. A server is the same: shut it down abruptly and the requests in flight are cut off halfway. One trap hides in the signal: php-fpm treats SIGTERM as "stop now". A 30-second report running when the container is told to stop is killed on the spot, and the user gets a 502. Only SIGQUIT makes php-fpm finish first.
       - type: visual
         kind: steps
         caption: 'The polite order for shutting down a server'
         steps:
-          - {title: '1. Take it off the line', body: 'Readiness goes off: the load balancer stops sending new requests.', tip: 'It takes a few seconds for the news to reach the load balancer, so this step adds a short wait (preStop).'}
-          - {title: '2. SIGTERM', body: 'The process is sent the "finish up now" signal.', tip: 'SIGTERM is a polite request. The process can finish its own work and stop if it chooses.'}
-          - {title: '3. Finish work in progress', body: 'Current requests and messages finish, and nothing new is taken.', tip: 'A Messenger worker that gets SIGTERM finishes its current message and only then stops (this needs the pcntl extension).'}
+          - {title: '1. Take it off the line', body: 'The load balancer stops sending new requests to this server.', tip: 'On Kubernetes this starts as soon as the pod is marked terminating. The news takes seconds to reach every load balancer, hence the short wait (preStop) in the config below.'}
+          - {title: '2. Send the right signal', body: 'php-fpm needs SIGQUIT. A Messenger worker needs SIGTERM.', tip: 'php-fpm treats SIGTERM as "stop now" and cuts requests in flight. SIGQUIT means "finish current requests, then exit". A Messenger worker handles SIGTERM itself.'}
+          - {title: '3. Finish work in progress', body: 'Current requests and messages finish, and nothing new is taken.', tip: 'A Messenger worker finishes its current message and only then stops (this needs the pcntl extension). php-fpm lets each worker complete its current request.'}
           - {title: '4. A time limit', body: 'Say 45 seconds. If it hasn''t stopped by then...', tip: 'The limit should be longer than the longest request or message in your system.'}
           - {title: '5. SIGKILL', body: '...it is killed by force. This is the last resort.', tone: bad, tip: 'SIGKILL can''t be caught. Work in progress is lost, so you don''t want to get this far.'}
       - type: code
@@ -210,27 +293,29 @@ slides:
                   preStop:
                     exec: { command: ['sleep', '10'] }
         marks:
-          - {line: 2, tip: 'This many seconds are allowed after SIGTERM, then SIGKILL. Set it longer than your longest request.'}
-          - {line: 6, tip: 'If this URL fails, the orchestrator takes that pod off the line. It doesn''t kill it, it just stops sending new requests.'}
-          - {line: 11, tip: 'Wait 10 seconds before SIGTERM: in that time the load balancer drops the server from its list.'}
+          - {line: 2, tip: 'This many seconds are allowed after the stop signal, then SIGKILL. Set it longer than your longest request.'}
+          - {line: 6, tip: 'If this URL fails, the orchestrator stops sending that pod new requests. Check only what the app truly can''t run without, like the database: a slow external courier API here would pull every server off the line.'}
+          - {line: 11, tip: 'Wait 10 seconds before the stop signal: in that time the load balancers drop the server from their lists.'}
       - type: code
-        lang: php
-        file: 'src/Controller/HealthController.php'
+        lang: dockerfile
+        file: 'Dockerfile'
         variant: good
         code: |
-          #[Route('/health/ready', methods: ['GET'])]
-          public function ready(Connection $connection): Response
-          {
-              try {
-                  $connection->executeQuery('SELECT 1');   // the core dependency: the database
-              } catch (Exception) {
-                  return new Response('db unavailable', Response::HTTP_SERVICE_UNAVAILABLE);
-              }
+          FROM php:8.3-fpm-alpine
 
-              return new Response('ok');
-          }
+          # php-fpm: SIGTERM = stop now, cutting requests in flight.
+          # SIGQUIT = finish the current requests, then exit.
+          STOPSIGNAL SIGQUIT
+          # how long the master waits for workers to finish after SIGQUIT
+          RUN printf '[global]\nprocess_control_timeout = 40s\n' \
+              > /usr/local/etc/php-fpm.d/zz-shutdown.conf
+
+          COPY . /var/www/html
         marks:
-          - {line: 5, tip: 'Check only what the app truly can''t run without. If you checked the external courier API here, one slow reply would pull every server off the line.'}
+          - {line: 5, tip: 'The key line. Docker and Kubernetes send this signal instead of SIGTERM when the container stops. The official php-fpm image already sets it; a custom base image may not.'}
+          - {line: 7, tip: 'Without this, the master waits almost nothing for its workers after SIGQUIT, and a long request is still cut. Keep it below terminationGracePeriodSeconds (45).'}
+      - type: quote
+        body: 'php-fpm: SIGTERM stops now, SIGQUIT finishes first.'
     aside:
       - type: commands
         title: 'Running workers politely'
@@ -241,12 +326,13 @@ slides:
         items:
           - 'During a deploy the workers are running old code too. If you don''t run messenger:stop-workers, they stay on the old code.'
           - 'A message cut off halfway goes back on the queue. So keep handlers idempotent, so that running twice does no harm.'
+          - 'Test it once: start a request that sleeps 20 seconds, stop the container, and check the request still completes.'
       - type: refs
         items:
           - {to: 'messaging/delivery-guarantees', label: 'What happens when a message arrives twice'}
     check:
-      q: 'In a rolling deploy, why switch readiness off first instead of shutting the old server straight down?'
-      a: 'Once readiness is off, the load balancer sends no new requests, but the requests in flight can finish. Shutting down directly would cut those requests off halfway.'
+      q: 'In a rolling deploy, why take the old server off the load balancer first, and why does php-fpm need SIGQUIT?'
+      a: 'Without the first, new requests keep arriving while it shuts down. On SIGTERM php-fpm cuts the requests in flight; only SIGQUIT lets them finish.'
 
   - slug: rollback-trap
     title: 'Pitfall: you can roll code back, but not data'
@@ -276,6 +362,25 @@ slides:
         marks:
           - {line: 4, tip: 'Dropping the column in the same release as the code change: the rolled-back old code won''t find this column.'}
           - {line: 10, tip: 'down() does bring the column back, but not the numbers that were in it. This is not a real rollback.'}
+      - type: visual
+        kind: compare
+        caption: 'The same bad release, with the drop in the same release and in a later one'
+        columns:
+          - title: 'Same release'
+            tone: bad
+            icon: cross
+            tip: 'Code change and DROP COLUMN go out together. Rolling back only undoes half of it.'
+            items: ['Deploy the new code and DROP phone together', 'Errors rise, so you roll the code back', 'The old code asks for phone, which is gone: still failing', 'down() brings back an empty column, the numbers are lost']
+          - title: 'Separate releases'
+            tone: good
+            icon: check
+            tip: 'The risky code change goes alone. If it fails, the data is still there to go back to.'
+            items: ['Release 1: the code stops using phone, the column stays', 'Errors rise: roll the code back in seconds, phone is intact', 'A week later all is calm: drop phone in its own release, after a backup']
+          - title: 'What it costs'
+            tone: warn
+            icon: warning
+            tip: 'The safe way has a price. Know it, and plan the second release so it is not forgotten.'
+            items: ['A dead column lingers for days', 'One change needs two releases, and someone must remember the second', 'Skip it for a throwaway table nobody reads']
       - type: points
         title: 'Five conditions for a rollback plan'
         style: check
@@ -319,7 +424,7 @@ flashcards:
   - q: 'What is the expand-contract pattern?'
     a: 'Splitting a database change over several releases: first add the new thing (expand), then drop the old one once everyone has moved (contract).'
     more: |
-      To rename a column: add the new column, write to both and backfill the old data, move reads to the new one, and drop the old column in the last release. At every step both the old and new code run.
+      To rename a column: add the new column, release code that writes to both, backfill the old rows, move reads to the new one, and drop the old column in a later release. At every step both the old and new code run.
     ref: expand-contract
   - q: 'Why is the migration that adds a new column made nullable?'
     a: 'Old code doesn''t know the new column exists. If it were NOT NULL, INSERTs from old code would break.'
@@ -327,10 +432,20 @@ flashcards:
       In PostgreSQL, adding a nullable column with DEFAULT NULL is instant and doesn't lock the table. After the backfill is done, you can add the constraint. On big tables, run the backfill in small batches.
     ref: expand-contract
   - q: 'What are the steps of a graceful shutdown?'
-    a: 'Take it off the line (readiness), SIGTERM, finish work in progress, a time limit, and SIGKILL if it still hasn''t stopped.'
+    a: 'Take it off the load balancer, send the right stop signal, finish work in progress, a time limit, and SIGKILL if it still hasn''t stopped.'
     more: |
       A short wait in preStop gives the load balancer time to drop the server. terminationGracePeriodSeconds should be longer than your longest job. A Messenger worker that gets SIGTERM finishes its current message and stops, and a message cut off halfway goes back on the queue.
     ref: graceful-shutdown
+  - q: 'Which signal stops php-fpm gracefully, and what does SIGTERM do to it?'
+    a: 'SIGQUIT lets php-fpm finish its current requests, then exit. SIGTERM makes it stop at once, cutting requests in flight.'
+    more: |
+      Set STOPSIGNAL SIGQUIT in the Dockerfile, so Docker and Kubernetes send it instead of SIGTERM. The official php-fpm image already does. A Messenger worker is the opposite: it handles SIGTERM itself and finishes its current message.
+    ref: graceful-shutdown
+  - q: 'In expand-contract, why must the backfill run after the write-to-both release is fully live?'
+    a: 'Until then, servers on the old code save new rows to phone only. An earlier backfill misses them, and those users show no number once reads move.'
+    more: |
+      The order is: add the column, release dual-write, wait for the rollout to end, backfill, check that no row has mobile empty and phone filled, then move reads. The backfill copies only rows where mobile is empty, so running it again is harmless.
+    ref: backfill-order
   - q: 'Why can you roll code back, but not a database?'
     a: 'Rolling code back means running the old files again. A dropped column or changed data can''t be restored, and down() brings back only the structure, not the data.'
     more: |
@@ -373,7 +488,7 @@ quiz:
   - q: 'In expand-contract, the phone column is being turned into mobile. Which order is right?'
     hint: 'The old code must never see a broken state.'
     options:
-      - text: 'Add mobile, write to both and backfill, read from mobile, drop phone in the next release'
+      - text: 'Add mobile, release write-to-both, backfill, read from mobile, and drop phone in a later release'
         correct: true
         why: 'At every step both old and new code work. The drop comes last, after everyone has moved.'
       - text: 'Rename phone to mobile, then deploy the code'
@@ -389,7 +504,7 @@ quiz:
   - q: 'Which of these are part of a graceful shutdown?'
     hint: 'Think of work in progress and new work separately.'
     options:
-      - text: 'Failing readiness before shutdown, so new requests stop coming'
+      - text: 'Taking the server off the load balancer before shutdown, so new requests stop coming'
         correct: true
         why: 'Once no new requests arrive, it is easy to finish the ones in progress.'
       - text: 'A Messenger worker that gets SIGTERM finishes its current message and stops'
@@ -418,3 +533,35 @@ quiz:
         correct: false
         why: 'A hotfix can take hours, and users get errors meanwhile. You need a rollback plan in advance.'
     ref: rollback-trap
+  - q: 'Nadia ran the backfill, and only an hour later released the code that writes both columns. Reads then moved to mobile. What do some users see?'
+    hint: 'Who saved their number between the backfill and the dual-write release?'
+    options:
+      - text: 'Users who signed up in between show no number, because their row was saved to phone only after the copy'
+        correct: true
+        why: 'The backfill only copies rows that exist when it runs. Write-to-both must be fully live first, so nothing new slips through.'
+      - text: 'Nothing: the backfill keeps watching and copies new rows by itself'
+        correct: false
+        why: 'The command copies what exists when it runs, then stops. It does not follow new writes.'
+      - text: 'All users lose their number, because mobile starts empty'
+        correct: false
+        why: 'The 10,000 existing rows were copied. Only the rows saved after the copy and before dual-write are missing.'
+      - text: 'The column cannot be dropped later'
+        correct: false
+        why: 'Dropping works as before. The harm is the missing numbers, not the drop.'
+    ref: backfill-order
+  - q: 'A custom php-fpm Docker image is stopped in a rolling deploy with the default signal, and users report 502s on long requests. What is the likely cause and fix?'
+    hint: 'What does php-fpm do when it receives SIGTERM?'
+    options:
+      - text: 'php-fpm stops at once on SIGTERM, cutting requests in flight; add STOPSIGNAL SIGQUIT to the Dockerfile'
+        correct: true
+        why: 'SIGQUIT makes php-fpm finish its current requests first. The terminationGracePeriodSeconds must still be longer than the longest request.'
+      - text: 'The readiness probe is too slow; raise periodSeconds'
+        correct: false
+        why: 'A slower probe does not change what php-fpm does on the stop signal. Requests in flight are cut by the signal itself.'
+      - text: 'Switch to SIGKILL, which stops it more cleanly'
+        correct: false
+        why: 'SIGKILL cannot be caught. It kills at once and is the worst choice for in-flight work.'
+      - text: 'The Messenger worker is at fault; run messenger:stop-workers'
+        correct: false
+        why: 'The 502s come from the web process, not the queue worker.'
+    ref: graceful-shutdown

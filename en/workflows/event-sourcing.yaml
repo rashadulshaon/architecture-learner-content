@@ -59,7 +59,7 @@ slides:
           - {from: agg, to: store, label: 'If the balance is enough, a MoneyWithdrawn event is appended', tone: good}
       - type: text
         body: |
-          With 10,000 events, replaying everything each time is slow. So now and then you take a **snapshot**: a copy of the state at that moment. Next time you load the latest snapshot and replay only the events after it.
+          An account with 10,000 events means reading 10,000 rows on every load. So every 100 events or so you take a **snapshot**: a copy of the state at that moment. Next time you load the latest snapshot and replay only the events after it: fewer than 100, not 10,000.
     aside:
       - type: terms
         items:
@@ -89,7 +89,7 @@ slides:
           - cells: ['type, schema_v', 'The event''s name and structure version']
             tip: 'Without schema_v, once the structure changes you can''t tell which old event has which structure.'
           - cells: ['payload (JSON), occurred_at', 'The data and the time']
-            tip: 'The actual content of the event. This row is never UPDATEd or DELETEd.'
+            tip: 'The actual content of the event. occurred_at defaults to now() in the database. This row is never UPDATEd or DELETEd.'
       - type: code
         lang: php
         file: 'src/Account/Account.php'
@@ -158,6 +158,10 @@ slides:
           - {line: 8, tip: 'expectedVersion is the version you saw when you read. Writing starts right after it.'}
           - {line: 15, tip: 'If two people try to write the same version at once, the primary key stops one of them. Optimistic concurrency without a lock.'}
     aside:
+      - type: story
+        title: 'Two withdrawals at once'
+        body: |
+          Rina and her husband each press "withdraw 300" on a balance of 500. Both read version 5, both see 300 is fine, both try to write version 6. Without the primary key both would be saved and the balance would be -100. With it, the second write fails, the command retries on the fresh state (balance 200) and gets InsufficientFunds.
       - type: tips
         items:
           - 'Name events in the past tense: `MoneyWithdrawn`, `OrderShipped`. They can''t be changed precisely because they have already happened.'
@@ -168,6 +172,74 @@ slides:
     check:
       q: 'What happens when two people write version 5 to the same Account at once, and why is that good?'
       a: 'The primary key (aggregate_id, version) stops one of them, who gets a ConcurrentModification. That''s good, because one of the two was acting on a balance that has already changed.'
+
+  - slug: snapshots-in-code
+    title: 'Snapshots in code: load fast, replay little'
+    kind: howto
+    tldr: 'Save the state every 100 events; load() reads the latest snapshot and replays only the events after it. The price: one more table, and a snapshot must be dropped when the rules change.'
+    keywords: ['snapshot', 'load aggregate', 'restore', 'replay', 'snapshot interval', 'event store']
+    blocks:
+      - type: text
+        body: |
+          Without a snapshot, an account with 10,000 events reads 10,000 rows every time it is loaded. With one saved every 100 events, `load()` reads one snapshot row plus fewer than 100 later events. The snapshot is only a shortcut: delete it and the events still give the right answer.
+      - type: code
+        lang: php
+        file: 'src/Account/AccountRepository.php'
+        variant: good
+        code: |
+          public function load(Uuid $id): Account
+          {
+              $snap = $this->db->fetchAssociative(
+                  'SELECT version, balance FROM account_snapshot WHERE aggregate_id = ?',
+                  [$id->toRfc4122()],
+              ) ?: ['version' => 0, 'balance' => 0];
+
+              $later = $this->store->eventsAfter($id, (int) $snap['version']);
+
+              return Account::restore((int) $snap['balance'], (int) $snap['version'], $later);
+          }
+
+          public function saveSnapshot(Uuid $id, Account $a): void     // every 100th event
+          {
+              $this->db->executeStatement(
+                  'INSERT INTO account_snapshot (aggregate_id, version, balance) VALUES (?, ?, ?)
+                   ON CONFLICT (aggregate_id) DO UPDATE
+                   SET version = EXCLUDED.version, balance = EXCLUDED.balance',
+                  [$id->toRfc4122(), $a->version(), $a->balance()],
+              );
+          }
+        marks:
+          - {line: 8, tip: 'Only events with a version above the snapshot''s are read: fewer than 100 rows instead of 10,000.'}
+          - {line: 10, tip: 'restore() starts from the saved balance and version, then replays the later events.'}
+          - {line: 13, tip: 'Call it after a successful append when the version is a multiple of 100. If it fails, nothing is lost: the events are the truth.'}
+      - type: code
+        lang: php
+        file: 'src/Account/Account.php (added)'
+        variant: good
+        code: |
+          public static function restore(int $balance, int $version, iterable $later): self
+          {
+              $a = new self();
+              $a->balance = $balance;
+              $a->version = $version;
+              foreach ($later as $e) { $a->apply($e); }    // the same apply() as before
+
+              return $a;
+          }
+      - type: points
+        title: 'What it costs'
+        style: cross
+        items:
+          - 'One more table, and code to keep it fresh.'
+          - 'If you change how `apply()` works, old snapshots are wrong: delete them and let them rebuild from the events.'
+          - 'Under a few hundred events per aggregate, replay is already fast: skip snapshots.'
+    aside:
+      - type: tips
+        items:
+          - 'Take snapshots in a background job if you like. A snapshot is only a cache of what the events already say.'
+    check:
+      q: 'An account has 10,000 events and its latest snapshot is at version 9,900. How many events does `load()` replay?'
+      a: '100: only the events with a version above 9,900. The snapshot already holds the state up to 9,900, so replaying those again would be wasted work.'
 
   - slug: projections-lag
     title: 'A separate table for reading: projections and lag'
@@ -214,13 +286,18 @@ slides:
                        SET balance = account_balance.balance + :delta, version = :v
                        WHERE account_balance.version = :v - 1',
                       ['id' => $m->aggregateId, 'delta' => $m->signedAmount, 'v' => $m->version],
-                  );                                  // 0 rows: duplicate, or an earlier event is missing
+                  );                                  // 0 rows: a duplicate or out-of-order event
               }
           }
         marks:
           - {line: 13, tip: 'Updates only when this is exactly the next version. A duplicate event doesn''t match the version, so nothing changes.'}
           - {line: 14, tip: 'The projector is idempotent: throw the table away, replay every event, and you get the same result.'}
     aside:
+      - type: terms
+        items:
+          - {term: 'CQRS', meaning: 'Keeping the model that handles writes separate from the model that answers reads.'}
+          - {term: 'Projection', meaning: 'A table built from events to answer one kind of question, such as the balance.'}
+          - {term: 'Eventual consistency', meaning: 'The read side catches up a moment after the write, not at the same instant.'}
       - type: tips
         items:
           - 'Return the `version` in the write response. The Vue app can send `?minVersion=7` to the read API and show "Updating…" until that version arrives, or show its own calculated value meanwhile.'
@@ -264,7 +341,7 @@ slides:
           {
               public function upcast(array $payload, int $schemaV): array
               {
-                  if (1 === $schemaV) {            // v1 had no currency
+                  if (1 === $schemaV) {            // v1 had no currency: all taka
                       $payload['currency'] = 'BDT';
                       $schemaV = 2;
                   }
@@ -285,7 +362,8 @@ slides:
       - type: tips
         items:
           - 'Use it only in the part of the system where history is central (a ledger, say), not everywhere. Keep the rest as plain CRUD.'
-          - 'Design the event shape carefully up front: if you put personal data into events, legal erasure duties (such as GDPR) become hard to meet.'
+          - 'If you only need an audit trail, an append-only `account_history` table beside a plain CRUD table is far cheaper. Event sourcing is for when the events themselves drive the state.'
+          - 'Keep personal data out of events: store a customer id and keep the details in an ordinary table you can erase, or erasure duties (such as GDPR) become impossible to meet.'
     check:
       q: 'Earlier events can''t be changed, so how do old events work with new code after the structure changes?'
       a: 'At read time an upcaster converts an event with an old schema_v to the latest shape. The original events in the database stay untouched, but the upcaster code piles up year after year.'
@@ -336,6 +414,12 @@ flashcards:
     more: |
       Event sourcing brings the complexity of projections, replay, snapshots and upcasting. Use it for a bank ledger or other audit-driven parts, and keep the rest as plain CRUD. Spreading it across the whole system is usually a mistake.
     ref: worth-it-and-upcasting
+
+  - q: 'How do you load an aggregate that has a snapshot?'
+    a: 'Read the latest snapshot, then replay only the events with a higher version. A snapshot at 9,900 of 10,000 events means replaying 100, not 10,000.'
+    more: |
+      A snapshot is a shortcut, never the truth. If one is lost, or the `apply()` rules change, delete it and rebuild from the events. With only a few hundred events per aggregate, replay is fast enough and you can skip snapshots.
+    ref: snapshots-in-code
 
 quiz:
   - q: 'In which situation does event sourcing make the most sense?'
@@ -440,3 +524,19 @@ quiz:
         correct: false
         why: 'You would lose the old history, and the state would be split up wrongly.'
     ref: worth-it-and-upcasting
+  - q: 'Rahim changes `apply()` so that withdrawals now include a fee. Old snapshots of the balance exist. What should he do?'
+    hint: 'Which is the truth: the snapshot or the events?'
+    options:
+      - text: 'Keep the snapshots: they are the source of truth'
+        correct: false
+        why: 'The events are the truth. A snapshot is only a saved result of the old rules.'
+      - text: 'Delete the snapshots and let them be rebuilt from the events with the new rules'
+        correct: true
+        why: 'Old snapshots hold balances computed by the old rules. Rebuilding from the events gives the right ones.'
+      - text: 'Delete the oldest events to match the snapshots'
+        correct: false
+        why: 'Never delete events. That destroys the history that everything else is built from.'
+      - text: 'Edit each snapshot by hand to subtract the fees'
+        correct: false
+        why: 'Hand edits are error-prone, and the events can rebuild every snapshot automatically.'
+    ref: snapshots-in-code

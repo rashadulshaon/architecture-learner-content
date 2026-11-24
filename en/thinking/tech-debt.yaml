@@ -64,6 +64,13 @@ slides:
         items:
           - {term: 'Principal', meaning: 'The work you must do now to fix the shortcut.'}
           - {term: 'Interest', meaning: 'The extra time and risk each change costs until the shortcut is fixed.'}
+          - {term: 'Sprint', meaning: 'A fixed work cycle, usually 1 or 2 weeks, after which the team plans the next one.'}
+      - type: when
+        use:
+          - 'A real deadline with real value, such as the Eid sale, and a debt you can write down'
+        avoid:
+          - 'Shortcuts in security, money or data-integrity code: there the interest is paid in incidents, not in extra days'
+          - 'Any shortcut you cannot give a repayment date'
     check:
       q: 'When is tech debt a good tactic, and when is it a trap?'
       a: 'A tactic when taken knowingly, written down, with a repayment date. A trap when it piles up unknowingly or ignored, or when nobody thinks about repaying.'
@@ -98,8 +105,8 @@ slides:
         file: 'src/Checkout/EidCheckoutService.php'
         variant: good
         code: |
-          // DEBT-12: a copy of CheckoutService. Must be merged by 2027-02-01.
-          // Once the campaign ends, this class gets deleted anyway.
+          // DEBT-12: a copy of CheckoutService. Merge it by 2027-02-01.
+          // Details and owner: docs/tech-debt.yaml
           final readonly class EidCheckoutService
           {
               public function pay(Cart $cart): Receipt
@@ -123,6 +130,11 @@ slides:
         items:
           - 'Keep each entry to one page; nobody reads long essays. Use a short, regular template like an ADR.'
           - 'At the start of each sprint, spend 5 minutes on the register: which debts have passed their date?'
+      - type: terms
+        items:
+          - {term: 'Ticket', meaning: 'One tracked job in your task board, with a number, so it can be found and assigned.'}
+          - {term: 'ADR', meaning: 'Architecture Decision Record: a one-page note saying what was decided and why.'}
+          - {term: 'grep', meaning: 'A command that searches text in files. `grep -r DEBT- src/` lists every marker.'}
       - type: refs
         items:
           - {to: 'thinking/documentation', label: 'ADRs and writing down design'}
@@ -138,14 +150,14 @@ slides:
     blocks:
       - type: text
         body: |
-          "Drop everything and rewrite" isn't a way to repay debt; it's a big risk in itself. Pay in small instalments instead. Leave the code a little cleaner wherever you touch it, reserve some time for debt in every sprint, and repay the debt with the highest interest first.
+          "Drop everything and rewrite" isn't a way to repay debt. Old code holds years of small bug fixes and rules that nobody wrote down; a rewrite silently drops many of them, and it always runs longer than planned. Pay in small instalments instead. Leave the code a little cleaner wherever you touch it, reserve some time for debt in every sprint, and repay the debt with the highest interest first.
       - type: code
         lang: php
         file: 'src/Order/OrderService.php'
         variant: good
         code: |
           // came to fix a bug, and cleaned up only what I touched
-          // before: if ($order->getTotal() > 5000) { ... }  // what is 5000?
+          // before: if ($order->getTotalInTaka() >= 5000) { ... }  // what is 5000?
           private const FREE_DELIVERY_FROM_TAKA = 5000;
 
           public function deliveryFee(Order $order): int
@@ -173,13 +185,104 @@ slides:
           - 'Repay debt in the code you change often before the rest.'
         avoid:
           - 'Don''t fix code nobody ever touches just because it''s ugly.'
+      - type: terms
+        items:
+          - {term: 'Refactoring', meaning: 'Changing how code is organised without changing what it does.'}
+          - {term: 'Magic number', meaning: 'A bare number in code whose meaning is a secret, like 5000. Give it a named constant.'}
       - type: pitfalls
         items:
-          - 'Big refactoring without tests: you introduce new bugs while repaying.'
+          - 'Big refactoring without tests: you introduce new bugs while repaying. The next slide shows the test to write first.'
           - 'Pushing debt time to "next sprint" again and again.'
     check:
       q: 'Which debt do you repay first: code you change every week, or code you change once a year?'
       a: 'The one you change every week. Interest is paid each time you touch the code, so the more it''s touched, the costlier the debt there.'
+
+  - slug: merge-the-copy
+    title: 'Repaying DEBT-12: merge the copy into one class'
+    kind: howto
+    tldr: 'Pin today''s totals with a test, then merge the two classes: the one real difference becomes a small injected policy, and the shared rules live once.'
+    keywords: ['strategy pattern', 'duplicate code', 'refactoring', 'DiscountPolicy', 'characterization test', 'copy paste']
+    blocks:
+      - type: text
+        body: |
+          Here is what the Eid copy cost. In January the VAT rate was updated to 15% in `CheckoutService`, and nobody remembered `EidCheckoutService`. Eid orders kept being taxed at the old 10%.
+      - type: code
+        lang: php
+        file: 'src/Checkout/ (before)'
+        variant: bad
+        code: |
+          final readonly class CheckoutService
+          {
+              public function total(Cart $cart): int
+              {
+                  return intdiv($cart->subtotal() * 115, 100);   // VAT 15%, fixed in January
+              }
+          }
+
+          // the copy, written in the Eid rush
+          final readonly class EidCheckoutService
+          {
+              public function total(Cart $cart): int
+              {
+                  return intdiv(($cart->subtotal() - 200) * 110, 100);   // still the old 10%
+              }
+          }
+        marks:
+          - {line: 5, tip: 'The January fix landed here only.'}
+          - {line: 14, tip: 'Same job, written twice. This copy was forgotten, so every Eid order was charged the old rate.'}
+      - type: text
+        body: |
+          The repayment has two moves. First write a test that sends one fixed cart through both classes and records today's totals, so the merge cannot change behaviour by accident. Then keep a single `CheckoutService` and turn the only real difference, the Eid discount, into a small swappable piece: a **strategy**, an object that answers one question.
+      - type: code
+        lang: php
+        file: 'src/Checkout/ (after)'
+        variant: good
+        code: |
+          interface DiscountPolicy
+          {
+              public function discountFor(Cart $cart): int;   // in taka
+          }
+
+          final readonly class EidOffer implements DiscountPolicy
+          {
+              public function discountFor(Cart $cart): int
+              {
+                  return 200;
+              }
+          }
+
+          final readonly class CheckoutService
+          {
+              public function __construct(
+                  #[Autowire(service: EidOffer::class)]
+                  private DiscountPolicy $discount,
+              ) {
+              }
+
+              public function total(Cart $cart): int
+              {
+                  $net = $cart->subtotal() - $this->discount->discountFor($cart);
+
+                  return intdiv($net * 115, 100);   // VAT lives here, once
+              }
+          }
+        marks:
+          - {line: 17, tip: 'When the campaign ends, point this at a NoDiscount class. One line changes, and no copy exists to forget.'}
+          - {line: 26, tip: 'The shared rule is written once. The next VAT change touches one place.'}
+    aside:
+      - type: when
+        use:
+          - 'The same change has already been made in two places more than once'
+        avoid:
+          - 'Two pieces of code that only look alike but change for different reasons: merging couples them'
+          - 'Code nobody touches: it pays no interest, so leave it'
+      - type: pitfalls
+        items:
+          - 'Merging without the pinning test: you cannot tell whether the totals still match.'
+          - 'Making the policy too general. One difference needs one small interface, not ten options.'
+    check:
+      q: 'Why write a test before merging the two checkout classes, and what should it record?'
+      a: 'To prove the merge changes nothing by accident. It sends one fixed cart through both classes and records today''s totals, then must stay green.'
 
 flashcards:
   - q: 'What is tech debt?'
@@ -211,6 +314,21 @@ flashcards:
     a: 'Leave any file you touch a little cleaner than you found it, such as naming a magic number.'
     more: |
       This means big refactoring doesn't need separate time, and the most-touched code gets cleaned the most. The condition: the change must be small and safe, and tests must exist.
+    ref: paying-down
+  - q: 'Why is copy-pasted code expensive?'
+    a: 'Every later change must be made in each copy, and a forgotten copy keeps the old behaviour: a bug that only shows up there.'
+    more: |
+      In the Eid example, the VAT update reached `CheckoutService` but not the copy, so Eid orders were taxed at the old rate. Each extra copy multiplies this risk.
+    ref: merge-the-copy
+  - q: 'How do you safely merge two near-identical classes?'
+    a: 'First write a test that records both classes'' current outputs, then merge, turning the one real difference into a small injected strategy.'
+    more: |
+      The test is your safety net. The strategy keeps the difference (such as the Eid discount) out of the shared code, so the shared rules live in one place.
+    ref: merge-the-copy
+  - q: 'Why is "stop everything and rewrite" a poor way to repay debt?'
+    a: 'Old code holds years of unwritten rules and bug fixes. A rewrite drops many of them and runs longer than planned.'
+    more: |
+      Repay in small instalments instead: clean what you touch, reserve some time each sprint, and start with the highest-interest debt.
     ref: paying-down
   - q: 'How much of a sprint is reasonable to set aside for debt?'
     a: 'Many teams reserve roughly 15-20 percent. The number varies by team; being regular is what matters.'
@@ -290,6 +408,22 @@ quiz:
         correct: false
         why: 'Neglect A and every new feature will be slower.'
     ref: paying-down
+  - q: 'You will merge `EidCheckoutService` into `CheckoutService`. What do you do first?'
+    hint: 'How will you know the merge changed nothing by accident?'
+    options:
+      - text: 'Write a test that sends one fixed cart through both classes and records the totals'
+        correct: true
+        why: 'It pins today''s behaviour, so after the merge a red test shows exactly what changed.'
+      - text: 'Delete `EidCheckoutService` and fix whatever breaks'
+        correct: false
+        why: 'You would be debugging live orders instead of a test, and rules hidden in the copy could be lost.'
+      - text: 'Add a third class that wraps both'
+        correct: false
+        why: 'That adds a layer without removing the duplication, so the interest keeps growing.'
+      - text: 'Add a TODO comment and merge next year'
+        correct: false
+        why: 'A TODO without a ticket, owner and date never gets done.'
+    ref: merge-the-copy
   - q: 'The team lead says, "Let''s pause features for two months and rewrite the whole system." What is the biggest risk of this approach?'
     hint: 'Where do the small rules hidden in the old system go?'
     options:

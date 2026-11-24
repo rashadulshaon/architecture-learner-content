@@ -42,6 +42,9 @@ slides:
           - {at: app, note: 'process crash or deploy', tone: bad, tip: 'If the app stops at exactly this moment, the second write never happens. And nobody sees any error.'}
           - {from: app, to: mq, label: 'OrderPlaced was never sent', tone: bad, dashed: true}
           - {at: mq, note: 'Warehouse never learns of the order', tone: bad, tip: 'The customer has paid and the goods won''t ship. It surfaces days later as a complaint.'}
+      - type: text
+        body: |
+          Two ways out. Make both systems commit together (two-phase commit, next slide), which is rarely worth the trouble. Or write the message into the same database transaction as the order (the outbox, the slide after that).
     aside:
       - type: terms
         items:
@@ -166,6 +169,8 @@ slides:
         items:
           - 'An outbox never gives exactly-once. It won''t lose a message, but it may send one twice. That is why the idempotent consumer on the next slide is essential.'
           - 'Add a job to delete old published rows, or the outbox table keeps growing.'
+          - 'The price is delay. With a 5-second relay the warehouse can hear up to 5 seconds late. Fine for orders and emails, wrong for anything that must react at once.'
+          - 'Skip the outbox when one database holds everything, or when losing a message is harmless (say, a "page viewed" counter).'
       - type: tips
         items:
           - 'In a small app, if Messenger''s Doctrine transport uses the same connection, the dispatch itself becomes part of that transaction; that is how you get a simple outbox.'
@@ -184,11 +189,11 @@ slides:
     blocks:
       - type: text
         body: |
-          An online order involves four services: order, payment, stock and courier. They are all separate, so a single rollback across them is impossible. So each service finishes its own transaction and tells the next step. If something gets stuck, the earlier steps run their own **compensation**, such as refunding the money. Instead of a database rollback, it is an "undoing action that makes amends".
+          An online order involves four services: order, payment, stock and courier. They are all separate, so a single rollback across them is impossible. So each service finishes its own transaction and tells the next step. If something gets stuck, the earlier steps run their own **compensation**, such as refunding the money. Instead of a database rollback, it is an "undoing action that makes amends". Who notices the failure and starts the undoing, and what if an undo fails too? The next slide shows it.
       - type: visual
         kind: table
         caption: 'A four-step saga, and the undo step for each'
-        headers: ['Step', 'What it does', 'Undo if it fails']
+        headers: ['Step', 'What it does', 'Undo, if a later step fails']
         rows:
           - cells: ['1. Create order', 'Makes the order pending', 'Mark the order cancelled']
             tip: 'The first step succeeded. If any later step fails, the order is marked cancelled.'
@@ -197,7 +202,7 @@ slides:
           - cells: ['3. Reserve stock', 'Places a hold on stock', 'Release the hold']
             tip: 'If the courier step fails, the stock must be freed again.'
           - cells: ['4. Book courier', 'Requests a pickup from the courier', 'Cancel the pickup']
-            tip: 'The last step. If it fails, the earlier three are undone in reverse order (3, 2, 1).'
+            tip: 'The last step. If this one fails it has nothing of its own to undo, so the saga undoes the earlier three in reverse order (3, 2, 1).'
       - type: quote
         body: 'A saga has no rollback; it has an undo action for each step.'
     aside:
@@ -214,6 +219,78 @@ slides:
     check:
       q: 'The courier booking failed. Which steps does the saga undo, and in what order?'
       a: 'In reverse order: first it releases the stock hold (3), then refunds the payment (2), and finally marks the order cancelled (1).'
+
+  - slug: saga-orchestrator
+    title: 'Starting the undo steps, and what if an undo fails'
+    kind: howto
+    tldr: 'An orchestrator records each finished step; on a failure it undoes them last to first, one message at a time. A failed undo is retried until it works, so every undo must be safe to repeat.'
+    keywords: ['saga orchestrator', 'compensation failure', 'Messenger retry', 'failure transport', 'idempotent compensation']
+    blocks:
+      - type: text
+        body: |
+          Someone has to notice the failure and start the undoing. Here a small orchestrator runs the steps and writes each finished one into a `saga` table. When a step fails, it flips the saga to "compensating" and sends one `CompensateNext` message. The handler undoes the latest finished step, then sends the next message, so the order stays 3, 2, 1. If an undo throws (the payment provider is down), Messenger retries it, and nothing else moves until it works.
+      - type: code
+        lang: php
+        file: 'src/Saga/PlaceOrderSaga.php'
+        variant: good
+        code: |
+          public function run(string $sagaId, PlaceOrder $cmd): void
+          {
+              foreach ($this->steps as $step) {       // order, payment, stock, courier
+                  try {
+                      $step->execute($sagaId, $cmd);  // the saga id is the idempotency key
+                  } catch (\Throwable) {
+                      $this->sagas->markCompensating($sagaId);
+                      $this->bus->dispatch(new CompensateNext($sagaId));
+
+                      return;
+                  }
+                  $this->sagas->recordDone($sagaId, $step::class);
+              }
+              $this->sagas->markCompleted($sagaId);
+          }
+        marks:
+          - {line: 7, tip: 'Saved before anything is undone. If the app dies now, a restart sees "compensating" and carries on undoing.'}
+          - {line: 8, tip: 'Starts the undo chain: one message, which undoes only the latest finished step.'}
+      - type: code
+        lang: php
+        file: 'src/Saga/CompensateNextHandler.php'
+        variant: good
+        code: |
+          #[AsMessageHandler]
+          final readonly class CompensateNextHandler
+          {
+              public function __invoke(CompensateNext $m): void
+              {
+                  $stepClass = $this->sagas->lastDoneStep($m->sagaId);  // 3, then 2, then 1
+                  if ($stepClass === null) {
+                      $this->sagas->markCancelled($m->sagaId);          // all undone
+                      return;
+                  }
+
+                  // refund, release the hold... if this throws, Messenger retries the message
+                  $this->steps->get($stepClass)->compensate($m->sagaId);
+
+                  $this->sagas->removeDone($m->sagaId, $stepClass);
+                  $this->bus->dispatch(new CompensateNext($m->sagaId));
+              }
+          }
+        marks:
+          - {line: 12, tip: 'It can run twice (a crash right after it, before removeDone). So the refund must use the saga id as its idempotency key and pay at most once.'}
+          - {line: 14, tip: 'A step is struck off only after its undo succeeded, so a failure never skips a step.'}
+      - type: quote
+        body: 'An undo can fail too: retry it until it works, and make it safe to repeat.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Set `retry_strategy` (for example max_retries 5, multiplier 3: waits of 1, 3, 9, 27, 81 seconds) and a `failure_transport`, and alert a person when a message lands there. A stuck refund must never go unseen.'
+          - 'An undo is not a perfect rewind: a sent email can''t be unsent, so you send a correction. And while the saga runs, others can see half-done state (order pending, stock held).'
+      - type: when
+        use: ['One business job spanning several services, each with its own database']
+        avoid: ['A single database can wrap it all in one transaction: use that, it is simpler']
+    check:
+      q: 'The refund undo throws because the payment provider is down. What happens to the saga?'
+      a: 'The CompensateNext message is retried with growing waits and the saga stays "compensating", so no later undo runs. If the retries run out, it lands in the failure transport and a person is alerted.'
 
   - slug: idempotent-consumer
     title: 'Arrives twice, runs once: the idempotent consumer'
@@ -320,6 +397,16 @@ flashcards:
     more: |
       The service has already committed its transaction, so it can't be erased. A refund is a new transaction, and the history holds both. That also means a compensation can fail too, so it needs retries and monitoring as well.
     ref: saga-compensation
+  - q: 'How does a saga start undoing its steps?'
+    a: 'An orchestrator catches the failing step, marks the saga "compensating" and sends a message that undoes the latest finished step, then the next one, last to first.'
+    more: |
+      The orchestrator writes every finished step into a saga table. After a failure, one `CompensateNext` handler undoes a single step and then sends the next message. Because the state is saved, a crash in the middle just resumes the undoing.
+    ref: saga-orchestrator
+  - q: 'What if a saga''s compensation itself fails?'
+    a: 'It is retried with growing waits until it works, then escalated to a person if retries run out. So every compensation must be safe to repeat (idempotent).'
+    more: |
+      A failed refund can't be ignored: the customer would lose money. Messenger's `retry_strategy` repeats the message and the `failure_transport` keeps the ones that never succeed. The saga id works as the idempotency key, so a repeated refund pays only once.
+    ref: saga-orchestrator
   - q: 'How do you build an idempotent consumer?'
     a: 'Insert each message id into a unique table; if the insert doesn''t go through (it already exists), do nothing and return.'
     more: |
@@ -406,6 +493,22 @@ quiz:
         correct: false
         why: 'The money and the stock hold haven''t been returned: the customer loses money and stock stays blocked.'
     ref: saga-compensation
+  - q: 'A saga is undoing its steps and the refund call times out. What is the right behaviour?'
+    hint: 'The customer''s money is still taken. Can the saga just move on?'
+    options:
+      - text: 'Retry the refund with growing waits, and alert a person if retries run out'
+        correct: true
+        why: 'The refund is still owed, so it must keep trying and must never fail silently.'
+      - text: 'Use the saga id as the refund''s idempotency key, so a repeated attempt can''t pay twice'
+        correct: true
+        why: 'A retry may run the refund again; the key makes the second run harmless.'
+      - text: 'Skip the refund and continue with the remaining undo steps'
+        correct: false
+        why: 'The order would be cancelled but the customer''s money stays taken.'
+      - text: 'Give up silently after the first timeout'
+        correct: false
+        why: 'A timeout is usually temporary. Giving up without retries or an alert leaves the customer out of pocket unnoticed.'
+    ref: saga-orchestrator
   - q: 'In the code below, what does `$fresh === 0` mean?'
     lang: php
     code: |

@@ -21,12 +21,12 @@ slides:
         messages:
           - {from: v2, to: db, label: 'migration: phone কলামের নাম হলো mobile', tip: 'RENAME COLUMN এক মুহূর্তে হয়ে যায়, কিন্তু পুরোনো কোড তখনো চলছে।'}
           - {at: db, note: 'এখন আর phone নামে কোনো কলাম নেই', tone: warn}
-          - {from: user, to: v1, label: 'প্রোফাইল দেখাও'}
+          - {from: user, to: v1, label: 'আমার প্রোফাইল দেখান'}
           - {from: v1, to: db, label: 'SELECT phone FROM user'}
           - {from: db, to: v1, label: 'ERROR: column phone নেই', dashed: true, tone: bad}
           - {from: v1, to: user, label: '500 Internal Server Error', dashed: true, tone: bad}
       - type: quote
-        body: 'Deploy চলার সময় পুরোনো ও নতুন কোড একসাথে একই ডেটাবেস ব্যবহার করে।'
+        body: 'Deploy চলার সময় পুরোনো ও নতুন কোড একই ডেটাবেস ভাগ করে। তাই এক ধাপে rename নয়: আগে নতুনটা যোগ করুন, সবাই সরলে পুরোনোটা মুছুন।'
     aside:
       - type: story
         title: 'শুক্রবার সন্ধ্যার deploy'
@@ -48,7 +48,7 @@ slides:
     blocks:
       - type: text
         body: |
-          চা দোকানের উদাহরণেই বলি। **Rolling**: একটা একটা করে চুলা বদলাও। **Blue/green**: পাশে পুরো নতুন দোকান সাজিয়ে এক মুহূর্তে সব ক্রেতা সেদিকে পাঠাও, পুরোনোটা প্রস্তুত থাকে। **Canary**: নতুন চায়ের এক কাপ শুধু কয়েকজনকে চেখে দেখতে দাও, ভালো হলে সবাইকে।
+          চা দোকানের উদাহরণেই বলি। **Rolling**: একটা একটা করে চুলা বদলানো হয়। **Blue/green**: পাশে পুরো নতুন দোকান সাজিয়ে এক মুহূর্তে সব ক্রেতা সেদিকে পাঠানো হয়, পুরোনোটা প্রস্তুত থাকে। **Canary**: নতুন চায়ের এক কাপ শুধু কয়েকজনকে চেখে দেখতে দেওয়া হয়, ভালো হলে সবাইকে।
       - type: visual
         kind: flow
         caption: 'Blue/green: Green চালু ও পরীক্ষা শেষে সুইচ, Blue থাকে ফেরার পথ হিসেবে'
@@ -72,7 +72,7 @@ slides:
             tip: 'তিনটাই শেষ পর্যন্ত নতুন ভার্সন সবার কাছে পৌঁছায়, শুধু ঝুঁকি ভাগ করার কায়দা আলাদা।'
           - cells: ['বাড়তি খরচ', 'প্রায় নেই', 'সাময়িক দ্বিগুণ সার্ভার', 'ছোট একটা অতিরিক্ত দল']
             tip: 'blue/green ভাড়ার সার্ভারে দামি, কিন্তু cloud-এ কয়েক মিনিটের জন্য ভাড়ায় সস্তা।'
-          - cells: ['রোলব্যাক', 'ধীর: আবার rolling', 'সবচেয়ে দ্রুত: সুইচ ফেরাও', 'দ্রুত: ছোট অংশ ফেরাও']
+          - cells: ['রোলব্যাক', 'ধীর: আবার rolling', 'সবচেয়ে দ্রুত: সুইচ ফেরানো', 'দ্রুত: ছোট অংশ ফেরানো']
             tip: 'রোলব্যাকের গতিই ঠিক করে ভুল হলে ক্ষতি কত বড় হবে।'
           - cells: ['মূল ঝুঁকি', 'v1 ও v2 একসাথে চলে', 'সুইচের মুহূর্তে সবাই নতুনে', 'ভালো মনিটরিং লাগে']
             tip: 'canary-র সাফল্য নির্ভর করে error rate আর latency ঠিকভাবে দেখতে পারার ওপর।'
@@ -98,20 +98,21 @@ slides:
   - slug: expand-contract
     title: 'Expand-contract: কলাম বদলের নিরাপদ পথ'
     kind: howto
-    tldr: 'একবারে নয়, কয়েক release-এ: আগে নতুন কলাম যোগ (expand), দুইটাতেই লেখা, পড়া নতুনে সরানো, সবশেষে পুরোনো মোছা (contract)। প্রতিটা ধাপে পুরোনো কোড বাঁচে।'
+    tldr: 'একবারে নয়, কয়েক release-এ: নতুন কলাম যোগ (expand), দুইটাতেই লেখা, পুরোনো সারি backfill, পড়া নতুনে সরানো, সবশেষে পুরোনো মোছা (contract)। প্রতিটা ধাপে পুরোনো কোড বাঁচে।'
     keywords: ['expand contract', 'parallel change', 'Doctrine Migrations', 'dual write', 'backfill', 'rename column']
     blocks:
       - type: text
         body: |
-          `phone` কলামকে `mobile` করতে হবে। একটা rename-এর বদলে নতুন চুলা পাশে বসানোর মতো করো: আগে নতুন কলাম যোগ (**expand**), সবকিছু সরিয়ে নেওয়ার পর পুরোনোটা বাদ (**contract**)। প্রতিটা ধাপ আলাদা release, তাই প্রতিটা ধাপে পুরোনো ও নতুন কোড দুটোই চলে।
+          `phone` কলামকে `mobile` করতে হবে। একটা rename-এর বদলে নতুন চুলা পাশে বসানোর মতো করুন: আগে নতুন কলাম যোগ (**expand**), সবকিছু সরিয়ে নেওয়ার পর পুরোনোটা বাদ (**contract**)। প্রতিটা ধাপ আলাদা release, তাই প্রতিটা ধাপে পুরোনো ও নতুন কোড দুটোই চলে। ক্রমটা কেন এমন, তা পরের slide-এ দেখানো হয়েছে।
       - type: visual
         kind: steps
-        caption: 'phone থেকে mobile: চার ধাপ, চার আলাদা release'
+        caption: 'phone থেকে mobile: পাঁচ ধাপ, এই ক্রমে, প্রতিটা আলাদা release বা চালানো'
         steps:
-          - {title: '১. Expand', body: 'mobile কলাম যোগ করো (nullable)। কোড বদলায় না।', tip: 'কলাম যোগ করা সবসময় নিরাপদ: পুরোনো কোড নতুন কলামের কথা জানেই না।'}
-          - {title: '২. দুইটাতেই লেখো', body: 'নতুন কোড phone ও mobile দুটোতেই লেখে। পুরোনো ডেটা backfill।', tip: 'backfill বড় টেবিলে ছোট ছোট batch-এ চালাও, একটা বিশাল UPDATE নয়।'}
-          - {title: '৩. পড়া সরাও', body: 'নতুন কোড mobile থেকে পড়ে। phone আর কেউ পড়ে না।', tip: 'এর আগে নিশ্চিত হও কোনো পুরোনো সার্ভার বা job আর phone পড়ছে না।'}
-          - {title: '৪. Contract', body: 'phone কলাম মোছো, পরের release-এ।', tone: warn, tip: 'এই ধাপটাই একমাত্র ফেরানো-যায়-না ধাপ। তাই সবশেষে, ও যথেষ্ট সময় পর।'}
+          - {title: '১. Expand', body: 'nullable mobile কলাম যোগ করুন। কোড বদলায় না।', tip: 'কলাম যোগ করা সবসময় নিরাপদ: পুরোনো কোড নতুন কলামের কথা জানেই না।'}
+          - {title: '২. দুইটাতেই লেখা', body: 'phone ও mobile দুটোতেই লেখে, এমন কোড release করুন।', tip: 'rollout শেষ হওয়া পর্যন্ত থামুন: পুরোনো কোডের সার্ভার শুধু phone-এ লেখে।'}
+          - {title: '৩. Backfill', body: 'ধাপ ২ পুরো চালু হলে পুরোনো সারিতে phone কপি করুন, ছোট batch-এ।', tip: 'পরের slide-এ কমান্ড আছে, আর কেন এটা ধাপ ২-এর পরেই হতে হবে তাও।'}
+          - {title: '৪. পড়া সরানো', body: 'mobile থেকে পড়ে এমন কোড release করুন। দুইটাতেই লেখা চলুক।', tip: 'phone-এ লেখা আপাতত চলুক: এই release ফেরাতে হলে পুরোনো কোড phone-এ টাটকা নম্বর পাবে।'}
+          - {title: '৫. Contract', body: 'কোডে phone ব্যবহার বন্ধ করুন। কলাম মুছুন পরের release-এ।', tone: warn, tip: 'একমাত্র ফেরানো-যায়-না ধাপ। আগে কোড, মোছা পরে, আর মোছার আগে backup নিন।'}
       - type: code
         lang: php
         file: 'migrations/Version20261120100000.php'
@@ -151,7 +152,7 @@ slides:
           public function setMobile(string $number): void
           {
               $this->mobile = $number;
-              $this->phone = $number;      // ধাপ ২: দুইটাতেই লেখো
+              $this->phone = $number;      // ধাপ ২: দুইটাতেই লিখুন
           }
 
           public function getMobile(): ?string
@@ -160,38 +161,120 @@ slides:
           }
         marks:
           - {line: 10, tip: 'পুরোনো সার্ভার এখনো phone পড়ে। সেখানে যেন নতুন নম্বর পৌঁছায়, তাই phone-এও লেখা।'}
-          - {line: 15, tip: 'নতুন কলাম ফাঁকা থাকলে পুরোনোটা দেখাও। backfill শেষ হলে এই fallback লাগবে না।'}
+          - {line: 15, tip: 'নতুন কলাম ফাঁকা থাকলে পুরোনোটা দেখান। backfill শেষ হলে এই fallback লাগবে না।'}
       - type: quote
-        body: 'কলাম বা টেবিল কখনো এক release-এ বদলাবে না: আগে যোগ করো, সবাই সরে গেলে তবে মোছো।'
+        body: 'কলাম বা টেবিল কখনো এক release-এ বদলাবেন না: আগে যোগ করুন, সবাই সরে গেলে তবে মুছুন।'
     aside:
       - type: pitfalls
         items:
-          - 'NOT NULL কলাম ডিফল্ট ছাড়া যোগ করলে পুরোনো কোডের INSERT ভেঙে যায়। আগে nullable রাখো, backfill শেষে constraint বসাও।'
-          - 'বড় টেবিলে একটা UPDATE সব সারিতে lock ধরে রাখে। backfill ১,০০০ সারি করে batch-এ চালাও।'
+          - 'NOT NULL কলাম ডিফল্ট ছাড়া যোগ করলে পুরোনো কোডের INSERT ভেঙে যায়। আগে nullable রাখুন, backfill শেষে constraint বসান।'
+          - 'বড় টেবিলে একটা UPDATE সব সারিতে lock ধরে রাখে। backfill ১,০০০ সারি করে batch-এ চালান।'
+          - 'দাম: একটা rename হয়ে যায় কয়েক দিনের পাঁচ ধাপ, আর দুটো কলাম পাশাপাশি থাকে।'
+      - type: when
+        use: ['যে কলাম বা টেবিল deploy-র সময় চালু ব্যবহারকারীরা পড়ে বা লেখে']
+        avoid: ['ছোট অভ্যন্তরীণ টুল, যেখানে ১০ মিনিটের পূর্বঘোষিত বন্ধ চলে: পাঁচ ধাপের খরচ তার চেয়ে বেশি', 'যে rename বাদ দেওয়া যায়, পুরোনো নামটাই রেখে দিলে চলে']
       - type: refs
         items:
           - {to: 'data/zero-downtime-migrations', label: 'ডেটাবেস migration-এ lock-এর খুঁটিনাটি'}
     check:
-      q: 'Rename না করে expand-contract-এ কেন চার ধাপ লাগে? কোন ধাপটা ফেরানো যায় না?'
+      q: 'Rename না করে expand-contract-এ কেন পাঁচ ধাপ লাগে? কোন ধাপটা ফেরানো যায় না?'
       a: 'প্রতিটা ধাপে পুরোনো ও নতুন দুই ভার্সনই ঠিক চলে, তাই deploy-এর মাঝে ভাঙে না। শুধু শেষ ধাপে (contract) কলাম মোছা ফেরানো যায় না।'
+
+  - slug: backfill-order
+    title: 'Backfill সঠিক ক্রমে, ছোট batch-এ'
+    kind: howto
+    tldr: 'আগে dual-write চালু, সেই rollout শেষ হলে backfill, তারপর যাচাই যে ফাঁক নেই, তবেই পড়া সরানো। ছোট batch-এ কপি করুন; কমান্ড আবার চালালেও ক্ষতি নেই।'
+    keywords: ['backfill', 'batch update', 'dual write order', 'Doctrine DBAL', 'console command', 'ডেটা migration']
+    blocks:
+      - type: text
+        body: |
+          ধরুন `user` টেবিলে ১০,০০০ সারি, আর নতুন কোড rollout হতে ২ মিনিট লাগে। ক্রমটা রুচির ব্যাপার নয়: প্রতিটা ধাপ পরেরটাকে নিরাপদ করে। backfill (পুরোনো মান নতুন কলামে কপি) খুব আগে চালালে নতুন sign-up-দের কী হয়, নিচে দেখুন।
+      - type: visual
+        kind: compare
+        caption: 'একই দুটো ধাপ, ভুল ও ঠিক ক্রমে'
+        columns:
+          - title: 'আগে backfill'
+            tone: bad
+            icon: cross
+            tip: 'কপির সময় পুরোনো কোড তখনো সবকিছু শুধু phone-এ রাখছে।'
+            items: ['backfill ১০,০০০ বিদ্যমান ব্যবহারকারী কপি করে', 'write-to-both release না যাওয়া পর্যন্ত আরও ৩০০ জন sign up করে: শুধু phone-এ জমা', 'পড়া mobile-এ গেলে ওই ৩০০ জনের নম্বর ফাঁকা, আর কিছুই তা ঠিক করে না']
+          - title: 'আগে write-to-both'
+            tone: good
+            icon: check
+            tip: 'rollout শেষ হওয়ার পর থেকে প্রতিটা save দুই কলামই ভরে। backfill-কে শুধু অতীত সামলাতে হয়।'
+            items: ['write-to-both release করুন। ২ মিনিটের rollout-এ পুরোনো সার্ভার প্রায় ৪০টা সারি শুধু phone-এ রাখে', 'rollout শেষ হলে backfill ওই ৪০ আর পুরোনো ১০,০০০ সারি কপি করে', 'বাকি সারির সংখ্যা শূন্য কি না যাচাই করে তারপর পড়া সরান']
+      - type: code
+        lang: php
+        file: 'src/Command/BackfillMobileCommand.php'
+        variant: good
+        code: |
+          #[AsCommand(name: 'app:backfill-mobile')]
+          final class BackfillMobileCommand extends Command
+          {
+              public function __construct(private readonly Connection $connection)
+              {
+                  parent::__construct();
+              }
+
+              protected function execute(InputInterface $input, OutputInterface $output): int
+              {
+                  do {
+                      $copied = $this->connection->executeStatement(<<<'SQL'
+                          UPDATE "user" SET mobile = phone WHERE id IN (
+                              SELECT id FROM "user"
+                              WHERE mobile IS NULL AND phone IS NOT NULL
+                              LIMIT 1000
+                          )
+                          SQL);
+                      $output->writeln(sprintf('%d rows copied', $copied));
+                      usleep(200_000);   // সামান্য বিরতি, যাতে ডেটাবেস ও replica তাল রাখতে পারে
+                  } while ($copied > 0);
+
+                  return Command::SUCCESS;
+              }
+          }
+        marks:
+          - {line: 15, tip: 'শুধু যেসব সারি এখনো কপি হয়নি সেগুলো বাছা হয়। তাই কমান্ড থামানো, আবার চালানো বা দুইবার চালানো নিরাপদ।'}
+          - {line: 16, tip: 'প্রতিটা batch lock ধরে রাখে মিলিসেকেন্ড। লাখ লাখ সারিতে একটা UPDATE মিনিটের পর মিনিট lock ধরে sign-up আটকে দিত।'}
+          - {line: 21, tip: 'যে রাউন্ডে কিছুই কপি হয় না, লুপ সেখানে শেষ: কপির মতো আর কোনো সারি নেই।'}
+      - type: code
+        lang: sql
+        variant: good
+        code: |
+          -- পড়া mobile-এ সরানোর আগে এটা 0 দিতে হবে
+          SELECT count(*) FROM "user" WHERE mobile IS NULL AND phone IS NOT NULL;
+        marks:
+          - {line: 2, tip: 'phone-এ নম্বর আছে কিন্তু mobile-এ নেই, এমন সারি গোনে। 0-র বেশি মানে ফাঁক, যা পরে ফাঁকা নম্বর হয়ে দেখা দেবে।'}
+    aside:
+      - type: commands
+        items:
+          - {cmd: 'php bin/console app:backfill-mobile', desc: 'phone থেকে mobile-এ ১,০০০ সারি করে কপি করে, বাকি না থাকা পর্যন্ত'}
+      - type: pitfalls
+        items:
+          - 'write-to-both rollout চলার সময় backfill শুরু করবেন না: পুরোনো সার্ভার তখনো শুধু-phone সারি যোগ করছে।'
+          - 'দাম: কাজ চলাকালে টেবিল বেশি ব্যস্ত থাকে, আর বিরতিটা ইচ্ছা করেই একে ধীর করে। ভিড়ের সময় এড়িয়ে চালান।'
+          - 'যাচাই 0 না দেওয়া পর্যন্ত, আর শুধু-phone লেখা চলতে থাকলে, mobile-এ NOT NULL বসাবেন না।'
+    check:
+      q: 'নাদিয়া আগে backfill চালাল, আর এক ঘণ্টা পরে write-to-both release করল। কী ভুল হলো, আর কার জন্য?'
+      a: 'ওই এক ঘণ্টায় যারা sign up করেছে, তাদের সারি শুধু phone-এ জমা, তাই পড়া mobile-এ গেলে তাদের নম্বর ফাঁকা দেখায়। আগে write-to-both, তারপর backfill করলে এই ফাঁক বন্ধ হয়।'
 
   - slug: graceful-shutdown
     title: 'পুরোনো সার্ভার বন্ধ হবে ভদ্রভাবে'
     kind: howto
-    tldr: 'পুরোনো সার্ভার বন্ধের আগে load balancer-কে নতুন request পাঠানো থামাতে বলো, চলমান কাজ শেষ হতে দাও, তারপর বন্ধ। Worker SIGTERM পেলে current message শেষ করে থামবে।'
+    tldr: 'পুরোনো সার্ভারকে load balancer থেকে সরান, তারপর "শেষ করে বের হও" মানে এমন সংকেত দিন: php-fpm-এর জন্য SIGQUIT, Messenger worker-এর জন্য SIGTERM। SIGTERM পেলে php-fpm তখনই থেমে যায়।'
     keywords: ['graceful shutdown', 'SIGTERM', 'readiness probe', 'messenger worker', 'drain', 'connection draining']
     blocks:
       - type: text
         body: |
-          চা দোকানে পুরোনো চুলা সরানোর আগে ওপরের কাপের চা শেষ করতে দিতে হয়, নইলে ক্রেতার কাপ ফেলে যাবে। সার্ভারেও একই: হঠাৎ বন্ধ করলে চলমান request মাঝপথে কাটা পড়ে। ভদ্র বন্ধের পাঁচ ধাপ নিচে।
+          চা দোকানে পুরোনো চুলা সরানোর আগে ঢালা কাপের চা শেষ করতে দিতে হয়, নইলে ক্রেতার কাপ ফেলে যাবে। সার্ভারেও একই: হঠাৎ বন্ধ করলে চলমান request মাঝপথে কাটা পড়ে। ফাঁদটা সংকেতে লুকানো: php-fpm SIGTERM-কে ধরে "এখনই থামা" বলে। কনটেইনার থামানোর সময় ৩০ সেকেন্ডের একটা রিপোর্ট চলতে থাকলে সেটা সাথে সাথে মারা যায়, আর ব্যবহারকারী পায় 502। শুধু SIGQUIT-এ php-fpm আগে কাজ শেষ করে।
       - type: visual
         kind: steps
         caption: 'সার্ভার বন্ধের ভদ্র ক্রম'
         steps:
-          - {title: '১. লাইন থেকে সরাও', body: 'readiness বন্ধ: load balancer নতুন request পাঠানো থামায়।', tip: 'load balancer-এ খবর পৌঁছাতে কয়েক সেকেন্ড লাগে, তাই এই ধাপে সামান্য অপেক্ষা (preStop) দেওয়া হয়।'}
-          - {title: '২. SIGTERM', body: 'প্রক্রিয়াকে "এখন শেষ করো" সংকেত পাঠানো হয়।', tip: 'SIGTERM ভদ্র অনুরোধ, প্রক্রিয়া চাইলে নিজের কাজ শেষ করে থামতে পারে।'}
-          - {title: '৩. চলমান কাজ শেষ', body: 'চলতি request ও message শেষ হয়, নতুন কিছু নেওয়া হয় না।', tip: 'Messenger worker SIGTERM পেলে বর্তমান message শেষ করে তবেই থামে (pcntl extension লাগে)।'}
-          - {title: '৪. নির্দিষ্ট সময়সীমা', body: 'ধরো ৪৫ সেকেন্ড। এর মধ্যে বন্ধ না হলে...', tip: 'সময়সীমা কাজের সবচেয়ে লম্বা request বা message-এর চেয়ে বেশি হওয়া উচিত।'}
+          - {title: '১. লাইন থেকে সরান', body: 'load balancer এই সার্ভারে নতুন request পাঠানো থামায়।', tip: 'Kubernetes-এ পড "terminating" চিহ্নিত হতেই এটা শুরু হয়। সব load balancer-এ খবর পৌঁছাতে কয়েক সেকেন্ড লাগে, তাই নিচের কনফিগে সামান্য অপেক্ষা (preStop)।'}
+          - {title: '২. ঠিক সংকেত পাঠান', body: 'php-fpm-এর জন্য SIGQUIT, Messenger worker-এর জন্য SIGTERM।', tip: 'php-fpm SIGTERM-কে "এখনই থামা" ধরে, চলমান request কেটে দেয়। SIGQUIT মানে "চলমান request শেষ করে বের হওয়া"। Messenger worker SIGTERM নিজেই সামলায়।'}
+          - {title: '৩. চলমান কাজ শেষ', body: 'চলতি request ও message শেষ হয়, নতুন কিছু নেওয়া হয় না।', tip: 'Messenger worker বর্তমান message শেষ করে তবেই থামে (pcntl extension লাগে)। php-fpm-এর প্রতিটা worker নিজের চলতি request শেষ করে।'}
+          - {title: '৪. নির্দিষ্ট সময়সীমা', body: 'ধরুন ৪৫ সেকেন্ড। এর মধ্যে বন্ধ না হলে...', tip: 'সময়সীমা কাজের সবচেয়ে লম্বা request বা message-এর চেয়ে বেশি হওয়া উচিত।'}
           - {title: '৫. SIGKILL', body: '...জোর করে মেরে ফেলা। এটা শেষ উপায়।', tone: bad, tip: 'SIGKILL ধরা যায় না। মাঝপথের কাজ হারায়, তাই এই পর্যন্ত যেন না গড়ায়।'}
       - type: code
         lang: yaml
@@ -210,27 +293,29 @@ slides:
                   preStop:
                     exec: { command: ['sleep', '10'] }
         marks:
-          - {line: 2, tip: 'SIGTERM-এর পর এত সেকেন্ড সময়। এরপর SIGKILL। সবচেয়ে লম্বা request-এর চেয়ে বেশি রাখো।'}
-          - {line: 6, tip: 'এই URL ব্যর্থ হলে orchestrator ওই পড-কে লাইন থেকে সরিয়ে দেয়। মারে না, শুধু নতুন request পাঠানো থামায়।'}
-          - {line: 11, tip: 'SIGTERM-এর আগে ১০ সেকেন্ড অপেক্ষা: এর মধ্যে load balancer সার্ভারটাকে তালিকা থেকে বাদ দিয়ে ফেলে।'}
+          - {line: 2, tip: 'থামার সংকেতের পর এত সেকেন্ড সময়। এরপর SIGKILL। সবচেয়ে লম্বা request-এর চেয়ে বেশি রাখুন।'}
+          - {line: 6, tip: 'এই URL ব্যর্থ হলে orchestrator ওই পডে নতুন request পাঠানো থামায়। শুধু সেটাই দেখুন যেটা ছাড়া অ্যাপ সত্যিই চলে না, যেমন ডেটাবেস: বাইরের কুরিয়ার API ধীর হলে সব সার্ভার লাইন থেকে বেরিয়ে যেত।'}
+          - {line: 11, tip: 'থামার সংকেতের আগে ১০ সেকেন্ড অপেক্ষা: এর মধ্যে load balancer-গুলো সার্ভারটাকে তালিকা থেকে বাদ দিয়ে ফেলে।'}
       - type: code
-        lang: php
-        file: 'src/Controller/HealthController.php'
+        lang: dockerfile
+        file: 'Dockerfile'
         variant: good
         code: |
-          #[Route('/health/ready', methods: ['GET'])]
-          public function ready(Connection $connection): Response
-          {
-              try {
-                  $connection->executeQuery('SELECT 1');   // মূল নির্ভরতা: ডেটাবেস
-              } catch (Exception) {
-                  return new Response('db unavailable', Response::HTTP_SERVICE_UNAVAILABLE);
-              }
+          FROM php:8.3-fpm-alpine
 
-              return new Response('ok');
-          }
+          # php-fpm: SIGTERM = এখনই থামা, চলমান request কেটে যায়।
+          # SIGQUIT = চলমান request শেষ করে তারপর বের হওয়া।
+          STOPSIGNAL SIGQUIT
+          # SIGQUIT-এর পরে worker-দের কাজ শেষের জন্য master কতক্ষণ অপেক্ষা করবে
+          RUN printf '[global]\nprocess_control_timeout = 40s\n' \
+              > /usr/local/etc/php-fpm.d/zz-shutdown.conf
+
+          COPY . /var/www/html
         marks:
-          - {line: 5, tip: 'শুধু সেটাই দেখো যেটা ছাড়া অ্যাপ সত্যিই চলতে পারে না। বাইরের কুরিয়ার API এখানে দেখলে সেটা ধীর হলেই সব সার্ভার লাইন থেকে বেরিয়ে যাবে।'}
+          - {line: 5, tip: 'মূল লাইন। container থামানোর সময় Docker ও Kubernetes SIGTERM-এর বদলে এই সংকেত পাঠায়। official php-fpm image-এ এটা আগেই বসানো; নিজের base image-এ না-ও থাকতে পারে।'}
+          - {line: 7, tip: 'এটা না থাকলে SIGQUIT-এর পরে master প্রায় অপেক্ষাই করে না, লম্বা request তবুও কাটা পড়ে। মান রাখুন terminationGracePeriodSeconds (৪৫)-এর চেয়ে কম।'}
+      - type: quote
+        body: 'php-fpm: SIGTERM এখনই থামায়, SIGQUIT আগে কাজ শেষ করায়।'
     aside:
       - type: commands
         title: 'Worker ভদ্রভাবে চালানো'
@@ -240,18 +325,19 @@ slides:
       - type: tips
         items:
           - 'Deploy-র সময় worker-ও পুরোনো কোড চালাচ্ছে। messenger:stop-workers না চালালে তারা পুরোনো কোডেই থেকে যায়।'
-          - 'মাঝপথে কাটা message আবার queue-তে ফেরে। তাই handler idempotent রাখো, যাতে দ্বিতীয়বার চললেও ক্ষতি নেই।'
+          - 'মাঝপথে কাটা message আবার queue-তে ফেরে। তাই handler idempotent রাখুন, যাতে দ্বিতীয়বার চললেও ক্ষতি নেই।'
+          - 'একবার পরীক্ষা করে দেখুন: ২০ সেকেন্ড ঘুমানো একটা request চালু করে container থামান, আর দেখুন request শেষ হচ্ছে কি না।'
       - type: refs
         items:
           - {to: 'messaging/delivery-guarantees', label: 'Message দুইবার এলে কী হয়'}
     check:
-      q: 'Rolling deploy-এ পুরোনো সার্ভার সরাসরি বন্ধ না করে আগে readiness বন্ধ করা হয় কেন?'
-      a: 'readiness বন্ধ হলে load balancer নতুন request পাঠায় না, কিন্তু চলমান request শেষ হতে পারে। সরাসরি বন্ধ করলে ওই request-গুলো মাঝপথে কাটা পড়ত।'
+      q: 'Rolling deploy-এ পুরোনো সার্ভার আগে load balancer থেকে সরানো হয় কেন, আর php-fpm-এর জন্য SIGQUIT কেন?'
+      a: 'না সরালে বন্ধ হওয়ার সময়ও নতুন request আসতে থাকে। SIGTERM-এ php-fpm চলমান request কেটে দেয়; শুধু SIGQUIT-এ সেগুলো শেষ হতে পারে।'
 
   - slug: rollback-trap
     title: 'ফাঁদ: কোড ফেরানো যায়, ডেটা যায় না'
     kind: pitfall
-    tldr: 'Release-এ কলাম মুছে দিলে কোড রোলব্যাক করলেও পুরোনো কোড আর চলে না। রোলব্যাক নিরাপদ রাখতে migration ও কোডের release আলাদা রাখো, আর plan আগে থেকে লেখো।'
+    tldr: 'Release-এ কলাম মুছে দিলে কোড রোলব্যাক করলেও পুরোনো কোড আর চলে না। রোলব্যাক নিরাপদ রাখতে migration ও কোডের release আলাদা রাখুন, আর plan আগে থেকে লিখুন।'
     keywords: ['rollback', 'destructive migration', 'down migration', 'rollback plan', 'feature flag', 'রোলব্যাক']
     blocks:
       - type: text
@@ -276,6 +362,25 @@ slides:
         marks:
           - {line: 4, tip: 'কোড বদলের সাথে একই release-এ কলাম মোছা: রোলব্যাক করা পুরোনো কোড এই কলাম খুঁজে পাবে না।'}
           - {line: 10, tip: 'down() কলামটা ফেরায় ঠিকই, কিন্তু ভেতরের নম্বরগুলো ফেরে না। এটা সত্যিকারের রোলব্যাক নয়।'}
+      - type: visual
+        kind: compare
+        caption: 'একই খারাপ release: মোছা একই release-এ, আর মোছা পরের release-এ'
+        columns:
+          - title: 'একই release'
+            tone: bad
+            icon: cross
+            tip: 'কোড বদল আর DROP COLUMN একসাথে যায়। রোলব্যাক করলে অর্ধেকটাই ফেরে।'
+            items: ['নতুন কোড আর DROP phone একসাথে deploy', 'error বাড়ে, তাই কোড রোলব্যাক করলেন', 'পুরোনো কোড phone চায়, সেটা নেই: তবু ভাঙা', 'down() খালি কলাম ফেরায়, নম্বরগুলো হারানো']
+          - title: 'আলাদা release'
+            tone: good
+            icon: check
+            tip: 'ঝুঁকির কোড বদল একা যায়। ব্যর্থ হলে ফেরার মতো ডেটা তখনো থাকে।'
+            items: ['Release ১: কোড phone ব্যবহার বন্ধ করে, কলাম থাকে', 'error বাড়লে কোড সেকেন্ডে রোলব্যাক, phone অক্ষত', 'এক সপ্তাহ শান্ত থাকলে backup নিয়ে phone মুছুন নিজের release-এ']
+          - title: 'এর দাম'
+            tone: warn
+            icon: warning
+            tip: 'নিরাপদ পথের একটা দাম আছে। সেটা জানুন, আর দ্বিতীয় release-টা যেন ভুলে না যায় তা ঠিক রাখুন।'
+            items: ['একটা মৃত কলাম কয়েক দিন পড়ে থাকে', 'একটা বদলে দুই release, আর দ্বিতীয়টা মনে রাখতে হয়', 'যে টেবিল কেউ পড়ে না, তার জন্য এটা বাদ দিন']
       - type: points
         title: 'রোলব্যাক plan-এর পাঁচ শর্ত'
         style: check
@@ -291,7 +396,7 @@ slides:
       - type: pitfalls
         items:
           - '"আমরা hotfix দিয়ে ঠিক করব" রোলব্যাক নয়। ভুল ধরা, কোড লেখা ও deploy করতে কয়েক গুণ বেশি সময় লাগে।'
-          - 'ডেটা বদলানো (backfill) migration ফেরানো যায় না। তাই এগুলো চালানোর আগে ব্যাকআপ নিশ্চিত করো।'
+          - 'ডেটা বদলানো (backfill) migration ফেরানো যায় না। তাই এগুলো চালানোর আগে ব্যাকআপ নিশ্চিত করুন।'
       - type: refs
         items:
           - {to: 'config/feature-flags', label: 'Feature flag দিয়ে ঝুঁকি আলাদা করা'}
@@ -319,18 +424,28 @@ flashcards:
   - q: 'Expand-contract pattern কী?'
     a: 'ডেটাবেস বদল কয়েক release-এ ভাগ করা: আগে নতুন কিছু যোগ (expand), সবাই সরে গেলে পুরোনোটা মোছা (contract)।'
     more: |
-      কলামের নাম বদলাতে: নতুন কলাম যোগ, দুটোতেই লেখা ও পুরোনো ডেটা backfill, পড়া নতুনে সরানো, শেষ release-এ পুরোনো কলাম মোছা। প্রতিটা ধাপে পুরোনো ও নতুন দুই কোডই চলে।
+      কলামের নাম বদলাতে: নতুন কলাম যোগ, দুটোতেই লেখে এমন কোড release, পুরোনো সারি backfill, পড়া নতুনে সরানো, পরের এক release-এ পুরোনো কলাম মোছা। প্রতিটা ধাপে পুরোনো ও নতুন দুই কোডই চলে।
     ref: expand-contract
   - q: 'নতুন কলাম যোগের migration কেন nullable রাখা হয়?'
     a: 'পুরোনো কোড নতুন কলামের কথা জানে না। NOT NULL হলে পুরোনো কোডের INSERT ভেঙে যায়।'
     more: |
-      PostgreSQL-এ nullable কলাম DEFAULT NULL দিয়ে যোগ করা তাৎক্ষণিক, টেবিল লক হয় না। backfill শেষ হওয়ার পর constraint বসানো যায়। বড় টেবিলে backfill ছোট batch-এ চালাও।
+      PostgreSQL-এ nullable কলাম DEFAULT NULL দিয়ে যোগ করা তাৎক্ষণিক, টেবিল লক হয় না। backfill শেষ হওয়ার পর constraint বসানো যায়। বড় টেবিলে backfill ছোট batch-এ চালান।
     ref: expand-contract
   - q: 'Graceful shutdown-এর ধাপগুলো কী?'
-    a: 'লাইন থেকে সরানো (readiness), SIGTERM, চলমান কাজ শেষ, সময়সীমা, না হলে SIGKILL।'
+    a: 'load balancer থেকে সরানো, ঠিক থামার সংকেত পাঠানো, চলমান কাজ শেষ, সময়সীমা, না হলে SIGKILL।'
     more: |
       Load balancer-কে সরাতে সময় দিতে preStop-এ সামান্য অপেক্ষা রাখা হয়। terminationGracePeriodSeconds হবে সবচেয়ে লম্বা কাজের চেয়ে বেশি। Messenger worker SIGTERM পেলে বর্তমান message শেষ করে থামে, আর মাঝপথে কাটা message আবার queue-তে ফেরে।
     ref: graceful-shutdown
+  - q: 'php-fpm কোন সংকেতে ভদ্রভাবে থামে, আর SIGTERM পেলে কী করে?'
+    a: 'SIGQUIT-এ php-fpm চলমান request শেষ করে তারপর বের হয়। SIGTERM-এ সে তখনই থেমে যায়, চলমান request কেটে।'
+    more: |
+      Dockerfile-এ STOPSIGNAL SIGQUIT বসান, যাতে Docker ও Kubernetes SIGTERM-এর বদলে এটা পাঠায়। official php-fpm image-এ এটা আগেই আছে। Messenger worker উল্টো: সে SIGTERM নিজেই সামলায় আর বর্তমান message শেষ করে।
+    ref: graceful-shutdown
+  - q: 'Expand-contract-এ backfill কেন write-to-both release পুরো চালু হওয়ার পরে চালাতে হয়?'
+    a: 'তার আগে পুরোনো কোডের সার্ভার নতুন সারি শুধু phone-এ রাখে। আগের backfill সেগুলো ধরে না, পড়া সরালে ওই ব্যবহারকারীর নম্বর ফাঁকা দেখায়।'
+    more: |
+      ক্রম: কলাম যোগ, dual-write release, rollout শেষ হওয়ার অপেক্ষা, backfill, "mobile ফাঁকা আর phone ভরা" সারি নেই তা যাচাই, তারপর পড়া সরানো। backfill শুধু সেই সারি কপি করে যেখানে mobile ফাঁকা, তাই আবার চালালেও ক্ষতি নেই।
+    ref: backfill-order
   - q: 'কোড রোলব্যাক সহজ, কিন্তু ডেটাবেস রোলব্যাক নয় কেন?'
     a: 'কোড ফেরানো মানে পুরোনো ফাইল চালানো। মোছা কলাম বা বদলানো ডেটা ফেরানো যায় না, down() শুধু কাঠামো ফেরায়, ডেটা নয়।'
     more: |
@@ -363,7 +478,7 @@ quiz:
       - text: 'সার্ভার ভাড়া খুবই সীমিত, বাড়তি সার্ভার রাখা যাবে না'
         correct: false
         why: 'blue/green সাময়িকভাবে দুই পরিবেশ চালায়, তাই বাড়তি ক্ষমতা লাগে। সীমিত সম্পদে rolling ভালো।'
-      - text: 'ব্যবহারকারীদের ৫% এ আগে নতুন ফিচার পরীক্ষা করতে চাও'
+      - text: 'ব্যবহারকারীদের ৫% এ আগে নতুন ফিচার পরীক্ষা করতে চান'
         correct: false
         why: 'এটা canary-র কাজ: ট্রাফিকের ছোট অংশে আগে পরীক্ষা।'
       - text: 'প্রতিদিন কয়েকটা ছোট বদল, সবচেয়ে কম খরচে'
@@ -373,7 +488,7 @@ quiz:
   - q: 'Expand-contract-এ phone কলামকে mobile করা হচ্ছে। কোন ক্রমটা ঠিক?'
     hint: 'পুরোনো কোড কখনই কোনো ভাঙা অবস্থা না দেখে।'
     options:
-      - text: 'mobile যোগ, দুটোতেই লেখা ও backfill, mobile থেকে পড়া, পরের release-এ phone মোছা'
+      - text: 'mobile যোগ, write-to-both release, backfill, mobile থেকে পড়া, তারপর পরের release-এ phone মোছা'
         correct: true
         why: 'প্রতিটা ধাপে পুরোনো ও নতুন কোড দুটোই কাজ করে। মোছা আসে সবশেষে, সবাই সরে যাওয়ার পর।'
       - text: 'phone-কে mobile নামে rename, তারপর কোড deploy'
@@ -387,9 +502,9 @@ quiz:
         why: 'নতুন কোড এমন কলামে লিখতে যাবে যা এখনো নেই, অর্থাৎ error।'
     ref: expand-contract
   - q: 'নিচের কোন কোন কাজ graceful shutdown-এর অংশ?'
-    hint: 'চলমান কাজ আর নতুন কাজ আলাদা করে ভাবো।'
+    hint: 'চলমান কাজ আর নতুন কাজ আলাদা করে ভাবুন।'
     options:
-      - text: 'বন্ধের আগে readiness ব্যর্থ করে নতুন request পাঠানো থামানো'
+      - text: 'বন্ধের আগে সার্ভারকে load balancer থেকে সরিয়ে নতুন request পাঠানো থামানো'
         correct: true
         why: 'নতুন request আর না এলে বাকি চলমান কাজ শেষ করা সহজ।'
       - text: 'Messenger worker SIGTERM পেলে current message শেষ করে থামা'
@@ -418,3 +533,36 @@ quiz:
         correct: false
         why: 'hotfix-এ ঘণ্টা লাগতে পারে, আর ততক্ষণ ব্যবহারকারী error পাবে। আগে থেকে রোলব্যাক plan থাকা দরকার।'
     ref: rollback-trap
+  - q: 'নাদিয়া backfill চালাল, আর এক ঘণ্টা পরে দুই কলামে লেখার কোড release করল। তারপর পড়া mobile-এ সরানো হলো। কিছু ব্যবহারকারী কী দেখবে?'
+    hint: 'backfill আর dual-write release-এর মাঝখানে কারা নম্বর জমা দিয়েছিল?'
+    options:
+      - text: 'মাঝের সময়ে যারা sign up করেছিল তাদের নম্বর ফাঁকা, কারণ কপির পর তাদের সারি শুধু phone-এ জমা হয়েছে'
+        correct: true
+        why: 'backfill শুধু চালানোর মুহূর্তে যা আছে তা কপি করে। write-to-both আগে পুরো চালু থাকলে নতুন কিছু ফসকাত না।'
+      - text: 'কিছুই না: backfill নজর রাখে এবং নতুন সারি নিজে থেকে কপি করে'
+        correct: false
+        why: 'কমান্ড চালানোর সময় যা আছে তা কপি করে থেমে যায়। নতুন লেখার পিছু নেয় না।'
+      - text: 'সব ব্যবহারকারীর নম্বর হারায়, কারণ mobile ফাঁকা থেকে শুরু'
+        correct: false
+        why: 'বিদ্যমান ১০,০০০ সারি কপি হয়েছিল। শুধু কপির পর আর dual-write-এর আগে জমা হওয়া সারিগুলো বাদ পড়েছে।'
+      - text: 'পরে কলামটা আর মোছা যাবে না'
+        correct: false
+        why: 'মোছা আগের মতোই চলবে। ক্ষতি ফাঁকা নম্বরের, মোছার নয়।'
+    ref: backfill-order
+  - q: 'নিজের বানানো php-fpm Docker image rolling deploy-এ ডিফল্ট সংকেতে থামানো হয়, আর লম্বা request-এ ব্যবহারকারীরা 502 পাচ্ছে। সম্ভাব্য কারণ ও সমাধান কী?'
+    hint: 'SIGTERM পেলে php-fpm কী করে?'
+    options:
+      - text: 'SIGTERM-এ php-fpm তখনই থামে, চলমান request কেটে যায়; Dockerfile-এ STOPSIGNAL SIGQUIT বসান'
+        correct: true
+        why: 'SIGQUIT-এ php-fpm আগে চলমান request শেষ করে। তবে terminationGracePeriodSeconds সবচেয়ে লম্বা request-এর চেয়ে বেশি রাখতেই হবে।'
+      - text: 'readiness probe ধীর, periodSeconds বাড়ান'
+        correct: false
+        why: 'probe ধীর হলে php-fpm থামার সংকেতে যা করে তা বদলায় না। চলমান request সংকেতেই কাটা পড়ে।'
+      - text: 'SIGKILL দিন, সেটা আরও পরিষ্কারভাবে থামায়'
+        correct: false
+        why: 'SIGKILL ধরা যায় না। সে তখনই মেরে ফেলে, চলমান কাজের জন্য সবচেয়ে খারাপ বিকল্প।'
+      - text: 'Messenger worker-এর দোষ, messenger:stop-workers চালান'
+        correct: false
+        why: '502 আসছে web প্রক্রিয়া থেকে, queue worker থেকে নয়।'
+    ref: graceful-shutdown
+

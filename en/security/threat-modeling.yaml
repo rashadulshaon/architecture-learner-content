@@ -30,6 +30,20 @@ slides:
               - '"What if they send someone else''s id?" comes up on design day'
               - 'The object-level check becomes part of the feature'
               - 'The decisions are written down, so newcomers can read them'
+      - type: code
+        lang: php
+        file: 'src/Controller/OrderController.php'
+        variant: good
+        code: |
+          // Without the design-day question, this was the whole method: any customer could read any order
+          #[Route('/orders/{id}', methods: ['GET'])]
+          #[IsGranted('ORDER_VIEW', subject: 'order')]   // the one line the question adds
+          public function show(Order $order): JsonResponse
+          {
+              return $this->json($order);
+          }
+        marks:
+          - {line: 3, tip: 'A voter compares the order''s owner with the logged-in user. Someone else''s id now gets a 403 instead of the data. This is called an object-level check.'}
       - type: quote
         body: 'Ask what an attacker could do at design time, not after the incident.'
     aside:
@@ -145,7 +159,7 @@ slides:
           - 'S: what if someone asks for a refund with a stolen token? Ask for the password or an OTP again on risky actions.'
           - 'T/I: can the customer supply the amount or someone else''s order id? Compute the amount on the server and check ownership of the order.'
           - 'R/E: how much can a support agent refund, and where is it recorded who did it?'
-          - 'D: what if someone requests refunds in a loop to flood the gateway or the database? Add a rate limit and an idempotency key.'
+          - 'D: what if someone requests refunds in a loop to flood the gateway or the database? Add a rate limit per user, and refuse a second refund of the same order.'
       - type: code
         lang: php
         file: 'src/Controller/RefundController.php'
@@ -156,9 +170,17 @@ slides:
           public function refund(
               Order $order,
               RefundService $refunds,
+              RateLimiterFactory $refundLimiter,
               #[CurrentUser] User $user,
           ): JsonResponse {
-              // T: the amount comes from the order, not from the client
+              // D: at most 3 refund attempts an hour per user
+              $limit = $refundLimiter->create((string) $user->getId())->consume();
+              if (!$limit->isAccepted()) {
+                  $retry = $limit->getRetryAfter()->getTimestamp() - time();
+                  throw new TooManyRequestsHttpException($retry);
+              }
+
+              // T: the amount comes from the order; a second refund of the same order is refused
               $refund = $refunds->refundFully($order, requestedBy: $user);
 
               // R: who, when, how much - the audit log
@@ -172,8 +194,20 @@ slides:
           }
         marks:
           - {line: 2, tip: 'The voter looks at the order and decides whether this user may refund it. One line blocks both E and I.'}
-          - {line: 8, tip: 'The request body has no amount at all, so there is nothing to tamper with.'}
-          - {line: 11, tip: 'With an audit log, nobody can claim "I didn''t do it".'}
+          - {line: 6, tip: 'Autowired by name: $refundLimiter is the limiter called refund in config/packages/rate_limiter.yaml (below).'}
+          - {line: 16, tip: 'The request body has no amount at all, so there is nothing to tamper with.'}
+          - {line: 19, tip: 'With an audit log, nobody can claim "I didn''t do it".'}
+      - type: code
+        lang: yaml
+        file: 'config/packages/rate_limiter.yaml'
+        variant: good
+        code: |
+          framework:
+              rate_limiter:
+                  refund:
+                      policy: 'sliding_window'
+                      limit: 3
+                      interval: '1 hour'
     aside:
       - type: pitfalls
         items:
@@ -194,6 +228,11 @@ slides:
       a: 'No. Every threat needs a decision: block it, reduce it, or accept it with a written reason. What matters most is that accepted risks are written down.'
 
 flashcards:
+  - q: 'A customer changes the order id in the URL and sees someone else''s order. What is the fix?'
+    a: 'An object-level check: a voter confirms the order belongs to the logged-in user, so someone else''s id gets a 403.'
+    more: |
+      Being logged in only proves who the customer is, not that this order is theirs. Asking "what if they send another id?" on design day turns the check into part of the feature, one `#[IsGranted]` line, instead of an emergency patch after a leak.
+    ref: nobody-asked-what-if
   - q: 'What is threat modeling?'
     a: 'Thinking before you build a feature: what could go wrong, who could cause harm, and what you will do about it.'
     more: |

@@ -23,7 +23,7 @@ slides:
           - {at: job, note: 'সার্ভার restart, কোনো checkpoint নেই', tone: bad}
           - {from: cron, to: job, label: '০২:১০ আবার শুরু, প্রথম সারি থেকে', tone: bad, dashed: true}
       - type: quote
-        body: 'বড় কাজ ছোট টুকরোয় ভাঙো, আর প্রতি টুকরোর পরে কোথায় আছ লিখে রাখো।'
+        body: 'বড় কাজ ছোট টুকরোয় ভাঙুন, আর প্রতি টুকরোর পরে কোথায় আছেন লিখে রাখুন।'
     aside:
       - type: story
         title: 'দুই সার্ভার, দুই বেতনের মেইল'
@@ -47,7 +47,7 @@ slides:
         icon: hourglass
         title: 'বাবুর্চির হাঁড়ি তোলা'
         body: |
-          বাবুর্চি হাঁড়িটা তুলে নিলে অন্যরা সেটা ধরে না, কারণ ওটা এখন তার। কিন্তু ৩০ মিনিটে ফেরত না দিলে ম্যানেজার ধরে নেন সে হারিয়ে গেছে আর হাঁড়ি অন্যজনকে দেন। এই ৩০ মিনিটই **visibility timeout**। আর ম্যানেজারের আলাদা "জরুরি হাঁড়ি" তাক থাকে, যাতে মেহমানের চা বিরিয়ানির পেছনে না পড়ে।
+          বাবুর্চি হাঁড়িটা তুলে নিলে অন্যরা সেটা ধরে না, কারণ ওটা এখন তার। কিন্তু নির্ধারিত সময়ে ফেরত না দিলে ম্যানেজার ধরে নেন সে হারিয়ে গেছে আর হাঁড়ি অন্যজনকে দেন। এই নির্ধারিত সময়ই **visibility timeout**। আর ম্যানেজারের আলাদা "জরুরি হাঁড়ি" তাক থাকে, যাতে মেহমানের চা বিরিয়ানির পেছনে না পড়ে।
       - type: visual
         kind: sequence
         caption: 'Visibility timeout: worker মরলে বার্তা আবার অন্যের হাতে'
@@ -65,8 +65,8 @@ slides:
         title: 'দুটো নিয়ম'
         style: check
         items:
-          - 'Timeout কাজের সর্বোচ্চ সময়ের চেয়ে বড় রাখো। ছোট হলে কাজ চলতে চলতেই বার্তা অন্যকে চলে যায়, ডুপ্লিকেট হয়।'
-          - 'জরুরি আর ধীর কাজ আলাদা queue-তে রাখো, আর worker আগে জরুরি queue পড়বে।'
+          - 'Timeout কাজের সর্বোচ্চ সময়ের চেয়ে বড় রাখুন। ছোট হলে কাজ চলতে চলতেই বার্তা অন্যকে চলে যায়, ডুপ্লিকেট হয়।'
+          - 'জরুরি আর ধীর কাজ আলাদা queue-তে রাখুন, আর worker আগে জরুরি queue পড়বে।'
     aside:
       - type: tips
         items:
@@ -75,6 +75,7 @@ slides:
       - type: pitfalls
         items:
           - 'কাজ ৫ মিনিটের, অথচ timeout ৩০ সেকেন্ড: একই কাজ চলতে চলতে আরেকজনও তুলে নেয়।'
+          - 'Timeout অতিরিক্ত বড় হলেও দাম আছে: worker মরার পর পুরো timeout পেরোনো পর্যন্ত বার্তা কেউ আবার চেষ্টা করে না।'
     check:
       q: 'কাজ চলতে সর্বোচ্চ ২ মিনিট লাগে। visibility timeout ৩০ সেকেন্ড হলে কী হবে?'
       a: 'Worker তখনো কাজ করছে, কিন্তু ৩০ সেকেন্ডে বার্তা আবার দৃশ্যমান হয়ে অন্য worker পাবে। ফলে একই কাজ দুই জায়গায় চলবে।'
@@ -82,9 +83,12 @@ slides:
   - slug: scheduler-and-lanes
     title: 'Symfony Scheduler আর priority transport'
     kind: howto
-    tldr: 'Cron-এর বদলে Scheduler-এ সময়সূচি কোডে রাখো, lock দিয়ে এক সার্ভারেই চালাও, আর জরুরি কাজের জন্য আলাদা transport।'
+    tldr: 'Cron-এর বদলে Scheduler-এ সময়সূচি কোডে রাখুন, lock দিয়ে একবারই চালান, আর জরুরি কাজের জন্য আলাদা transport দিন।'
     keywords: ['Symfony Scheduler', 'RecurringMessage', 'AsSchedule', 'cron', 'priority transport', 'schedule lock', 'সিডিউলার']
     blocks:
+      - type: text
+        body: |
+          Lock না থাকলে দুই সার্ভারে দুটো Scheduler worker চলে, আর দুটোই রাত ২টায় `BuildDailyReport` বের করে: দুটো রিপোর্ট, দুই সেট বেতন-স্লিপের ইমেইল। Lock থাকলে প্রথম worker সেটা ধরে, দ্বিতীয়জন দেখে ধরা আছে, তাই সে বাদ দেয়। দাম: lock কাজ করে কেবল যদি `framework.lock` এমন store-এ যায় যা সব সার্ভার শেয়ার করে, যেমন Redis বা ডেটাবেস। ডিফল্ট local store সার্ভারের বাইরে কিছু আটকায় না। সবচেয়ে সোজা বিকল্প হলো supervisor-এর নিচে মাত্র একটা Scheduler worker চালানো, তবে সেটা বন্ধ থাকলে কিছুই বের হয় না।
       - type: code
         lang: php
         file: 'src/Scheduler/MainSchedule.php'
@@ -137,22 +141,26 @@ slides:
       - type: commands
         title: 'Scheduler কমান্ড'
         items:
-          - {cmd: 'php bin/console debug:scheduler', desc: 'সব schedule আর পরের চালানোর সময় দেখো'}
+          - {cmd: 'php bin/console debug:scheduler', desc: 'সব schedule আর পরের চালানোর সময় দেখুন'}
           - {cmd: 'php bin/console messenger:consume scheduler_default', desc: 'schedule-এর বার্তা বের করার worker'}
       - type: tips
         items:
           - '`RecurringMessage::cron()` ব্যবহার করতে `dragonmantank/cron-expression` প্যাকেজ লাগে।'
           - 'Scheduler-এর কাজও একটা Messenger বার্তা, তাই retry আর failure transport সেখানেও খাটে।'
+          - 'Lock পরীক্ষা করতে আলাদা দুই মেশিনে দুটো `scheduler_default` worker চালান। কাজ দুইবার বের হলে lock store শেয়ার করা নয়।'
     check:
-      q: 'দুই সার্ভারে worker চললে Scheduler-এর কাজ দুইবার বের হওয়া কীভাবে ঠেকাবে?'
-      a: 'Schedule-এ `->lock(...)` দাও, যাতে এক সময়ে একটা worker-ই বার্তা বের করতে পারে। সাথে `stateful()` দিলে মিস হওয়া রান নিয়েও চিন্তা থাকে না।'
+      q: 'দুই সার্ভারে worker চললে Scheduler-এর কাজ দুইবার বের হওয়া কীভাবে ঠেকাবেন?'
+      a: 'Schedule-এ `->lock(...)` দিন, যাতে এক সময়ে একটা worker-ই বার্তা বের করতে পারে। সাথে `stateful()` দিলে মিস হওয়া রান নিয়েও চিন্তা থাকে না।'
 
   - slug: chunks-and-checkpoints
     title: 'ফাঁদ: এক টানে বিশাল কাজ'
     kind: pitfall
-    tldr: 'বড় কাজকে ছোট টুকরোয় ভাঙো; প্রতি টুকরো একটা বার্তা, আর পরের টুকরোর বার্তায় checkpoint (শেষ id) থাকে। তাহলে ভাঙলে শুধু চলতি টুকরো আবার চলে।'
+    tldr: 'বড় কাজকে ছোট টুকরোয় ভাঙুন; প্রতি টুকরো একটা বার্তা, আর পরের টুকরোর বার্তায় checkpoint (শেষ id) থাকে। তাহলে ভাঙলে শুধু চলতি টুকরো আবার চলে।'
     keywords: ['chunk', 'checkpoint', 'cursor', 'batch', 'long running', 'টুকরো', 'চেকপয়েন্ট']
     blocks:
+      - type: text
+        body: |
+          রাত ২টার রিপোর্টে ১০ লাখ সারি (id ১ থেকে ১০,০০,০০০)। ৫০০-র টুকরোয় সেটা ২,০০০টা ছোট বার্তা। ৬ লাখ সারির পরে সার্ভার মরলে broker ১,২০১ নম্বর টুকরোটা আবার দেয়, যার বার্তায় `afterId` ৬০০০০০; ৬ লাখের বদলে শুধু ৫০০ সারি আবার হয়। দাম: একটা loop-এর বদলে queue দিয়ে ২,০০০ যাতায়াত, আর টুকরোগুলো একটার পর একটা চলে, তাই মোট সময় একটু বেশি। ১০ সেকেন্ডের কাজে এটা লাগে না।
       - type: code
         lang: php
         file: 'src/MessageHandler/ExportUsersHandler.php'
@@ -192,11 +200,11 @@ slides:
           - {line: 11, tip: 'টুকরো ফের চললে একই ফল দিতে হবে, কারণ redelivery হতে পারে।'}
           - {line: 13, tip: 'পরের টুকরোর বার্তায় checkpoint। কাজ ভাঙলে এখান থেকেই আবার শুরু হয়।'}
       - type: quote
-        body: 'টুকরো ছোট রাখো, টুকরো idempotent রাখো, আর অগ্রগতি লিখে রাখো।'
+        body: 'টুকরো ছোট রাখুন, টুকরো idempotent রাখুন, আর অগ্রগতি লিখে রাখুন।'
     aside:
       - type: tips
         items:
-          - 'টুকরোর আকার এমন রাখো যাতে একটা টুকরো কয়েক সেকেন্ডে শেষ হয়, মেমরি আর timeout দুটোই নিরাপদ থাকে।'
+          - 'টুকরোর আকার এমন রাখুন যাতে একটা টুকরো কয়েক সেকেন্ডে শেষ হয়, মেমরি আর timeout দুটোই নিরাপদ থাকে।'
           - 'আরেকটা টুকরো নিজে dispatch না করে Messenger batch handler বা fan-out দিয়েও করা যায়, তবে এই cursor ধরন সহজ ও নিরাপদ।'
       - type: pitfalls
         items:
@@ -206,15 +214,18 @@ slides:
       a: 'প্রতিটা টুকরো idempotent, যাতে দুইবার চললেও ফল এক। আর পরের বার্তায় checkpoint, যাতে নতুন করে সবকিছু না চালিয়ে শেষ জায়গা থেকে চলে।'
 
   - slug: job-observability
-    title: 'জব চোখে দেখা: কী মাপবে'
+    title: 'জব চোখে দেখা: কী মাপবেন'
     kind: howto
-    tldr: 'ব্যাকগ্রাউন্ড জব নীরবে মরে। queue-র দৈর্ঘ্য, সবচেয়ে পুরনো বার্তার বয়স, ব্যর্থতার হার আর সময় মেপে alert বসাও।'
+    tldr: 'ব্যাকগ্রাউন্ড জব নীরবে মরে। queue-র দৈর্ঘ্য, সবচেয়ে পুরনো বার্তার বয়স, ব্যর্থতার হার আর সময় মেপে alert বসান।'
     keywords: ['observability', 'queue depth', 'queue age', 'messenger:stats', 'WorkerMessageFailedEvent', 'মনিটরিং']
     blocks:
+      - type: text
+        body: |
+          ১০টা বার্তার queue কিছুই না, আর প্রতি মিনিটে ৫০০ করে বাড়া ১ লাখ বার্তা বন্যা। কিন্তু ১০টা বার্তাও ক্ষতি করে যদি সবচেয়ে পুরনোটা আধঘণ্টা ধরে অপেক্ষায় থাকে। তাই শুধু কয়টা আছে নয়, কাজ কতক্ষণ অপেক্ষা করছে তা দেখে alert দিন।
       - type: visual
         kind: table
         caption: 'ব্যাকগ্রাউন্ড জবের চার সংকেত'
-        headers: ['কী মাপো', 'কী বোঝায়', 'কখন alert']
+        headers: ['কী মাপবেন', 'কী বোঝায়', 'কখন alert']
         rows:
           - cells: ['Queue depth', 'কয়টা বার্তা জমে আছে', 'টানা বাড়তে থাকলে']
             tip: 'জমা বাড়ছে মানে worker প্রবাহের সাথে পেরে উঠছে না, বা সব worker মরে গেছে।'
@@ -246,18 +257,31 @@ slides:
         marks:
           - {line: 6, tip: 'worker একটা বার্তায় ব্যর্থ হলেই Messenger এই event ছোড়ে।'}
           - {line: 10, tip: '`will_retry` false হলে বার্তা DLQ-তে যাচ্ছে, সেটা আলাদা alert-এর যোগ্য।'}
+      - type: code
+        lang: sql
+        file: 'সবচেয়ে পুরনো বার্তার বয়স (Doctrine transport, PostgreSQL)'
+        variant: good
+        code: |
+          SELECT now() AT TIME ZONE 'UTC' - min(created_at) AS oldest_age
+          FROM messenger_messages
+          WHERE queue_name = 'default';
+        marks:
+          - {line: 1, tip: 'ack হলে সারি মুছে যায়, তাই সবচেয়ে পুরনো সারিই সবচেয়ে বেশি অপেক্ষায় বা আটকে থাকা বার্তা। এটা সীমা ছাড়ালে alert দিন, ইমেইলে ধরুন ৫ মিনিট।'}
     aside:
       - type: commands
         items:
           - {cmd: 'php bin/console messenger:stats', desc: 'প্রতি transport-এ কতগুলো বার্তা জমে আছে'}
-          - {cmd: 'php bin/console messenger:failed:show', desc: 'ব্যর্থ বার্তা আর কারণ দেখো'}
+          - {cmd: 'php bin/console messenger:failed:show', desc: 'ব্যর্থ বার্তা আর কারণ দেখুন'}
+      - type: tips
+        items:
+          - 'SQS-এ একই সংখ্যা CloudWatch metric `ApproximateAgeOfOldestMessage`।'
       - type: remember
         body: 'Queue-র গভীরতা নয়, সবচেয়ে পুরনো বার্তার বয়সই বলে ব্যবহারকারী কত পিছিয়ে।'
       - type: refs
         items:
           - {to: 'observability/metrics-slos', label: 'Metric আর SLO'}
     check:
-      q: 'Queue-তে জমা বার্তা মাত্র ১০টা, তবুও অ্যাপে সমস্যা। কোন মাপটা বলে দেবে কেন?'
+      q: 'Queue-তে জমা বার্তা মাত্র ১০টা, তবুও অ্যাপে সমস্যা। কোন মাপটা কারণ বলে দেবে?'
       a: 'সবচেয়ে পুরনো বার্তার বয়স। ১০টা বার্তার একটাও আধঘণ্টা ধরে পড়ে থাকলে worker আটকে আছে, যদিও depth দেখে সবই ঠিক মনে হয়।'
 
 flashcards:
@@ -277,7 +301,7 @@ flashcards:
       এটা worker মরে গেলে বার্তা হারানো ঠেকায়। কিন্তু timeout কাজের সর্বোচ্চ সময়ের চেয়ে ছোট হলে কাজ চলতে চলতেই বার্তা অন্যজন নিয়ে নেয়, আর কাজ দুইবার চলে।
     ref: visibility-and-priority
   - q: 'Visibility timeout কত রাখা উচিত?'
-    a: 'কাজের সর্বোচ্চ সম্ভাব্য সময়ের চেয়ে বড়। আর কাজ লম্বা হলে কাজকে টুকরো করো, timeout বাড়াতে বাড়াতে না।'
+    a: 'কাজের সর্বোচ্চ সম্ভাব্য সময়ের চেয়ে বড়। আর কাজ লম্বা হলে কাজকে টুকরো করুন, timeout বাড়াতে বাড়াতে নয়।'
     more: |
       খুব বড় timeout রাখলে worker মরার পরে বার্তা ফেরত আসতে অনেকক্ষণ লাগে। তাই ছোট টুকরো আর মাঝারি timeout ভালো ভারসাম্য।
     ref: visibility-and-priority
@@ -294,8 +318,18 @@ flashcards:
   - q: 'ব্যাকগ্রাউন্ড জবের কোন মাপটা ব্যবহারকারীর টের পাওয়া দেরির সবচেয়ে কাছের?'
     a: 'Queue-র সবচেয়ে পুরনো বার্তার বয়স। শুধু depth দেখলে ছোট queue-তেও আটকে থাকা একটা বার্তা ধরা পড়ে না।'
     more: |
-      সাথে ব্যর্থতার হার, কাজের সময় আর DLQ-র আকার মাপো। DLQ-তে একটা বার্তাও মানে একটা কাজ হারিয়েছে, তাই সেটা আলাদা alert-এর যোগ্য।
+      সাথে ব্যর্থতার হার, কাজের সময় আর DLQ-র আকার মাপুন। DLQ-তে একটা বার্তাও মানে একটা কাজ হারিয়েছে, তাই সেটা আলাদা alert-এর যোগ্য।
     ref: job-observability
+  - q: '১০ লাখ সারির কাজ ৫০০-র টুকরোয় চলছে, ৬ লাখ সারির পরে ভাঙল। কতটা আবার হবে?'
+    a: 'শুধু চলতি টুকরো, ৫০০ সারি। বার্তায় শেষ id থাকে, তাই আবার শুরু হয় সেখান থেকে, প্রথম সারি থেকে নয়।'
+    more: |
+      মোট ২,০০০টা টুকরো-বার্তা। দাম হলো queue দিয়ে ২,০০০ যাতায়াত আর একটার পর একটা চলা টুকরো। কয়েক সেকেন্ডের কাজে টুকরো করা পোষায় না।
+    ref: chunks-and-checkpoints
+  - q: 'Scheduler-এর lock থাকলেও কেন একাধিক সার্ভারে কাজ দুইবার চলতে পারে?'
+    a: 'Lock store সব সার্ভারের শেয়ার করা হতে হবে, যেমন Redis বা ডেটাবেস। Local file lock শুধু এক মেশিন আটকায়।'
+    more: |
+      শেয়ার করা store না থাকলে প্রতিটা সার্ভার ভাবে lock তার হাতেই, আর কাজ বের করে দেয়। `framework.lock` দেখে নিন। সহজ বিকল্প হলো একটাই Scheduler worker, তবে সেটা বন্ধ থাকলে কিছুই বের হয় না।
+    ref: scheduler-and-lanes
 
 quiz:
   - q: 'অ্যাপ দুটো সার্ভারে চলে, দুটোতেই Scheduler worker চালু। প্রতি রাত ২টার রিপোর্ট দুইবার বের হচ্ছে। সমাধান কী?'
@@ -334,7 +368,7 @@ quiz:
           }
           $this->jobs->markDone($m->jobId);
       }
-    hint: 'মেমরি, সময় আর ভাঙলে কী হবে ভাবো।'
+    hint: 'মেমরি, সময় আর ভাঙলে কী হবে ভাবুন।'
     options:
       - text: 'সব entity মেমরিতে লোড হয়, লাখ লাখ হলে মেমরি ফুরোবে'
         correct: true
@@ -362,7 +396,7 @@ quiz:
         correct: false
         why: 'ব্যয় বাড়ে, আর রিপোর্ট বাড়লে আবার একই সমস্যা। আলাদা লেন মূল সমাধান।'
     ref: scheduler-and-lanes
-  - q: 'কোন মাপ দেখে তুমি বুঝবে worker আটকে আছে, অথচ queue-তে মাত্র ৫টা বার্তা?'
+  - q: 'কোন মাপ দেখে আপনি বুঝবেন worker আটকে আছে, অথচ queue-তে মাত্র ৫টা বার্তা?'
     hint: 'সংখ্যা ছোট হলেও কিছু একটা অনেকদিন ধরে বসে থাকতে পারে।'
     options:
       - text: 'Queue depth, মানে বার্তার সংখ্যা'
@@ -375,3 +409,16 @@ quiz:
         correct: false
         why: 'আটকে থাকা worker হয়তো I/O-র অপেক্ষায় বসে, CPU কম হতে পারে, এতে কিছুই বোঝা যায় না।'
     ref: job-observability
+  - q: 'দুই সার্ভারে `->lock(...)` সহ Scheduler worker চলছে, তবু রিপোর্ট দুইবার বের হচ্ছে। সবচেয়ে সম্ভাব্য কারণ কী?'
+    hint: 'প্রতিটা সার্ভার তার lock কোথায় রাখে?'
+    options:
+      - text: 'Lock store প্রতিটা সার্ভারে আলাদা, তাই কেউ অন্যের lock দেখে না'
+        correct: true
+        why: 'Lock কেবল তাদেরই আটকায় যারা একই store দেখে। `framework.lock` Redis বা ডেটাবেসে দিন।'
+      - text: 'Cron expression ভুল'
+        correct: false
+        why: 'সময় ঠিকই আছে। একই সময়ের কাজ দুইবার বের হচ্ছে কারণ দুই worker-ই ভাবছে lock তার হাতে।'
+      - text: 'Messenger বার্তাটা retry করছে'
+        correct: false
+        why: 'Retry হয় ব্যর্থতার পরে, আর এখানে দুটো বের হওয়াই সফল।'
+    ref: scheduler-and-lanes

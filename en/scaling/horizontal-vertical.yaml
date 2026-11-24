@@ -123,7 +123,7 @@ slides:
           - {line: 7, tip: 'The session TTL in Redis comes from this value, so old sessions delete themselves.'}
       - type: text
         body: |
-          Now uploads. In the diff below, the red line stores the file on this server's disk, where no other server will ever see it. The green lines write to object storage through Flysystem, which looks the same to every server.
+          Now uploads. Declare the storage once in `config/packages/flysystem.yaml` (a storage named `uploads.storage`, with the `aws` adapter and your bucket). In the diff below, the red line stores the file on this server's disk, where no other server will ever see it. The green lines write to object storage through Flysystem, which looks the same to every server.
       - type: code
         lang: diff
         file: 'src/Controller/AvatarController.php'
@@ -143,6 +143,7 @@ slides:
         items:
           - 'Store the object storage URL in the database, not a path on the server.'
           - 'If you lose the Redis sessions, users just log in again. So keep nothing critical in a session; critical data goes in the database.'
+          - 'The price: every request now makes one Redis call, and if Redis is down nobody can log in. Give it a replica or use a managed Redis with failover.'
       - type: commands
         title: 'Commands to check it'
         items:
@@ -202,6 +203,11 @@ slides:
         items:
           - 'Without a max, a buggy loop or an attack can grow your servers and your bill without limit.'
           - 'Without a readiness check, a new pod receives requests while it is still cold.'
+          - 'minReplicas costs money around the clock. For a one-night sale, raise it an hour before and lower it after.'
+      - type: terms
+        items:
+          - {term: 'Pod', meaning: 'One running copy of your app in Kubernetes. More pods means more servers doing the same job.'}
+          - {term: 'HPA', meaning: 'The Kubernetes autoscaler. It watches CPU and adds or removes pods.'}
       - type: remember
         body: 'Autoscaling handles slow waves, not sudden jumps. For jumps you need servers added in advance, plus a rate limit.'
       - type: refs
@@ -224,7 +230,7 @@ slides:
           The restaurant goes from 4 branches to 20, but they all fetch their rice and lentils from the same central warehouse. Now people from 20 branches are jostling at its door. Adding app servers does exactly this: everyone's pressure lands on a single database.
       - type: text
         body: |
-          Do the math: 20 app servers with 25 PHP-FPM workers each, one connection per worker, makes 500 connections. If Postgres has `max_connections` at 200, the new servers can't even get into the database. The fix is a connection pooler, such as PgBouncer.
+          Do the math: 20 app servers with 25 PHP-FPM workers each, one connection per worker, makes 500 connections. If Postgres has `max_connections` at 200, the new servers can't even get into the database. The fix is a connection pooler, such as PgBouncer, which lends real connections out one transaction at a time. It has limits; the next slide shows them.
       - type: code
         lang: ini
         file: 'pgbouncer.ini'
@@ -239,7 +245,7 @@ slides:
           default_pool_size = 20        ; only 20 real connections to the database
         marks:
           - {line: 5, tip: 'It doesn''t hold a connection for every query; it hands the connection to someone else as soon as the transaction ends. So few connections serve many clients.'}
-          - {line: 7, tip: '1000 clients, but the database sees only 20. The load on the database''s RAM and CPU drops dramatically.'}
+          - {line: 7, tip: '1000 clients, but the database sees only 20. Each transaction holds a connection for a few milliseconds, so 20 real ones serve 500 workers in turns, like 20 tills serving a long queue.'}
       - type: visual
         kind: steps
         caption: 'When the database is slow, work through these in order'
@@ -250,6 +256,11 @@ slides:
           - {title: '4. A bigger machine (vertical)', body: 'A more powerful database server', tip: 'For databases, vertical is often the simplest option. Using it up to its limit is perfectly fine.'}
           - {title: '5. Shard', body: 'Split the data across many databases', tip: 'The most powerful and the most expensive. Cross-shard queries and transactions get hard.', tone: warn}
     aside:
+      - type: terms
+        items:
+          - {term: 'PHP-FPM worker', meaning: 'One PHP process that handles one request at a time. 25 workers means 25 requests in parallel.'}
+          - {term: 'Connection pooler', meaning: 'A middleman that holds a few real database connections and lends them to many clients.'}
+          - {term: 'N+1', meaning: 'Loading a list with one query, then one more query for every row of it.'}
       - type: refs
         items:
           - {to: 'data/replication', label: 'Read replicas and replication'}
@@ -259,6 +270,63 @@ slides:
     check:
       q: 'After going from 4 to 20 app servers, the database throws "too many connections". What is the first fix?'
       a: 'Put a pooler like PgBouncer in front, so the database holds only a few real connections. Just raising max_connections eats the database''s RAM.'
+
+  - slug: pgbouncer-limits
+    title: 'PgBouncer transaction mode: what it breaks'
+    kind: pitfall
+    tldr: 'Transaction pooling lends a connection for one transaction only. Prepared statements, SET, advisory locks and LISTEN/NOTIFY assume the same connection stays yours, and break. Fix: emulate prepares, go direct for the rest.'
+    keywords: ['PgBouncer', 'transaction pooling', 'prepared statements', 'EMULATE_PREPARES', 'advisory lock', 'LISTEN NOTIFY', 'pool_mode']
+    blocks:
+      - type: metaphor
+        icon: wallet
+        title: 'Twenty tills, five hundred shoppers'
+        body: |
+          A shopper writes a note and leaves it at till 7, expecting to find it there next time. But the shop sends every visit to whichever till is free, so the note is at till 7 while the shopper stands at till 12. Transaction pooling works like this: anything you leave on "your" connection is gone by your next transaction.
+      - type: text
+        body: |
+          The classic PHP victim is the prepared statement. PDO prepares the query on one connection, then runs it on another, and Postgres answers `SQLSTATE[26000]: prepared statement "pdo_stmt_00000001" does not exist`. Tell PDO to send plain queries instead; the values are still escaped.
+      - type: code
+        lang: yaml
+        file: 'config/packages/doctrine.yaml'
+        variant: good
+        code: |
+          doctrine:
+              dbal:
+                  # DATABASE_URL points at PgBouncer, port 6432
+                  url: '%env(resolve:DATABASE_URL)%'
+                  options:
+                      !php/const PDO::ATTR_EMULATE_PREPARES: true   # no server-side prepares
+        marks:
+          - {line: 6, tip: 'PDO builds the SQL itself and sends it in one go, so nothing is left on a connection that the next transaction would lose. PgBouncer 1.21+ can instead track prepares if you set max_prepared_statements.'}
+      - type: code
+        lang: bash
+        file: 'deploy.sh'
+        variant: good
+        code: |
+          # migrations (and LISTEN/NOTIFY, advisory locks) go straight to Postgres, port 5432
+          DATABASE_URL='postgresql://app:CHANGE_ME@10.0.0.5:5432/shop?serverVersion=16' \
+              php bin/console doctrine:migrations:migrate --no-interaction
+        marks:
+          - {line: 2, tip: 'Only this command gets the direct URL. The running app keeps using PgBouncer.'}
+      - type: points
+        title: 'Also lost in transaction mode'
+        style: cross
+        items:
+          - '`SET search_path` or `SET timezone`: lost, or leaks to another client. Use `SET LOCAL` inside a transaction.'
+          - 'Session-level advisory locks, `LISTEN`/`NOTIFY`, temporary tables: go direct.'
+    aside:
+      - type: when
+        use:
+          - 'Many app servers: total workers are far above `max_connections`'
+        avoid:
+          - 'Few servers whose workers already fit in `max_connections`: no pooler needed'
+          - 'Code that leans on session state: use session mode or a direct connection'
+      - type: pitfalls
+        items:
+          - 'PgBouncer is one more process in front of the database. Run two, or it becomes the next single point of failure.'
+    check:
+      q: 'After switching to PgBouncer in transaction mode, some queries fail with "prepared statement does not exist". Why, and what is the fix?'
+      a: 'PDO prepares on one pooled connection and executes on another. Turn on PDO::ATTR_EMULATE_PREPARES (or PgBouncer 1.21+ max_prepared_statements).'
 
 flashcards:
   - q: 'What is the difference between vertical and horizontal scaling?'
@@ -289,8 +357,18 @@ flashcards:
   - q: 'Why does adding app servers lead to "too many connections" in the database?'
     a: 'Every worker on every server takes one connection. More servers push the total past the database''s max_connections.'
     more: |
-      20 servers x 25 workers = 500 connections, while the database may be stuck at 200. The fix is a pooler like PgBouncer, which turns many client connections into just a few real ones.
+      20 servers x 25 workers = 500 connections, while the database may be stuck at 200. The fix is a pooler like PgBouncer, which turns many client connections into just a few real ones. It comes with limits, covered in the next card.
     ref: database-last
+  - q: 'What breaks when PgBouncer runs in transaction pooling mode?'
+    a: 'Anything that assumes one connection stays yours: server-side prepared statements, SET, session advisory locks, LISTEN/NOTIFY, temp tables.'
+    more: |
+      Transaction mode lends a connection for one transaction only, then gives it to someone else. A prepared statement made on one connection is missing on the next. Use `SET LOCAL` inside transactions, and send migrations and LISTEN/NOTIFY straight to Postgres.
+    ref: pgbouncer-limits
+  - q: 'In Symfony behind PgBouncer you see "prepared statement does not exist". What is the fix?'
+    a: 'Set PDO::ATTR_EMULATE_PREPARES to true in the Doctrine dbal options, or on PgBouncer 1.21+ set max_prepared_statements.'
+    more: |
+      With emulation, PDO builds the query with escaped values and sends it in one go, so no statement is left on a connection that the next transaction might not get. The price is that Postgres can''t reuse a parsed plan.
+    ref: pgbouncer-limits
   - q: 'When the database is slow, what is the right order of scaling steps?'
     a: 'Fix queries, cache, read replicas, bigger machine, and shard last. The cheapest step comes first.'
     more: |
@@ -368,6 +446,22 @@ quiz:
         correct: false
         why: 'With no workers, the app doesn''t run at all.'
     ref: database-last
+  - q: 'Behind PgBouncer (pool_mode = transaction) a Symfony app throws a "prepared statement does not exist" error now and then. What is the best fix?'
+    hint: 'The statement was prepared on one connection and run on another. How do you avoid server-side prepares?'
+    options:
+      - text: 'Set PDO::ATTR_EMULATE_PREPARES to true in the Doctrine dbal options'
+        correct: true
+        why: 'PDO then builds the query with escaped values and sends it whole, so nothing is left behind on a connection that the next transaction might not get.'
+      - text: 'Raise default_pool_size so the same connection is reused more often'
+        correct: false
+        why: 'More connections doesn''t guarantee you land on the same one. Transaction mode hands them out per transaction.'
+      - text: 'Switch the app to talk to Postgres directly again'
+        correct: false
+        why: 'That works, but it throws away the pooler, and the "too many connections" problem returns.'
+      - text: 'Retry every failed query three times'
+        correct: false
+        why: 'A retry may land on yet another connection and fail again. The cause stays, and writes might run twice.'
+    ref: pgbouncer-limits
   - q: 'The crowd for a flash sale jumps 10x at exactly 8 pm, and autoscaling is on. Which is the smartest preparation?'
     hint: 'How long does a server take to start working after the crowd arrives?'
     options:

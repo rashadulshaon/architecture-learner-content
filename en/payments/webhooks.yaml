@@ -165,7 +165,7 @@ slides:
     blocks:
       - type: text
         body: |
-          A gateway that gets no reply sends the same event again, so seeing one event twice is normal. And `succeeded` can arrive before `pending`, because retries scramble the order. The easiest mistake is to set the status and send the email right in the controller.
+          A gateway that gets no reply sends the same event again, so seeing one event twice is normal. And `succeeded` can arrive before `pending`, because retries scramble the order. The easiest mistake is to set the status and send the email right in the controller. The handler below fixes that, and its `TooEarly` branch (the next slide explains it) keeps an event that arrives too soon from being lost.
       - type: code
         lang: php
         file: 'src/Controller/PayWebhookController.php (wrong)'
@@ -207,7 +207,11 @@ slides:
                       $payload = $this->db->fetchOne(
                           'SELECT payload FROM webhook_event WHERE event_id = ?', [$m->eventId]);
                       $event = json_decode($payload, true);
-                      $this->payments->applyGatewayEvent($event['data']['id'], $event['type']);
+                      $outcome = $this->payments->applyGatewayEvent(
+                          $event['data']['id'], $event['type']);
+                      if (Outcome::TooEarly === $outcome) {
+                          throw new EventTooEarly($m->eventId);   // rolls back the claim
+                      }
                   });
               }
           }
@@ -215,6 +219,7 @@ slides:
           - {line: 11, tip: 'You can only claim it while processed_at IS NULL. Even if two workers arrive together, only one updates 1 row.'}
           - {line: 15, tip: '0 rows means someone else already handled it. Just return: no exception, or Messenger would retry.'}
           - {line: 20, tip: 'The payment status isn''t set directly here; the state machine checks the transition is valid and only then changes it.'}
+          - {line: 22, tip: 'The payment is not ready for this event yet. Throwing rolls back the claim above, so the event stays unprocessed and can be retried.'}
       - type: quote
         body: 'Assume both about webhooks: the same event will come more than once, and the order will not be right.'
     aside:
@@ -229,6 +234,98 @@ slides:
     check:
       q: 'When a duplicate event reaches the worker handler, how many rows does `UPDATE ... processed_at IS NULL` change, and what does the handler do then?'
       a: 'The first time, 1 row, so the work runs. For a duplicate, 0 rows, so the handler quietly returns and does nothing more.'
+
+  - slug: early-event
+    title: 'An early event must not be thrown away'
+    kind: pitfall
+    tldr: 'If the payment is not ready for an event yet, rejecting it and marking it processed loses it for good. Roll back and retry; drop only events the payment has already moved past.'
+    keywords: ['early webhook', 'dropped event', 'stuck payment', 'retry', 'Messenger retry', 'failure transport']
+    blocks:
+      - type: text
+        body: |
+          Rahim's app calls the gateway, which charges the card and fires a `payment.succeeded` webhook at once. But the reply that carries the gateway's payment id is still on its way, so Rahim's row has no gateway id yet. The handler looks the payment up, finds nothing, and returns quietly, with the event already marked processed. A second later the id is saved, and nobody will ever send `succeeded` again. The customer has paid, and the order waits forever.
+      - type: visual
+        kind: compare
+        caption: 'The same early event, thrown away versus kept for later'
+        columns:
+          - title: 'Drop and mark done'
+            tone: bad
+            icon: cross
+            tip: 'The handler treats every rejected event as old news, including one that is only early.'
+            items: ['`succeeded` arrives before our row has its gateway id', 'No payment found, so the handler returns and the event counts as processed', 'The id is saved a second later', 'No event comes again: the payment is stuck in `pending`']
+          - title: 'Roll back and retry'
+            tone: good
+            icon: check
+            tip: 'The handler asks one more question: is the payment behind this event, or already past it?'
+            items: ['`succeeded` arrives before our row has its gateway id', 'The payment is behind the event, so the claim is rolled back', 'Messenger retries after 2, 4, 8 seconds', 'By then the id is saved, `succeed` is legal and gets applied']
+      - type: code
+        lang: php
+        file: 'src/Payment/PaymentService.php'
+        variant: good
+        code: |
+          enum Outcome { case Applied; case Stale; case TooEarly; }
+
+          private const RANK = ['created' => 0, 'pending' => 1,
+              'succeeded' => 2, 'failed' => 2, 'refunded' => 3];
+
+          public function applyGatewayEvent(string $gatewayId, string $type): Outcome
+          {
+              $payment = $this->repo->findOneBy(['gatewayId' => $gatewayId]);
+              if (null === $payment) {
+                  return Outcome::TooEarly;            // no row has this gateway id yet
+              }
+              [$transition, $target] = match ($type) {
+                  'payment.succeeded' => ['succeed', 'succeeded'],
+                  'payment.failed' => ['fail', 'failed'],
+                  'payment.refunded' => ['refund', 'refunded'],
+                  default => [null, null],             // a type we do not act on
+              };
+              if (null === $transition) {
+                  return Outcome::Stale;
+              }
+              if ($this->transitions->apply($payment->getId(), $transition)) {
+                  return Outcome::Applied;
+              }
+              // Not legal now: is the payment behind the event, or already past it?
+              return self::RANK[$payment->getStatus()] < self::RANK[$target]
+                  ? Outcome::TooEarly
+                  : Outcome::Stale;
+          }
+        marks:
+          - {line: 10, tip: 'No row for this gateway id yet also means the event is early, not wrong.'}
+          - {line: 24, tip: 'The state machine said no. Now we find out why.'}
+          - {line: 25, tip: 'Behind the event: wait. At or past it: the news is old and safe to drop.'}
+      - type: code
+        lang: yaml
+        file: 'config/packages/messenger.yaml'
+        variant: good
+        code: |
+          framework:
+              messenger:
+                  failure_transport: failed
+                  transports:
+                      async:
+                          dsn: '%env(MESSENGER_TRANSPORT_DSN)%'
+                          retry_strategy:
+                              max_retries: 6
+                              delay: 2000        # 2s, then 4s, 8s, 16s, 32s, 64s
+                              multiplier: 2
+                      failed: 'doctrine://default?queue_name=failed'
+        marks:
+          - {line: 8, tip: 'Six retries cover about two minutes, plenty for a payment row that is a second late.'}
+          - {line: 3, tip: 'An event that is still early after the last retry goes here for a human, instead of vanishing.'}
+      - type: quote
+        body: 'Drop an event only when the payment is already past it. If the payment is behind it, roll back and retry.'
+    aside:
+      - type: when
+        use: ['Events that can overtake the write they depend on', 'Any handler that marks work done before the work is accepted']
+        avoid: ['Events that will never become valid (a payment you never created): retries only add noise, so let them reach the failure transport quickly']
+      - type: tips
+        items:
+          - 'Retries cost delay, not correctness. For a stuck event after the last retry, the [[payments/unknown-outcomes|sweeper]] asks the gateway for the payment''s real state.'
+    check:
+      q: 'A `succeeded` event arrives but no payment has that gateway id yet. Drop it, or roll back and retry? What about a `failed` event for a payment that is already `succeeded`?'
+      a: 'Roll back and retry the first: the payment is behind the event, and no second `succeeded` will ever come. Drop the second: the payment is already past it, so it is old news.'
 
 flashcards:
   - q: 'What is a webhook, and why can''t you trust it without verification?'
@@ -271,6 +368,12 @@ flashcards:
     more: |
       200 means "I have this safely, don't send it again." If you reply 200 to news you couldn't keep, it is lost for good. And for a bad seal, reply 400/401, since a retry from the genuine gateway wouldn't be needed here.
     ref: verify-then-store
+
+  - q: 'A webhook event arrives before the payment is ready for it. Why not just drop it?'
+    a: 'The gateway will not send it again. If you drop it and mark it processed, the payment stays stuck. Roll back and retry instead.'
+    more: |
+      A `succeeded` event can arrive before the reply with the gateway id has been saved, or a `refunded` one before `succeeded` is applied. Compare the payment's state with the event's target: if the payment is behind it (or not found yet), throw so the claim is rolled back and Messenger retries with backoff. If the payment is already at or past the target, the event is old news, so drop it.
+    ref: early-event
 
 quiz:
   - q: 'Rahim''s webhook handler marks the order paid just because the body says `status: paid`, with no signature check. What is the biggest risk?'
@@ -371,3 +474,19 @@ quiz:
         correct: true
         why: 'If the event isn''t stored, you can''t reply 2xx. A 5xx means "I couldn''t take it, try again".'
     ref: verify-then-store
+  - q: 'The handler claimed a `payment.succeeded` event, but no payment has that gateway id yet: the reply carrying the id has not been saved. What should it do?'
+    hint: 'Will the gateway ever send this event again?'
+    options:
+      - text: 'Throw so the claim rolls back and Messenger retries later'
+        correct: true
+        why: 'The payment is behind the event. Once the id is saved, the retry finds it, applies `succeed` and the payment moves on.'
+      - text: 'Return quietly; the event is already marked processed'
+        correct: false
+        why: 'That throws the event away. The gateway will not resend it, so the payment stays in `pending` forever.'
+      - text: 'Create a new payment row from the event''s data and mark it succeeded'
+        correct: false
+        why: 'The event is not the record of what you sold, and the original row would turn up later as a duplicate payment.'
+      - text: 'Return 500 from the controller so the gateway sends it again'
+        correct: false
+        why: 'The controller already stored the event and replied 200. The decision is made later, in the worker.'
+    ref: early-event

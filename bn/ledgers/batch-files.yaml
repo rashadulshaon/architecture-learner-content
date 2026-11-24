@@ -64,7 +64,7 @@ slides:
           - {title: '১. পুরো এসেছে?', body: 'আপলোড শেষের চিহ্ন (rename বা .done) আছে কি', tip: 'দাতা ফাইল .tmp নামে তুলে শেষে নাম বদলায়। আমরা শুধু শেষ নামের ফাইল তুলি।'}
           - {title: '২. checksum মেলে?', body: 'নিজের SHA-256 আর পাঠানোটা এক কি না', tip: 'পথে একটা বিটও বদলালে hash আলাদা হয়, ফাইল নষ্ট ধরা পড়ে।'}
           - {title: '৩. control total মেলে?', body: 'নিজে গোনা সারি ও যোগফল = trailer-এর সংখ্যা', tip: 'ফাইল কাটা পড়েছে বা সারি হারিয়েছে কি না, এটাই বলে দেয়।'}
-          - {title: '৪. আগে এসেছে?', body: 'এই hash আগে লোড হয়েছে কি না', tip: 'একই ফাইল দুইবার এলে দ্বিতীয়বার চুপচাপ বাদ।'}
+          - {title: '৪. আগে এসেছে?', body: 'এই hash আগে পুরো লোড হয়েছে কি না', tip: 'loaded চিহ্নিত ফাইল চুপচাপ বাদ। মাঝপথে থেমে থাকা ফাইল বাদ নয়, আবার চালিয়ে শেষ করা হয়।'}
       - type: quote
         body: 'ফাইল নিজের গোনা আর যোগফলে trailer-এর সাথে না মিললে পুরো ফাইল ফেরত।'
     aside:
@@ -74,7 +74,7 @@ slides:
           - {term: 'Control total', meaning: 'ফাইলে নিজেই লেখা সারির সংখ্যা ও যোগফল, যা আমরা আলাদা করে গুনে মিলিয়ে দেখি।'}
       - type: tips
         items:
-          - 'SFTP-তে দাতাকে বলো ফাইল `.tmp` নামে তুলে শেষে নাম বদলাতে। নইলে অর্ধেক ফাইল ধরে ফেলার ঝুঁকি থাকে।'
+          - 'SFTP-তে দাতাকে বলুন ফাইল `.tmp` নামে তুলে শেষে নাম বদলাতে। নইলে অর্ধেক ফাইল ধরে ফেলার ঝুঁকি থাকে।'
     check:
       q: 'Control total মিলল না, কিন্তু ৯৫% সারি ঠিক। আংশিক লোড করা যাবে কি?'
       a: 'না। মিলল না মানে ফাইল কাটা, বদলানো বা সারি হারানো সন্দেহ। কোনটা, আমরা জানি না, তাই পুরো ফাইল ফেরত দিয়ে দাতার কাছে নতুন ফাইল চাই।'
@@ -82,12 +82,12 @@ slides:
   - slug: ingest-command
     title: 'ফটক পেরিয়ে সারি সারি লোড: Symfony কোড'
     kind: howto
-    tldr: 'Hash আর control total যাচাই, একবারই-গ্রহণ, তারপর সারি ধরে লোড; খারাপ সারি quarantine-এ, আর CSV ও fixed-width দুটোই integer minor unit-এ পড়ো।'
+    tldr: 'Hash আর control total যাচাই, ফাইল claim করা, তারপর সারি ধরে লোড; খারাপ সারি quarantine-এ, আর CSV ও fixed-width দুটোই integer minor unit-এ পড়ুন।'
     keywords: ['fixed-width', 'CSV parse', 'hash_file', 'quarantine', 'SplFileObject', 'importer']
     blocks:
       - type: text
         body: |
-          Importer পুরো ফাইল একবারে মেমরিতে না তুলে একটা একটা সারি পড়ে (generator বা `SplFileObject`)। প্রতিটা সারি নিজের ছোট transaction-এ লোড হয়, আর খারাপ সারি `InvalidRow` ছুঁড়ে quarantine-এ যায়, বাকিগুলো চলে।
+          Importer পুরো ফাইল একবারে মেমরিতে না তুলে একটা একটা সারি পড়ে (generator বা `SplFileObject`)। প্রতিটা সারি নিজের ছোট transaction-এ লোড হয়, আর খারাপ সারি `InvalidRow` ছুঁড়ে quarantine-এ যায়, বাকিগুলো চলে। অন্য কোনো ক্র্যাশে রান থেমে যায়, কিন্তু ফাইল `loading` চিহ্নিত থাকে, তাই পরের রান সেটা তুলে নেয় (পরের স্লাইড)।
       - type: code
         lang: php
         file: 'src/Batch/PayoutImporter.php'
@@ -99,8 +99,8 @@ slides:
               if (!hash_equals($expectedSha, $hash)) {
                   throw new CorruptedFile($path);          // পথে নষ্ট হয়েছে
               }
-              if (null === $fileId = $this->files->registerOnce($provider, basename($path), $hash)) {
-                  return;                                  // একই ফাইল আগেই এসেছে
+              if (null === $fileId = $this->files->claim($provider, basename($path), $hash)) {
+                  return;                                  // loaded বা rejected: বাদ
               }
 
               $file = $this->parser->parse($path);         // header, rows, trailer
@@ -121,7 +121,7 @@ slides:
           }
         marks:
           - {line: 4, tip: 'দাতার পাঠানো SHA-256-এর সাথে নিজের হিসাব করা hash মেলে কি না। `hash_equals` timing-নিরাপদ তুলনা।'}
-          - {line: 7, tip: '`(provider, sha256)`-এ UNIQUE থাকলে INSERT একবারই সফল হয়; দ্বিতীয়বার null ফেরে।'}
+          - {line: 7, tip: 'নতুন ফাইল, বা ক্র্যাশের পরও `loading` থাকা ফাইলের জন্য `claim()` ফাইলের id ফেরায়। `loaded` বা `rejected` ফাইলে null ফেরে।'}
           - {line: 13, tip: '`$file->count` আর `totalMinor` trailer-এ লেখা সংখ্যা। নিজের গোনার সাথে না মিললে কিছুই লোড হয় না।'}
           - {line: 22, tip: 'খারাপ সারি থামায় না; কারণসহ আলাদা জায়গায় যায়, বাকি ফাইল চলতে থাকে।'}
       - type: code
@@ -143,26 +143,102 @@ slides:
           }
           $minor = (int) $m[1] * 100 + (int) str_pad($m[2] ?? '', 2, '0');
         marks:
-          - {line: 4, tip: 'Fixed-width-এ প্রতিটা field-এর শুরু আর দৈর্ঘ্য দাতার spec-এ লেখা। আন্দাজ নয়, spec ধরে কাটো।'}
+          - {line: 4, tip: 'Fixed-width-এ প্রতিটা field-এর শুরু আর দৈর্ঘ্য দাতার spec-এ লেখা। আন্দাজ নয়, spec ধরে কাটুন।'}
           - {line: 10, tip: 'regex দিয়ে ছাঁচ যাচাই, ভুল হলে এই সারিই quarantine-এ যায়।'}
           - {line: 13, tip: 'শুধু integer গুণ-যোগ; কোথাও float নেই।'}
     aside:
       - type: tips
         items:
-          - 'Fixed-width ফাইল পড়ার আগে encoding UTF-8 করে নাও (`mb_convert_encoding`); নইলে অক্ষর-ঘর গোলমাল হয়।'
-          - 'SFTP থেকে ফাইল আনতে Flysystem-এর SFTP adapter ভালো; আনার পর নিজের ডিরেক্টরিতে নিয়ে তবেই পড়ো।'
+          - 'Fixed-width ফাইল পড়ার আগে encoding UTF-8 করে নিন (`mb_convert_encoding`); নইলে অক্ষর-ঘর গোলমাল হয়।'
+          - 'SFTP থেকে ফাইল আনতে Flysystem-এর SFTP adapter ভালো; আনার পর নিজের ডিরেক্টরিতে নিয়ে তবেই পড়ুন।'
       - type: refs
         items:
           - {to: 'ledgers/modeling-money', label: 'Integer minor unit'}
           - {to: 'payments/idempotency-keys', label: 'দুইবার-নিরাপদ লেখা'}
     check:
       q: 'Importer পুরো ফাইল `file()` দিয়ে এক বারে পড়লে বড় ফাইলে কী ঝুঁকি, আর কী করা উচিত?'
-      a: 'মেমরি শেষ হয়ে যেতে পারে। একটা একটা সারি পড়ো (generator বা `SplFileObject`) আর প্রতিটা নিজের ছোট transaction-এ লোড করো।'
+      a: 'মেমরি শেষ হয়ে যেতে পারে। একটা একটা সারি পড়ুন (generator বা `SplFileObject`) আর প্রতিটা নিজের ছোট transaction-এ লোড করুন।'
+
+  - slug: resume-after-crash
+    title: '৪০০০ নম্বরে ক্র্যাশ? আবার চালালে ফাইল শেষ হয়'
+    kind: howto
+    tldr: 'ফাইলে status রাখুন (শেষ না হওয়া পর্যন্ত `loading`), আর প্রতিটা সারির জমার সাথেই একটা টিক লিখুন। আবার চালালে loaded ফাইল বাদ, অর্ধেক ফাইল চালু, টিক-দেওয়া সারি বাদ।'
+    keywords: ['resume', 'idempotent import', 'row ledger', 'ON CONFLICT', 'crash recovery', 'আবার চালানো']
+    blocks:
+      - type: text
+        body: |
+          ৪০০০ নম্বর সারির ক্র্যাশে ফিরি। যে ফাইল একবার দেখা হয়েছে সেটাই বাদ দিলে অর্ধেক-লোড ফাইল চিরকাল অর্ধেকই থাকবে। তাই ফাইলের একটা status থাকে: শেষ সারি না হওয়া পর্যন্ত `loading`, তারপর `loaded`। আবার চালালে শুধু `loaded` ফাইল বাদ যায়। আর প্রতিটা সারির জমার সাথে একই transaction-এ `batch_row`-এ একটা টিক পড়ে, ঠিক দোকানদার যেমন বেতনের তালিকায় নামের পাশে টিক দেন: বিদ্যুৎ গেলেও টিক-দেওয়া নামে দ্বিতীয়বার টাকা যায় না।
+      - type: code
+        lang: sql
+        file: 'migrations — resume support'
+        variant: good
+        code: |
+          CREATE TABLE batch_row (
+            file_id bigint NOT NULL REFERENCES batch_file (id),
+            line_no int    NOT NULL,
+            PRIMARY KEY (file_id, line_no)   -- যে সারিতে টাকা জমা হয়েছে, তার একটাই টিক
+          );
+
+          -- claim(): নতুন ফাইল হয় 'loading'; অসমাপ্ত ফাইল ফেরত আসে
+          INSERT INTO batch_file (provider, name, sha256, status)
+          VALUES (:p, :n, :h, 'loading')
+          ON CONFLICT (provider, sha256) DO NOTHING;
+
+          SELECT id FROM batch_file
+           WHERE provider = :p AND sha256 = :h AND status = 'loading';
+        marks:
+          - {line: 4, tip: 'টিকের টেবিল। primary key থাকায় একই সারির দ্বিতীয় টিক পড়তেই পারে না।'}
+          - {line: 12, tip: 'শুধু `loading` ফাইল ফেরে। `loaded` ও `rejected` ফাইলে কিছুই ফেরে না, তাই সেগুলো বাদ যায়।'}
+      - type: code
+        lang: php
+        file: 'src/Batch/RowLoader.php'
+        variant: good
+        code: |
+          public function load(int $fileId, int $line, Row $row): void
+          {
+              $this->em->wrapInTransaction(function () use ($fileId, $line, $row): void {
+                  $ticked = $this->em->getConnection()->executeStatement(
+                      'INSERT INTO batch_row (file_id, line_no) VALUES (?, ?)
+                       ON CONFLICT DO NOTHING',
+                      [$fileId, $line],
+                  );
+                  if (0 === $ticked) {
+                      return;                         // ক্র্যাশের আগেই জমা হয়েছে: বাদ
+                  }
+                  $this->wallet->credit($row->userId, $row->amountMinor);   // একই transaction
+              });
+          }
+        marks:
+          - {line: 8, tip: 'টিক আগেই ছিল, মানে আগের রানেই এই সারিতে টাকা জমা হয়েছে। কিছু করার নেই।'}
+          - {line: 11, tip: 'টিক আর জমা একসাথে commit হয়, নয়তো একসাথেই বাতিল। ক্র্যাশে একটা থাকবে আর অন্যটা থাকবে না, এমন হয় না।'}
+      - type: visual
+        kind: sequence
+        caption: 'সকালের পুনরায় চালানো: একই ফাইল, একই ক্র্যাশ-বিন্দু'
+        actors:
+          - {id: cron, label: 'আমাদের cron', icon: clock, tip: 'একই ফাইলে importer আবার চালায়।'}
+          - {id: files, label: 'batch_file', icon: archive, tip: 'প্রতিটা ফাইলের status মনে রাখে: loading, loaded বা rejected।'}
+          - {id: wallet, label: 'ওয়ালেট', icon: wallet, tip: 'টাকা জমা দেয়। এখন প্রতি সারির টিক পাহারা দেয়।'}
+        messages:
+          - {from: cron, to: files, label: 'একই ফাইল আবার: claim'}
+          - {from: files, to: cron, label: 'status loading: চালিয়ে যাওয়া হোক', dashed: true, tip: 'আগের কোড এখানেই ফিরে যেত, ফাইল অর্ধেক পড়ে থাকত।'}
+          - {from: cron, to: wallet, label: '১-৩৯৯৯ সারি: টিক আছে, বাদ', tone: good}
+          - {at: wallet, note: 'কেউ দুইবার টাকা পেল না', tone: good}
+          - {from: cron, to: wallet, label: '৪০০০ থেকে: জমা ও টিক', tone: good}
+          - {from: cron, to: files, label: 'শেষ সারি হলো: status loaded'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'দাম: প্রতি সারিতে একটা বাড়তি INSERT, আর `batch_row` প্রতি ফাইলে বাড়ে। কয়েক মাস আগের loaded ফাইলের টিক মুছে দিন।'
+          - 'দুটো cron রান একসাথে চলতে পারলে আগে ফাইলের hash-এ Symfony Lock নিন; নইলে দুটোই চলে, আর দ্বিতীয়টা প্রথমটার টিকের জন্য অপেক্ষা করে।'
+          - 'জমা নিজেই idempotent হলে টিক লাগে না, যেমন `(file_id, line_no)` ধরে UPSERT।'
+    check:
+      q: 'Importer ১০,০০০ সারির ৪০০০ নম্বরে ক্র্যাশ করল। পরের রান ১-৩৯৯৯ সারি আর ৪০০০ নম্বর সারি নিয়ে কী করবে?'
+      a: 'status এখনও `loading`, তাই ফাইলটা claim হয়। ১-৩৯৯৯ সারির টিক পেয়ে বাদ দেয়; ৪০০০ থেকে জমা আর টিক দেয়।'
 
   - slug: quarantine-bad-rows
     title: 'খারাপ সারি: চুপচাপ বাদ নয়, আলাদা ঝুড়িতে'
     kind: pitfall
-    tldr: 'Catch করে `continue` দিলে খারাপ সারি হারিয়ে যায়; কারণসহ quarantine টেবিলে রাখো, ঠিক করো, তারপর শুধু সেই সারি আবার চালাও।'
+    tldr: 'Catch করে `continue` দিলে খারাপ সারি হারিয়ে যায়; কারণসহ quarantine টেবিলে রাখুন, ঠিক করুন, তারপর শুধু সেই সারি আবার চালান।'
     keywords: ['quarantine', 'dead letter', 'reprocess', 'partial failure', 'unique constraint', 'খারাপ সারি']
     blocks:
       - type: text
@@ -233,8 +309,8 @@ slides:
     aside:
       - type: pitfalls
         items:
-          - 'কত % সারি quarantine-এ গেল সেটা গুনে alert দাও। হঠাৎ ২০% হলে সমস্যা ফাইলে নয়, আমাদের parser-এ।'
-          - 'যদি সারিগুলো একে অপরের ওপর নির্ভরশীল (যেমন একটা হিসাবের অংশ), তাহলে সবটা-বা-কিছুই-না ব্যবহার করো।'
+          - 'কত % সারি quarantine-এ গেল সেটা গুনে alert দিন। হঠাৎ ২০% হলে সমস্যা ফাইলে নয়, আমাদের parser-এ।'
+          - 'যদি সারিগুলো একে অপরের ওপর নির্ভরশীল (যেমন একটা হিসাবের অংশ), তাহলে সবটা-বা-কিছুই-না ব্যবহার করুন।'
       - type: refs
         items:
           - {to: 'recovery/bulk-reprocessing', label: 'নিরাপদে আবার চালানো'}
@@ -250,7 +326,7 @@ flashcards:
       চারটার একটাও ফাঁক থাকলে অর্ধেক লোড, নষ্ট ফাইল বা ডবল লোডের ঝুঁকি থাকে। তাই এগুলো ফাইলের একটা সারি ছোঁয়ার আগেই যাচাই হয়।
     ref: file-gates
   - q: 'Checksum কী কাজে লাগে?'
-    a: 'ফাইল পথে বদলেছে বা নষ্ট হয়েছে কি না ধরতে: নিজের SHA-256 আর দাতার পাঠানোটা মেলাও।'
+    a: 'ফাইল পথে বদলেছে বা নষ্ট হয়েছে কি না ধরতে: নিজের SHA-256 আর দাতার পাঠানোটা মেলান।'
     more: |
       একটা বিটও বদলালে hash সম্পূর্ণ আলাদা হয়। PHP-তে `hash_file('sha256', $path)` আর `hash_equals` দিয়ে তুলনা করা হয়।
     ref: file-gates
@@ -265,19 +341,24 @@ flashcards:
       Rename একটা মুহূর্তে হয়, তাই পুরো ফাইলই দেখা যায় অথবা কিছুই না। এই চুক্তি দাতার সাথে আগেই ঠিক করে নিতে হয়।
     ref: file-gates
   - q: 'একই ফাইল দুইবার এলে ডবল লোড কীভাবে ঠেকানো হয়?'
-    a: '`(provider, sha256)`-এ UNIQUE রেখে ফাইল নিবন্ধন করা। দ্বিতীয়বার INSERT ব্যর্থ হয়, আর ফাইল বাদ যায়।'
+    a: '`(provider, sha256)`-এ UNIQUE আর একটা status রেখে ফাইল নিবন্ধন করা। `loaded` ফাইল বাদ যায়; দ্বিতীয় INSERT কিছুই করে না।'
     more: |
-      সারি পর্যায়ে `(file_id, line_no)` অনন্য রাখলে ফাইল মাঝপথে ক্র্যাশ করে আবার চললেও কোনো সারি দুইবার লোড হয় না।
+      status-টাই আসল: শুধু `loaded` ফাইল বাদ যায়। ক্র্যাশের পর `loading` থাকা ফাইল বাদ দিলে চলবে না, চালিয়ে শেষ করতে হবে; নইলে সেটা অর্ধেকই থেকে যায়।
     ref: ingest-command
+  - q: 'Importer ৪০০০ নম্বর সারিতে ক্র্যাশ করল। কাউকে দুইবার টাকা না দিয়ে আবার চালিয়ে ফাইল শেষ হয় কীভাবে?'
+    a: 'ফাইল `loading` থাকে, তাই আবার চালালে চলে। প্রতি সারির টিক জমার সাথেই `batch_row`-এ লেখা, তাই টিক-দেওয়া সারি বাদ যায়।'
+    more: |
+      টিক (`(file_id, line_no)` primary key) আর জমা একই transaction-এ, তাই ক্র্যাশে দুটোই থাকে নয়তো কোনোটাই না। আবার চালালে শুধু `loaded` ফাইল বাদ যায়; অর্ধেক-লোড ফাইল কখনো বাদ যায় না।
+    ref: resume-after-crash
   - q: 'Fixed-width ফাইল আর CSV-র পার্থক্য কী?'
     a: 'CSV-তে field আলাদা করে একটা বিভাজক (`,` বা `|`)। Fixed-width-এ প্রতিটা field-এর অক্ষর-ঘর নির্দিষ্ট।'
     more: |
-      Fixed-width-এ spec-এ লেখা শুরু আর দৈর্ঘ্য ধরে `substr` করা হয়। encoding আগে UTF-8 না করলে অক্ষর-ঘর গোলমাল হয়। অঙ্ক সবসময় integer minor unit-এ বদলে নাও।
+      Fixed-width-এ spec-এ লেখা শুরু আর দৈর্ঘ্য ধরে `substr` করা হয়। encoding আগে UTF-8 না করলে অক্ষর-ঘর গোলমাল হয়। অঙ্ক সবসময় integer minor unit-এ বদলে নিন।
     ref: ingest-command
   - q: 'ফাইলের একটা সারি খারাপ হলে কী করা উচিত?'
-    a: 'চুপচাপ বাদ নয়। সারি, নম্বর আর কারণসহ quarantine টেবিলে রাখো; বাকি ফাইল চলুক; ঠিক হলে শুধু সেই সারি আবার চালাও।'
+    a: 'চুপচাপ বাদ নয়। সারি, নম্বর আর কারণসহ quarantine টেবিলে রাখুন; বাকি ফাইল চলুক; ঠিক হলে শুধু সেই সারি আবার চালান।'
     more: |
-      quarantine-এ কত সারি গেল গুনে alert দাও। হঠাৎ অনেক হলে বুঝতে হবে সমস্যা ফাইলে নয়, আমাদের parser-এ।
+      quarantine-এ কত সারি গেল গুনে alert দিন। হঠাৎ অনেক হলে বুঝতে হবে সমস্যা ফাইলে নয়, আমাদের parser-এ।
     ref: quarantine-bad-rows
 
 quiz:
@@ -339,7 +420,7 @@ quiz:
         why: 'ধরার ধরন নয়, চুপচাপ বাদ দেওয়াটাই সমস্যা।'
     ref: quarantine-bad-rows
   - q: 'কোনগুলো ফাইল ইন্টিগ্রেশনে নিরাপদে আবার-চালানোর (idempotent) সাহায্য করে?'
-    hint: 'ফাইল স্তর আর সারি স্তর দুটোই ভাবো।'
+    hint: 'ফাইল স্তর আর সারি স্তর দুটোই ভাবুন।'
     options:
       - text: '`(provider, sha256)`-এ UNIQUE constraint'
         correct: true
@@ -354,6 +435,32 @@ quiz:
         correct: false
         why: 'নাম একই কিন্তু বিষয়বস্তু আলাদা হতে পারে। hash-ই নির্ভরযোগ্য।'
     ref: ingest-command
+  - q: 'Importer মাঝপথে ক্র্যাশ করে আবার চললে এই নিবন্ধনে কী সমস্যা?'
+    lang: php
+    code: |
+      $id = $this->files->registerOnce($provider, $name, $hash);
+      if (null === $id) {
+          return;          // এই hash আগে দেখেছি: বাদ
+      }
+      foreach ($file->rows as $line => $row) {
+          $this->wallet->credit($row->userId, $row->amountMinor);
+      }
+      $this->files->markLoaded($id);
+    hint: 'মাঝপথে ক্র্যাশ করা ফাইলটা আবার চালালে সে কী দেখে?'
+    options:
+      - text: 'আবার চালালে hash চেনা, তাই সে আগেই ফিরে যায়; ফাইলের বাকিটা কখনো লোড হয় না'
+        correct: true
+        why: '"দেখা" মানে "শেষ" ধরে নেওয়া হয়েছে। ফাইলের status দরকার, আর বাদ যাবে শুধু `loaded` ফাইল।'
+      - text: 'আবার চালালে ১ নম্বর সারি থেকে শুরু হয়ে প্রথম সারিগুলোয় আবার টাকা যায়'
+        correct: false
+        why: 'এখানে উল্টোটা ঘটে: কোনো সারি ছোঁয়ার আগেই সে ফিরে যায়। টিক ছাড়া resume করলে তবে ডবল জমার ঝুঁকি থাকত।'
+      - text: '`markLoaded` loop-এর আগে বসানো উচিত'
+        correct: false
+        why: 'তাতে ফাইল শেষ হওয়ার আগেই loaded হয়ে যাবে; ক্র্যাশের পর সেটা চিরতরে বাদ পড়বে।'
+      - text: 'hash-এর তুলনায় `===`-এর বদলে `==` দরকার'
+        correct: false
+        why: 'তুলনার ধরনের সাথে ক্র্যাশের সমস্যার কোনো সম্পর্ক নেই।'
+    ref: resume-after-crash
   - q: 'একটা ফাইলে ১০,০০০ সারির মধ্যে ১২টা সারির তারিখ ভুল format-এ। অন্য সারিগুলো স্বাধীন লেনদেন। সবচেয়ে ভালো আচরণ?'
     hint: 'সারিগুলো একে অপরের ওপর নির্ভর করে না।'
     options:

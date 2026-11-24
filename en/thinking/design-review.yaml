@@ -28,6 +28,10 @@ slides:
           Nobody in the design review asked, "What if Pay is pressed twice?" On a Friday night with a slow network, 17 customers were charged twice. No line of code was wrong. The mistake was an unstated assumption: "the user will press it only once."
       - type: remember
         body: 'The most dangerous sentence in a design is the one nobody wrote.'
+      - type: terms
+        items:
+          - {term: 'Happy path', meaning: 'The version of events where every step works and every system answers on time.'}
+          - {term: 'Timeout', meaning: 'A wait limit: after this many seconds we stop waiting and treat the call as failed.'}
     check:
       q: 'Behind the design line "the Payment API is called", which unstated assumption is dangerous?'
       a: 'That the API always answers quickly. If it is slow or silent and there is no wait limit, our own server gets stuck too.'
@@ -63,6 +67,11 @@ slides:
         items:
           - 'Ask the four questions of your own design too. It''s hard to spot mistakes in what you wrote yourself, so keep the questions written down.'
           - 'Ask questions, don''t pass verdicts: instead of "this is wrong", say "what happens if the charge succeeds but we time out?"'
+      - type: terms
+        items:
+          - {term: 'Idempotent', meaning: 'Safe to do twice: the second run leaves things exactly as the first did, like pressing a lift button again.'}
+          - {term: 'Backoff', meaning: 'Waiting a little longer before each new retry (1s, 2s, 4s) instead of hammering a struggling system.'}
+          - {term: 'Retry storm', meaning: 'Thousands of clients retrying at once, which buries a system that was only slow.'}
       - type: refs
         items:
           - {to: 'payments/idempotency-keys', label: 'Arrives twice: idempotency keys'}
@@ -107,11 +116,15 @@ slides:
         code: |
           public function pay(Order $order): JsonResponse
           {
-              $this->http->request('POST', 'https://pay.example/charge', [
-                  'timeout' => 5,
-                  'headers' => ['Idempotency-Key' => $order->paymentKey()],
-                  'json' => ['amount' => $order->total(), 'order' => (string) $order->id()],
-              ])->toArray();
+              try {
+                  $this->http->request('POST', 'https://pay.example/charge', [
+                      'timeout' => 3, 'max_duration' => 5,
+                      'headers' => ['Idempotency-Key' => $order->paymentKey()],
+                      'json' => ['amount' => $order->total(), 'order' => (string) $order->id()],
+                  ])->toArray();
+              } catch (TransportExceptionInterface) {
+                  return $this->json(['status' => 'pending'], 202);   // outcome unknown: not paid yet
+              }
 
               $order->markPaid();
               $this->em->flush();
@@ -120,9 +133,10 @@ slides:
               return $this->json(['ok' => true]);
           }
         marks:
-          - {line: 4, tip: 'Never wait more than five seconds. A slow API can''t hold the whole server hostage.'}
-          - {line: 5, tip: 'Every order gets one fixed key. If the same order arrives twice, the Payment API doesn''t charge a second time.'}
-          - {line: 11, tip: 'The email goes to the queue. If it fails, Messenger retries it on its own, and the customer''s order is not held up.'}
+          - {line: 5, tip: 'Give up after 3 seconds of silence and 5 seconds in total (max_duration). A slow API can''t hold the whole server hostage.'}
+          - {line: 6, tip: 'Every order gets one fixed key. If the same order arrives twice, or we ask again after a timeout, the Payment API doesn''t charge a second time.'}
+          - {line: 9, tip: 'A timeout means we don''t know if the money was taken. We neither mark it paid nor failed; it stays pending, and asking again with the same key is safe.'}
+          - {line: 15, tip: 'The email goes to the queue. If it fails, Messenger retries it on its own, and the customer''s order is not held up.'}
       - type: points
         title: 'The three parts of a good review comment'
         style: number
@@ -134,7 +148,7 @@ slides:
       - type: pitfalls
         items:
           - 'This code still has a small gap: if flush succeeds but the process dies before dispatch, the email is lost. The full fix is an outbox.'
-          - 'Setting a `timeout` doesn''t tell you the outcome: after a timeout you still don''t know whether the money was taken, so you need a status check or a webhook.'
+          - 'The `pending` answer only parks the order. To settle it you still need a status check or a webhook (the payment system calling us back), or a retry with the same key.'
       - type: refs
         items:
           - {to: 'workflows/outbox-inbox', label: 'Saving the DB and the message safely together: outbox'}
@@ -177,6 +191,9 @@ slides:
           - 'Attacking the person, not the design: "Why didn''t you think of this?" Ask instead, "Has this been considered?"'
           - 'Spending hours on small things (names, formatting) while the hard-to-reverse decisions (data model, API) slip by.'
           - 'Commenting and then going quiet. A review isn''t finished until every risk has an owner and a remedy.'
+      - type: terms
+        items:
+          - {term: 'Circuit breaker', meaning: 'A switch, like a fuse, that stops calling a failing service for a while so it can recover and we stop wasting waits.'}
       - type: when
         use: ['Before finalising a big or hard-to-reverse design', 'Before adopting a new technology or a new integration']
         avoid: ['Small decisions you could change in one afternoon']
@@ -203,7 +220,7 @@ flashcards:
   - q: 'What is the minimum protection when you call another system?'
     a: 'A timeout, being safe to retry (idempotency), and a plan for what happens on failure.'
     more: |
-      Without a timeout, a slow system holds your threads and slows you down too. In Symfony HttpClient you set the wait limit with the `timeout` option.
+      Without a timeout, a slow system holds your threads and slows you down too. In Symfony HttpClient, `timeout` limits silence and `max_duration` limits the whole request.
     ref: review-worked-example
   - q: 'Why move a step like an email out of the request and into a queue?'
     a: 'If the email is slow or fails, the main job isn''t held up, and the queue retries by itself.'
@@ -214,6 +231,11 @@ flashcards:
     a: 'A question, a risk and a suggestion, all three, aimed at the design and not the person.'
     more: |
       Saying "this is wrong" puts the author on the defensive. A question like "what happens if it is pressed twice?" lets them see the gap themselves. Adding the risk and a suggestion steers the talk toward a solution.
+    ref: review-worked-example
+  - q: 'The payment API times out. Do you mark the order paid or failed?'
+    a: 'Neither. The outcome is unknown, so keep it pending, then retry with the same Idempotency-Key or check the status.'
+    more: |
+      A timeout only says that we stopped waiting, not that the charge didn't happen. Marking it failed risks a customer who paid and got nothing; marking it paid risks the opposite. A pending state plus a safe retry (same key) or a status check settles it without a second charge.
     ref: review-worked-example
   - q: 'What is a pre-mortem?'
     a: 'Assuming before the project starts that it has already failed, then working out together why.'
@@ -308,5 +330,21 @@ quiz:
         why: 'The save already happened; the problem is the wait after it.'
       - text: 'No risk, 10 seconds is a small amount of time'
         correct: false
-        why: 'At peak time, with many requests arriving every second, hundreds of requests get stuck in 10 seconds.'
+        why: 'At 50 requests a second, 10 seconds leaves about 500 requests waiting, each holding a worker. That is how a small slowdown becomes an outage.'
     ref: four-questions
+  - q: 'Your call to the payment API times out after 5 seconds. What should the order be?'
+    hint: 'Did we hear "no", or did we just stop listening?'
+    options:
+      - text: 'Pending: we don''t know the outcome, so ask again with the same Idempotency-Key or check the status'
+        correct: true
+        why: 'A timeout only means we stopped waiting. The same key makes the second ask safe: no second charge.'
+      - text: 'Failed, so the customer can pay again straight away'
+        correct: false
+        why: 'The money may already have been taken; a second payment would charge the customer twice.'
+      - text: 'Paid, because most calls that time out still succeed'
+        correct: false
+        why: 'It is a guess. If the charge did not happen, we would ship goods for free.'
+      - text: 'Retry in a loop without a key until it answers'
+        correct: false
+        why: 'Without a key every retry is a new charge, and a loop of retries is how a retry storm starts.'
+    ref: review-worked-example

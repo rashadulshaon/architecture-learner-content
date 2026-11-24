@@ -75,9 +75,29 @@ slides:
           - 'It can be changed without a deploy (from the database or a config service).'
           - 'The on-call engineer can find and change it within a minute.'
           - 'When it is off, the app doesn''t crash. It takes a fallback path, such as a "please try again later" message.'
+      - type: code
+        lang: php
+        file: 'src/Controller/PaymentController.php'
+        variant: good
+        code: |
+          #[Route('/checkout/pay', methods: ['POST'])]
+          public function pay(Request $request): Response
+          {
+              if ($this->flags->isOn('card-payments-off')) {      // the kill switch
+                  return $this->json([
+                      'message' => 'Card payment is unavailable right now. Please pay with bKash.',
+                  ], Response::HTTP_SERVICE_UNAVAILABLE);          // a fallback, not a crash
+              }
+
+              return $this->paymentGateway->charge($request);
+          }
+        marks:
+          - {line: 4, tip: 'The flag is named "off" on purpose: a missing flag defaults to false, so card payments keep working unless someone really pulls the switch.'}
+          - {line: 7, tip: 'While the switch is on, customers get a clear message and another way to pay, instead of a hanging page.'}
     aside:
       - type: tips
         items:
+          - 'A kill switch has a price: while it is on, that feature is gone. Build and test the fallback path before the emergency.'
           - 'For every flag, write down its kind, its owner and when it will be removed. Everything except permission flags and kill switches needs an expiry date.'
           - 'A permission flag is really an access rule. It belongs under authorization in the security topic.'
       - type: refs
@@ -147,6 +167,7 @@ slides:
       - type: pitfalls
         items:
           - 'If flag state lives in a config file, changing it needs a deploy, which defeats the whole point.'
+          - '1% of 300 daily buyers is 3 people, too few to judge by. On a small site, hold each step longer or start at 10%.'
     check:
       q: 'Why does a percentage rollout hash the user id instead of calling random()?'
       a: 'random() gives a different result on every request, so the same user would see the new path one time and the old path the next. A hash gives the same id the same result every time.'
@@ -159,7 +180,7 @@ slides:
     blocks:
       - type: text
         body: |
-          A Vue app doesn't decide flags itself. The server evaluates every flag for the current user and returns a small JSON object. Vue keeps it in a Pinia store and uses it in `v-if`. But remember that everything in the browser is visible: hiding a button in the UI doesn't make anything safe. The new checkout's API has to be guarded by the same flag on the server.
+          A Vue app doesn't decide flags itself. The server evaluates every flag for the current user and returns a small JSON object. Vue keeps it in a Pinia store and uses it in `v-if`. But remember that everything in the browser is visible: hiding a button in the UI doesn't make anything safe. The new checkout's API has to be guarded by the same flag on the server (next slide).
       - type: code
         lang: php
         file: 'src/Controller/FlagController.php'
@@ -211,6 +232,61 @@ slides:
       q: 'Why isn''t hiding a button in Vue enough to protect a feature?'
       a: 'The browser code and requests are in the user''s hands. They can call the API directly. So the server must block it with the same flag.'
 
+  - slug: flag-server-guard
+    title: 'Hiding the button is not a lock: guard the API too'
+    kind: pitfall
+    tldr: 'A hidden button is still a reachable URL. Check the same flag inside the API action and answer 404 while it is off.'
+    keywords: ['server-side flag check', 'hidden button', 'direct API call', '404', 'enforcement']
+    blocks:
+      - type: metaphor
+        icon: lock
+        title: 'The "Staff only" sign'
+        body: |
+          Taking down the "Staff only" sign doesn't lock the back door of a shop. Hiding the button is the sign; the flag check on the server is the lock.
+      - type: text
+        body: |
+          Rahim hides the new checkout's button behind the flag. A curious user opens the browser's network tab, copies the request the new page would send, and sends it by hand. Nothing on the server asks about the flag, so the unfinished checkout runs for a stranger.
+      - type: code
+        lang: php
+        file: 'src/Controller/CheckoutV2Controller.php'
+        variant: bad
+        code: |
+          #[Route('/api/checkout/v2', methods: ['POST'])]
+          public function create(#[MapRequestPayload] CheckoutV2Request $dto): JsonResponse
+          {
+              // Vue hides the button, but nothing here asks about the flag
+              return $this->json($this->checkoutV2->place($dto), Response::HTTP_CREATED);
+          }
+      - type: code
+        lang: php
+        file: 'src/Controller/CheckoutV2Controller.php'
+        variant: good
+        code: |
+          #[Route('/api/checkout/v2', methods: ['POST'])]
+          public function create(#[MapRequestPayload] CheckoutV2Request $dto): JsonResponse
+          {
+              if (!$this->flags->isOn('new-checkout', $this->getUser())) {
+                  throw $this->createNotFoundException();   // as if the route didn't exist
+              }
+
+              return $this->json($this->checkoutV2->place($dto), Response::HTTP_CREATED);
+          }
+        marks:
+          - {line: 4, tip: 'The same isOn() call, with the same user, as /api/flags. The hash gives the same answer, so Vue and the server always agree.'}
+          - {line: 5, tip: '404 tells a stranger nothing. A 403 would confirm that a closed feature exists.'}
+      - type: quote
+        body: 'The client can hide a feature. Only the server can forbid it.'
+    aside:
+      - type: tips
+        items:
+          - 'Guard every endpoint the feature owns, not just the first one. One unguarded route is an open door.'
+          - 'If the flag is switched off while a page is open, the next call gets a 404. Let the Vue app reload /api/flags and fall back to the old checkout.'
+      - type: remember
+        body: 'Vue decides what to show. The server decides what is allowed.'
+    check:
+      q: 'A user calls POST /api/checkout/v2 directly while new-checkout is off for them. What should happen, and where is that decided?'
+      a: 'The server answers 404, decided inside the controller action by the same isOn() call. The hidden button in Vue is only decoration.'
+
   - slug: flag-debt
     title: 'Flag debt: the switch nobody flips'
     kind: pitfall
@@ -222,13 +298,13 @@ slides:
           If a switchboard has year-old switches that nobody recognises, nobody dares to touch them. Code is the same. 10 flags means 1,024 possible combinations in theory, yet only a couple are ever tested. The saddest case: someone flips an old flag by mistake, and its old path broke long ago.
       - type: code
         lang: yaml
-        file: 'config/flags.yaml (as documentation)'
+        file: 'config/flags.yaml (the registry)'
         code: |
           new-checkout:
             type: release
             owner: 'rahim'
             created: '2026-11-01'
-            remove_by: '2026-12-15'      # CI warns after this date
+            remove_by: '2026-12-15'      # the CI test below fails after this date
           payments-kill-switch:
             type: ops
             owner: 'oncall-payments'
@@ -236,6 +312,31 @@ slides:
         marks:
           - {line: 5, tip: 'Every release flag gets a removal date. Once it passes, CI or a weekly report speaks up.'}
           - {line: 9, tip: 'An ops flag carries a runbook: what happens when you turn it off, and when to use it.'}
+      - type: code
+        lang: php
+        file: 'tests/Flag/FlagRegistryTest.php'
+        variant: good
+        code: |
+          public function testNoReleaseFlagIsPastItsRemovalDate(): void
+          {
+              $flags = Yaml::parseFile(__DIR__.'/../../config/flags.yaml');
+              $today = new \DateTimeImmutable('today');
+              $overdue = [];
+
+              foreach ($flags as $name => $flag) {
+                  if ('release' !== $flag['type']) {
+                      continue;
+                  }
+                  if (new \DateTimeImmutable($flag['remove_by']) < $today) {
+                      $overdue[] = $name;
+                  }
+              }
+
+              self::assertSame([], $overdue, 'Overdue flags: delete them and their old paths.');
+          }
+        marks:
+          - {line: 11, tip: 'Ops flags have no remove_by, so only release flags are checked against today.'}
+          - {line: 16, tip: 'On the due date the build turns red and names the flag. Nobody has to remember.'}
       - type: points
         title: 'Rules for removing flags'
         style: number
@@ -251,6 +352,9 @@ slides:
           - 'Release and experiment flags: remove them when the work is done.'
         avoid:
           - 'Nesting one flag inside another. It tangles the logic.'
+      - type: tips
+        items:
+          - 'A red build on the due date is the point. If the date truly can''t be met, move remove_by in a reviewed commit; never skip the test.'
       - type: remember
         body: 'Every flag is born carrying its own date of death.'
       - type: refs
@@ -300,7 +404,12 @@ flashcards:
     a: 'No. A user can call the API directly, so the server must block it with the same flag.'
     more: |
       Vue only shows or hides things. The server makes the decision and sends the per-user result (true/false) through an API. The client never needs to know the percentage or the allow list.
-    ref: flag-in-vue
+    ref: flag-server-guard
+  - q: 'How do you make sure finished release flags actually get removed?'
+    a: 'Record an owner and a remove_by date for each flag in a registry, and add a CI test that fails once a release flag is overdue.'
+    more: |
+      A red build on the due date names the flag, so nobody has to remember. If the date truly can't be met, move it in a reviewed commit rather than skipping the test. Ops flags (kill switches) have no remove_by.
+    ref: flag-debt
 
 quiz:
   - q: 'At 11 pm you discover a bug in a new feature. It was behind a flag. What is the fastest, safest move?'
@@ -375,6 +484,22 @@ quiz:
         correct: false
         why: 'The damage then reaches everyone, and you lose the benefit of a slow rollout.'
     ref: flag-service-symfony
+  - q: 'A flagged checkout button is hidden in Vue. The API route has no flag check. What can a curious user do?'
+    hint: 'Who controls the browser: you or the user?'
+    options:
+      - text: 'Send the request by hand and use the closed feature'
+        correct: true
+        why: 'Anything in the browser is in the user''s hands. Only a check on the server can refuse the request.'
+      - text: 'Nothing, because the button is hidden'
+        correct: false
+        why: 'Hiding a button removes a shortcut, not the URL behind it.'
+      - text: 'Nothing, because Vue sends the flag with every request'
+        correct: false
+        why: 'A request typed by hand carries whatever its author writes; the server cannot trust the client.'
+      - text: 'Only users in the percentage bucket can do it'
+        correct: false
+        why: 'The bucket is only checked if the server asks. This route never asks.'
+    ref: flag-server-guard
   - q: 'A release flag reached 100% two months ago and is still in the code. What should you do now?'
     hint: 'The flag''s job is over. Does it still belong in the code?'
     options:

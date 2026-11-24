@@ -19,7 +19,7 @@ slides:
             icon: cross
             tip: 'Fire on every channel whenever something happens. Easy to build, but tiring for the user.'
             items:
-              - 'Order, payment, packing, shipping: 4 SMS and 4 emails'
+              - 'Placed, paid, packed, shipped, delivered: 5 SMS and 5 emails'
               - 'The user turned SMS off, and it still goes out'
               - 'A retry sends the same message twice'
               - 'When the SMS provider is down, the OTP never arrives'
@@ -35,6 +35,10 @@ slides:
       - type: quote
         body: 'A notification''s job isn''t to send messages. It is to tell the right person, through the right channel, exactly once.'
     aside:
+      - type: terms
+        items:
+          - {term: 'OTP', meaning: 'A one-time code, usually sent by SMS, that proves it is really you, such as a login or password-reset code.'}
+          - {term: 'Opt-out', meaning: 'The user''s choice to stop receiving some kind of message.'}
       - type: story
         title: 'The digital wallet''s annoyance'
         body: |
@@ -81,6 +85,7 @@ slides:
           - {term: 'Throttling', meaning: 'A cap on how many messages one person gets in a given period.'}
           - {term: 'Digest', meaning: 'Collecting many small updates into one summary message.'}
           - {term: 'Failover', meaning: 'Switching to a backup provider when the primary one fails.'}
+          - {term: 'Transactional message', meaning: 'A message the user needs to finish what they came to do, such as an OTP. Marketing is the opposite.'}
       - type: pitfalls
         items:
           - 'OTP and security messages sit outside opt-out. Marketing never does.'
@@ -145,11 +150,15 @@ slides:
           - {line: 5, tip: '`failover(...)` tries them in order. No code changes, only the DSN.'}
           - {line: 7, tip: 'If you give no channels, the Notification''s importance picks the channels according to this policy.'}
     aside:
+      - type: terms
+        items:
+          - {term: 'DSN', meaning: 'One line that says which provider to use and how to log in to it, like a connection string.'}
       - type: tips
         items:
           - 'Each SMS provider in Bangladesh has its own DSN. If Notifier has no bridge for yours, you can write a small transport yourself.'
           - 'Mailer has a `failover(...)` DSN too, with the same idea.'
           - 'Notifier sends synchronously. Route it through Messenger so the request doesn''t slow down.'
+          - 'Failover can send twice if provider A delivered but answered too late. For an OTP that is harmless; keep it in mind for anything else.'
       - type: refs
         items:
           - {to: 'messaging/dlq-retries', label: 'When sending fails: retries and the DLQ'}
@@ -157,21 +166,85 @@ slides:
       q: 'Do you have to change code to add a second SMS provider in Notifier?'
       a: 'No. Just turn the `texter_transports` DSN into `failover(A B)`. If the first provider fails, Notifier automatically tries the second.'
 
+  - slug: otp-bypass
+    title: 'The OTP must get through: transactional vs marketing'
+    kind: pitfall
+    tldr: 'If every message obeys preferences, a user who switched notifications off never gets the login code. Mark messages transactional or not, and let only transactional ones skip preferences.'
+    keywords: ['OTP', 'transactional message', 'opt-out', 'notification kind', 'security alert', 'preferences']
+    blocks:
+      - type: text
+        body: |
+          Rina switched off every notification because the offers annoyed her. Now she asks for a password-reset code, and a pipeline that obeys her preferences quietly sends nothing. She is locked out and no error appears anywhere. The fix is to decide per message **kind**: a transactional message (one the user needs to finish what they came to do) skips preferences, and everything else obeys them.
+      - type: code
+        lang: php
+        file: 'OrderNotifier.php (wrong for an OTP)'
+        variant: bad
+        code: |
+          $channels = $this->prefs->enabledChannels($user, 'otp');   // []: she switched all off
+          if ([] === $channels) {
+              return;                    // no code is sent, and the user is locked out
+          }
+        marks:
+          - {line: 3, tip: 'Right for a promotion, wrong for an OTP: the user asked for this code a moment ago.'}
+      - type: code
+        lang: php
+        file: 'src/Notification/NotificationKind.php'
+        variant: good
+        code: |
+          enum NotificationKind: string
+          {
+              case Otp = 'otp';
+              case SecurityAlert = 'security_alert';
+              case OrderShipped = 'order_shipped';
+              case Promotion = 'promotion';
+
+              public function isTransactional(): bool
+              {
+                  return self::Otp === $this || self::SecurityAlert === $this;
+              }
+          }
+
+          // in ChannelPicker
+          public function channelsFor(User $user, NotificationKind $kind): array
+          {
+              if ($kind->isTransactional()) {
+                  return ['sms', 'email'];      // always: no code, no login
+              }
+
+              return $this->prefs->enabledChannels($user, $kind->value);
+          }
+        marks:
+          - {line: 10, tip: 'The list is explicit and short on purpose. Adding a kind here is a decision someone should review.'}
+          - {line: 18, tip: 'Transactional kinds ignore preferences. Everything else still asks the user.'}
+      - type: points
+        title: 'What it costs'
+        style: cross
+        items:
+          - 'Keep the transactional list short. Once a promotion sneaks in, you are ignoring opt-outs, which can break the law.'
+          - 'Give OTPs their own limit (say 5 an hour per number), or an attacker can make you pay for thousands of SMS.'
+          - 'They skip the digest too: a code inside an hourly summary is useless.'
+    aside:
+      - type: remember
+        body: 'Marketing asks permission. An OTP answers a request.'
+    check:
+      q: 'Why may a password-reset OTP ignore opt-out while a promotion may not?'
+      a: 'The user asked for the OTP a moment ago and cannot go on without it. A promotion is something we want to say, so the user decides whether to hear it.'
+
   - slug: dedup-throttle-digest
     title: 'The same message once, and a digest when there are too many'
     kind: pitfall
-    tldr: 'Retries and redeliveries send a message twice, so stop that with a dedup key. Past the limit, hold messages back with a rate limiter and collect them in a digest.'
+    tldr: 'Retries and redeliveries send a message twice, so stop that with a dedup key. Past the limit, ordinary messages are held back by a rate limiter and collected in a digest.'
     keywords: ['dedup key', 'RateLimiter', 'digest', 'throttle', 'idempotent notification', 'duplicate notification']
     blocks:
       - type: text
         body: |
-          Sending a notification is message processing too, so a retry can send the same SMS twice. The fix is a **dedup key** (for example `order_shipped:501:user7`) that goes into a UNIQUE table only once. And once a user would receive more than three in an hour, the rest aren't sent immediately but collected in a digest.
+          Sending a notification is message processing too, so a retry can send the same SMS twice. The fix is a **dedup key** (for example `order_shipped:501:user7`) that goes into a UNIQUE table only once. And once a user would receive more than three in an hour, the rest of the ordinary messages aren't sent immediately but collected in a digest. Urgent ones skip that limit.
       - type: code
         lang: php
         file: 'src/Notification/SafeSender.php'
         variant: good
         code: |
-          public function send(User $user, string $dedupKey, Notification $n): void
+          public function send(User $user, string $dedupKey, Notification $n, bool $urgent = false): void
           {
               $claimed = $this->db->executeStatement(
                   'INSERT INTO notification_log (dedup_key) VALUES (?) ON CONFLICT DO NOTHING',
@@ -181,7 +254,8 @@ slides:
                   return;                                    // already sent
               }
 
-              if (!$this->perUserLimiter->create((string) $user->getId())->consume()->isAccepted()) {
+              $limit = $this->perUserLimiter->create((string) $user->getId());
+              if (!$urgent && !$limit->consume()->isAccepted()) {
                   $this->digest->add($user, $n);             // goes out later, together
                   return;
               }
@@ -195,8 +269,8 @@ slides:
           }
         marks:
           - {line: 4, tip: 'With UNIQUE on dedup_key, the second message can''t get in.'}
-          - {line: 11, tip: 'Past the limit it goes straight to the digest. Nothing is lost; it just goes out later.'}
-          - {line: 19, tip: 'If sending fails, we remove the mark. Otherwise the retry is skipped and the message is never sent.'}
+          - {line: 12, tip: 'Past the limit an ordinary message goes to the digest; an urgent one (an OTP) skips the limit. Nothing is lost; it just goes out later.'}
+          - {line: 20, tip: 'If sending fails, we remove the mark. Otherwise the retry is skipped and the message is never sent.'}
       - type: code
         lang: yaml
         file: 'config/packages/rate_limiter.yaml'
@@ -213,13 +287,69 @@ slides:
       - type: pitfalls
         items:
           - 'Set the dedup mark before sending and forget to remove it when sending fails, and the message is lost for good.'
-          - 'Don''t forget to send what you collect in the digest on time; a scheduled job should empty it.'
+          - 'What the digest collects must be sent on time: the next slide shows the scheduled job that empties it.'
+      - type: terms
+        items:
+          - {term: 'Rate limiter', meaning: 'Counts how often something happens in a time window and says no once the limit is passed.'}
       - type: refs
         items:
           - {to: 'api/rate-limiting', label: 'Rate limiting'}
     check:
       q: 'Which is right for building a dedup key: a random UUID or the identity of the event?'
       a: 'The identity of the event, such as `order_shipped:501:user7`. A retry produces the same key, which is how the duplicate is caught; a random UUID is new each time and makes the check useless.'
+
+  - slug: digest-job
+    title: 'Emptying the digest: a scheduled job'
+    kind: howto
+    tldr: 'A digest helps only if something sends it. A Scheduler task gathers each user''s waiting items every hour, sends one message, and clears them only after the send worked.'
+    keywords: ['digest', 'Scheduler', 'AsPeriodicTask', 'summary email', 'scheduled job', 'batch notification']
+    blocks:
+      - type: text
+        body: |
+          Messages held back by the limit sit in the digest table. Left alone they never reach anyone, which is the same as dropping them. A scheduled task runs every hour and sends each user one summary. It clears the items only after the send worked, so a failure just means the digest goes out in the next run.
+      - type: code
+        lang: php
+        file: 'src/Notification/SendDigests.php'
+        variant: good
+        code: |
+          #[AsPeriodicTask(frequency: '1 hour', schedule: 'default')]
+          final readonly class SendDigests
+          {
+              public function __construct(
+                  private DigestRepository $digests,
+                  private NotifierInterface $notifier,
+              ) {}
+
+              public function __invoke(): void
+              {
+                  foreach ($this->digests->usersWithPending() as $user) {
+                      $items = $this->digests->pendingFor($user);
+
+                      $n = (new Notification(count($items).' updates on your orders', ['email']))
+                          ->content(implode("\n", array_map(fn ($i) => $i->line(), $items)));
+
+                      $this->notifier->send($n, new Recipient($user->getEmail()));
+                      $this->digests->clear($user, $items);   // only after the send worked
+                  }
+              }
+          }
+        marks:
+          - {line: 1, tip: 'Symfony Scheduler runs this class every hour. It needs a running worker, or nothing ever fires.'}
+          - {line: 18, tip: 'If the send throws, this line never runs and the items wait for the next hour. Clearing first would lose them.'}
+      - type: points
+        title: 'What it costs'
+        style: cross
+        items:
+          - 'The digest arrives up to an hour late. Fine for updates, wrong for anything urgent.'
+          - 'A crash between the send and the clear sends the same digest twice. For a summary email that is acceptable.'
+          - 'Without a running Scheduler worker, the digest silently never leaves.'
+    aside:
+      - type: commands
+        items:
+          - {cmd: 'php bin/console messenger:consume scheduler_default', desc: 'start the worker that fires scheduled tasks'}
+    check:
+      q: 'Why does the job clear the digest items only after the send succeeded?'
+      a: 'If it cleared first and the send then failed, the items would be gone and the user would never hear about them. Clearing last means a failure just retries next hour.'
 
 flashcards:
   - q: 'What is the core job of a notification system?'
@@ -257,6 +387,17 @@ flashcards:
     more: |
       A user who has switched off all SMS still needs the password-reset code. So the rules differ by message type, and they are written out explicitly in code.
     ref: notification-pipeline
+
+  - q: 'Why may an OTP ignore a user''s notification preferences?'
+    a: 'The user just asked for it and cannot go on without it. Marketing is something we want to say, so the user decides; an OTP answers a request.'
+    more: |
+      A user who switched everything off still needs the password-reset code. Mark each message kind transactional or not, keep the transactional list short, and rate-limit OTPs separately so attackers cannot run up your SMS bill.
+    ref: otp-bypass
+  - q: 'Why must a notification digest have a scheduled job?'
+    a: 'Held-back messages reach the user only if something sends them. A scheduled task sends one summary per user, then clears the items after the send worked.'
+    more: |
+      Without the job, the digest table just fills up and the messages are effectively dropped. Clearing after the send means a failed run simply tries again next time, at the price of an occasional duplicate summary.
+    ref: digest-job
 
 quiz:
   - q: 'One order sends five SMS and the user is annoyed. Which fixes are right?'
@@ -346,3 +487,32 @@ quiz:
         correct: false
         why: 'It is promotional, and the user can switch it off if they want.'
     ref: notification-pipeline
+  - q: 'Rina switched off every notification. She asks for a password-reset code, and the pipeline obeys preferences for every kind of message. What happens?'
+    hint: 'What does `enabledChannels()` return when everything is off?'
+    options:
+      - text: 'The pipeline sends the code anyway, because OTP is special'
+        correct: false
+        why: 'Nothing in this code treats an OTP differently. Without an explicit rule, it is just another message.'
+      - text: 'The code is sent to her email instead'
+        correct: false
+        why: 'She switched email off too, so the list of channels is empty and nothing is sent.'
+      - text: 'No code is sent, no error shows, and she is locked out'
+        correct: true
+        why: 'An empty channel list ends the pipeline quietly. A transactional kind must bypass preferences.'
+      - text: 'The code is queued and sent when she switches notifications back on'
+        correct: false
+        why: 'Nothing queues it. The message is dropped, and an expired OTP would be useless later anyway.'
+    ref: otp-bypass
+  - q: 'In the digest job, `clear()` runs before `send()`. The email provider fails during that run. What is the result?'
+    hint: 'Which comes first: removing the items or delivering them?'
+    options:
+      - text: 'The items are gone and the user never hears about them'
+        correct: true
+        why: 'The send failed after the items were removed, so nothing is left to retry. Clear only after a successful send.'
+      - text: 'The items stay and go out in the next run'
+        correct: false
+        why: 'That is what happens when `clear()` comes after `send()`. Here they were removed first.'
+      - text: 'The user gets the digest twice'
+        correct: false
+        why: 'Duplicates come from a crash after sending. Here nothing was sent at all.'
+    ref: digest-job

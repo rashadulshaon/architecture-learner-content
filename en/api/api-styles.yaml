@@ -131,7 +131,7 @@ slides:
             icon: list
             tip: 'A separate URL for each resource. The simplest approach, but when a screen gets complex you have to call again and again.'
             items:
-              - '3 separate requests'
+              - '5 separate requests'
               - 'The full shape of each resource'
               - 'URL-based HTTP caching is easy'
           - title: 'GraphQL'
@@ -153,6 +153,84 @@ slides:
     check:
       q: 'In protobuf, why can''t the `= 2` in `int64 total_paisa = 2;` be changed?'
       a: 'That number is what identifies the field on the wire. If you change it, old clients read a different field, so it is a breaking change.'
+
+  - slug: grpc-pain
+    title: 'The pain gRPC cures: a renamed field'
+    kind: pitfall
+    tldr: 'Between two internal services, hand-written JSON drifts apart without a sound. A shared .proto turns the same rename into a loud failure before deploy.'
+    keywords: ['gRPC', 'internal services', 'contract drift', 'protobuf', 'generated client', 'silent failure']
+    blocks:
+      - type: text
+        body: |
+          Rahim's order service asks the payment service, run by another team, for an order's total. The reply is hand-written JSON. On Tuesday the payment team renames `total` to `total_paisa`. Nothing crashes: the order service reads a key that no longer exists, gets nothing, and quietly shows 0 taka on every order until a customer complains.
+      - type: metaphor
+        icon: shop
+        title: 'The kitchen''s code list'
+        body: |
+          The waiter and the kitchen talk by walkie-talkie in codes: "7" means biryani. If the kitchen changes what 7 means and tells nobody, the waiter keeps shouting 7 and wrong plates keep coming out. A `.proto` file is one printed code list that both sides must generate from, so a changed code shows up before the first order.
+      - type: code
+        lang: php
+        file: 'src/Order/PaymentClient.php'
+        variant: bad
+        code: |
+          $data = $this->http
+              ->request('GET', 'http://payments.internal/orders/'.$id)
+              ->toArray();
+
+          $total = $data['total'] ?? 0;   // renamed upstream: silently 0 now
+        marks:
+          - {line: 5, tip: 'A missing array key is not an error in PHP. The ?? 0 even hides it, so the wrong number flows on.'}
+      - type: code
+        lang: php
+        file: 'src/Order/PaymentClient.php'
+        variant: good
+        code: |
+          // GetOrderRequest and Order are generated from order.proto
+          [$order, $status] = $this->client
+              ->GetOrder(new GetOrderRequest(['id' => $id]))
+              ->wait();
+
+          if ($status->code !== \Grpc\STATUS_OK) {
+              throw new \RuntimeException($status->details);
+          }
+
+          $total = $order->getTotalPaisa();   // a renamed field has no getter any more
+        marks:
+          - {line: 6, tip: 'A failed call comes back as a status you must look at, not as a quietly empty result.'}
+          - {line: 10, tip: 'After the .proto changes and the code is regenerated, this method is gone. Static analysis in CI flags it, and in Go or Java the build stops.'}
+      - type: visual
+        kind: compare
+        caption: 'What gRPC fixes between internal services, and what it costs'
+        columns:
+          - title: 'What it fixes'
+            tone: good
+            icon: check
+            tip: 'The pain is two teams changing a shared shape without noticing. A generated contract makes the change visible to both sides.'
+            items:
+              - 'One .proto file is the contract; both sides generate code from it'
+              - 'A rename fails in CI, not in production'
+              - 'Small on the wire: 35 bytes of JSON for an order, about 12 in Protobuf'
+          - title: 'What it costs'
+            tone: warn
+            icon: warning
+            tip: 'You pay in tooling and in how hard it is to look at traffic. For a few calls between two services of one team, that price is not worth it.'
+            items:
+              - 'Every build needs protoc and the gRPC PHP extension'
+              - 'Bodies are binary: curl and log files show noise'
+              - 'Not for browsers or outside partners'
+    aside:
+      - type: when
+        use:
+          - 'Many calls between services you own, possibly in more than one language'
+        avoid:
+          - 'One team, one app, a few calls: REST with an OpenAPI file is enough'
+          - 'Clients you do not control, such as browsers and partners'
+      - type: terms
+        items:
+          - {term: 'protoc', meaning: 'The tool that reads a .proto file and writes the client and server code for your language.'}
+    check:
+      q: 'Payment renames `total` in its JSON. Why does the order service fail silently, and why does the gRPC version fail early?'
+      a: 'A missing array key just gives nothing, and `?? 0` hides it. With gRPC the field is a generated method, so after regeneration the old name no longer exists and CI catches it.'
 
   - slug: async-202
     title: 'The style that doesn''t make you wait: 202 Accepted'
@@ -299,6 +377,16 @@ flashcards:
     more: |
       Renaming a field is relatively safe, but changing or reusing its number is a breaking change. The number of a deleted field is marked `reserved`, so nobody reuses it by mistake.
     ref: graphql-grpc-shape
+  - q: 'What silent failure does gRPC prevent between two internal services?'
+    a: 'A field renamed by the other team. With hand-written JSON you read nothing and carry on; with a generated client the old name stops compiling or fails in CI.'
+    more: |
+      Both services generate their code from one .proto file, so a change to the contract shows up on both sides before deploy. Hand-written JSON has no such shared file: a missing key is just null, and `?? 0` hides it.
+    ref: grpc-pain
+  - q: 'What does gRPC cost you, and when should you not use it?'
+    a: 'Build tooling (protoc, the gRPC extension) and unreadable binary traffic. Skip it for one team with a few calls, or for clients you don''t control.'
+    more: |
+      A plain REST API described by an OpenAPI file gives most of the contract benefit with none of the tooling. Reach for gRPC when many calls cross services you own, speed matters, or the services use different languages.
+    ref: grpc-pain
   - q: 'What status does an API return for slow work, and with what?'
     a: '`202 Accepted` plus a `Location` header where the job''s status can be checked. The work runs in the background in a queue worker.'
     more: |
@@ -384,6 +472,22 @@ quiz:
         correct: false
         why: 'GraphQL runs at many large companies. The question is whether this app needs it.'
     ref: decision-guide
+  - q: 'The payment team renames `total` to `amount` in its JSON reply. Next day every order in the order service shows 0 taka, and no error is logged. What would have caught this before deploy?'
+    hint: 'Where does the contract live, and who checks it?'
+    options:
+      - text: 'A shared .proto file with generated clients, so the old field name stops existing in CI'
+        correct: true
+        why: 'Both sides generate code from the same file, so the rename breaks the build or static analysis, not production.'
+      - text: 'A longer timeout on the HTTP call'
+        correct: false
+        why: 'The call succeeded. The data was read wrongly, so timing is not the issue.'
+      - text: 'Writing `?? null` instead of `?? 0`'
+        correct: false
+        why: 'Still silent: the key is missing either way and nothing tells you the contract changed.'
+      - text: 'Moving the payment service to a message queue'
+        correct: false
+        why: 'A queue changes how the message travels, not who checks its shape.'
+    ref: grpc-pain
   - q: 'Why is caching harder in GraphQL than in REST?'
     hint: 'What does an HTTP cache build its cache key from?'
     options:

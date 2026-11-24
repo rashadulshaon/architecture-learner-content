@@ -7,7 +7,7 @@ slides:
     blocks:
       - type: text
         body: |
-          Hasan Store's monthly report says "total outstanding: 5000 taka" on the first page, yet the list below it adds up to 4000. Both queries ran inside the same transaction. But in the gap between them, Karim's 1000 taka payment was committed, and the second query saw it. So where did the I in ACID go? The answer: isolation isn't a switch, it's a dial with four settings, and the default setting is fairly loose.
+          Hasan Store's monthly report says "total outstanding: 5000 taka" on the first page, yet the list below it adds up to 4000. Both queries ran inside the same transaction. But in the gap between them, Karim's 1000 taka payment was committed, and the second query saw it. So where did the I in ACID go? The answer: isolation isn't a switch, it's a dial with four settings, and the default setting is fairly loose. The fix is one line, shown below: ask for REPEATABLE READ, so the whole transaction works from one snapshot, a frozen picture taken when it starts. The price: the report shows the shop as of its start, so Karim's payment appears only in the next run.
       - type: code
         lang: php
         file: 'src/Report/DueReport.php'
@@ -40,6 +40,24 @@ slides:
           - {from: report, to: db, label: 'Give me each person''s due'}
           - {from: db, to: report, label: 'List: sums to 4000', dashed: true, tone: bad, tip: 'The second query saw the new state. Two queries in one transaction got pictures from two different moments.'}
           - {at: report, note: 'Total 5000, list says 4000', tone: bad, tip: 'The report disagrees with itself. No error, no log entry, just a wrong sheet of paper.'}
+      - type: code
+        lang: php
+        file: 'src/Report/DueReport.php'
+        variant: good
+        code: |
+          // Same report at REPEATABLE READ: one snapshot for the whole transaction
+          $report = $conn->transactional(function (Connection $c): array {
+              $c->executeStatement('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+
+              $total = (int) $c->fetchOne('SELECT SUM(due) FROM customer');       // 5000
+              // Karim's 1000 taka commits here, but this transaction keeps its snapshot
+              $rows = $c->fetchAllAssociative('SELECT name, due FROM customer');  // sums to 5000
+
+              return ['total' => $total, 'rows' => $rows];
+          });
+        marks:
+          - {line: 3, tip: 'PostgreSQL: this must run before the transaction''s first query, and it applies to this one transaction only.'}
+          - {line: 7, tip: 'Both queries read the same frozen picture, so the total and the list agree: 5000 and 5000.'}
     aside:
       - type: terms
         items:
@@ -68,13 +86,13 @@ slides:
       - type: visual
         kind: table
         caption: 'The three read anomalies, in ledger terms'
-        headers: ['Anomaly', 'What happens in the ledger', 'Result']
+        headers: ['Anomaly', 'What happens in the ledger', 'Result', 'Stopped from']
         rows:
-          - cells: ['Dirty read', 'You read a pencil entry, then it gets erased', 'You acted on something that never existed']
+          - cells: ['Dirty read', 'You read a pencil entry, then it gets erased', 'You acted on something that never existed', 'READ COMMITTED upwards']
             tip: 'Reading another transaction''s uncommitted change. If it rolls back, you have made a decision on data that was never true.'
-          - cells: ['Non-repeatable read', 'You read the same line twice; someone inked over it in between', 'Two different values for the same row']
+          - cells: ['Non-repeatable read', 'You read the same line twice; someone inked over it in between', 'Two different values for the same row', 'REPEATABLE READ upwards']
             tip: 'Reading the same row twice in one transaction and getting two values, because another transaction changed it and committed in between.'
-          - cells: ['Phantom read', 'You count lines matching a rule twice; a new line appeared in between', 'Extra rows suddenly show up']
+          - cells: ['Phantom read', 'You count lines matching a rule twice; a new line appeared in between', 'Extra rows suddenly show up', 'SERIALIZABLE (PostgreSQL: already at REPEATABLE READ)']
             tip: 'Running the same WHERE query twice and getting extra rows (or missing ones) the second time, because someone committed an INSERT or DELETE in between.'
       - type: text
         body: |
@@ -125,7 +143,7 @@ slides:
             items:
               - 'Two people read the same row and write the same row'
               - 'Due is 500; both add 100 and write 600, instead of 700'
-              - 'Prevented by: atomic UPDATE, FOR UPDATE lock, version column'
+              - 'Prevented by: atomic UPDATE (SET due = due + 100), FOR UPDATE lock, version column'
           - title: 'Write skew'
             tone: bad
             icon: shuffle
@@ -265,7 +283,7 @@ slides:
         style: check
         items:
           - 'Single-row arithmetic (stock, balance): an atomic UPDATE or a lock; no need to change the level.'
-          - 'A long report that needs one picture for all its queries: REPEATABLE READ.'
+          - 'A long report that needs one picture for all its queries: REPEATABLE READ (read-only, so no aborts; it shows data as of its start).'
           - 'A rule spanning several rows (write skew): SERIALIZABLE plus retry.'
       - type: quote
         body: 'SERIALIZABLE promises "no wrong results", not "no aborts". Without retry it is incomplete.'
@@ -275,6 +293,7 @@ slides:
           - 'Don''t make SERIALIZABLE the default for the whole app: more aborts and retries will slow it down.'
           - 'Keep emails, HTTP calls and queue dispatches out of the retried closure, because it may run several times.'
           - 'If a transaction is already open outside, SET TRANSACTION fails; call the runner from the outermost layer.'
+          - 'In PostgreSQL, a REPEATABLE READ transaction that writes can also be aborted if it touches a row someone else changed. Read-only reports never are.'
       - type: tips
         items:
           - 'In MySQL, run `SET TRANSACTION ISOLATION LEVEL …` before the transaction starts; it then applies only to the next transaction.'
@@ -291,6 +310,11 @@ flashcards:
     a: 'How much of each other''s changes concurrent transactions can see. The stricter the level, the fewer anomalies, but the more waiting and aborts.'
     more: |
       The SQL standard defines four levels: read uncommitted, read committed, repeatable read, serializable. So the I in ACID is a dial, not a yes/no. At the default setting, another transaction's commit can still slip in between two queries of yours.
+    ref: two-reads-two-answers
+  - q: 'How do you make all of a report''s queries agree with each other?'
+    a: 'Run the report transaction at REPEATABLE READ. It reads one snapshot taken at its start, so the total and the list always match.'
+    more: |
+      One line does it: `SET TRANSACTION ISOLATION LEVEL REPEATABLE READ` before the first query. The price is that the report shows the data as of its start; payments that commit while it runs appear only in the next run. A read-only report never gets aborted for this.
     ref: two-reads-two-answers
   - q: 'What is a dirty read?'
     a: 'Reading another transaction''s uncommitted change. If it rolls back, you acted on data that never existed.'

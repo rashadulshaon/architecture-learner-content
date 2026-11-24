@@ -12,7 +12,7 @@ slides:
           When there's a mistake in the credit ledger, a sensible shopkeeper doesn't scratch it out. He writes a new line: "Correction: 50 taka less, date, signature". In a scratched-out ledger nobody can tell what was written before. UPDATE is exactly that scratching out: the old value is gone, and so is who changed it and why.
       - type: text
         body: |
-          At Rahim's shop, the price of rice went from 80 to 90 taka. Someone ran `UPDATE products SET price = 90`. Now last week's invoice page shows 90 taka, and the customer says, "But I bought it at 80." There's no proof either way.
+          At Rahim's shop, the price of rice went from 80 to 90 taka. Someone ran `UPDATE products SET price = 90 WHERE id = 7`. The invoice page reads the price from `products`, so last week's invoice now shows 90 taka, and the customer says, "But I bought it at 80." There's no proof either way.
       - type: visual
         kind: compare
         caption: 'The same event: overwriting vs keeping history'
@@ -33,6 +33,19 @@ slides:
               - 'The invoice shows the 80 taka from the time of sale'
               - 'Who, when and why are all recorded'
               - 'The price on any date can be looked up'
+      - type: code
+        lang: sql
+        file: 'invoice query: the same line before and after'
+        code: |
+          -- before: the invoice borrows today's price, so it changes with it
+          SELECT i.qty, p.price FROM order_items i JOIN products p ON p.id = i.product_id;
+
+          -- after: the price is copied onto the line at the moment of sale
+          INSERT INTO order_items (order_id, product_id, qty, unit_price)
+          SELECT :order, p.id, :qty, p.price FROM products p WHERE p.id = :product;
+        marks:
+          - {line: 2, tip: 'The join reads whatever the price is now. After the UPDATE to 90, every old invoice silently shows 90.'}
+          - {line: 6, tip: 'unit_price is written once and never joined back to products. A later price change cannot touch it.'}
       - type: quote
         body: 'If a value might ever be questioned, don''t overwrite it. Add a new line.'
     aside:
@@ -40,6 +53,9 @@ slides:
         title: 'Who raised the salary?'
         body: |
           An audit found that an employee's salary had changed three times, but the table held only the last figure. Who changed it, when, and with whose approval? No answers. An app may have a "last updated" column, but it never keeps the previous value.
+      - type: tips
+        items:
+          - 'Copying the price answers "what did this customer pay?". It can''t answer "what was the price on 10 February?" for a product nobody bought that day; that needs effective dating (slide 3).'
       - type: terms
         items:
           - {term: 'Audit trail', meaning: 'An unalterable list of who changed what, and when.'}
@@ -56,7 +72,7 @@ slides:
     blocks:
       - type: text
         body: |
-          An audit table follows the ledger's rule: lines are only ever added, and nobody touches the old ones. Each row records **who** (the actor), **when**, **which** record, what action, and the old and new values. It has to be written in the same transaction as the main change: if the change succeeds the audit row exists, and if it fails both disappear.
+          An audit table follows the ledger's rule: lines are only ever added, and nobody touches the old ones. Each row records **who** (the actor), **when**, **which** record, what action, and the old and new values. It has to be written in the same transaction as the main change: if the change succeeds the audit row exists, and if it fails both disappear. Written separately, a crash between the two would leave a price change with no record of who made it.
       - type: code
         lang: sql
         file: 'migrations/audit_log.sql'
@@ -110,10 +126,11 @@ slides:
     aside:
       - type: tips
         items:
-          - 'To catch every change, a database trigger is safest, because even SQL run by hand from a console is captured. Writing from the app misses anything done outside it.'
+          - 'A database trigger catches every change, even hand-typed SQL, but it doesn''t know the app user unless you pass it (for example SET LOCAL app.user_id). Writing from the app knows the user but misses anything done outside it.'
       - type: pitfalls
         items:
           - 'An audit log is not an application log. App logs get rotated away; audit data is legal evidence.'
+          - 'The table only grows, one row per change. Plan how long to keep it, and partition it by month once it gets big.'
       - type: refs
         items:
           - {to: 'data/data-lifecycle', label: 'How long to keep audit data'}
@@ -129,7 +146,7 @@ slides:
     blocks:
       - type: text
         body: |
-          An audit says who changed something and when; **effective dating** says which value was valid during which period. In a price table you don't edit a row. You close the old row's `valid_to` and add a new row. An empty `valid_to` means "still in force". You can even set a price for a future date, such as an Eid offer starting on the 1st. To stop two periods for the same product from getting mixed up, use an exclusion constraint in PostgreSQL.
+          An audit says who changed something and when; **effective dating** says which value was valid during which period. In a price table you don't edit a row. You close the old row's `valid_to` and add a new row. An empty `valid_to` means "still in force". You can even set a price for a future date, such as an Eid offer starting on the 1st. Without a guard, one typo can leave two rows covering 20 February, so the lookup returns two prices and nobody knows which is right. An exclusion constraint in PostgreSQL stops that.
       - type: code
         lang: sql
         file: 'migrations/product_prices.sql'
@@ -275,6 +292,7 @@ slides:
     aside:
       - type: pitfalls
         items:
+          - 'To show or restore deleted rows (an admin screen), switch the filter off for that request: `$em->getFilters()->disable(''soft_delete'')`.'
           - 'Native SQL and reporting queries don''t get the Doctrine filter. There you must write `deleted_at IS NULL` by hand.'
           - 'Soft delete makes the database grow; run a hard-delete job 30 to 90 days after deletion.'
       - type: refs
@@ -295,6 +313,11 @@ flashcards:
     more: |
       In Doctrine, use `$em->wrapInTransaction()`. In a separate transaction, there would be a window where the change succeeds but the audit write fails. To catch writes made outside the app, a database trigger is safest.
     ref: audit-history
+  - q: 'How do you stop old invoices changing when a product''s price changes?'
+    a: 'Copy the price onto the order line (`unit_price`) at the time of sale, and never join back to `products.price` for invoices.'
+    more: |
+      The invoice then rests on its own row, so a later UPDATE of the product cannot touch it. The price of this simplicity: it only knows prices that were actually sold. To answer "what was the price on 10 February?" for any product, use effective dating.
+    ref: history-vanished
   - q: 'What is effective dating?'
     a: 'Storing `valid_from` and `valid_to` with each value, so you can say which value was valid on any date.'
     more: |

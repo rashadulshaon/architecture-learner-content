@@ -89,7 +89,7 @@ slides:
         marks:
           - {line: 5, tip: 'No variables in the message, so every failure groups under one name. Counting, graphing and alerting become easy.'}
           - {line: 6, tip: 'A field of its own: you can filter directly on order_id later.'}
-          - {line: 9, tip: 'Pass the whole exception under the exception key and Monolog writes its class, message and stack trace in order.'}
+          - {line: 9, tip: 'Pass the whole exception under the exception key and Monolog writes its class, message, code and file and line. The full stack trace needs `includeStacktraces` turned on in the JSON formatter.'}
       - type: code
         lang: yaml
         file: 'config/packages/monolog.yaml'
@@ -232,7 +232,7 @@ slides:
     blocks:
       - type: text
         body: |
-          When the request ends, the work doesn't. The email goes out from a worker, and the payment happens in another service. If the number doesn't cross those borders, the story breaks halfway. So stick it into the header of every outgoing HTTP call, and onto every message you put in a queue (in Messenger's terms, a **stamp**).
+          When the request ends, the work doesn't. A refund goes out from a worker, and the payment happens in another service. If the number doesn't cross those borders, the story breaks halfway. So stick it into the header of every outgoing HTTP call (next slide), and onto every message you put in a queue (in Messenger's terms, a **stamp**).
       - type: visual
         kind: flow
         caption: 'One number, three places: every log says 0191-ab'
@@ -245,8 +245,23 @@ slides:
         edges:
           - {from: user, to: api, label: 'The request arrives; the API creates number 0191-ab'}
           - {from: api, to: pay, label: 'HTTP header X-Correlation-Id: 0191-ab'}
-          - {from: api, to: queue, label: 'The email message gets the stamp 0191-ab'}
+          - {from: api, to: queue, label: 'The refund message gets the stamp 0191-ab'}
           - {from: queue, to: worker, label: 'The worker reads the stamp and logs under the same number', tone: good}
+      - type: visual
+        kind: table
+        caption: 'Order 5512: filter 40,000 lines by 0191-ab and five remain, in time order'
+        headers: ['Time', 'Program', 'What it logged']
+        rows:
+          - cells: ['02:01:13', 'Shop API', 'checkout.started  order_id=5512']
+            tip: 'The request arrives and gets the number 0191-ab.'
+          - cells: ['02:01:14', 'Payment service', 'payment.charged  gateway=bkash']
+            tip: 'The customer''s money is taken. This line comes from another service but carries the same number.'
+          - cells: ['02:01:14', 'Shop API', 'order.save_failed  reason=lock_timeout']
+            tip: 'The database gave up waiting for a lock, so no order was created. This is where the story broke.'
+          - cells: ['02:01:15', 'Shop API', 'refund.queued  order_id=5512']
+            tip: 'The API puts a refund job on the queue, and the job carries the stamp.'
+          - cells: ['02:01:19', 'Worker', 'refund.failed  reason=gateway_503']
+            tip: 'Four seconds later a different process logs under the same number. The customer was charged and never refunded.'
       - type: code
         lang: php
         file: 'src/Observability/CorrelationIdMiddleware.php'
@@ -297,9 +312,10 @@ slides:
     aside:
       - type: tips
         items:
-          - 'When you call another service, pass `X-Correlation-Id` in HttpClient''s `headers` option; the listener on the other side picks it up.'
+          - 'For outgoing HTTP calls the next slide wraps the HTTP client, so the header is added for you and the listener on the other side picks it up.'
           - 'A worker resets its services after each message. Thanks to `reset()`, the old number doesn''t stick to the next one.'
           - 'A retried message keeps its stamp, so the logs of the first attempt and the later ones match under one number.'
+          - 'Only lines logged after you add the number carry it. Old lines can''t be searched this way, so set it up before the incident, not during.'
       - type: refs
         items:
           - {to: 'messaging/events-vs-commands', label: 'Symfony Messenger basics'}
@@ -307,6 +323,82 @@ slides:
     check:
       q: 'The API''s logs have the number, but the worker''s logs don''t. Where is the gap?'
       a: 'Either the number was never attached to the message as a stamp when it was sent, or the worker never read it back and made it current. The middleware does both jobs.'
+
+  - slug: outgoing-http
+    title: 'Outgoing HTTP calls: stamp the header for free'
+    kind: howto
+    tldr: 'Wrap Symfony''s HTTP client so every outgoing call carries X-Correlation-Id automatically, instead of trusting each developer to add the header.'
+    keywords: ['HttpClient decorator', 'X-Correlation-Id', 'outgoing request', 'AsDecorator', 'propagation']
+    blocks:
+      - type: text
+        body: |
+          Passing the header by hand works until one developer forgets it in one place. That call is where the story breaks: the payment service logs under a new number and nobody can connect the two sides. Do for HTTP what the processor did for logs: add it once, for every call.
+      - type: code
+        lang: php
+        file: 'src/Payment/RefundService.php'
+        variant: bad
+        code: |
+          // every caller has to remember the header; this one forgot
+          $this->client->request('POST', 'https://pay.internal/refund', [
+              'json' => ['order_id' => $order->getId()],
+          ]);
+        marks:
+          - {line: 3, tip: 'No X-Correlation-Id header, so the payment service starts a new number and the trail is cut here.'}
+      - type: code
+        lang: php
+        file: 'src/Observability/CorrelationIdHttpClient.php'
+        variant: good
+        code: |
+          #[AsDecorator(decorates: 'http_client')]
+          final class CorrelationIdHttpClient implements HttpClientInterface
+          {
+              public function __construct(
+                  #[AutowireDecorated] private HttpClientInterface $inner,
+                  private readonly CorrelationId $correlationId,
+              ) {
+              }
+
+              public function request(
+                  string $method,
+                  string $url,
+                  array $options = [],
+              ): ResponseInterface {
+                  $options['headers']['X-Correlation-Id'] = $this->correlationId->get();
+
+                  return $this->inner->request($method, $url, $options);
+              }
+
+              public function stream(
+                  ResponseInterface|iterable $responses,
+                  ?float $timeout = null,
+              ): ResponseStreamInterface {
+                  return $this->inner->stream($responses, $timeout);
+              }
+
+              public function withOptions(array $options): static
+              {
+                  $clone = clone $this;
+                  $clone->inner = $this->inner->withOptions($options);
+
+                  return $clone;
+              }
+          }
+        marks:
+          - {line: 1, tip: 'Replaces the default http_client service: every autowired HttpClientInterface now goes through this class.'}
+          - {line: 14, tip: 'Added in one place for every outgoing call. No developer has to remember it.'}
+      - type: quote
+        body: 'Anything a machine can stamp must never depend on a developer''s memory.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'This decorates only the default `http_client`. A scoped client (from `scoped_clients`) is a separate service and needs the same decoration.'
+          - 'The header also reaches outside companies. Keep the number random, never something secret like a session ID.'
+      - type: tips
+        items:
+          - 'The receiving side is the listener from the correlation-id slide: it validates the header and reuses the number.'
+    check:
+      q: 'Why decorate the HTTP client instead of adding the header in each call?'
+      a: 'One forgotten call breaks the chain at exactly that point. A decorator adds the header to every call from one place.'
 
   - slug: traces-and-spans
     title: 'Traces and spans: where did the time go?'
@@ -321,7 +413,7 @@ slides:
           A courier's tracking page doesn't only list where the parcel went. It also shows how long it sat at each stop: 2 hours at the Dhaka hub, 6 hours on the truck, 19 hours at the Khulna hub. Nobody has to tell you where the delay is.
       - type: text
         body: |
-          Distributed tracing gives you exactly this picture. One request's whole journey is a **trace**. Each step of it, a query or an outside call, is a **span**, recorded with its start time, its duration and its parent span. Logs tell you what happened; a trace tells you where the time went.
+          Distributed tracing gives you exactly this picture. One request's whole journey is a **trace**. Each step of it, a query or an outside call, is a **span**, recorded with its start time, its duration and its parent span. **OpenTelemetry** is the open standard and toolkit that creates spans and ships them to a collector, a small service that gathers them for a viewer. Logs tell you what happened; a trace tells you where the time went.
       - type: visual
         kind: bars
         caption: 'POST /checkout: the spans of one trace and their durations'
@@ -346,7 +438,7 @@ slides:
         marks:
           - {line: 1, tip: 'With the opentelemetry PHP extension and the auto-symfony package installed, spans for requests, HttpClient calls and so on are created automatically.'}
           - {line: 6, tip: 'tracecontext is the W3C traceparent header. It carries the trace ID and the parent span ID from one service to the next.'}
-          - {line: 8, tip: 'Keeps the traces of 10% of requests (sampling). Keeping all of them raises both storage cost and overhead.'}
+          - {line: 8, tip: 'Keeps the traces of 10% of requests (sampling). Keeping all of them raises storage cost and overhead. The price: the one request you wanted may be in the 90% dropped.'}
       - type: code
         lang: php
         file: 'src/Payment/BkashGateway.php'
@@ -423,6 +515,16 @@ flashcards:
     a: 'It travels with the message as a stamp. On the worker side, a Messenger middleware reads the stamp and makes the number current.'
     more: |
       A worker is a separate process, often on another server, so it can't see a number held in the request's memory. At dispatch time the middleware stamps the number onto the message. On the other side the same middleware sees the `ReceivedStamp`, knows it's in a worker, and sets the number again.
+    ref: id-across-boundaries
+  - q: 'How can every outgoing HTTP call carry the correlation ID without anyone remembering?'
+    a: 'Decorate Symfony''s HTTP client with a class whose request() method adds the X-Correlation-Id header, then forwards the call.'
+    more: |
+      Adding the header by hand works until someone forgets it once, and the trail is cut exactly there. A decorator does it in one place for every call made through the default client. Scoped clients are separate services and need the same decoration.
+    ref: outgoing-http
+  - q: 'One order is lost among 40,000 log lines. How do you find its story?'
+    a: 'Get its correlation ID (from the response header or the customer''s screenshot) and filter every service''s logs by it.'
+    more: |
+      Filtering by one number leaves only that request's lines from the API, the payment service and the worker, in time order. It only works for lines logged after the number was added, so set it up before an incident.
     ref: id-across-boundaries
   - q: 'What is the difference between a trace and a span?'
     a: 'A trace is one request''s whole journey. A span is one step of it, with a start time, a duration and a parent span.'
@@ -507,6 +609,19 @@ quiz:
         correct: false
         why: 'Users can send headers too. Without validation, huge or forged text ends up in your logs (log injection).'
     ref: correlation-id
+  - q: 'Sumi wraps her HTTP client so the correlation header is added in one place. Which call will still go out without it?'
+    hint: 'What exactly did she decorate?'
+    options:
+      - text: 'A call made through a separate scoped client that was not decorated'
+        correct: true
+        why: 'A decorator on http_client covers only that service. Each scoped client is its own service and needs the same wrapping.'
+      - text: 'A call made through the default client in a controller'
+        correct: false
+        why: 'The default client is exactly what the decorator replaces, so these calls get the header.'
+      - text: 'A call made through the default client inside a worker'
+        correct: false
+        why: 'Same service, same decorator. The worker has already made the stamp''s number current.'
+    ref: outgoing-http
   - q: 'Checkout sometimes takes 4 seconds. The path includes the API, a database, a payment service and a queue, and nothing shows an error. What shows most directly where the time goes?'
     hint: 'What measures the duration of each step separately?'
     options:
@@ -550,7 +665,7 @@ quiz:
         why: 'Sending and storing every span of every request means huge data volumes, cost and extra load on the app.'
       - text: 'It costs a lot and adds load, so you sample and keep only a share of traces'
         correct: true
-        why: 'Keeping 10%, say, still gives plenty of samples of slow and broken requests, at a tenth of the cost.'
+        why: 'Keeping 10% of 2,000 requests a second is still 200 traces a second, plenty to spot slow and broken requests, at a tenth of the cost. The price: a particular request may not have been kept.'
       - text: 'Drop traces and keep only logs'
         correct: false
         why: 'Logs say what happened but not how long each step took. The two do different jobs.'

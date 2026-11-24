@@ -49,12 +49,12 @@ slides:
   - slug: httpclient-timeout-retry
     title: 'Symfony HttpClient: timeout আর retry ঠিকভাবে'
     kind: howto
-    tldr: 'Scoped client-এ timeout, max_duration আর retry_failing বসাও; transport error আর 4xx আলাদা করে ধরো; POST retry শুধু idempotency key-সহ।'
+    tldr: 'Web request-এ ছোট timeout আর retry নয়; queue worker-এ backoff-সহ retry। transport error আর 4xx আলাদা করে ধরুন; POST retry শুধু idempotency key-সহ।'
     keywords: ['HttpClient', 'scoped_clients', 'retry_failing', 'max_duration', 'exponential backoff', 'jitter']
     blocks:
       - type: text
         body: |
-          প্রতিটা vendor-এর জন্য একটা **scoped client** বানাও: base URL, key, timeout আর retry এক জায়গায়। **timeout** মানে নীরব থাকার সর্বোচ্চ সময়, **max_duration** পুরো request-এর সীমা। retry-তে অপেক্ষা বাড়াও (**exponential backoff**) আর একটু এলোমেলো করো (**jitter**), নইলে সবাই একসাথে আবার ধাক্কা দেয়।
+          Vendor-এর জন্য **scoped client** বানান: base URL, key, timeout আর retry এক জায়গায়। **timeout** মানে নীরব থাকার সর্বোচ্চ সময়, **max_duration** পুরো request-এর সীমা। retry-তে সাবধান। `max_duration: 3` আর সেকেন্ডে ১০ checkout হলে web request বড়জোর ১০ × ৩ = ৩০টা worker ধরে রাখে, ৫০-এর মধ্যে। কিন্তু ৩ বার retry যোগ করলে একটা request একটা worker-কে ১৫ সেকেন্ডের বেশি আটকে রাখতে পারে, আর সাইট আবার অচল। তাই web client কখনো retry করে না; queue-worker client করে, বাড়তে থাকা অপেক্ষায় (**exponential backoff**) আর একটু এলোমেলো করে (**jitter**), নইলে সবাই একসাথে আবার ধাক্কা দেয়।
       - type: code
         lang: yaml
         file: 'config/packages/framework.yaml'
@@ -63,11 +63,16 @@ slides:
           framework:
             http_client:
               scoped_clients:
-                gateway.client:
+                gateway.client:               # web request: দ্রুত হার মানা, retry নয়
                   base_uri: '%env(GATEWAY_URL)%'
                   auth_bearer: '%env(GATEWAY_KEY)%'
-                  timeout: 3          # চুপচাপ থাকার সর্বোচ্চ সময় (সেকেন্ড)
-                  max_duration: 10    # পুরো request-এর সীমা
+                  timeout: 2          # চুপচাপ থাকার সর্বোচ্চ সময় (সেকেন্ড)
+                  max_duration: 3     # পুরো request-এর সীমা
+                gateway.worker_client:        # queue worker: ধৈর্যশীল, retry-সহ
+                  base_uri: '%env(GATEWAY_URL)%'
+                  auth_bearer: '%env(GATEWAY_KEY)%'
+                  timeout: 3
+                  max_duration: 10
                   retry_failing:
                     max_retries: 3
                     delay: 500        # প্রথম অপেক্ষা (ms)
@@ -75,9 +80,9 @@ slides:
                     jitter: 0.3       # ±৩০% এলোমেলো
                     http_codes: [429, 502, 503, 504]
         marks:
-          - {line: 7, tip: 'সার্ভার ৩ সেকেন্ড কিছু না পাঠালে TransportException ওঠে। worker আর আটকে থাকে না।'}
-          - {line: 8, tip: 'ধীরে ধীরে উত্তর ঝরাতে থাকলেও ১০ সেকেন্ডের বেশি অপেক্ষা নয়।'}
-          - {line: 13, tip: 'এলোমেলো বিরতি না থাকলে হাজার client একই মুহূর্তে retry করে vendor-কে আবার ধসিয়ে দেয়।'}
+          - {line: 7, tip: 'সার্ভার ২ সেকেন্ড কিছু না পাঠালে TransportException ওঠে। worker আর আটকে থাকে না।'}
+          - {line: 8, tip: 'ধীরে ধীরে উত্তর ঝরাতে থাকলেও ৩ সেকেন্ডের বেশি অপেক্ষা নয়। সেকেন্ডে ১০ request বড়জোর ৩০টা worker ধরে, ২০টা খালি থাকে।'}
+          - {line: 18, tip: 'এলোমেলো বিরতি না থাকলে হাজার client একই মুহূর্তে retry করে vendor-কে আবার ধসিয়ে দেয়।'}
       - type: code
         lang: php
         file: 'src/Payment/AcmeClient.php'
@@ -99,34 +104,34 @@ slides:
               }
           }
         marks:
-          - {line: 1, tip: '`gateway.client` scoped client-টা `$gatewayClient` নামের argument-এ নিজে থেকে inject হয়।'}
-          - {line: 7, tip: 'POST retry হলে টাকা দুইবার কাটতে পারে। তাই একই Idempotency-Key প্রতি retry-তে যায়।'}
+          - {line: 1, tip: '`gateway.client` scoped client-টা `$gatewayClient` নামের argument-এ নিজে থেকে inject হয়। worker-টা হবে `$gatewayWorkerClient`।'}
+          - {line: 7, tip: 'POST কখনো retry হলে (worker client-এ, বা পরে আমরা করলে) টাকা দুইবার কাটতে পারে। তাই একই Idempotency-Key প্রতিবার যায়।'}
           - {line: 10, tip: 'timeout বা 5xx মানে "ব্যর্থ" নয়, মানে "জানি না"। এই অবস্থা আলাদা করে সামলাতে হয়।'}
           - {line: 12, tip: '4xx মানে আমাদের request-ই ভুল বা প্রত্যাখ্যাত। retry করে লাভ নেই।'}
     aside:
       - type: pitfalls
         items:
-          - 'সব error-এ retry কোরো না। 4xx (ভুল request) retry করলে একই ভুল আবার হয়।'
-          - 'Web request-এর ভেতরে লম্বা retry চালিও না; লম্বা কাজ queue-র worker-এ নাও।'
+          - 'সব error-এ retry করবেন না। 4xx (ভুল request) retry করলে একই ভুল আবার হয়।'
+          - 'Web request-এর ভেতরে retry করবেন না: ৩ সেকেন্ডের ৪টা চেষ্টা একটা worker-কে ১৫ সেকেন্ড বা বেশি আটকায়। retry করুন queue worker থেকে।'
       - type: refs
         items:
           - {to: 'payments/unknown-outcomes', label: 'Timeout-এর পর "জানি না" অবস্থা'}
           - {to: 'payments/idempotency-keys', label: 'Idempotency key'}
     check:
       q: 'Retry-তে `jitter` না দিলে কী সমস্যা, আর POST retry-তে কোন header জরুরি?'
-      a: 'হাজার client একই মুহূর্তে retry করে vendor-কে আবার ধসিয়ে দেয়। POST-এ একই Idempotency-Key পাঠাও, যাতে টাকা দুইবার না কাটে।'
+      a: 'হাজার client একই মুহূর্তে retry করে vendor-কে আবার ধসিয়ে দেয়। POST-এ একই Idempotency-Key পাঠান, যাতে টাকা দুইবার না কাটে।'
 
   - slug: rate-limits-outgoing
     title: 'Rate limit: কুরিয়ারের ফোন লাইনের ভিড়'
     kind: howto
-    tldr: 'Vendor প্রতি সেকেন্ডে সীমিত call নেয়; 429 এলে থামো, আর নিজের দিক থেকেও Symfony RateLimiter দিয়ে call-এর গতি বেঁধে দাও।'
+    tldr: 'Vendor প্রতি সেকেন্ডে সীমিত call নেয়; 429 এলে থামুন, আর নিজের দিক থেকেও Symfony RateLimiter দিয়ে call-এর গতি বেঁধে দিন।'
     keywords: ['rate limit', '429', 'RateLimiter', 'token bucket', 'throttle', 'ধীর করা']
     blocks:
       - type: metaphor
         icon: truck
         title: 'কুরিয়ার অফিসের ফোন লাইন'
         body: |
-          কুরিয়ার অফিসে একসাথে সীমিত কল ধরা যায়। এক মিনিটে ১০০ বার ফোন করলে তারা তোমার নম্বরই আটকে দেয়। বুদ্ধিমান ক্লায়েন্ট তাই নিজেই ঠিক করে নেয় — মিনিটে সর্বোচ্চ ২০ বার ফোন, আর "ব্যস্ত" শুনলে খানিক অপেক্ষা। এই নিজের বেঁধে নেওয়া গতিই client-side rate limiter।
+          কুরিয়ার অফিসে একসাথে সীমিত কল ধরা যায়। এক মিনিটে ১০০ বার ফোন করলে তারা আপনার নম্বরই আটকে দেয়। বুদ্ধিমান ক্লায়েন্ট তাই নিজেই ঠিক করে নেয় — মিনিটে সর্বোচ্চ ২০ বার ফোন, আর "ব্যস্ত" শুনলে খানিক অপেক্ষা। এই নিজের বেঁধে নেওয়া গতিই client-side rate limiter।
       - type: visual
         kind: flow
         caption: 'নিজের limiter আগে থামায়; তবু 429 এলে অপেক্ষা'
@@ -181,16 +186,19 @@ slides:
       a: 'নিচে থাকলে 429 প্রায় আসেই না। সীমার ঠিক গায়ে চললে সামান্য ভিড়েই vendor আমাদের আটকে দেয়।'
 
   - slug: wrap-the-vendor
-    title: 'Vendor-কে নিজের interface-এর পেছনে রাখো'
+    title: 'Vendor-কে নিজের interface-এর পেছনে রাখুন'
     kind: concept
     tldr: 'Domain নিজের `PaymentGateway` interface চেনে; vendor-এর ভাষা শুধু একটা adapter-এ থাকে, তাই vendor বদলালে বাকি কোড ছোঁয়া লাগে না।'
     keywords: ['adapter', 'port', 'vendor lock-in', 'exit plan', 'interface', 'anti-corruption layer']
     blocks:
+      - type: text
+        body: |
+          দেয়াল ছাড়া Acme-র `state` field আর error কোড ছড়িয়ে পড়ে checkout, refund আর রিপোর্টে। যেদিন Acme ফি দ্বিগুণ করে, সেদিন ওই প্রতিটা জায়গা খুঁজে বদলাতে হয়। একেই বলে **vendor lock-in**।
       - type: metaphor
         icon: plug
         title: 'দেয়ালের সকেট আর অ্যাডাপ্টার'
         body: |
-          তোমার বাড়ির সব যন্ত্র একটা সাধারণ সকেটে লাগে। বিদেশি প্লাগ হলে মাঝখানে একটা অ্যাডাপ্টার লাগে, আর যন্ত্র নিজে বদলাতে হয় না। কোডে **interface** হলো সকেট, আর **adapter** সেই অ্যাডাপ্টার। vendor বদলালে শুধু অ্যাডাপ্টার বদলায়।
+          আপনার বাড়ির সব যন্ত্র একটা সাধারণ সকেটে লাগে। বিদেশি প্লাগ হলে মাঝখানে একটা অ্যাডাপ্টার লাগে, আর যন্ত্র নিজে বদলাতে হয় না। কোডে **interface** হলো সকেট, আর **adapter** সেই অ্যাডাপ্টার। vendor বদলালে শুধু অ্যাডাপ্টার বদলায়।
       - type: visual
         kind: flow
         caption: 'Domain শুধু interface চেনে, vendor-এর কথা জানে না'
@@ -235,9 +243,9 @@ slides:
         title: 'Vendor-কে ছেড়ে যাওয়ার (exit) পরিকল্পনা'
         style: check
         items:
-          - 'প্রতিটা লেনদেনে vendor-এর নাম আর vendor reference নিজের টেবিলে রাখো।'
-          - 'Vendor-এর ডেটা (গ্রাহক, টোকেন, ইতিহাস) বের করে আনার উপায় চুক্তিতে লিখিয়ে নাও।'
-          - 'নতুন vendor-এর adapter লিখে কিছুদিন পাশাপাশি চালিয়ে দেখো।'
+          - 'প্রতিটা লেনদেনে vendor-এর নাম আর vendor reference নিজের টেবিলে রাখুন।'
+          - 'Vendor-এর ডেটা (গ্রাহক, টোকেন, ইতিহাস) বের করে আনার উপায় চুক্তিতে লিখিয়ে নিন।'
+          - 'নতুন vendor-এর adapter লিখে কিছুদিন পাশাপাশি চালিয়ে দেখুন।'
     aside:
       - type: when
         use:
@@ -251,6 +259,61 @@ slides:
     check:
       q: 'Vendor বদলালে কেন শুধু একটা class বদলায়?'
       a: 'vendor-এর field, error আর ভাষা শুধু adapter-এ আছে। বাকি কোড নিজের interface ও type চেনে, তাই ছোঁয়াই লাগে না।'
+
+  - slug: adapter-price
+    title: 'ফি বাড়ল: adapter কী দেয়, আর কী নেয়'
+    kind: compare
+    tldr: 'Adapter থাকলে vendor বদল মানে একটা নতুন class আর একটা alias বদল। দাম: বাড়তি কোড, আর interface-এ শুধু সব vendor-এর সাধারণ ফিচার। যেখানে ছাড়া কষ্টের, সেখানে ব্যবহার করুন।'
+    keywords: ['vendor lock-in', 'adapter cost', 'leaky abstraction', 'switching cost', 'exit plan', 'ট্রেড-অফ']
+    blocks:
+      - type: text
+        body: |
+          Acme জানাল, আগামী মাস থেকে তাদের ফি ১.৫% থেকে ২.৫%। আপনি মাসে প্রায় ৩,০০,০০,০০০ টাকা তাদের দিয়ে পাঠান, তাই প্রতি মাসে ৩,০০,০০০ টাকা বেশি যাবে। এক প্রতিদ্বন্দ্বী ১.২% চায়, নতুন দামের তুলনায় যা মাসে ৩,৯০,০০০ টাকা বাঁচায়। Adapter না থাকলে `$raw['state']` আর Acme-র error কোড প্রায় ৪০টা ফাইলে ছড়ানো; বদলানো মানে কয়েক মাসের refactor, তাই আপনি বাড়তি ফি-ই দেন। Adapter থাকলে `OtherPayGateway` লিখুন, পুরনোটার পাশাপাশি চালিয়ে দেখুন, আর একটা লাইন বদলান।
+      - type: code
+        lang: yaml
+        file: 'config/services.yaml'
+        variant: good
+        code: |
+          services:
+              App\Payment\PaymentGateway:
+                  alias: App\Payment\OtherPayGateway   # আগে ছিল AcmePayGateway
+        marks:
+          - {line: 3, tip: 'শুধু এই লাইনটা বদলায়। `PaymentGateway` চায় এমন প্রতিটা class এখন নতুন adapter পায়।'}
+      - type: visual
+        kind: compare
+        caption: 'Adapter: কী লাভ, কী দাম'
+        columns:
+          - title: 'কী দেয়'
+            tone: good
+            icon: check
+            tip: 'লাভটা দেখা যায় যেদিন vendor ছাড়তে হয়।'
+            items:
+              - 'Vendor বদলালে ৪০টা ফাইল নয়, একটা class বদলায়'
+              - 'ফি নিয়ে দর-কষাকষিতে সত্যিকারের বিকল্প থাকে'
+              - 'Test-এ নেটওয়ার্ক ছাড়াই নকল gateway চলে'
+          - title: 'কী নেয়'
+            tone: warn
+            icon: warning
+            tip: 'প্রতিদিনের দাম, ভবিষ্যতে বদলান বা না বদলান।'
+            items:
+              - 'একটা interface, adapter আর test লিখে হালনাগাদ রাখতে হয়'
+              - 'Interface-এ শুধু সব vendor-এর সাধারণ ফিচার ধরে'
+              - 'এক vendor দেখে interface বানালে সেটা তারই ছায়া হয়, অন্যটার সাথে মেলে না'
+      - type: quote
+        body: 'যে vendor ছাড়া কষ্টের তাকে মুড়ে রাখুন। বাকিদের সরাসরি ডাকুন।'
+    aside:
+      - type: when
+        use:
+          - 'টাকা, SMS, ইমেইল বা পরিচয় যাচাই: ছাড়া ব্যয়বহুল, আর সত্যিকারের বিকল্প আছে'
+        avoid:
+          - 'একবারের tool, বা বিকল্পহীন vendor: adapter এমন কোড যা কখনো কাজে লাগে না'
+      - type: tips
+        items:
+          - 'Interface বানান আপনার domain-এর দরকার ধরে (charge, refund, status), Acme-র API ধরে নয়।'
+          - 'একটা contract test লিখুন যা প্রতিটা adapter-কে পাস করতে হয়। এতেই বোঝা যায় নতুন vendor সত্যিই একই আচরণ করে।'
+    check:
+      q: 'Adapter কী দেয় আর কী নেয়, একটা করে বলুন।'
+      a: 'দেয়: vendor বদলালে একটা class বদলায়। নেয়: বাড়তি কোড আর test, আর interface-এ শুধু সব vendor-এর সাধারণ ফিচার ধরে।'
 
   - slug: sandbox-is-not-production
     title: 'Sandbox-এ সব ঠিক, production-এ কেন ভাঙে'
@@ -271,7 +334,7 @@ slides:
           - cells: ['ব্যর্থতা', 'প্রায় কখনো না', 'ব্যাংক-এর ব্যর্থতা, ওটিপি, limit']
             tip: 'আসল কার্ড ও ব্যাংক নানা কারণে ফেরত দেয়। failure path-ই production-এর বেশি কাজ।'
           - cells: ['Rate limit', 'ঢিলা বা নেই', 'কড়া, প্রতিটা key-র আলাদা']
-            tip: 'সীমা production-এ কম-বেশি আলাদা হতে পারে; চুক্তি বা ড্যাশবোর্ডে দেখে নাও।'
+            tip: 'সীমা production-এ কম-বেশি আলাদা হতে পারে; চুক্তি বা ড্যাশবোর্ডে দেখে নিন।'
           - cells: ['Webhook', 'তাৎক্ষণিক, সবসময় আসে', 'দেরিতে, দুইবার বা ক্রম ভেঙে']
             tip: 'সত্যিকারের webhook retry, duplicate আর দেরি করে আসে।'
           - cells: ['Key আর ডেটা', 'নকল key, নকল গ্রাহক', 'আসল key, আসল টাকা']
@@ -291,15 +354,15 @@ slides:
           - {line: 2, tip: 'ডিফল্ট sandbox রাখলে ভুল করে কেউ লোকাল মেশিন থেকে আসল টাকা নাড়াতে পারে না।'}
           - {line: 5, tip: 'আসল key vault-এ থাকে; git-এ কখনো ওঠে না।'}
       - type: quote
-        body: 'Sandbox শুধু কোডের জোড় পরীক্ষা করে। timeout, ব্যর্থতা আর duplicate নিজে বানিয়ে পরীক্ষা করো।'
+        body: 'Sandbox শুধু কোডের জোড় পরীক্ষা করে। timeout, ব্যর্থতা আর duplicate নিজে বানিয়ে পরীক্ষা করুন।'
     aside:
       - type: tips
         items:
-          - 'পরীক্ষায় নিজে ধীর বা ব্যর্থ vendor বানাও: Symfony-র `MockHttpClient` দিয়ে timeout, 429, 503 নকল করা যায়।'
-          - 'চালুর দিন প্রথম কয়েকটা আসল লেনদেন নিজে দেখো, আর [[ledgers/reconciliation|হিসাব মেলানো]] job চালু রাখো।'
+          - 'পরীক্ষায় নিজে ধীর বা ব্যর্থ vendor বানান: Symfony-র `MockHttpClient` দিয়ে timeout, 429, 503 নকল করা যায়।'
+          - 'চালুর দিন প্রথম কয়েকটা আসল লেনদেন নিজে দেখুন, আর [[ledgers/reconciliation|হিসাব মেলানো]] job চালু রাখুন।'
     check:
-      q: 'Sandbox-এ কেন timeout-এর কোড কখনো পরীক্ষা হয় না, আর কীভাবে পরীক্ষা করবে?'
-      a: 'Sandbox সবসময় দ্রুত সাড়া দেয়, তাই timeout ঘটেই না। `MockHttpClient`-এ ধীর বা ব্যর্থ উত্তর নকল করে পরীক্ষা করো।'
+      q: 'Sandbox-এ কেন timeout-এর কোড কখনো পরীক্ষা হয় না, আর কীভাবে পরীক্ষা করবেন?'
+      a: 'Sandbox সবসময় দ্রুত সাড়া দেয়, তাই timeout ঘটেই না। `MockHttpClient`-এ ধীর বা ব্যর্থ উত্তর নকল করে পরীক্ষা করুন।'
 
 flashcards:
   - q: 'কেন বাইরের API call-এ সবসময় timeout দিতে হয়?'
@@ -332,6 +395,16 @@ flashcards:
     more: |
       interface-এ থাকে আমাদের নিজের type, যেমন `ChargeRequest`, `ChargeResult`। এতে vendor lock-in কমে, আর পরীক্ষায় নকল adapter বসানো সহজ হয়।
     ref: wrap-the-vendor
+  - q: 'Web request কেন বাইরের call retry করবে না?'
+    a: 'প্রতিটা চেষ্টা worker আটকায়। ৩ সেকেন্ডের ৪ চেষ্টা ১৫ সেকেন্ড বা বেশি ধরে, আর সেকেন্ডে ১০ request-এ ৫০টা worker-ই আটকে যায়।'
+    more: |
+      Web client দ্রুত হার মানে: ছোট timeout, retry নয়। backoff আর jitter-সহ retry থাকে queue worker-এ, যেখানে অপেক্ষা করলে পেজ দেখা কারো আটকায় না।
+    ref: httpclient-timeout-retry
+  - q: 'Vendor-কে adapter-এর পেছনে রাখার দাম কী?'
+    a: 'বাড়তি কোড আর test সামলাতে হয়, আর interface-এ শুধু সব vendor-এর সাধারণ ফিচার ধরে। এক vendor-এর API দেখে বানালে অন্যটার সাথে মেলে না।'
+    more: |
+      দামটা দিন সেখানে, যেখানে ছাড়া কষ্টের: টাকা, SMS, ইমেইল, পরিচয় যাচাই। একবারের tool বা বিকল্পহীন vendor-এ সরাসরি client ডাকা সস্তা। Interface বানান নিজের domain ধরে, আর একটা contract test রাখুন যা প্রতিটা adapter-কে পাস করতে হয়।
+    ref: adapter-price
   - q: 'Vendor lock-in থেকে বেরোনোর জন্য আগে থেকে কী রাখা উচিত?'
     a: 'প্রতিটা লেনদেনে vendor-এর নাম ও reference নিজের টেবিলে, ডেটা বের করার অধিকার চুক্তিতে, আর নতুন adapter পাশাপাশি চালানোর সুযোগ।'
     more: |
@@ -385,7 +458,7 @@ quiz:
         why: 'সফল হয়েছে কি না আমরা জানি না। না জেনে ধরে নেওয়াও ভুল।'
     ref: httpclient-timeout-retry
   - q: 'নিচের কোনগুলো Symfony HttpClient retry সাজানোর ভালো অভ্যাস?'
-    hint: 'অপেক্ষা, ছড়ানো আর কোন error retry-যোগ্য — এই তিনটা ভাবো।'
+    hint: 'অপেক্ষা, ছড়ানো আর কোন error retry-যোগ্য — এই তিনটা ভাবুন।'
     options:
       - text: 'প্রতি চেষ্টায় অপেক্ষা বাড়ানো (multiplier)'
         correct: true
@@ -416,6 +489,38 @@ quiz:
         correct: false
         why: 'সমস্যা গতির সীমা; অপেক্ষা বাড়ালে worker আরও আটকায়।'
     ref: rate-limits-outgoing
+  - q: 'একটা web request `timeout: 3` আর `max_retries: 3` নিয়ে গেটওয়ে ডাকে। সেকেন্ডে ১০ request, ৫০ worker; গেটওয়ে মরে গেল। কী হবে?'
+    hint: 'চারটা চেষ্টা আর মাঝের অপেক্ষা মিলিয়ে একটা request কতক্ষণ worker ধরে রাখে?'
+    options:
+      - text: 'প্রতিটা request ১৫ সেকেন্ড বা বেশি worker ধরে রাখে, তাই প্রায় ৫ সেকেন্ডেই ৫০টা worker আটকে যায়'
+        correct: true
+        why: '৪টা চেষ্টা × ৩ সেকেন্ড আর ৩.৫ সেকেন্ড অপেক্ষা মিলে প্রায় ১৫.৫ সেকেন্ড। সেকেন্ডে ১০ × ১৫ মানে ৫০টা worker-এর চেয়ে অনেক বেশি।'
+      - text: 'কিছুই হবে না; ৩ সেকেন্ডের timeout সাইটকে বাঁচায়'
+        correct: false
+        why: 'timeout প্রতি চেষ্টায়। retry-গুলো worker ধরে রাখার সময় গুণ করে দেয়।'
+      - text: 'retry কাজে লাগবে, কারণ গেটওয়ে ঠিক সময়ে সেরে উঠবে'
+        correct: false
+        why: 'সেরে উঠলেও অপেক্ষার সময় worker আটকে ছিল, আর সাইটের সব পেজ ভুগেছে।'
+      - text: 'শুধু checkout অচল হবে; বাকি সাইট চলবে'
+        correct: false
+        why: 'worker সব পেজের সাথে ভাগ করা। সব আটকে গেলে হোম পেজের জন্য একটাও থাকে না।'
+    ref: httpclient-timeout-retry
+  - q: 'আপনি Acme দিয়ে মাসে ৩,০০,০০,০০০ টাকা পাঠান। তাদের ফি ১.৫% থেকে ২.৫% হলো; প্রতিদ্বন্দ্বী ১.২% চায়। বদলালে কত বাঁচে, আর কী সেটা সহজ করে?'
+    hint: 'নতুন ২.৫%-এর সাথে ১.২% মেলান, পুরনো ১.৫%-এর সাথে নয়।'
+    options:
+      - text: 'মাসে ৩,৯০,০০০ টাকা; adapter থাকলে একটা class লিখে একটা alias বদলালেই হয়'
+        correct: true
+        why: '৩,০০,০০,০০০-এর ১.৩% হলো ৩,৯০,০০০। vendor-এর ভাষা এক adapter-এ, তাই বদলটা ছোট।'
+      - text: 'মাসে ৩,০০,০০০ টাকা'
+        correct: false
+        why: 'ওটা শুধু ১.৫% থেকে ২.৫%-এর বৃদ্ধি। প্রতিদ্বন্দ্বীর সাথে সাশ্রয় ২.৫% বিয়োগ ১.২%।'
+      - text: 'মাসে ৩,৯০,০০০ টাকা, কিন্তু Acme-র প্রতিটা field পড়ার জায়গা নতুন করে লেখার পর'
+        correct: false
+        why: 'ওটা adapter না থাকার দাম। adapter থাকলে অনুবাদ থাকে এক class-এ।'
+      - text: 'কিছুই না; interface সব vendor-কে একই আচরণ করায়'
+        correct: false
+        why: 'interface পার্থক্য ততটুকুই লুকায় যতটুকু আপনি নকশা করেছেন; বাকিটা adapter-কে অনুবাদ করতে হয়।'
+    ref: adapter-price
   - q: 'Checkout কোড সরাসরি `AcmeClient` ব্যবহার করে, আর `$raw[''state''] === ''paid''` সব জায়গায় ছড়ানো। ছয় মাস পর vendor বদলাতে হবে। কী সমস্যা?'
     hint: 'বদলাতে কতগুলো ফাইল ছুঁতে হবে?'
     options:

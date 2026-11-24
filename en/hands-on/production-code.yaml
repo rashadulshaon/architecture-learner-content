@@ -296,24 +296,33 @@ slides:
         file: 'src/shipping/bookShipment.ts'
         variant: good
         code: |
-          const response = await fetch(`${COURIER_URL}/v1/shipments`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Idempotency-Key': `order-${order.id}`,
-            },
-            body: JSON.stringify({ reference: order.number }),
-            signal: AbortSignal.timeout(3000),
-          })
+          async function bookShipment(order: Order): Promise<string> {
+            if (order.trackingCode) return order.trackingCode // already booked: don't book again
 
-          if (!response.ok) {
-            logger.error({ orderId: order.id, status: response.status }, 'Courier booking failed')
-            throw new CourierUnavailableError()
+            try {
+              const response = await fetch(`${COURIER_URL}/v1/shipments`, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Idempotency-Key': `order-${order.id}`,
+                },
+                body: JSON.stringify({ reference: order.number }),
+                signal: AbortSignal.timeout(3000),
+              })
+              if (!response.ok) throw new Error(`Courier answered ${response.status}`)
+
+              const { tracking } = (await response.json()) as { tracking: string }
+              return tracking
+            } catch (error) {
+              logger.error({ orderId: order.id, err: error }, 'Courier booking failed')
+              throw new CourierUnavailableError({ cause: error })
+            }
           }
         marks:
-          - {line: 5, tip: 'The same idempotency key: the language changed, the principle didn''t.'}
-          - {line: 8, tip: 'If there is no response in 3 seconds, fetch cancels itself and throws a TimeoutError. This takes the place of Symfony''s timeout option.'}
-          - {line: 12, tip: 'A structured log with context, just like Monolog''s context array.'}
+          - {line: 9, tip: 'The same idempotency key: the language changed, the principle didn''t.'}
+          - {line: 12, tip: 'If there is no response in 3 seconds, fetch cancels itself and throws a TimeoutError. This takes the place of Symfony''s timeout option.'}
+          - {line: 14, tip: 'Unlike PHP''s toArray(), fetch does not throw on a 500 or 404. Without this check, the error page would be parsed as if it were a booking.'}
+          - {line: 18, tip: 'One catch covers the timeout, a dropped connection, a bad status and broken JSON. It logs with context, like Monolog''s context array, and throws your own error, the same as the PHP version.'}
       - type: points
         title: 'What a second ecosystem gives you'
         style: check
@@ -380,6 +389,11 @@ flashcards:
     a: 'You can tell which ideas are universal principles (timeouts, idempotency, validation) and which are just one framework''s conventions.'
     more: |
       Know only one framework and every habit of it feels like "the way it must be done". Seeing a different solution to the same problem in a second one shows what the real principle was. Then you can also review other teams' code, and argue about tool choices from experience.
+    ref: second-ecosystem
+  - q: 'Does fetch() in Node throw an error when the server answers 500 or 404?'
+    a: 'No. fetch only rejects on network failure or a timeout. A 500 or 404 still resolves, so you must check `response.ok` yourself.'
+    more: |
+      PHP''s `toArray()` throws on a bad status, so PHP developers are used to errors arriving as exceptions. In Node, skip the `response.ok` check and you will parse an error page as if it were a booking. Then wrap the whole call in one try/catch that logs with context and throws your own error.
     ref: second-ecosystem
 
 quiz:

@@ -12,7 +12,7 @@ slides:
           Close a busy Dhaka road to demolish its old bridge and hundreds of thousands of people are stuck. A sensible engineer builds a new bridge alongside, moves the traffic onto it, and only then tears down the old one. A database schema change works the same way: don't tear down the old structure in place; build the new one next to it and move across step by step.
       - type: text
         body: |
-          At midday, Rahim ran a migration that changed a column on the `users` table, which has 10 million rows. The command held a lock on the table for 40 seconds, a lock that blocks all reads and writes. Thousands of the app's queries piled up in line behind it.
+          At midday, Rahim ran a migration that changed a column on the `users` table, which has 10 million rows. The command held a lock on the table for 40 seconds, a lock that blocks all reads and writes. At 100 requests a second, that is 4,000 queries piled up behind it, and a connection pool of 50 is full within the first second.
       - type: visual
         kind: sequence
         caption: 'Everyone gets stuck behind one slow ALTER'
@@ -50,6 +50,18 @@ slides:
         body: |
           To rename the `phone` column to `mobile_number`, you can't run `RENAME COLUMN` in one go, because old code will still look for `phone` while the deploy rolls out. So it takes three phases. **Expand**: add the new column and keep the old one. **Migrate**: make the code write to both columns, copy the old data into the new one, then switch reads to the new column. **Contract**: once nothing uses the old column, drop it. At the end of every step, both old and new code can run.
       - type: visual
+        kind: sequence
+        caption: 'The one-step rename that breaks the servers still on old code'
+        actors:
+          - {id: mig, label: 'Migration', icon: tools, tip: 'Runs RENAME COLUMN and the new code is deployed in the same release.'}
+          - {id: db, label: 'Database', icon: db, tip: 'Applies the rename instantly. From now on the column `phone` does not exist.'}
+          - {id: old, label: 'Old-code server', icon: server, tip: 'A server the rolling deploy has not reached yet. Its code still says `phone`.'}
+        messages:
+          - {from: mig, to: db, label: 'RENAME phone TO mobile_number'}
+          - {from: old, to: db, label: 'SELECT phone FROM users'}
+          - {from: db, to: old, label: 'ERROR: column phone does not exist', dashed: true}
+          - {at: old, note: 'Every request on this server fails with a 500 until the deploy reaches it', tone: bad, tip: 'A rolling deploy of many servers takes minutes. For that whole time, part of your traffic gets errors.'}
+      - type: visual
         kind: steps
         caption: '`phone` to `mobile_number`: six small steps, each its own deploy'
         steps:
@@ -67,6 +79,12 @@ slides:
           - 'Schema changes and code deploys go in separate releases, never together.'
           - 'The last step (the drop) comes at the very end, once you are sure.'
     aside:
+      - type: when
+        use:
+          - 'Any change that running old code can''t survive: a rename, a drop, a type change.'
+        avoid:
+          - 'A brand-new nullable column nobody reads yet: the expand step alone is enough.'
+          - 'Don''t expect it to be cheap: one rename becomes several releases over days, with two columns to keep in sync meanwhile.'
       - type: remember
         body: 'Add first, then move, and delete last.'
       - type: refs
@@ -85,7 +103,7 @@ slides:
     blocks:
       - type: text
         body: |
-          In PostgreSQL, adding a nullable column with a default is nearly instant. But a plain `CREATE INDEX` blocks writes to the table, while `CONCURRENTLY` doesn't, though it can't run inside a transaction. So in Doctrine Migrations you return `false` from `isTransactional()`. Also set a `lock_timeout`: if the lock isn't available, the migration gives up after 3 seconds instead of freezing the site.
+          In PostgreSQL, adding a nullable column with a default is nearly instant. But a plain `CREATE INDEX` blocks writes to the table, while `CONCURRENTLY` doesn't, though it can't run inside a transaction. So in Doctrine Migrations you return `false` from `isTransactional()`. Even a change that takes a millisecond must first wait for every running query on the table to finish, and all new queries queue behind it. So set a `lock_timeout`: if the lock isn't available, the migration gives up after 3 seconds instead of freezing the site.
       - type: code
         lang: php
         file: 'migrations/Version20260301000001.php'
@@ -170,7 +188,7 @@ slides:
     blocks:
       - type: text
         body: |
-          Updating 10 million rows in one `UPDATE` means minutes of locking, a gigantic transaction log, and replicas falling behind. A better approach is like cooking for a wedding: not every pot at once, but one at a time. Process 1,000 rows per round, pause briefly between rounds, and advance by `id` so that if it stops partway you can restart from the same place.
+          Updating 10 million rows in one `UPDATE` means minutes of locking, a gigantic transaction log, and replicas falling behind. A better approach is like cooking for a wedding: not every pot at once, but one at a time. Process 1,000 rows per round, pause briefly between rounds, and advance by `id` so that if it stops partway you can restart from the same place. The price is total time: at about 0.06 s of work plus a 0.1 s pause per 1,000 rows, 10 million rows take around 27 minutes. That is fine, because it runs in the background and nobody waits for it.
       - type: code
         lang: php
         file: 'src/Command/BackfillMobileCommand.php'
@@ -211,16 +229,16 @@ slides:
           - {line: 27, tip: 'A short pause. It keeps replicas from lagging and leaves room for other queries.'}
       - type: visual
         kind: bars
-        caption: '10 million rows: all at once vs in batches (lock time per transaction)'
+        caption: '10 million rows: how long one transaction holds its locks'
         items:
-          - {label: 'One UPDATE', value: 600, display: '~10 minutes', tone: bad, tip: 'The rows stay locked for that long, and the transaction log grows huge too.'}
-          - {label: '10,000 per batch', value: 12, display: '~12 seconds', tone: warn, tip: 'Better, but still noticeable at peak hours.'}
-          - {label: '1,000 per batch', value: 1, display: '~1 second', tone: good, tip: 'Each batch is so short that no query gets stuck behind it.'}
+          - {label: 'One UPDATE', value: 600000, display: '~10 minutes', tone: bad, tip: 'The rows stay locked for that long, and the transaction log grows huge too.'}
+          - {label: '10,000 per batch', value: 600, display: '~0.6 seconds', tone: warn, tip: 'Much better, but a lock this long can still make a busy page stutter at peak hours.'}
+          - {label: '1,000 per batch', value: 60, display: '~0.06 seconds', tone: good, tip: 'Each batch is so short that no query gets stuck behind it. (The time per row is the same as in the single UPDATE: 10 minutes for 10 million rows.)'}
     aside:
       - type: tips
         items:
           - 'Add a `--dry-run` option that reports how many rows are left; it also gives you progress while the job runs.'
-          - 'Measure replica lag. If lag grows, shrink the batch size or lengthen the pause.'
+          - 'Measure replica lag (how far behind the copy servers fall). If lag grows, shrink the batch size or lengthen the pause.'
       - type: pitfalls
         items:
           - 'Advance with `id >`, not OFFSET; OFFSET gets slower as rows pile up and can skip rows when data changes underneath it.'
@@ -236,7 +254,7 @@ slides:
     blocks:
       - type: text
         body: |
-          The new column will eventually need `NOT NULL`, but a direct `SET NOT NULL` scans the whole table and holds a lock while it does. Foreign keys behave the same way. The fix: first add the constraint as **NOT VALID** (only new writes are checked, not existing rows), then run a separate `VALIDATE CONSTRAINT`, which doesn't block the table.
+          The new column will eventually need `NOT NULL`, but a direct `SET NOT NULL` scans the whole table and holds a lock while it does. Foreign keys behave the same way. The fix: first add the constraint as **NOT VALID** (only new writes are checked, not existing rows), then run a separate `VALIDATE CONSTRAINT`, which doesn't block the table. The price: more steps, and if `VALIDATE` finds a bad row it fails. Fix the data and run it again; nothing broke meanwhile. A plain `CREATE INDEX` blocks writes, so use `CONCURRENTLY`, as on the previous slides.
       - type: code
         lang: sql
         file: 'Dangerous'
@@ -248,8 +266,12 @@ slides:
           -- checks every row while holding a lock
           ALTER TABLE orders
             ADD CONSTRAINT fk_orders_user FOREIGN KEY (user_id) REFERENCES users (id);
+
+          -- blocks every INSERT, UPDATE and DELETE until the index is built
+          CREATE INDEX idx_orders_user ON orders (user_id);
         marks:
           - {line: 2, tip: 'On a big table this can take minutes, and writes are blocked the whole time.'}
+          - {line: 9, tip: 'A plain CREATE INDEX lets reads through but blocks all writes to the table for as long as the build takes.'}
       - type: code
         lang: sql
         file: 'Safe'
@@ -266,11 +288,18 @@ slides:
           ALTER TABLE users ALTER COLUMN mobile_number SET NOT NULL;
           ALTER TABLE users DROP CONSTRAINT users_mobile_nn;
 
-          -- same for foreign keys: ADD CONSTRAINT ... NOT VALID, then VALIDATE
+          -- foreign key: the same two steps
+          ALTER TABLE orders
+            ADD CONSTRAINT fk_orders_user FOREIGN KEY (user_id) REFERENCES users (id) NOT VALID;
+          ALTER TABLE orders VALIDATE CONSTRAINT fk_orders_user;
+
+          -- index: builds while writes carry on (own migration, not in a transaction)
+          CREATE INDEX CONCURRENTLY idx_orders_user ON orders (user_id);
         marks:
           - {line: 3, tip: 'With `NOT VALID`, only new writes are checked right now; existing rows aren''t examined, so the lock stays short.'}
           - {line: 6, tip: '`VALIDATE` takes a weaker lock: reads and writes continue.'}
           - {line: 9, tip: 'From PostgreSQL 12, with a valid CHECK constraint in place, `SET NOT NULL` skips the scan.'}
+          - {line: 14, tip: 'The foreign key gets the same treatment: add it NOT VALID, then VALIDATE while traffic carries on.'}
       - type: quote
         body: 'On a big table, any command that scans every row also holds a lock. Take the short lock first, do the heavy check later.'
     aside:
@@ -278,6 +307,9 @@ slides:
         items:
           - 'Dropping a column comes dead last: if old code still reads it, you get 500 errors immediately.'
           - 'Changing a column''s type (`ALTER TYPE`) often rewrites the whole table. Build a new column and use expand-contract.'
+      - type: tips
+        items:
+          - 'On a table with only a few thousand rows, a direct `SET NOT NULL` finishes in milliseconds. The two-step path is for big, busy tables.'
       - type: remember
         body: 'On big tables: NOT VALID first, VALIDATE after.'
     check:
@@ -289,6 +321,11 @@ flashcards:
     a: 'The site stays up during the schema change, and both old and new code keep working.'
     more: |
       There are two goals: avoid long locks, and cope with the period during a deploy when old and new code run side by side. As a result, a migration is usually split into several small, separate releases.
+    ref: alter-table-freeze
+  - q: 'Why can a 40-second ALTER freeze a site that serves 100 requests a second?'
+    a: 'Every query on the table queues behind the lock: 4,000 of them in 40 seconds, enough to fill a pool of 50 connections within a second.'
+    more: |
+      Once the connection pool is full, even pages that never touch that table can't get a connection. CPU stays low because everything is waiting, not working. That is why a `lock_timeout` matters: it makes the ALTER give up instead of the site.
     ref: alter-table-freeze
   - q: 'What is expand-migrate-contract?'
     a: 'A three-phase safe change: add the new structure, move data and code across, then delete the old one.'
@@ -303,7 +340,7 @@ flashcards:
   - q: 'What must you do to run `CREATE INDEX CONCURRENTLY` in a Doctrine Migration?'
     a: 'Return `false` from `isTransactional()`, because PostgreSQL won''t let that command run inside a transaction.'
     more: |
-      `CONCURRENTLY` builds the index without locking the table, but takes longer. If it fails it leaves an INVALID index behind; drop it with `DROP INDEX CONCURRENTLY` and build it again. It's best to keep such a command alone in its migration.
+      `CONCURRENTLY` builds the index without locking the table, but takes longer. If it fails it leaves an INVALID index behind; drop it with `DROP INDEX CONCURRENTLY` and build it again. Keep such migrations small, because without a transaction a failure halfway can't be rolled back.
     ref: safe-doctrine-migrations
   - q: 'What is the benefit of setting `lock_timeout` in a migration?'
     a: 'If it can''t get the lock, the migration fails by itself after a short wait, so queries don''t pile up behind it and take the site down.'
@@ -313,12 +350,17 @@ flashcards:
   - q: 'How do you backfill a big table?'
     a: 'In small batches (say 1,000 rows), advancing by `id`, with pauses between them, in a command you can safely rerun.'
     more: |
-      A single `UPDATE` over millions of rows creates a long lock and a huge transaction. Batching keeps each lock short. An `IS NULL` condition makes reruns safe. Measure replica lag to tune the speed.
+      A single `UPDATE` over millions of rows creates a long lock and a huge transaction. Batching keeps each lock short: about 0.06 s per 1,000 rows instead of 10 minutes for the whole table. The price is a longer total run, around 27 minutes for 10 million rows. An `IS NULL` condition makes reruns safe. Measure replica lag to tune the speed.
     ref: batched-backfill
   - q: 'What does `ADD CONSTRAINT ... NOT VALID` do?'
     a: 'It enforces the constraint on new writes right away, but postpones checking existing rows. That keeps the lock short.'
     more: |
       Running `VALIDATE CONSTRAINT` afterwards checks the existing rows, and reads and writes continue meanwhile. This works for foreign keys and CHECK constraints. In PostgreSQL 12+, a valid CHECK lets `SET NOT NULL` skip the scan.
+    ref: dangerous-ddl
+  - q: 'How do you add a foreign key on a huge table without blocking writes?'
+    a: 'Add it with `NOT VALID` first, then run `VALIDATE CONSTRAINT` as a separate statement while traffic carries on.'
+    more: |
+      A plain `ADD FOREIGN KEY` checks every existing row while holding a lock. With `NOT VALID` only new writes are checked at first, so the lock is brief, and `VALIDATE CONSTRAINT` then checks the old rows under a weaker lock.
     ref: dangerous-ddl
 quiz:
   - q: 'A team wants to rename the `orders.status` column to `state`, and deploys are rolling. What is the safest path?'
@@ -391,6 +433,22 @@ quiz:
       - text: 'Be content with adding validation in the app'
         correct: false
         why: 'Something can bypass the app and insert blanks; a database constraint is the last line of defence.'
+    ref: dangerous-ddl
+  - q: 'Which statement will block writes to a 30-million-row `orders` table for as long as it takes to run?'
+    hint: 'Which of these does a full scan or a full build while holding a lock?'
+    options:
+      - text: '`CREATE INDEX idx_orders_user ON orders (user_id)` (plain)'
+        correct: true
+        why: 'A plain index build blocks every INSERT, UPDATE and DELETE until it finishes. `CONCURRENTLY` avoids that.'
+      - text: '`ALTER TABLE orders VALIDATE CONSTRAINT fk_orders_user`'
+        correct: false
+        why: 'VALIDATE takes a weaker lock, so reads and writes carry on while it checks the old rows.'
+      - text: '`ALTER TABLE orders ADD CONSTRAINT fk_orders_user FOREIGN KEY (user_id) REFERENCES users (id)` (no NOT VALID)'
+        correct: true
+        why: 'It checks every existing row while holding its lock. Adding it `NOT VALID` first keeps that lock short.'
+      - text: '`CREATE INDEX CONCURRENTLY idx_orders_user ON orders (user_id)`'
+        correct: false
+        why: 'CONCURRENTLY builds the index without blocking writes. It only takes longer.'
     ref: dangerous-ddl
   - q: 'You ran an `ALTER TABLE` at midday. Database CPU is low, yet the site is stuck. What is the most likely cause?'
     hint: 'Low CPU means waiting, not working.'

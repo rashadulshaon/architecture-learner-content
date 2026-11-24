@@ -66,9 +66,9 @@ slides:
           - cells: ['Encryption (reversible)', 'Yes, with the key', 'Wrong']
             tip: 'If the key is stolen, all the passwords come back at once. There is no need to get passwords back at all.'
           - cells: ['MD5, SHA-256 (fast hashes)', 'No, but guessing is very fast', 'Wrong']
-            tip: 'These were made for file checks, so they are fast. An attacker can make billions of guesses per second.'
+            tip: 'These were made for file checks, so they are fast. An attacker can make billions of guesses per second: a list of 1 million common passwords is tried in a blink.'
           - cells: ['argon2id, bcrypt (slow + salted)', 'No', 'Right']
-            tip: 'Deliberately slow, with a different salt in every hash. Each guess is expensive.'
+            tip: 'Deliberately slow, with a different salt in every hash. At about a quarter of a second per guess, the same 1 million passwords take days on one machine.'
       - type: code
         lang: yaml
         file: 'config/packages/security.yaml'
@@ -202,7 +202,7 @@ slides:
           In a bank, every locker has its own small key. Those small keys are in turn locked in the bank's master vault, which never leaves the bank. To open a locker, you ask the manager: "Please take my key out of the vault." The KMS is that master vault, and a data key is the key to one locker.
       - type: visual
         kind: flow
-        caption: 'Envelope encryption: data is encrypted with a data key, and the data key is locked by the KMS key'
+        caption: 'Envelope encryption both ways: lock the data with a data key, then ask the KMS to unlock that key later'
         nodes:
           - {id: app, label: 'Symfony app', sub: 'does the encrypting', icon: api, tone: accent, col: 0, row: 1, tip: 'It never knows the master key. It only takes a small data key and encrypts data with it.'}
           - {id: kms, label: 'KMS', sub: 'master key lives here', icon: key, col: 1.5, row: 0, tip: 'AWS KMS, Google Cloud KMS or Vault. The master key stays inside and never comes out.'}
@@ -211,6 +211,9 @@ slides:
           - {from: app, to: kms, label: 'The app asks the KMS for a new data key'}
           - {from: kms, to: app, label: 'The KMS returns the data key in two forms: open and locked', dashed: true}
           - {from: app, to: db, label: 'The app stores the encrypted data and the locked key', tone: good}
+          - {from: db, to: app, label: 'Later, the app reads the encrypted data and the locked key back', dashed: true}
+          - {from: app, to: kms, label: 'It sends only the locked key to the KMS and asks it to open it'}
+          - {from: kms, to: app, label: 'The KMS returns the open data key; the app decrypts, then wipes it', dashed: true, tone: good}
       - type: code
         lang: php
         file: 'src/Security/EnvelopeEncryptor.php'
@@ -233,14 +236,49 @@ slides:
         marks:
           - {line: 3, tip: 'generateDataKey of Aws\Kms\KmsClient returns two forms of the same key: Plaintext (to encrypt with) and CiphertextBlob (to store).'}
           - {line: 11, tip: 'Wipe the open key from memory as soon as you are done. Only the locked form is stored.'}
+      - type: code
+        lang: php
+        file: 'src/Security/EnvelopeEncryptor.php'
+        variant: good
+        code: |
+          final readonly class EncryptedBlob
+          {
+              public function __construct(public string $cipher, public string $lockedKey) {}
+          }
+
+          public function decrypt(EncryptedBlob $blob): string
+          {
+              $result = $this->kms->decrypt(['CiphertextBlob' => $blob->lockedKey]);
+              $dek = $result['Plaintext'];
+
+              $n = SODIUM_CRYPTO_SECRETBOX_NONCEBYTES;
+              $plain = sodium_crypto_secretbox_open(
+                  substr($blob->cipher, $n), substr($blob->cipher, 0, $n), $dek
+              );
+              sodium_memzero($dek);
+
+              if (false === $plain) {
+                  throw new \RuntimeException('Could not decrypt');
+              }
+
+              return $plain;
+          }
+        marks:
+          - {line: 8, tip: 'The KMS checks who is asking against its access policy and opens the locked key. Only the small data key comes back; the master key stays inside.'}
+          - {line: 15, tip: 'Wipe the open key right after use, just as when encrypting.'}
+          - {line: 17, tip: 'False means the data or the key was tampered with. Never use the result.'}
       - type: quote
         body: 'The master key never leaves the KMS; the app stores only the locked data key.'
     aside:
       - type: problem
         body: 'If one key covers all the data, then once it is stolen everything is lost, and changing it means re-encrypting all the data. With envelopes, rotating the master key only requires locking the small data keys again.'
+      - type: when
+        use: ['Many records or users that each need separate protection', 'Rules that ask for key rotation and an audit trail of every decrypt']
+        avoid: ['A small app with one secret: a single key from the secrets vault is simpler, while a KMS adds a network call, a bill and one more thing that can be down']
       - type: tips
         items:
-          - 'You don''t have to call the KMS for every piece of data; a data key can be cached in memory for a limited time.'
+          - 'You don''t have to call the KMS for every read: a data key can be cached in memory for a short time. The price is that the open key lives in memory longer.'
+          - 'In AWS KMS, ReEncrypt re-locks a data key under a new master key without the app ever seeing the open key.'
           - 'Limit who can decrypt through the KMS with an access policy, and keep an audit log of every decrypt.'
       - type: terms
         items:
@@ -249,6 +287,65 @@ slides:
     check:
       q: 'Why does rotating the master key in envelope encryption not mean re-encrypting the whole database?'
       a: 'Because the data is encrypted with data keys. When the master key changes, you only lock the small data keys again with the new master key.'
+
+  - slug: log-leak
+    title: 'How a password ends up in the logs'
+    kind: pitfall
+    tldr: 'One "log everything" debug line copies passwords and NID numbers into files that live for months and that many people can read. Log the event, not the form.'
+    keywords: ['log leak', 'PII in logs', 'debug logging', 'sensitive data', 'log retention', 'request body']
+    blocks:
+      - type: text
+        body: |
+          A customer can't log in, so a developer adds one debug line that logs the whole form. The line stays. Logs are kept for 90 days and shipped to a search tool that 40 people can open. Now anyone who searches "Login failed" sees customers' passwords and NID numbers in plain text, and a stolen log backup is as bad as a stolen database.
+      - type: code
+        lang: php
+        file: 'src/Security/LoginFailureListener.php'
+        variant: bad
+        code: |
+          #[AsEventListener]
+          public function onLoginFailure(LoginFailureEvent $event): void
+          {
+              $request = $event->getRequest();
+
+              // "just log everything while we debug"
+              $this->logger->warning('Login failed', ['request' => $request->request->all()]);
+          }
+
+          // What lands in var/log and the log service, kept for 90 days:
+          // Login failed {"request":{"email":"rahim@example.com","password":"rahim@2024",
+          //   "nid":"1990123456789"}}
+        marks:
+          - {line: 7, tip: 'This copies every form field into the log, password included. The developer only wanted to know why the login failed.'}
+          - {line: 11, tip: 'Plain text, for 90 days, searchable by everyone with log access. Anyone reading it can log in as Rahim.'}
+      - type: code
+        lang: php
+        file: 'src/Security/LoginFailureListener.php'
+        variant: good
+        code: |
+          #[AsEventListener]
+          public function onLoginFailure(LoginFailureEvent $event): void
+          {
+              $request = $event->getRequest();
+
+              $this->logger->warning('Login failed', [
+                  'ip' => $request->getClientIp(),
+                  'reason' => $event->getException()::class,   // e.g. BadCredentialsException
+                  'request_id' => $request->headers->get('X-Request-Id'),
+              ]);
+          }
+        marks:
+          - {line: 6, tip: 'Log the event, not the form: where it came from, why it failed, and an id to find the rest of the story in other logs.'}
+    aside:
+      - type: tips
+        items:
+          - 'Never log whole request bodies, the Authorization and Cookie headers, or exception objects that carry them.'
+          - 'Logs are data too: give them a retention period (for example 30 days) and limit who can search them.'
+      - type: refs
+        items:
+          - {to: 'observability/logging-tracing', label: 'Structured logs and what not to write'}
+    check:
+      q: 'A teammate logs `$request->request->all()` to debug logins. What leaks, and what should be logged instead?'
+      a: 'Passwords and NID numbers land in log files kept for months. Log only the event: IP, failure reason and a request id, never the form.'
 
   - slug: pii-in-logs
     title: 'Personal data: keep less, show it masked, keep it out of logs'
@@ -304,6 +401,8 @@ slides:
           }
         marks:
           - {line: 1, tip: 'A processor written once works on every log channel, so there is a last fence even when someone makes a mistake.'}
+          - {line: 4, tip: 'Only these key names are caught. A key called "passport" or "phone" slips through, so extend the list as new fields appear.'}
+          - {line: 8, tip: 'Only the context array is cleaned. Text inside the message ("Login for 01712345678 failed") and the extra array are not touched.'}
           - {line: 14, tip: 'It also walks into arrays nested inside the context. Checking only the top level would leak nested data.'}
       - type: points
         title: 'Rules for handling PII'
@@ -313,6 +412,7 @@ slides:
           - 'Retention: decide how long you keep it, and delete it when the time is up.'
           - 'Know every PII field: where it lives and who can read it.'
           - 'PII also ends up in logs, error reports and analytics; check those too.'
+          - 'The redactor is a net, not a plan: it matches key names only, so keep PII out of messages and out of keys it doesn''t list.'
       - type: quote
         body: 'Don''t keep what you don''t need to keep, and don''t let what you do keep reach the logs.'
     aside:
@@ -360,10 +460,25 @@ flashcards:
     more: |
       The master key never leaves the KMS. The app asks the KMS to create or unlock data keys. To rotate the master key you only lock the data keys again; you don't re-encrypt all the data.
     ref: envelope-kms
+  - q: 'How is envelope-encrypted data read back?'
+    a: 'The app sends the locked data key to the KMS, gets the open data key back, decrypts the data with it, then wipes the key from memory.'
+    more: |
+      Only the small data key travels to and from the KMS, never the data. Each decrypt is a network call to the KMS, so cache the data key briefly if you read often. That call is the price of keeping the master key out of your app.
+    ref: envelope-kms
   - q: 'What is the difference between tokenization and masking?'
     a: 'With tokenization the real value stays with the provider and we keep a token. Masking only hides part of a value when it is shown.'
     more: |
       Masking (017****89) is for display or logs, not for protecting data. With tokenization our database never holds the real card number at all, so a leak costs us nothing and our PCI burden shrinks.
+    ref: pii-in-logs
+  - q: 'How does personal data get into logs, and what stops it?'
+    a: 'A debug line that logs the whole request copies passwords and NID numbers into log files. Log only the event (IP, reason, request id).'
+    more: |
+      Add a redacting processor as a safety net, and give logs a retention period and limited access. Logs are copied to search tools and backups, so a leaked log is a leaked database.
+    ref: log-leak
+  - q: 'What can a log redactor that matches key names not catch?'
+    a: 'Personal data inside the message text, or under a key name that isn''t on its list. Keep PII out of messages and extend the list.'
+    more: |
+      A redactor like the one in this lesson only walks the context array and compares key names. `$logger->info("Login for $phone failed")` passes straight through, as does a key called `passport`. It is a safety net behind careful logging, not a replacement for it.
     ref: pii-in-logs
 
 quiz:
@@ -459,6 +574,22 @@ quiz:
         correct: false
         why: 'Then you lose the benefit of a KMS. If the app holds the master key, it is also a way to steal it.'
     ref: envelope-kms
+  - q: 'Which steps does the app take to read a value stored with envelope encryption?'
+    hint: 'Which key goes to the KMS, and which key comes back?'
+    options:
+      - text: 'Send the locked data key to the KMS and get the open data key back'
+        correct: true
+        why: 'Only the KMS can open the locked key, and only the small data key comes back.'
+      - text: 'Decrypt the data with the open data key, then wipe the key from memory'
+        correct: true
+        why: 'The open key is needed only for the moment of decryption. Keeping it around widens the window for theft.'
+      - text: 'Ask the KMS to decrypt the whole column of data directly'
+        correct: false
+        why: 'A KMS handles small keys, not bulk data. Direct KMS encryption is limited to a few kilobytes.'
+      - text: 'Fetch the master key from the KMS and decrypt locally'
+        correct: false
+        why: 'The master key never leaves the KMS; that is the whole point.'
+    ref: envelope-kms
   - q: 'The app''s logs sometimes contain a whole request body, including passwords and NID numbers. What is the best fix?'
     hint: 'Which step works even when someone makes a mistake?'
     options:
@@ -474,4 +605,17 @@ quiz:
       - text: 'Set the log level to error everywhere'
         correct: false
         why: 'Changing the level doesn''t change which data goes in.'
+    ref: pii-in-logs
+  - q: 'The redactor masks keys named `password` and `token`. A developer writes `$logger->info("Login for $phone failed")`. What ends up in the log?'
+    hint: 'What exactly does the redactor look at?'
+    options:
+      - text: 'The phone number in plain text, because the redactor only checks the names of context keys'
+        correct: true
+        why: 'The number is inside the message string, which the processor never inspects.'
+      - text: '[REDACTED], because the redactor finds phone numbers by itself'
+        correct: false
+        why: 'It matches key names from a fixed list. It has no idea what a phone number looks like.'
+      - text: 'Nothing, because Monolog drops messages that contain personal data'
+        correct: false
+        why: 'Monolog writes whatever it is given. Keeping PII out is the developer''s job.'
     ref: pii-in-logs

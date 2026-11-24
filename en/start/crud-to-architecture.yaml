@@ -2,7 +2,7 @@ slides:
   - slug: tea-stall-to-restaurant
     title: 'From a tea stall to a big restaurant'
     kind: story
-    tldr: 'Code that runs fine for 10 users breaks at 10,000 — not because the code was wrong, but because the pressure changed.'
+    tldr: 'Code that runs fine for 10 users can break at 10,000 — not because the code was wrong, but because the pressure changed.'
     keywords: ['scale', 'CRUD', 'production', 'why apps break', 'growth']
     blocks:
       - type: metaphor
@@ -28,7 +28,7 @@ slides:
             icon: users
             tip: 'Under load, the weaknesses that were hiding all come out at the same time.'
             items:
-              - 'One server can''t carry the load any more'
+              - 'One server is now a risk: if it stops, everyone stops'
               - 'The same seat gets sold to two people'
               - 'A 5-minute outage means lost money'
               - 'One slow query stalls the whole site'
@@ -49,12 +49,12 @@ slides:
   - slug: the-last-ticket
     title: 'The last ticket sold twice'
     kind: pitfall
-    tldr: '"Check first, then change" code goes wrong when two requests arrive together — the best-known trap in CRUD apps.'
+    tldr: '"Check first, then change" code goes wrong when two requests arrive together — the best-known trap in CRUD apps. The next slide fixes it.'
     keywords: ['race condition', 'check then act', 'double booking', 'ticket', 'concurrency']
     blocks:
       - type: text
         body: |
-          The code below looks completely harmless: if the seat is free, book it. Test it alone and it works every time. But when Rahim and Karim press the button at **the same moment**, both see "free" and both book the seat.
+          The code below looks completely harmless: if the seat is free, book it. Test it alone and it works every time. But when Rahim and Karim press the button at **the same moment**, both see "free" and both book the seat. The next slide shows the fix.
       - type: code
         lang: php
         file: 'src/Controller/BookingController.php'
@@ -92,7 +92,7 @@ slides:
           - {at: db, note: 'One seat, two owners', tone: bad, tip: 'Both got a "booking confirmed" message. Cue the argument at the station.'}
     aside:
       - type: problem
-        body: 'This slide doesn''t fix anything — it only helps you recognise the trap. The fixes (locks, atomic updates, unique constraints) are covered in the transactions and concurrency topic.'
+        body: 'This slide is the trap, shown on purpose. The very next slide fixes it with one conditional UPDATE. For rules that touch several rows, see the transactions and concurrency topic.'
       - type: remember
         body: 'If there''s a gap between checking and changing, someone else will walk through it.'
       - type: refs
@@ -101,6 +101,73 @@ slides:
     check:
       q: 'The code works when tested alone, so why does it fail in production?'
       a: 'Alone, requests arrive one after another. In production two arrive together, and both decide based on the old state.'
+
+  - slug: book-in-one-step
+    title: 'Check and book in one step'
+    kind: howto
+    tldr: 'Move the check into the write itself: one UPDATE that only succeeds while the seat is still free, then read how many rows changed.'
+    keywords: ['atomic update', 'conditional update', 'double booking fix', 'affected rows', 'compare and set']
+    blocks:
+      - type: metaphor
+        icon: ticket
+        title: 'The stamp that refuses'
+        body: |
+          At a train ticket counter, the old way was: look at the chart, say "free", then reach for the stamp. In that gap another clerk can stamp the same seat. The new way is a stamp that refuses to print on a seat that already has ink. Rahim's stamp lands first. Karim's finds ink, does nothing, and Karim hears "taken" at once.
+      - type: code
+        lang: php
+        file: 'src/Controller/BookingController.php'
+        variant: good
+        code: |
+          #[Route('/seats/{id}/book', methods: ['POST'])]
+          public function book(int $id, EntityManagerInterface $em): JsonResponse
+          {
+              $changed = $em->createQuery(
+                  'UPDATE App\Entity\Seat s SET s.bookedBy = :user
+                   WHERE s.id = :id AND s.bookedBy IS NULL'
+              )->execute(['user' => $this->getUser(), 'id' => $id]);
+
+              if ($changed === 0) {               // someone else got there first
+                  return $this->json(['error' => 'Seat taken'], 409);
+              }
+
+              return $this->json(['ok' => true]);
+          }
+        marks:
+          - {line: 6, tip: 'The check lives inside the write. The database tests "still free?" and books the seat as one step.'}
+          - {line: 9, tip: '0 rows changed means the WHERE no longer matched: the seat was already taken.'}
+      - type: visual
+        kind: sequence
+        caption: 'Same two requests as before, now ending with one owner'
+        actors:
+          - {id: rahim, label: 'Rahim', icon: user, tip: 'Presses "Book" for seat 12.'}
+          - {id: db, label: 'Database', icon: db, tip: 'Checks "still free?" and changes the row in one step.'}
+          - {id: karim, label: 'Karim', icon: user, tip: 'Presses "Book" for seat 12 at the very same moment.'}
+        messages:
+          - {from: rahim, to: db, label: 'UPDATE … WHERE seat is still free'}
+          - {from: karim, to: db, label: 'UPDATE … WHERE seat is still free'}
+          - {at: db, note: 'Row locked for Rahim; Karim waits a moment', tone: warn, tip: 'The database lets only one UPDATE touch this row at a time.'}
+          - {from: db, to: rahim, label: '1 row changed: booked', dashed: true, tone: good}
+          - {from: db, to: karim, label: '0 rows changed: already taken', dashed: true, tip: 'Karim''s WHERE is checked after Rahim''s change, and it no longer matches.'}
+          - {at: db, note: 'One seat, one owner', tone: good}
+      - type: points
+        title: 'What it costs'
+        items:
+          - 'It guards one row. If the rule spans several rows, such as a seat plus a wallet balance, use a transaction with a lock.'
+          - 'It says only "0 rows", not why. To answer "no such seat", look the seat up first.'
+          - 'A bulk UPDATE skips entity events and does not refresh Seat objects you already loaded.'
+    aside:
+      - type: remember
+        body: 'Don''t ask, then act. Act, and let the database tell you whether it worked.'
+      - type: terms
+        items:
+          - {term: 'Atomic', meaning: 'All-or-nothing in one indivisible step: no other request can slip in halfway.'}
+          - {term: 'Affected rows', meaning: 'How many rows the database actually changed. 0 means the WHERE matched nothing.'}
+      - type: refs
+        items:
+          - {to: 'concurrency/atomic-operations', label: 'More ways to make a step atomic'}
+    check:
+      q: 'Karim''s UPDATE came back with 0 rows changed. What should the controller answer?'
+      a: 'A 409 "Seat taken". Zero rows means the WHERE no longer matched, so someone booked the seat first.'
 
   - slug: what-is-architecture
     title: 'So what is architecture?'
@@ -127,6 +194,7 @@ slides:
         items:
           - 'Before any new decision, ask yourself: "How many days would it take to change this in six months?"'
           - 'If the answer is "one afternoon", decide fast. If it''s "a few months", stop, think, and ask others.'
+          - 'Thinking ahead has a price: you can only plan for what you know today. Keep the pillars few, and decide each as late as is safe.'
       - type: refs
         items:
           - {to: 'thinking/what-is-architectural', label: 'Which decisions are architectural?'}
@@ -195,11 +263,21 @@ flashcards:
     more: |
       For example: "Is the seat free? Then book it." Because checking and changing are two separate steps, two requests can both see "free". The fix is to turn the two steps into one indivisible step. More in [[concurrency/atomic-operations|atomic operations]].
     ref: the-last-ticket
+  - q: 'How do you stop two requests booking the same seat?'
+    a: 'Put the check inside the write: UPDATE … WHERE the seat is still free, then look at how many rows changed.'
+    more: |
+      Reading first and writing second leaves a gap. A single conditional UPDATE has no gap: the database checks the condition and changes the row as one step. If 0 rows changed, someone else won, so answer 409 "Seat taken".
+    ref: book-in-one-step
   - q: 'When does a race condition happen?'
     a: 'When several requests read and change the same data at once, and the result depends on who gets there first.'
     more: |
       You'll never catch it by testing alone, because requests then arrive one after another. It shows up in production once the load rises, and the result is double sales or a wrong balance.
     ref: the-last-ticket
+  - q: 'What are the limits of a conditional UPDATE as a fix?'
+    a: 'It guards one row only, and it tells you just "0 rows", not why.'
+    more: |
+      When a rule spans several rows or tables, such as moving money between two accounts, wrap the steps in a transaction with a lock. See [[concurrency/atomic-operations|atomic operations]]. A bulk UPDATE also skips entity events and leaves already-loaded objects stale.
+    ref: book-in-one-step
   - q: 'Where do slow jobs (emails, reports) get moved to?'
     a: 'Into a queue; a worker does them later in the background.'
     more: |
@@ -241,6 +319,22 @@ quiz:
         correct: false
         why: 'Alone, requests arrive one after another, so this trap is never caught that way.'
     ref: the-last-ticket
+  - q: 'Two customers buy the last phone at the same instant. Which stock update is safe?'
+    hint: 'Where does the "is any left?" check happen: in PHP, or inside the statement the database runs?'
+    options:
+      - text: 'UPDATE product SET stock = stock - 1 WHERE id = :id AND stock > 0, then check the rows changed'
+        correct: true
+        why: 'The check and the change are one step. The second customer matches 0 rows and is told "sold out".'
+      - text: 'Read the stock, check it is above 0 in PHP, then UPDATE product SET stock = :newStock'
+        correct: false
+        why: 'Same gap as before: both customers read 1, both write 0, and two phones are sold.'
+      - text: 'UPDATE product SET stock = stock - 1 WHERE id = :id, with no condition'
+        correct: false
+        why: 'The decrement is safe but nothing stops it going below 0, so stock drops to -1 and a phone that doesn''t exist is "sold".'
+      - text: 'Re-read the stock just before flush()'
+        correct: false
+        why: 'That only makes the gap shorter. Two requests can still slip through it.'
+    ref: book-in-one-step
   - q: 'Which of these are architectural decisions?'
     hint: 'Which ones would take weeks or months to change six months from now?'
     options:

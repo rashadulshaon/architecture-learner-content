@@ -107,7 +107,7 @@ slides:
         kind: steps
         caption: 'Five steps you loop through during an incident'
         steps:
-          - {title: '1. Read the symptoms', body: 'Dashboards: errors, latency, queue', tip: 'Look at numbers, not guesses: RED and queue depth.'}
+          - {title: '1. Read the symptoms', body: 'Dashboards: errors, latency, queue', tip: 'Look at numbers, not guesses: error rate, latency and how many jobs are waiting in the queue.'}
           - {title: '2. What changed?', body: 'Deploys, config, traffic just before the start', tip: 'Behind most outages sits a recent change. It is the likeliest guess.'}
           - {title: '3. Form a hypothesis', body: 'One guess, one cheap test', tip: 'Change many things at once and you can''t tell which one worked.'}
           - {title: '4. Stop it', body: 'Rollback, flag off, scale, failover', tip: 'Safest first: rollback > flag > scale > hotfix.'}
@@ -130,23 +130,88 @@ slides:
           kubectl logs deploy/shop-api --since=15m | grep 0191-ab
         marks:
           - {line: 2, tip: 'The list of revisions and when each happened. Compare it with the start time.'}
-          - {line: 5, tip: 'Going back to the previous revision. A code rollback is safe, but a database migration needs separate care.'}
+          - {line: 5, tip: 'Going back to the previous revision. Rolling back code is safe, but a database change does not roll back with it: see the next slide.'}
           - {line: 11, tip: 'With the correlation id built in logging-tracing, one customer''s incident comes up in one list.'}
       - type: quote
         body: 'Stop the harm first, find the cause after, and change one thing at a time.'
     aside:
       - type: pitfalls
         items:
-          - 'Assuming a migration can be rolled back: a migration that dropped a column can''t be undone. So migrations go step by step (expand, then contract).'
+          - 'Assuming rollback undoes the database too. It only swaps the code; the next slide shows what breaks and the two-step fix.'
           - 'Use a feature flag alongside the deploy for rollback: if the new feature sits behind a flag, turning it off is one click.'
           - 'Logging into a server and editing code directly (a hot patch): in the chaos nobody knows what changed where. Every change goes through the pipeline.'
+      - type: terms
+        items:
+          - {term: 'Rollback', meaning: 'Putting the previous version of the code back, like undoing the last deploy.'}
+          - {term: 'Feature flag', meaning: 'A switch in config that turns one feature on or off without a deploy.'}
+          - {term: 'Failover', meaning: 'Sending traffic to a standby copy (another server or database) when the main one is down.'}
+          - {term: 'Hotfix', meaning: 'A quick new code change made in a hurry. The riskiest fix, because it is barely tested.'}
       - type: refs
         items:
-          - {to: 'data/zero-downtime-migrations', label: 'Safe migrations'}
           - {to: 'config/feature-flags', label: 'Feature flags'}
     check:
       q: 'A new deploy went out 10 minutes before checkout broke. Roll back first or find the cause first, and why?'
       a: 'Roll back. A recent change is the likeliest cause, and going back is fast and safe. Only once the harm stops can you look for the cause calmly.'
+
+  - slug: rollback-limits
+    title: 'When rollback isn''t enough: the database moved on'
+    kind: pitfall
+    tldr: 'Rollback swaps the code, not the data. If the deploy also renamed a column, the old code breaks on the new schema, so change the schema in two safe steps.'
+    keywords: ['rollback', 'migration', 'expand contract', 'schema change', 'rename column', 'backward compatible']
+    blocks:
+      - type: text
+        body: |
+          Rollback puts the old code back, but the database stays exactly as the deploy left it. Say the 13:45 deploy renamed the `phone` column to `mobile`. You roll back, and the old code asks for `phone`, which no longer exists. Every query on customers fails, and the rollback made things worse.
+      - type: code
+        lang: php
+        file: 'migrations/Version20260912134500.php'
+        variant: bad
+        code: |
+          // shipped in the same deploy as the new code
+          public function up(Schema $schema): void
+          {
+              $this->addSql('ALTER TABLE customer RENAME COLUMN phone TO mobile');
+          }
+        marks:
+          - {line: 4, tip: 'One step: the old column is gone the moment this runs, so the old code can never run again.'}
+      - type: code
+        lang: php
+        file: 'migrations/ (two separate deploys)'
+        variant: good
+        code: |
+          // Deploy 1 (expand): add the new column, keep the old one
+          public function up(Schema $schema): void
+          {
+              $this->addSql('ALTER TABLE customer ADD mobile VARCHAR(20) DEFAULT NULL');
+              $this->addSql('UPDATE customer SET mobile = phone');
+          }
+
+          // Deploy 2 (contract), days later, once rollback is no longer wanted
+          public function up(Schema $schema): void
+          {
+              $this->addSql('ALTER TABLE customer DROP phone');
+          }
+        marks:
+          - {line: 4, tip: 'The old phone column stays, so after a rollback the old code still finds what it needs.'}
+          - {line: 11, tip: 'Only now is the old column dropped, after the new code has run safely for days.'}
+      - type: text
+        body: |
+          The price: two deploys instead of one, and for a while the data lives in two columns, so the new code must write both. It is worth it on any live app. For a brand-new table nobody reads yet, one step is fine.
+      - type: quote
+        body: 'Rollback undoes code, not data: change the database in two steps, never one.'
+    aside:
+      - type: when
+        use:
+          - 'A live app with real traffic'
+          - 'Any column rename, drop or type change'
+        avoid:
+          - 'A brand-new table that no running code reads yet'
+      - type: refs
+        items:
+          - {to: 'data/zero-downtime-migrations', label: 'Safe migrations'}
+    check:
+      q: 'A deploy renamed a column in one step and checkout broke. Why doesn''t rolling the code back fix it?'
+      a: 'The old code still asks for the old column, which the migration already removed, so it fails too. Add the new column first and drop the old one in a later deploy.'
 
   - slug: roles-communication
     title: 'Roles and communication: who does what, who tells whom'
@@ -302,6 +367,11 @@ flashcards:
     more: |
       A rollback returns to a previously tested state. A hotfix is new code written under incident pressure, often without proper tests. So roll back first where you can, and be careful with migrations (a dropped column can't be restored).
     ref: mitigate-first
+  - q: 'Why can''t you always fix a bad deploy by rolling back?'
+    a: 'Rollback restores the code, not the database. If the deploy renamed or dropped a column, the old code breaks on the new schema.'
+    more: |
+      Change the schema in two deploys: expand (add the new column, keep the old one) and, days later, contract (drop the old one). The price is two deploys and a period with data in two columns. For a brand-new table nobody reads yet, one step is fine.
+    ref: rollback-limits
   - q: 'What does an Incident Commander do, and not do?'
     a: 'They coordinate, decide and divide the work. They don''t debug or work on the keyboard themselves.'
     more: |
@@ -356,6 +426,22 @@ quiz:
         correct: false
         why: 'At the very bottom of the priorities; a ticket.'
     ref: triage-severity
+  - q: 'Nadia''s deploy renamed customer.phone to mobile in one migration and checkout failed. She rolled the code back and it still fails. Why?'
+    hint: 'What did the rollback not touch?'
+    options:
+      - text: 'The old code asks for phone, but the database already renamed it'
+        correct: true
+        why: 'Rollback swaps the code only; the schema stays as the migration left it.'
+      - text: 'The rollback did not restore any code'
+        correct: false
+        why: 'It did restore the old code. That is exactly why it now asks for a column that is gone.'
+      - text: 'The cache must be cleared before a rollback works'
+        correct: false
+        why: 'A stale cache is a different problem; the error here is a missing column.'
+      - text: 'She should have waited longer for the rollback to finish'
+        correct: false
+        why: 'Waiting changes nothing; the code and the schema disagree.'
+    ref: rollback-limits
   - q: 'An incident is under way. Two developers are changing prod at the same time and neither knows what the other is doing. What is the best fix?'
     hint: 'Who is coordinating?'
     options:

@@ -12,7 +12,7 @@ slides:
           Two bank branches each have a wall clock, and one runs 5 minutes fast. Both branches update the same customer's address, and head office rules: "the later time wins". The older update from the fast clock wins. You simply can't tell by looking at clocks which change really happened last.
       - type: visual
         kind: sequence
-        caption: 'Phone A''s clock is 5 minutes fast: the older edit wins'
+        caption: 'Phone A''s clock is 5 minutes fast, so the older edit wins; counting versions fixes it'
         actors:
           - {id: a, label: 'Phone A', icon: phone, tip: 'Its clock is 5 minutes fast. It changes the name at 10:00 real time.'}
           - {id: b, label: 'Phone B', icon: phone, tip: 'Its clock is correct. It changes the name at 10:02 real time, which is after A.'}
@@ -21,6 +21,7 @@ slides:
           - {from: a, to: db, label: 'name = Rahim, time 10:05', tip: 'Real time is 10:00, but A''s fast clock wrote 10:05.'}
           - {from: b, to: db, label: 'name = Rahim Ahmed, time 10:02', tip: 'This is really the newer change, but its timestamp is smaller.'}
           - {at: db, note: '10:05 > 10:02, so "Rahim" stays', tone: bad, tip: 'The database threw away the newer change without any error. Nobody ever finds out.'}
+          - {at: db, note: 'Fix: versions. A saves v4, B saves v5', tone: good, tip: 'The server hands out the numbers, so no phone clock is involved. B had loaded v4, so its change lands on top as v5. Had B loaded v3, the server would answer 409 instead of silently dropping one edit.'}
     aside:
       - type: story
         title: 'The story of the synced notes'
@@ -78,7 +79,7 @@ slides:
     blocks:
       - type: text
         body: |
-          In real systems the simple way is to create the order in one place: the database. Each change increments `version` by one, and the change event carries that number. A consumer accepts only a number larger than the latest version it knows. A stale event that arrives late does no harm.
+          In real systems the simple way is to create the order in one place: the database. Each change increments `version` by one, and the change event carries that number. A consumer accepts only a number larger than the latest version it knows. A stale event that arrives late does no harm. The price: one place has to hand out the numbers, so this suits one entity in one database; several databases need the other tools on the next slide.
       - type: code
         lang: sql
         file: 'Source: the database'
@@ -207,7 +208,7 @@ slides:
               return $this->json(['ok' => true]);
           }
         marks:
-          - {line: 6, tip: 'Checks that the version the client saw when it made its change still equals the row''s version. No clock needed.'}
+          - {line: 6, tip: 'Checks that the version the client saw when it made its change still equals the row''s version (the entity needs a #[ORM\Version] column). No clock needed.'}
           - {line: 7, tip: 'Write only the changed fields and leave the rest as they are. Unrelated changes then don''t erase each other.'}
           - {line: 10, tip: 'On a conflict, tell the client. Have it fetch the new data and merge, or ask the user to choose.'}
     aside:
@@ -372,4 +373,17 @@ quiz:
       - text: 'The content of a shared document'
         correct: false
         why: 'Silently erasing someone''s work is direct harm. Here you need a merge or conflict handling.'
+    ref: lww-danger
+  - q: 'Phone A saved version 4. Phone B loaded version 3 earlier and now saves, sending "expected version 3". What happens with version-based locking?'
+    hint: 'Does the server compare clocks or versions?'
+    options:
+      - text: 'The server answers 409; B fetches version 4 and merges, or asks the user'
+        correct: true
+        why: 'The version B saw (3) no longer matches the row (4), so the conflict is caught and nothing is lost silently.'
+      - text: 'B silently overwrites A''s change'
+        correct: false
+        why: 'That is last-write-wins. The version check exists to stop exactly this.'
+      - text: 'Whichever phone has the later clock time wins'
+        correct: false
+        why: 'No clock is involved in a version check, which is its whole point.'
     ref: lww-danger

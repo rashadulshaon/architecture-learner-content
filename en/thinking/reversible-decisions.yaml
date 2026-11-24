@@ -35,6 +35,12 @@ slides:
         title: 'The email that couldn''t be recalled'
         body: |
           A team once sent an "offer ended" email to production addresses instead of the test database. They fixed the code within an hour, but an email can't be called back. The only option was to apologise with another email.
+      - type: terms
+        items:
+          - {term: 'Migration', meaning: 'A small script, run once, that changes the database structure, for example adds or drops a column.'}
+          - {term: 'Deploy', meaning: 'Putting a new version of the code on the live server.'}
+          - {term: 'Backup', meaning: 'A saved copy of the data that you can restore if something gets deleted.'}
+          - {term: 'Public API', meaning: 'The doorway other companies'' apps use to talk to yours. You can''t see or fix their code.'}
       - type: refs
         items:
           - {to: 'thinking/what-is-architectural', label: 'Which decisions are architectural?'}
@@ -60,8 +66,8 @@ slides:
         rows:
           - cells: ['Turning on a new feature flag', 'Two-way', 'Switch the flag off and you''re back']
             tip: 'The code is already there; you''re only flipping a switch. No retreat is cheaper than this.'
-          - cells: ['Adding a new column', 'Two-way', 'Can be dropped later']
-            tip: 'Old code doesn''t know the new column, so nothing breaks. Adding is safe; deleting is dangerous.'
+          - cells: ['Adding a new nullable column', 'Two-way', 'Can be dropped later']
+            tip: 'If the column is nullable (or has a default), old code doesn''t notice it, so nothing breaks. Adding is safe; deleting is dangerous.'
           - cells: ['Choosing an SMS company', 'Two-way', 'With an interface, change one class']
             tip: 'The rest of the code knows only the interface, so switching company means rewriting one class.'
           - cells: ['Dropping a column or data', 'One-way', 'Only from a backup']
@@ -86,12 +92,32 @@ slides:
   - slug: keep-door-open
     title: 'Turning a one-way door into a two-way door'
     kind: howto
-    tldr: 'Put a thin layer over a big decision with an interface and a feature flag, so you can go back to the old path if it goes wrong.'
+    tldr: 'Hide a big decision behind an interface and a feature flag, so you can go back to the old code path if it goes wrong. The flag does not undo data.'
     keywords: ['interface', 'feature flag', 'abstraction', 'AsAlias', 'Autowire env', 'rollback']
     blocks:
       - type: text
         body: |
-          Some decisions look one-way but can be made two-way. Don't scatter a vendor or library through your code; keep it behind an `interface`, and keep the new path behind a flag. Then if something goes wrong, changing one class or flipping the flag restores the old state.
+          Some decisions look one-way but can be made two-way. Don't scatter a vendor's SDK through your code. Keep it behind an `interface` (a contract that says what can be asked, not who answers), and keep the new path behind a **feature flag** (an on/off switch read from configuration). Then changing one class or flipping the flag brings the old path back. The flag restores code, not data: whatever the new path already wrote stays written.
+      - type: visual
+        kind: compare
+        caption: 'Same switch of SMS company, with and without an interface'
+        columns:
+          - title: 'SDK called everywhere'
+            tone: bad
+            icon: cross
+            tip: 'Every file that sends an SMS knows the company''s classes. The dependency is spread, so leaving is a big job.'
+            items:
+              - '30 files call the company''s SDK directly'
+              - 'Switching company: edit and retest all 30'
+              - 'Nobody dares try the new company'
+          - title: 'Behind SmsGateway'
+            tone: good
+            icon: check
+            tip: 'The 30 files know only the interface. The company hides in one adapter class, so the dependency is in one place.'
+            items:
+              - '30 files call the SmsGateway interface'
+              - 'Switching company: write 1 new class'
+              - 'Keep the old class and going back is one line'
       - type: code
         lang: php
         file: 'src/Sms/SmsGateway.php + BulkSmsGateway.php'
@@ -152,6 +178,8 @@ slides:
         items:
           - 'Create interfaces for things that are external (SMS, payments, file storage), not for every class.'
           - 'Write a removal date next to every flag. Old flags piling up become the new clutter.'
+          - 'An env var is read when the process starts, so flipping it means a restart or deploy. For an instant switch, store the flag in the database.'
+          - 'Two paths mean double the tests, and they cost real effort. Use this for risky, hard-to-reverse changes, not for every small edit.'
       - type: refs
         items:
           - {to: 'config/feature-flags', label: 'Running feature flags properly'}
@@ -180,7 +208,7 @@ slides:
               $this->addSql('ALTER TABLE customer DROP COLUMN phone');
           }
 
-          // down() is empty or a lie: the data doesn't come back
+          // down() brings the column back, but empty: the data doesn't come back
           public function down(Schema $schema): void
           {
               $this->addSql('ALTER TABLE customer ADD phone VARCHAR(20) DEFAULT NULL');
@@ -208,6 +236,77 @@ slides:
       q: 'Why does the drop step go last, in its own deploy?'
       a: 'Because it''s the only one-way step. In every earlier step the old column stays intact, so you can safely go back if the code has a problem.'
 
+  - slug: expand-contract-in-code
+    title: 'Expand and contract, in real code'
+    kind: howto
+    tldr: 'Step 1-2 is one additive migration plus a dual write in the entity; the drop waits for its own deploy and a zero-row check.'
+    keywords: ['expand contract', 'dual write', 'Doctrine Migrations', 'backfill', 'zero rows check', 'drop column']
+    blocks:
+      - type: text
+        body: |
+          Back to Sumi's team. The first migration only adds `mobile_number` and copies the old numbers into it, so the "older customers" never exist only in one column. It can be undone, because `down()` just drops the new column and `phone` is untouched.
+      - type: code
+        lang: php
+        file: 'migrations/Version20261124100000.php'
+        variant: good
+        code: |
+          // Deploy 1: expand + migrate. Nothing is lost, so down() is honest.
+          public function up(Schema $schema): void
+          {
+              $this->addSql('ALTER TABLE customer ADD mobile_number VARCHAR(20) DEFAULT NULL');
+              $this->addSql('UPDATE customer SET mobile_number = phone');
+          }
+
+          public function down(Schema $schema): void
+          {
+              $this->addSql('ALTER TABLE customer DROP COLUMN mobile_number');
+          }
+
+          // Deploy 4, weeks later, only after the check below returns 0 and a backup exists:
+          //   ALTER TABLE customer DROP COLUMN phone
+          //
+          // The check (run on production, expect 0):
+          //   SELECT COUNT(*) FROM customer
+          //   WHERE phone IS NOT NULL AND mobile_number IS NULL;
+        marks:
+          - {line: 5, tip: 'On a table with millions of rows, copy in batches instead. One huge UPDATE can lock the table and stall live traffic.'}
+          - {line: 16, tip: 'Zero rows means every old number exists in the new column. Only now is the one-way step safe to take.'}
+      - type: text
+        body: |
+          Between deploy 1 and deploy 4 the code must keep both columns in step. While the old and new code versions run side by side, either may read, so every write goes to both.
+      - type: code
+        lang: php
+        file: 'src/Entity/Customer.php'
+        variant: good
+        code: |
+          public function changeMobile(string $number): void
+          {
+              $this->mobileNumber = $number;
+              $this->phone = $number;   // step 2: remove this line in step 4
+          }
+
+          public function mobile(): ?string
+          {
+              // step 3: read the new column, fall back to the old one
+              return $this->mobileNumber ?? $this->phone;
+          }
+        marks:
+          - {line: 4, tip: 'The old column stays correct, so rolling back to the previous code still finds the right number.'}
+          - {line: 10, tip: 'Reads prefer the new column. Once the zero-row check passes for a while, the fallback and the old column can go.'}
+    aside:
+      - type: when
+        use:
+          - 'Any column or table that real data lives in'
+        avoid:
+          - 'Scratch data in a dev database: just drop it'
+          - 'A tiny internal table you can rebuild in minutes: four deploys cost more than the risk'
+      - type: pitfalls
+        items:
+          - 'The price: four deploys instead of one, and for a while two columns that must stay equal.'
+    check:
+      q: 'Before the final drop, which query proves no number would be lost, and what result do you need?'
+      a: 'Count rows where phone is not null but mobile_number is null. You need 0, and a backup, before dropping phone.'
+
 flashcards:
   - q: 'What is a two-way door decision?'
     a: 'One that is easy and cheap to reverse if it turns out wrong, such as turning on a feature flag or changing a banner colour.'
@@ -234,6 +333,21 @@ flashcards:
     more: |
       Each step is its own deploy. Only the last step is one-way; in the other three the old column stays intact, so you can return to the earlier state at any time.
     ref: drop-column-trap
+  - q: 'Before the final DROP COLUMN, what check proves no data would be lost?'
+    a: 'Count rows where the old column has a value but the new one is NULL. It must return 0, and you need a backup.'
+    more: |
+      In the example: `SELECT COUNT(*) FROM customer WHERE phone IS NOT NULL AND mobile_number IS NULL;`. A non-zero result means some numbers exist only in the old column, which is exactly how Sumi's team lost theirs.
+    ref: expand-contract-in-code
+  - q: 'What does expand-contract cost, and when is it overkill?'
+    a: 'Four deploys instead of one, plus a while of double writes. Overkill for scratch data or a tiny table you can rebuild in minutes.'
+    more: |
+      The price buys a safe way back. For any column that holds real customer data it is worth it; for a dev database it is not.
+    ref: expand-contract-in-code
+  - q: 'What does turning a feature flag off NOT undo?'
+    a: 'Whatever the new path already wrote or sent. The flag brings back the old code path, not the data or the emails.'
+    more: |
+      If the new checkout charged 40 customers before you flipped the flag, those 40 charges stay. Use flags for risky code, and still plan how to fix what the new path already did.
+    ref: keep-door-open
   - q: 'What are two common ways to turn a one-way door into a two-way one?'
     a: 'Keep external things behind an interface, and keep the new path behind a feature flag.'
     more: |
@@ -297,6 +411,36 @@ quiz:
         correct: false
         why: 'It''s risky and you''d have to repeat it every time; the real problem, the spread-out dependency, remains.'
     ref: keep-door-open
+  - q: 'The new checkout ran behind a flag for an hour and charged 40 customers twice by mistake. You switch the flag off. What is still true?'
+    hint: 'What does a flag control: code, or the world outside the code?'
+    options:
+      - text: 'New orders use the old path again, but the 40 double charges still exist and must be refunded'
+        correct: true
+        why: 'A flag chooses the code path. Money already taken is outside the flag and needs its own fix.'
+      - text: 'Everything is back as before, including the 40 charges'
+        correct: false
+        why: 'The charges are real records at the payment provider. Switching code does not cancel them.'
+      - text: 'The flag cannot be switched off once customers have paid'
+        correct: false
+        why: 'The flag can always be flipped. It just does not clean up the past.'
+    ref: keep-door-open
+  - q: 'You copied `phone` into `mobile_number` and switched the code to read it. Before dropping `phone`, which result of this query tells you it is safe?'
+    lang: sql
+    code: |
+      SELECT COUNT(*) FROM customer
+      WHERE phone IS NOT NULL AND mobile_number IS NULL;
+    hint: 'What would a non-zero count mean?'
+    options:
+      - text: '0: no number exists only in the old column'
+        correct: true
+        why: 'Every old value is already in the new column. With a backup, the drop will not lose data.'
+      - text: 'Any number above 0, because rows exist in both columns'
+        correct: false
+        why: 'The query counts rows that have phone but lack mobile_number. A positive count means data would be lost.'
+      - text: 'The query result does not matter if the tests pass'
+        correct: false
+        why: 'Tests rarely cover every old row in production. The query checks the real data.'
+    ref: expand-contract-in-code
   - q: 'What is the best rule for deciding how much time to give a decision?'
     hint: 'Think about the consequence of a mistake, not the size of the decision.'
     options:

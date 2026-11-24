@@ -27,7 +27,7 @@ slides:
             icon: send
             tip: 'Thousands of new rows arrive every second and reads are comparatively rare. An accumulate-then-sort engine (LSM) suits this better.'
             items:
-              - 'Sensors, logs, chat messages, events'
+              - 'Sensors, logs, chat, events: 1,000 sensors reporting every second is 1,000 writes a second'
               - 'New data is only appended'
               - 'Write speed is the real bottleneck'
       - type: quote
@@ -66,7 +66,7 @@ slides:
               - 'Write: find the right page and put it there'
               - 'Read: walk down the tree and land directly on it'
               - 'Writes land in scattered places, so random writes on disk'
-              - 'A full page is split in two'
+              - 'A full page is split in two, which costs extra writes'
           - title: 'LSM-tree'
             tone: good
             icon: archive
@@ -80,7 +80,7 @@ slides:
         title: 'Three names for this trade-off'
         style: dot
         items:
-          - 'Write amplification: how many times the disk is really written for one write.'
+          - 'Write amplification: how many times the disk is really written for one write. A B-tree rewrites a whole page (8 to 16 KB) for a 100-byte change; an LSM rewrites data again at each compaction.'
           - 'Read amplification: how many places must be checked to find one value.'
           - 'Space amplification: how much more space is used than the real data needs.'
     aside:
@@ -119,6 +119,9 @@ slides:
           - {from: app, to: mem, label: 'The same write is placed in the in-memory memtable too'}
           - {from: mem, to: sst, label: 'When the memtable fills, it goes to disk as a sorted SSTable file'}
           - {from: sst, to: comp, label: 'Later, compaction merges many files into one clean file', tone: good}
+      - type: text
+        body: |
+          Picture the memtable holding the last 10,000 writes, only in RAM, when the power goes. Without a WAL they are gone. With one, the server restarts, reads the log and puts all 10,000 back.
       - type: quote
         body: 'Write to the WAL first, then do the rest. After a crash, the database comes back by reading the WAL.'
     aside:
@@ -129,7 +132,7 @@ slides:
           - {term: 'Compaction', meaning: 'Merging many files into a new one, leaving out old and deleted data.'}
       - type: story
         title: 'B-trees have a WAL too'
-        body: 'The WAL is not only for LSM. PostgreSQL and MySQL (where it is called the redo log) write every change to the WAL before the page. Replication also works by following this WAL.'
+        body: 'The WAL is not only for LSM. PostgreSQL writes every change to the WAL before the data page, and MySQL InnoDB does the same with its redo log. PostgreSQL replication follows this WAL; MySQL replicates through a separate binary log.'
     check:
       q: 'In an LSM-tree, writes sit in memory; why is no data lost when the server crashes?'
       a: 'Every write is first appended to the WAL on disk. After a crash, the database reads the WAL and rebuilds the memtable''s data.'
@@ -159,8 +162,8 @@ slides:
         title: 'Rules for deciding'
         style: check
         items:
-          - 'Ordinary business apps (orders, users, payments): B-tree, meaning PostgreSQL or MySQL.'
-          - 'Huge continuous writes with known queries (logs, sensors, chat): consider an LSM-based database.'
+          - 'Ordinary business apps (orders, users, payments; tens to hundreds of writes a second): B-tree, meaning PostgreSQL or MySQL.'
+          - 'Huge continuous writes with known queries (logs, sensors, chat; tens of thousands of writes a second and up): consider an LSM-based database.'
           - 'If you are unsure, B-tree. Measure first, then change.'
     aside:
       - type: when
@@ -185,7 +188,7 @@ slides:
     blocks:
       - type: text
         body: |
-          When INSERTs feel slow, many people set `fsync = off`, because without forcing data to disk the numbers look great. But then a power cut can leave the database files themselves damaged, with half-written data. `synchronous_commit` is different: turning it off can lose only the last few milliseconds of commits, and the files are not corrupted.
+          When INSERTs feel slow, many people set `fsync = off`, because without forcing data to disk the numbers look great. But then a power cut can leave the database files themselves damaged, with half-written data. `synchronous_commit` is different: turning it off can lose only the last fraction of a second of commits (up to about 0.6 s by default), and the files are not corrupted.
       - type: code
         lang: ini
         file: 'postgresql.conf'
@@ -226,7 +229,61 @@ slides:
           - {to: 'concurrency/acid', label: 'Durability is the D in ACID'}
     check:
       q: 'What is the big difference between fsync = off and synchronous_commit = off?'
-      a: 'Turning off fsync can corrupt the whole database in a crash. Turning off synchronous_commit leaves the files intact and can lose only the last few milliseconds of commits.'
+      a: 'Turning off fsync can corrupt the whole database in a crash. Turning off synchronous_commit leaves the files intact and can lose only the last fraction of a second of commits.'
+
+  - slug: batch-before-tuning
+    title: 'Slow INSERTs: batch before you tune'
+    kind: pitfall
+    tldr: 'Every commit waits for one disk flush. 1,000 single-row commits wait 1,000 times; one transaction of 1,000 rows waits once, and risks nothing.'
+    keywords: ['batch insert', 'transaction', 'commit', 'fsync cost', 'array_chunk', 'slow inserts']
+    blocks:
+      - type: text
+        body: |
+          A commit doesn't return until its WAL record is flushed to disk, like a shopkeeper who won't hand over the receipt until the daybook line is written. On a typical cloud disk one flush takes a few milliseconds; say 5 ms. Saving 1,000 click rows one by one means 1,000 flushes, about 5 seconds. Saving them in one transaction means 1 flush, about 5 ms, plus the inserts themselves.
+      - type: visual
+        kind: bars
+        caption: 'Time to store 1,000 rows when one flush takes 5 ms'
+        items:
+          - {label: '1,000 commits', value: 5000, display: 'about 5 s', tone: bad, tip: 'Autocommit: each INSERT is its own transaction, so each one waits for its own flush. 1,000 x 5 ms.'}
+          - {label: '1 transaction', value: 60, display: 'about 0.06 s', tone: good, tip: 'One flush (5 ms) plus the 1,000 inserts themselves. Roughly 80 times faster, and no durability given up.'}
+      - type: code
+        lang: php
+        file: 'src/Service/ClickLogger.php'
+        variant: bad
+        code: |
+          foreach ($events as $e) {
+              // autocommit: every insert is its own transaction and its own flush
+              $this->connection->insert('click_event', ['page' => $e['page'], 'at' => $e['at']]);
+          }
+        marks:
+          - {line: 2, tip: 'Nothing wraps the loop, so PostgreSQL commits after every single row.'}
+      - type: code
+        lang: php
+        file: 'src/Service/ClickLogger.php'
+        variant: good
+        code: |
+          // one transaction per chunk: one flush for every 1,000 rows
+          foreach (array_chunk($events, 1000) as $chunk) {
+              $this->connection->transactional(function (Connection $c) use ($chunk): void {
+                  foreach ($chunk as $e) {
+                      $c->insert('click_event', ['page' => $e['page'], 'at' => $e['at']]);
+                  }
+              });
+          }
+        marks:
+          - {line: 2, tip: 'Chunks, not one giant transaction: a huge one holds locks for long, and one bad row rolls back all of it.'}
+    aside:
+      - type: tips
+        items:
+          - 'Doctrine''s `$em->flush()` already runs all pending changes in one transaction. Call it once per batch, not once per entity.'
+      - type: when
+        use:
+          - 'Many rows arrive together: imports, event batches, a queue consumer.'
+        avoid:
+          - 'Rows arriving one at a time from separate web requests: there is nothing to batch. Collect them in a queue first, or use SET LOCAL synchronous_commit = off for loss-tolerant data.'
+    check:
+      q: 'Why are 1,000 single-row commits far slower than one transaction of 1,000 rows?'
+      a: 'Each commit waits for its own disk flush. 1,000 commits wait 1,000 times (about 5 seconds at 5 ms each); one transaction waits once.'
 
 flashcards:
   - q: 'What is a storage engine?'
@@ -264,6 +321,11 @@ flashcards:
     more: |
       For an ordinary business app, a B-tree-based relational database is the default. When you have huge continuous writes and known queries (logs, sensors, chat), you can consider an LSM-based database.
     ref: which-database-which-engine
+  - q: 'Why is committing 1,000 rows one by one slow, and what is the first fix?'
+    a: 'Each commit waits for its own disk flush (about 5 ms each, 5 s in total). Put the rows in one transaction, in chunks of about 1,000.'
+    more: |
+      Batching keeps full durability: when the transaction commits, the data is safely on disk. Only after batching has proved too slow should you consider synchronous_commit = off, and only for data you can afford to lose.
+    ref: batch-before-tuning
 
 quiz:
   - q: 'An IoT company''s 1 million sensors send readings every second. Reads are rare, and only by time window. Which engine family fits best?'
@@ -321,6 +383,22 @@ quiz:
         correct: false
         why: 'This is not about slow versus fast; it is about the risk of losing data.'
     ref: durability-switch-pitfall
+  - q: 'A queue consumer inserts 20,000 audit rows, one commit each. At 5 ms per flush it takes 100 seconds. What should Nadia try first?'
+    hint: 'Which fix makes it faster without risking any data?'
+    options:
+      - text: 'Set fsync = off in postgresql.conf'
+        correct: false
+        why: 'It is fast, but a power cut can corrupt the whole database. Far too high a price for an insert loop.'
+      - text: 'Insert the rows in chunks of about 1,000, one transaction per chunk'
+        correct: true
+        why: '20,000 flushes become 20, so about 0.1 s of waiting instead of 100 s, and every committed row is still safely on disk.'
+      - text: 'Set synchronous_commit = off for the whole server'
+        correct: false
+        why: 'It helps, but every payment on that server could now lose its last commit. Batching comes first, and the setting belongs in one transaction at most.'
+      - text: 'Buy more RAM'
+        correct: false
+        why: 'The wait is for the disk flush at each commit, not for memory.'
+    ref: batch-before-tuning
   - q: 'Which of these statements about the WAL and engines are true?'
     hint: 'What does the WAL write first, and why?'
     options:

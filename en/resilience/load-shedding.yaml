@@ -83,6 +83,9 @@ slides:
           - {term: 'Retry-After', meaning: 'An HTTP header saying how many seconds to wait before trying again.'}
       - type: remember
         body: 'A line with no limit is not a line, it is a pit. Hit the limit and say "no" at once.'
+      - type: when
+        use: ['Demand above capacity, whether a sudden sale crowd or a viral link', 'Work the client can safely retry later']
+        avoid: ['A brief burst that a short bounded queue can absorb', 'Clients that cannot retry, like a one-shot webhook with no retries']
       - type: refs
         items:
           - {to: 'api/rate-limiting', label: 'Per-user rate limits and 429'}
@@ -91,14 +94,16 @@ slides:
       a: 'Without it, everyone would wait 120 seconds and fail. With it, 50 people are served fast and the rest know right away when to come back.'
 
   - slug: shed-with-rate-limiter
-    title: 'Shed the less important work first with Symfony RateLimiter'
+    title: 'Cap the less important work first with Symfony RateLimiter'
     kind: howto
-    tldr: 'Put an overall limit on the less important routes with RateLimiter, and return 503 with Retry-After when it is hit. Never put payment or checkout on the shedding list.'
+    tldr: 'A token bucket caps low-priority routes at a fixed rate and answers 503 with Retry-After when it is hit. It is a budget, not yet shedding: it ignores how busy the server is.'
     keywords: ['RateLimiter', 'token bucket', 'priority', 'critical traffic', 'shedding', 'Retry-After']
     blocks:
       - type: text
         body: |
-          Not all requests are equally important. In a crowd, shed things like search, recommendations and reports first, to save room for checkout and payment. Below is a token bucket (a bucket that refills with tokens at a steady rate): at most 50 low-priority requests per second, with one shared key (`global`) for everyone.
+          Not all requests are equally important. In a crowd, shed things like search, recommendations and reports first, to save room for checkout and payment. Below is a token bucket (a bucket that refills with tokens at a steady rate): a fixed budget of at most 50 low-priority requests per second, with one shared key (`global`) for everyone.
+
+          Be clear about what this is: a cap that never looks at the server. It refuses request 51 even when the server is idle, so it is a budget, not yet load shedding. The next slide makes it react.
       - type: code
         lang: yaml
         file: 'config/packages/rate_limiter.yaml'
@@ -168,13 +173,116 @@ slides:
           - 'To share the overall limit across several servers, give the limiter Redis as its cache pool. Otherwise each server counts separately.'
       - type: when
         use: ['To protect less important routes when a crowd suddenly arrives', 'As a safety net before a campaign or sale']
-        avoid: ['With numbers you set without measuring', 'On payment or auth routes']
+        avoid: ['With numbers you set without measuring', 'On payment or auth routes', 'As your only defence: it never checks whether the server is struggling']
       - type: refs
         items:
           - {to: 'api/rate-limiting', label: 'The different rate limit policies'}
     check:
       q: 'Why is the shedding listener placed on kernel.request instead of in a controller?'
       a: 'A shed request never reaches the controller, the database or external APIs. So shedding costs almost nothing, and the capacity it saves goes to the important work.'
+
+  - slug: shed-when-overloaded
+    title: 'Make it react: shed only while the server is struggling'
+    kind: howto
+    tldr: 'A fixed cap refuses people even when the server is idle. Check an overload signal first, and enforce the cap only while the server is really struggling.'
+    keywords: ['overload signal', 'load average', 'adaptive shedding', 'sys_getloadavg', 'fixed cap', 'reactive shedding']
+    blocks:
+      - type: text
+        body: |
+          Picture 3 a.m.: the server is 10% busy, 80 searches a second arrive, and the cap is 50. Thirty people a second are refused for nothing, like a clerk shouting "sold out" with half the tickets still in the drawer. Real shedding starts only when the server says "I'm struggling". So the listener first asks an overload signal, and applies the cap only if the answer is yes.
+      - type: visual
+        kind: compare
+        caption: 'The same cap, with and without a check on how the server is doing'
+        columns:
+          - title: 'Fixed cap only'
+            tone: bad
+            icon: cross
+            tip: 'The cap is a number someone guessed. It never asks how the server feels.'
+            items: ['3 a.m., server 10% busy, 80 searches a second: 30 refused for nothing', 'The cap is the same whether the server is at 10% or at 100%']
+          - title: 'Cap + overload signal'
+            tone: good
+            icon: check
+            tip: 'The signal decides when to refuse. The cap only decides how much still gets through.'
+            items: ['3 a.m.: the signal says healthy, all 80 searches are served', 'Sale day: the signal says overloaded, the cap of 50 applies, the rest get 503', 'Checkout and payment are never on the list, in either case']
+          - title: 'What it costs'
+            tone: warn
+            icon: warning
+            tip: 'Every recommendation has a price. Know it before you copy the code.'
+            items: ['Load average is a 1-minute average, so shedding starts late and stops late', 'Each server judges only itself: one can shed while its neighbour sits idle', 'Not needed if demand always stays far below capacity']
+      - type: code
+        lang: php
+        file: 'src/Service/OverloadDetector.php'
+        variant: good
+        code: |
+          final class OverloadDetector
+          {
+              public function __construct(
+                  #[Autowire(env: 'int:CPU_CORES')]
+                  private readonly int $cores,
+              ) {
+              }
+
+              public function isOverloaded(): bool
+              {
+                  // average number of tasks running or waiting for a CPU core, last minute
+                  return sys_getloadavg()[0] > 1.5 * $this->cores;
+              }
+          }
+        marks:
+          - {line: 12, tip: 'About 1 task per core means the CPU is fully used. 1.5 per core means work is queueing for a core.'}
+      - type: code
+        lang: php
+        file: 'src/EventListener/LoadSheddingListener.php'
+        variant: good
+        code: |
+          #[AsEventListener(event: KernelEvents::REQUEST, priority: 30)]
+          final class LoadSheddingListener
+          {
+              private const SHEDDABLE = ['/api/search', '/api/recommendations', '/api/reports'];
+
+              public function __construct(
+                  private readonly RateLimiterFactory $lowPriorityLimiter,
+                  private readonly OverloadDetector $overload,
+              ) {
+              }
+
+              public function __invoke(RequestEvent $event): void
+              {
+                  $path = $event->getRequest()->getPathInfo();
+                  $sheddable = array_filter(self::SHEDDABLE, fn ($p) => str_starts_with($path, $p));
+                  if (!$event->isMainRequest() || [] === $sheddable) {
+                      return;   // checkout, payment, login: never shed
+                  }
+                  if (!$this->overload->isOverloaded()) {
+                      return;   // healthy server: no cap, serve everything
+                  }
+                  if (!$this->lowPriorityLimiter->create('global')->consume()->isAccepted()) {
+                      $event->setResponse(new JsonResponse(
+                          ['error' => 'busy'],
+                          Response::HTTP_SERVICE_UNAVAILABLE,
+                          ['Retry-After' => '2'],
+                      ));
+                  }
+              }
+          }
+        marks:
+          - {line: 19, tip: 'The new gate: while the server is healthy, the listener returns here and the cap is never consulted.'}
+          - {line: 22, tip: 'Only an overloaded server reaches the bucket. Inside the 50 a second budget a request still passes; the rest get 503.'}
+      - type: quote
+        body: 'A cap that never looks at the server is a budget. Shedding starts when the server says it is struggling.'
+    aside:
+      - type: tips
+        items:
+          - 'The 1.5 × cores line is a starting guess. Log the load average during a normal busy hour, then set the line above it.'
+          - 'If requests mostly wait on a database or an API, the CPU stays calm while requests pile up. Count in-flight requests or queue depth instead.'
+          - 'Keep the detector behind its own class, so you can swap load average for queue depth or slow replies later.'
+      - type: terms
+        items:
+          - {term: 'Load average', meaning: 'How many tasks, averaged over the last minute, were running or waiting for a CPU core. About the number of cores means fully busy.'}
+          - {term: 'Overload signal', meaning: 'A number you can read in an instant that says the server is struggling: load average, busy workers, queue depth, slow replies.'}
+    check:
+      q: 'At 3 a.m. the server is idle but 80 searches a second arrive and the cap is 50. What does a fixed cap do, and what does the overload check change?'
+      a: 'A fixed cap refuses 30 a second for nothing. With the check, nobody is refused while the server is healthy; the cap applies only once it reports overload.'
 
   - slug: unbounded-queue-trap
     title: 'Pitfall: "just put it in the queue, it''ll get done later"'
@@ -282,6 +390,11 @@ flashcards:
     more: |
       Decide this before the crowd arrives, because in a hurry you will get it wrong. Write the shedding list explicitly in code. Protect most the work that brings in the business's revenue.
     ref: shed-with-rate-limiter
+  - q: 'Is a fixed rate cap the same as load shedding?'
+    a: 'No. A fixed cap never looks at the server, so it refuses people even when the server is idle. Shedding refuses work only while the server is overloaded.'
+    more: |
+      Add an overload signal in front of the cap: load average above about 1.5 per CPU core, busy PHP-FPM workers, a deep queue, or slow replies. While the signal says healthy, serve everything. Once it says overloaded, enforce the cap. The price: a lagging signal and one server judging only itself.
+    ref: shed-when-overloaded
   - q: 'Why make the shedding decision in kernel.request rather than in a controller?'
     a: 'A shed request never reaches the database or external APIs, so shedding costs almost nothing and the capacity is saved for important work.'
     more: |
@@ -375,3 +488,19 @@ quiz:
         correct: false
         why: 'Silently dropping work amounts to losing data. Turning requests away openly is the polite and safe way.'
     ref: unbounded-queue-trap
+  - q: 'At 3 a.m. Rahim''s server is 10% busy, but 80 searches a second arrive and his fixed cap is 50. What happens, and what is the fix?'
+    hint: 'Does the cap know how busy the server is?'
+    options:
+      - text: '30 searches a second are refused for no reason; enforce the cap only while an overload signal says the server is struggling'
+        correct: true
+        why: 'A fixed cap has no eyes. Checking load first means a healthy server serves everyone, and the cap still protects it on sale day.'
+      - text: 'Nothing is wrong: a cap that refuses requests is exactly what load shedding means'
+        correct: false
+        why: 'Shedding is a reaction to overload. Refusing people while the server is idle only loses requests it could have served.'
+      - text: 'Raise the cap to 1,000 for good, so nobody is refused'
+        correct: false
+        why: 'On sale day a cap of 1,000 no longer protects checkout. You lose the protection you wanted in the first place.'
+      - text: 'Switch the response to 429, so the clients know it is their fault'
+        correct: false
+        why: 'The status code does not change who is refused. 503 is still right, because the limit is the server''s, not one client''s.'
+    ref: shed-when-overloaded

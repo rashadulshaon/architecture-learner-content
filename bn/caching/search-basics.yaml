@@ -9,7 +9,7 @@ slides:
         icon: book
         title: 'লাইব্রেরির প্রতিটা বই খুলে দেখা'
         body: |
-          লাইব্রেরিতে ৫ লাখ বই। তুমি বললে, "যে বইয়ে ইলিশ শব্দটা আছে, সব দাও।" লাইব্রেরিয়ান যদি প্রতিটা বইয়ের প্রতিটা পাতা উল্টে খোঁজেন, সন্ধ্যা পেরিয়ে যাবে। `LIKE '%ইলিশ%'` ঠিক এটাই করে — টেবিলের প্রতিটা সারি পড়ে দেখে, লেখার মাঝখানে কোথাও শব্দটা আছে কি না। সাধারণ index এখানে কাজে আসে না, কারণ সেটা অভিধানের মতো **প্রথম অক্ষর** ধরে সাজানো।
+          লাইব্রেরিতে ৫ লাখ বই। আপনি বললেন, "যে বইয়ে ইলিশ শব্দটা আছে, সব দিন।" লাইব্রেরিয়ান যদি প্রতিটা বইয়ের প্রতিটা পাতা উল্টে খোঁজেন, সন্ধ্যা পেরিয়ে যাবে। `LIKE '%ইলিশ%'` ঠিক এটাই করে — টেবিলের প্রতিটা সারি পড়ে দেখে, লেখার মাঝখানে কোথাও শব্দটা আছে কি না। সাধারণ index এখানে কাজে আসে না, কারণ সেটা অভিধানের মতো **প্রথম অক্ষর** ধরে সাজানো।
       - type: code
         lang: sql
         file: 'রহিমের দোকানের search box'
@@ -130,8 +130,9 @@ slides:
         lang: http
         file: 'Elasticsearch: index তৈরি'
         code: |
-          PUT /products
+          PUT /products_v1
           {
+            "aliases": { "products": {} },
             "settings": {
               "analysis": {
                 "analyzer": {
@@ -148,14 +149,16 @@ slides:
               "properties": {
                 "name":  { "type": "text", "analyzer": "product_text" },
                 "brand": { "type": "keyword" },
-                "price": { "type": "integer" }
+                "price": { "type": "integer" },
+                "in_stock": { "type": "boolean" }
               }
             }
           }
         marks:
-          - {line: 10, tip: 'filter-গুলো এই ক্রমেই চলে। আগে lowercase না করলে stop word আর stemmer বড় হাতের শব্দ চিনবে না।'}
-          - {line: 17, tip: 'text মানে analyzer চলবে — পুরো লেখায় খোঁজার জন্য। index আর query, দুই সময়েই product_text ব্যবহার হবে।'}
-          - {line: 18, tip: 'keyword মানে analyzer চলবে না; পুরো মানটা হুবহু একটা term। filter, sort আর facet-এর জন্য এটাই লাগে।'}
+          - {line: 3, tip: 'আসল index-এর নাম products_v1, কিন্তু অ্যাপ সবসময় products বলে। এই ডাকনামের (alias) জোরে পরে কোড না ছুঁয়েই নতুন করে বানানো index বসানো যায়।'}
+          - {line: 11, tip: 'filter-গুলো এই ক্রমেই চলে। আগে lowercase না করলে stop word আর stemmer বড় হাতের শব্দ চিনবে না।'}
+          - {line: 18, tip: 'text মানে analyzer চলবে — পুরো লেখায় খোঁজার জন্য। index আর query, দুই সময়েই product_text ব্যবহার হবে।'}
+          - {line: 19, tip: 'keyword মানে analyzer চলবে না; পুরো মানটা হুবহু একটা term। filter, sort আর facet-এর জন্য এটাই লাগে।'}
       - type: quote
         body: 'Index আর query — দুই দিকে একই analyzer। নইলে শব্দ খাতায় থাকবে, কিন্তু মিলবে না।'
     aside:
@@ -165,8 +168,8 @@ slides:
           - {cmd: 'POST /products/_analyze', desc: 'body-তে analyzer আর text দিলে দেখায় লেখাটা কোন কোন term-এ ভাঙল'}
       - type: tips
         items:
-          - 'বাংলা লেখার জন্য Elasticsearch-এ তৈরি `bengali` analyzer আছে। নামে বাংলা-ইংরেজি মিশে থাকলে দুইটা field-এ দুই analyzer রাখো।'
-          - 'synonym filter দিয়ে "mobile" আর "phone"-কে এক করা যায় — খদ্দের যে শব্দে খোঁজে, সেটাই শেখাও।'
+          - 'বাংলা লেখার জন্য Elasticsearch-এ তৈরি `bengali` analyzer আছে। নামে বাংলা-ইংরেজি মিশে থাকলে দুইটা field-এ দুই analyzer রাখুন।'
+          - 'synonym filter দিয়ে "mobile" আর "phone"-কে এক করা যায় — খদ্দের যে শব্দে খোঁজে, সেটাই শেখান।'
       - type: terms
         items:
           - {term: 'Token', meaning: 'tokenizer-এর কাটা একটা টুকরো; filter পেরিয়ে index-এ উঠলে সেটাই term।'}
@@ -227,7 +230,7 @@ slides:
       - type: tips
         items:
           - 'query-তে `"explain": true` দিলে প্রতিটা ফলাফলের score কীভাবে হলো, তার পুরো হিসাব দেখায়।'
-          - 'বিক্রি বা রেটিংয়ের মতো ব্যবসার সংকেতও score-এ মেশানো যায় (`function_score`) — তবে আগে নাম আর analyzer ঠিক করো।'
+          - 'বিক্রি বা রেটিংয়ের মতো ব্যবসার সংকেতও score-এ মেশানো যায় (`function_score`) — তবে আগে নাম আর analyzer ঠিক করুন।'
     check:
       q: '"ইলিশ রান্না" খোঁজে কোন বই বেশি score পাবে: যার নামেই "ইলিশ" আছে, নাকি যার ৫০০ পাতার এক জায়গায় "রান্না" আছে? কেন?'
       a: 'নামে "ইলিশ" থাকা বইটা। "ইলিশ" বিরল শব্দ, আর সেটা মিলেছে খুব ছোট একটা লেখায় — দুই কারণেই নম্বর বাড়ে।'
@@ -235,12 +238,12 @@ slides:
   - slug: search-with-facets
     title: 'Symfony থেকে search: ফলাফল আর facet এক request-এ'
     kind: howto
-    tldr: 'Facet মানে ফলাফলের পাশে "Samsung (১২), Xiaomi (৮)" ধরনের গোনা তালিকা; query, filter আর aggregation এক request-এ পাঠাও।'
+    tldr: 'Facet মানে ফলাফলের পাশে "Samsung (১২), Xiaomi (৮)" ধরনের গোনা তালিকা; query, filter আর aggregation এক request-এ পাঠান।'
     keywords: ['facet', 'aggregation', 'bool query', 'filter', 'HttpClient', 'ফ্যাসেট', 'keyword field']
     blocks:
       - type: text
         body: |
-          অনলাইন দোকানে "phone" লিখলে বাম পাশে দেখায়: Samsung (১২), Xiaomi (৮)। এই গোনা তালিকাই **facet** — ফলাফলকে ভাগ করে প্রতিটা ভাগে কয়টা আছে তা দেখায়, যাতে খদ্দের এক ক্লিকে তালিকা ছোট করতে পারে। Elasticsearch-এ এর নাম aggregation। খোঁজার লেখা যায় `must`-এ, যেখানে score হয়। খদ্দেরের বাছাই করা brand যায় `filter`-এ, যেখানে শুধু হ্যাঁ বা না।
+          অনলাইন দোকানে "phone" লিখলে বাম পাশে দেখায়: Samsung (১২), Xiaomi (৮)। এই গোনা তালিকাই **facet** — ফলাফলকে ভাগ করে প্রতিটা ভাগে কয়টা আছে তা দেখায়, যাতে খদ্দের এক ক্লিকে তালিকা ছোট করতে পারে। Elasticsearch-এ এর নাম aggregation। খোঁজার লেখা যায় `must`-এ, যেখানে score হয়। "স্টকে আছে"-র মতো হ্যাঁ বা না শর্ত যায় `filter`-এ। খদ্দের যে brand-এ ক্লিক করে, সেটা যায় `post_filter`-এ; গোনা শেষ হওয়ার পরেই সে hit ছাঁটে। এটা মূল query-তে রাখলে facet কমে শুধু Samsung (১২)-এ ঠেকে, brand বদলানোর উপায় থাকে না।
       - type: code
         lang: yaml
         file: 'config/packages/framework.yaml'
@@ -264,23 +267,26 @@ slides:
               /** @return array{hits: list<array>, brands: list<array>} */
               public function search(string $text, ?string $brand = null): array
               {
-                  $filter = null === $brand ? [] : [['term' => ['brand' => $brand]]];
-
-                  $data = $this->searchClient->request('POST', '/products/_search', [
-                      'json' => [
-                          'size' => 20,
-                          'query' => ['bool' => [
-                              'must' => [['multi_match' => [
-                                  'query' => $text,
-                                  'fields' => ['name^3', 'description'],
-                              ]]],
-                              'filter' => $filter,
-                          ]],
-                          'aggs' => [
-                              'brands' => ['terms' => ['field' => 'brand', 'size' => 10]],
-                          ],
+                  $body = [
+                      'size' => 20,
+                      'query' => ['bool' => [
+                          'must' => [['multi_match' => [
+                              'query' => $text,
+                              'fields' => ['name^3', 'description'],
+                          ]]],
+                          'filter' => [['term' => ['in_stock' => true]]],
+                      ]],
+                      'aggs' => [
+                          'brands' => ['terms' => ['field' => 'brand', 'size' => 10]],
                       ],
-                  ])->toArray();
+                  ];
+                  if (null !== $brand) {
+                      $body['post_filter'] = ['term' => ['brand' => $brand]];
+                  }
+
+                  $data = $this->searchClient
+                      ->request('POST', '/products/_search', ['json' => $body])
+                      ->toArray();
 
                   return [
                       'hits' => array_column($data['hits']['hits'], '_source'),
@@ -290,9 +296,10 @@ slides:
           }
         marks:
           - {line: 3, tip: 'search.client নামের scoped client এই নামের argument-এ নিজে থেকেই autowire হয়।'}
-          - {line: 16, tip: 'must-এর ভেতরের query score হিসাব করে — কোন পণ্য আগে আসবে তা এখানেই ঠিক হয়।'}
-          - {line: 20, tip: 'filter score বদলায় না, শুধু বাদ দেয়। ফলটা cache-ও হয়, তাই হ্যাঁ/না ধরনের শর্ত সবসময় এখানে রাখো।'}
-          - {line: 23, tip: 'প্রতিটা brand-এ কয়টা পণ্য মিলল তা গুনে দেয়: [{key: samsung, doc_count: 12}, …]। field-টা keyword হতেই হবে।'}
+          - {line: 13, tip: 'must-এর ভেতরের query score হিসাব করে — কোন পণ্য আগে আসবে তা এখানেই ঠিক হয়।'}
+          - {line: 17, tip: 'filter score বদলায় না, শুধু বাদ দেয়; Elasticsearch ফলটা cache-ও করে। হ্যাঁ/না শর্ত এখানে যায়। in_stock mapping-এর একটা boolean field।'}
+          - {line: 20, tip: 'post_filter চলার আগেই প্রতিটা brand-এ কয়টা পণ্য মিলল গুনে দেয়: [{key: samsung, doc_count: 12}, {key: xiaomi, doc_count: 8}]। field-টা keyword হতেই হবে।'}
+          - {line: 24, tip: 'গোনার পরে চলে। hit কমে শুধু Samsung-এ নামে, কিন্তু facet-এ Xiaomi (৮) থেকেই যায়। দাম: post_filter cache হয় না, গতিও বাড়ায় না — তাই শুধু facet-এর নিজের field-এর জন্য রাখুন।'}
       - type: visual
         kind: flow
         caption: 'এক request-এ ফলাফল আর facet'
@@ -302,22 +309,22 @@ slides:
           - {id: es, label: 'Elasticsearch', sub: 'products index', icon: search, col: 4, row: 0, tip: 'inverted index থেকে মিলে যাওয়া document বের করে, score দেয়, আর একই সাথে brand ধরে গোনে।'}
         edges:
           - {from: vue, to: api, label: 'খদ্দের লেখে "phone", আর brand বাছে Samsung'}
-          - {from: api, to: es, label: 'এক request-এ query, filter আর aggs যায়'}
-          - {from: es, to: api, label: 'score অনুযায়ী ২০টা hit আর brand-এর bucket ফেরে', dashed: true}
+          - {from: api, to: es, label: 'এক request-এ query, filter, aggs আর post_filter যায়'}
+          - {from: es, to: api, label: 'score অনুযায়ী ২০টা Samsung hit আর প্রতিটা brand-এর গোনা ফেরে', dashed: true}
           - {from: api, to: vue, label: 'Vue বামে facet আর ডানে ফলাফল দেখায়', dashed: true, tone: good}
     aside:
       - type: pitfalls
         items:
-          - '`text` field-এ aggregation চালালে error আসে। facet-এর field সবসময় `keyword` রাখো।'
-          - 'brand-এর filter মূল query-তে থাকলে facet-এ শুধু বাছাই করা brand-ই থাকে। বাকি brand-ও দেখাতে চাইলে সেটা `post_filter`-এ দাও।'
-          - 'Elasticsearch-কে কখনো সরাসরি ইন্টারনেটে খুলে দিয়ো না; সব request Symfony হয়ে যাবে।'
+          - '`text` field-এ aggregation চালালে error আসে। facet-এর field সবসময় `keyword` রাখুন।'
+          - '`post_filter` শুধু facet-এর নিজের field-এর জন্য। বাকি সব শর্ত (স্টক, দামের সীমা) যাবে `filter`-এ — তাতে cache হয়, আর গোনাও সেই শর্ত মেনে ছোট হয়।'
+          - 'Elasticsearch-কে কখনো সরাসরি ইন্টারনেটে খুলে দেবেন না; সব request Symfony হয়ে যাবে।'
       - type: terms
         items:
           - {term: 'Facet / aggregation', meaning: 'ফলাফলকে ভাগ করে প্রতিটা ভাগে কয়টা document আছে তার গণনা।'}
           - {term: 'Bucket', meaning: 'aggregation-এর একটা ভাগ, যেমন brand = samsung, সাথে তার সংখ্যা।'}
     check:
-      q: 'খদ্দের "phone" লিখে brand হিসেবে Samsung বাছল। কোনটা `must`-এ যাবে আর কোনটা `filter`-এ, কেন?'
-      a: '"phone" যাবে must-এ, কারণ সেটার জন্য score দরকার। brand = Samsung যাবে filter-এ, কারণ ওটা শুধু হ্যাঁ বা না — score লাগে না, আর cache হয়।'
+      q: 'খদ্দের "phone" লিখে Samsung বাছল, তবু Xiaomi (৮) তালিকায় থাকা চাই। লেখা, brand আর "স্টকে আছে" শর্ত কোনটা কোথায় যাবে?'
+      a: '"phone" যাবে must-এ, কারণ score দরকার। brand যাবে post_filter-এ, যাতে গোনা আগে হয়ে যায় আর hit পরে ছাঁটা হয়। "স্টকে আছে" যাবে filter-এ: হ্যাঁ বা না, score লাগে না, cache হয়।'
 
   - slug: search-engine-tradeoffs
     title: 'Elasticsearch / OpenSearch: কখন আনবে, কখন নয়'
@@ -327,10 +334,10 @@ slides:
     blocks:
       - type: text
         body: |
-          Elasticsearch আর OpenSearch — দুটোই Lucene নামের একই library-র ওপর বানানো search engine, তাই ভেতরের ধারণা আর API প্রায় এক। (OpenSearch হলো Elasticsearch 7.10 থেকে বেরোনো Apache 2.0 লাইসেন্সের শাখা।) দুটোই দারুণ search দেয়, কিন্তু বিনা দামে নয়: এটা তোমার সিস্টেমে আরেকটা চলন্ত অংশ, যাকে চালাতে, পাহারা দিতে আর ডেটাবেসের সাথে মিলিয়ে রাখতে হয়।
+          Elasticsearch আর OpenSearch — দুটোই Lucene নামের একই library-র ওপর বানানো search engine, তাই ভেতরের ধারণা আর API প্রায় এক। (OpenSearch হলো Elasticsearch 7.10 থেকে বেরোনো Apache 2.0 লাইসেন্সের শাখা।) দুটোই দারুণ search দেয়, কিন্তু বিনা দামে নয়: এটা আপনার সিস্টেমে আরেকটা চলন্ত অংশ, যাকে চালাতে, পাহারা দিতে আর ডেটাবেসের সাথে মিলিয়ে রাখতে হয়। সবচেয়ে সস্তা পথটা আপনার ডেটাবেসেই আছে, তাই তুলনার ঠিক নিচে সেটা পুরোটা দেখানো হলো।
       - type: visual
         kind: compare
-        caption: 'তিন পথ — কী পাও আর কী দাম দাও'
+        caption: 'তিন পথ — কী পান আর কী দাম দেন'
         columns:
           - title: 'ডেটাবেসের full-text'
             tone: good
@@ -359,16 +366,44 @@ slides:
               - 'ছোট থেকে মাঝারি ক্যাটালগে দারুণ'
               - 'বিশাল ডেটা বা জটিল aggregation-এ সীমিত'
               - 'এখানেও ডেটাবেস থেকে sync রাখতে হয়'
+      - type: code
+        lang: sql
+        file: 'PostgreSQL: ডেটাবেসের পথ, পুরোটা'
+        variant: good
+        code: |
+          -- ১. একবার, migration-এ: term-এর একটা কলাম, যা ডেটাবেস নিজে হালনাগাদ রাখে
+          ALTER TABLE product ADD search_vector tsvector GENERATED ALWAYS AS (
+              setweight(to_tsvector('english', coalesce(name, '')), 'A') ||
+              setweight(to_tsvector('english', coalesce(description, '')), 'B')
+          ) STORED;
+          CREATE INDEX product_search_idx ON product USING GIN (search_vector);
+
+          -- ২. প্রতিটা খোঁজে: "samsung phones" লিখলে Samsung Galaxy A15 Phone মেলে
+          SELECT id, name, ts_rank(search_vector, q) AS score
+          FROM product, websearch_to_tsquery('english', 'samsung phones') AS q
+          WHERE search_vector @@ q
+          ORDER BY score DESC
+          LIMIT 20;
+        marks:
+          - {line: 3, tip: 'নামের জন্য ওজন A, বিবরণের জন্য B: নামে মিললে ranking ওপরে — Elasticsearch-এর name^3 boost-এর মতো।'}
+          - {line: 5, tip: 'STORED মানে প্রতিটা insert/update-এ ডেটাবেস নিজেই কলামটা ভরে, একই transaction-এর ভেতরে — তাই কখনো বাসি হয় না। PostgreSQL ১২ বা নতুন ভার্সন লাগে।'}
+          - {line: 6, tip: 'GIN হলো inverted index: আগের মতোই শব্দ থেকে সারির তালিকা। এটা না থাকলে LIKE-এর মতোই প্রতি খোঁজে পুরো টেবিল পড়তে হয়।'}
+          - {line: 10, tip: 'english configuration ছোট হাতের করে আর মূল রূপে আনে, তাই "phones" হয়ে যায় phone আর মেলে। websearch_to_tsquery search box-এ যেমন লেখা হয় তেমনই নেয়, কখনো error দেয় না।'}
+          - {line: 12, tip: 'ts_rank শুধু মিল আর ওজন গোনে। BM25-এর চেয়ে সরল; শব্দটা বিরল কি না তা জানে না। আর "samsang"-এর মতো বানান ভুলে এখনো কিছুই মেলে না।'}
       - type: points
         title: 'সিদ্ধান্তের নিয়ম'
         style: number
         items:
-          - 'আগে ডেটাবেসের full-text দিয়ে শুরু করো।'
-          - 'বানান ভুল, facet, ভাষা বা ranking নিয়ে সত্যিকারের অভিযোগ এলে search engine আনো।'
-          - 'Search engine-এ যা রাখবে, তা যেন ডেটাবেস থেকে যেকোনো দিন আবার বানানো যায়।'
+          - 'আগে ডেটাবেসের full-text দিয়ে শুরু করুন।'
+          - 'বানান ভুল, facet, ভাষা বা ranking নিয়ে সত্যিকারের অভিযোগ এলে search engine আনুন।'
+          - 'Search engine-এ যা রাখবেন, তা যেন ডেটাবেস থেকে যেকোনো দিন আবার বানানো যায়।'
       - type: quote
-        body: 'Search index হলো কপি, আসল সত্য নয়। টাকা বা স্টকের সিদ্ধান্ত কখনো index দেখে নিয়ো না।'
+        body: 'Search index হলো কপি, আসল সত্য নয়। টাকা বা স্টকের সিদ্ধান্ত কখনো index দেখে নেবেন না।'
     aside:
+      - type: pitfalls
+        items:
+          - 'Doctrine `search_vector` কলামটা চেনে না, তাই পরের `make:migration` সেটা মুছে ফেলার প্রস্তাব দিতে পারে। প্রতিটা migration চালানোর আগে পড়ে নিন।'
+          - 'PostgreSQL-এ বাংলার তৈরি কোনো configuration নেই। বাংলা লেখায় `simple` ব্যবহার করুন (stemming নেই), অথবা বাংলা analyzer আছে এমন search engine-এ যান।'
       - type: when
         use:
           - 'খদ্দেরের মূল কাজই খোঁজা: ই-কমার্স ক্যাটালগ, চাকরির বিজ্ঞাপন, ডকুমেন্ট।'
@@ -382,7 +417,7 @@ slides:
           - {to: 'thinking/build-vs-buy', label: 'নতুন প্রযুক্তির আসল খরচ'}
     check:
       q: 'রহিমের দোকানে ৮ হাজার পণ্য, এক সার্ভার, টিমে দুইজন। Search-এর জন্য প্রথমে কী বেছে নেওয়া উচিত, আর কেন?'
-      a: 'ডেটাবেসের full-text search। এত কম ডেটায় সেটাই যথেষ্ট দ্রুত, নতুন সার্ভার বা sync-এর ঝামেলা নেই। অভিযোগ এলে তখন search engine।'
+      a: 'ডেটাবেসের full-text search (GIN index-সহ tsvector কলাম)। এত কম ডেটায় সেটাই যথেষ্ট দ্রুত, নতুন সার্ভার বা sync-এর ঝামেলা নেই। অভিযোগ এলে তখন search engine।'
 
 flashcards:
   - q: 'LIKE ''%শব্দ%'' বড় টেবিলে ধীর কেন?'
@@ -398,7 +433,7 @@ flashcards:
   - q: 'Analyzer-এর তিনটা অংশ কী কী?'
     a: 'Character filter (ধোয়ামোছা), tokenizer (শব্দে কাটা) আর token filter (lowercase, stop word, stemming)।'
     more: |
-      Analyzer লেখাকে index-এ তোলার উপযোগী term-এ বদলায়। "Samsung Phones" হয়ে যায় samsung আর phone। তাই পরে "phone" বা "PHONES" — যেভাবেই খোঁজো, মিলে যায়। কোন লেখা কোন term-এ ভাঙছে তা `_analyze` API দিয়ে দেখে নেওয়া যায়।
+      Analyzer লেখাকে index-এ তোলার উপযোগী term-এ বদলায়। "Samsung Phones" হয়ে যায় samsung আর phone। তাই পরে "phone" বা "PHONES" — যেভাবেই খোঁজেন, মিলে যায়। কোন লেখা কোন term-এ ভাঙছে তা `_analyze` API দিয়ে দেখে নেওয়া যায়।
     ref: analyzer-pipeline
   - q: 'Index করার সময় আর খোঁজার সময় আলাদা analyzer চললে কী হয়?'
     a: 'দুই পাশের term আলাদা হয়ে যায়, তাই শব্দ index-এ থাকলেও খোঁজে মেলে না।'
@@ -425,15 +460,25 @@ flashcards:
     more: |
       খদ্দেরের লেখা শব্দ যায় must-এ, কারণ সেখানে "কতটা মানানসই" জানা দরকার। brand, দামের সীমা বা স্টকে আছে কি না — এ ধরনের শর্ত যায় filter-এ। ভুল করে সব must-এ দিলে কাজ হয়, কিন্তু query ধীর হয় আর score অকারণে বদলে যায়।
     ref: search-with-facets
+  - q: 'Faceted search-এ post_filter কীসের জন্য?'
+    a: 'গোনা শেষ হওয়ার পরে hit ছাঁটে, তাই খদ্দের একটা brand বাছলেও facet-এ সব brand থাকে।'
+    more: |
+      brand-এর শর্ত মূল query-তে থাকলে গোনাও ছোট হয়ে যায়, facet-এ থাকে শুধু Samsung (১২)। post_filter-এ গোনা আগে হয়, hit ছাঁটা পরে। দাম: post_filter cache হয় না আর গতি বাড়ায় না — তাই শুধু facet-এর নিজের field-এ ব্যবহার করুন, বাকি শর্ত filter-এ রাখুন।
+    ref: search-with-facets
+  - q: 'PostgreSQL-এ ডেটাবেসের full-text search কীভাবে কাজ করে?'
+    a: 'tsvector কলামে term জমা থাকে, GIN index (একটা inverted index) সেটাকে দ্রুত করে, আর @@ দিয়ে tsquery-র সাথে মেলানো হয়।'
+    more: |
+      generated কলাম সারির সাথে সাথে term হালনাগাদ রাখে, তাই আলাদা sync job লাগে না। `ts_rank` ফলাফল সাজায়। ছাড়তে হয়: বানান ভুল সহ্য (pg_trgm extension কিছুটা দেয়), facet আর BM25-মানের ranking। কয়েক হাজার থেকে কয়েক লাখ সারির জন্য প্রায়ই এটুকুই যথেষ্ট।
+    ref: search-engine-tradeoffs
   - q: 'Search index-কে আসল ডেটার একমাত্র ঠিকানা বানানো উচিত নয় কেন?'
     a: 'ওটা ডেটাবেসের কপি; এক-দুই সেকেন্ড পিছিয়ে থাকে, transaction নেই, আর mapping বদলালে পুরোটা নতুন করে বানাতে হয়।'
     more: |
-      আসল সত্য থাকে ডেটাবেসে। Search index যেকোনো দিন মুছে ডেটাবেস থেকে আবার বানানো যাবে — এই ধরে নিয়ে ডিজাইন করো। দাম বা স্টকের মতো সিদ্ধান্ত সবসময় ডেটাবেস দেখে নাও। কপিটা কীভাবে তাজা রাখবে: [[caching/search-pipeline|search index আপডেট রাখা]]।
+      আসল সত্য থাকে ডেটাবেসে। Search index যেকোনো দিন মুছে ডেটাবেস থেকে আবার বানানো যাবে — এই ধরে নিয়ে ডিজাইন করুন। দাম বা স্টকের মতো সিদ্ধান্ত সবসময় ডেটাবেস দেখে নিন। কপিটা কীভাবে তাজা রাখবে: [[caching/search-pipeline|search index আপডেট রাখা]]।
     ref: search-engine-tradeoffs
 
 quiz:
   - q: 'করিম `product.name`-এ index বসাল, তবু `WHERE name LIKE ''%চার্জার%''` আগের মতোই ধীর। কারণ কী?'
-    hint: 'অভিধানে "র" দিয়ে শেষ হওয়া সব শব্দ খুঁজতে হলে কোন পাতা থেকে শুরু করবে?'
+    hint: 'অভিধানে "র" দিয়ে শেষ হওয়া সব শব্দ খুঁজতে হলে কোন পাতা থেকে শুরু করবেন?'
     options:
       - text: 'index সাজানো লেখার শুরু ধরে; শুরুতে % থাকলে index কাজে লাগে না'
         correct: true
@@ -449,7 +494,7 @@ quiz:
         why: 'LIMIT দিলেও মেলে এমন সারি খুঁজে পেতে আগে সারিগুলো পড়তেই হয়।'
     ref: like-fails
   - q: 'Inverted index-এ আছে: laptop → ২, ৫, ৯ এবং bag → ৫, ৭। "laptop bag" খুঁজলে কোন document-এ দুই শব্দই আছে?'
-    hint: 'দুই তালিকায় যে সংখ্যাটা একসাথে আছে, সেটা খোঁজো।'
+    hint: 'দুই তালিকায় যে সংখ্যাটা একসাথে আছে, সেটা খুঁজুন।'
     options:
       - text: 'শুধু ৫'
         correct: true
@@ -507,8 +552,24 @@ quiz:
         correct: false
         why: 'একটা index-এ যত খুশি field রাখা যায়।'
     ref: search-with-facets
+  - q: 'খদ্দের Samsung-এ ক্লিক করল। hit কমে Samsung-এ নামল, কিন্তু brand facet-এ এখন শুধু "Samsung (১২)", Xiaomi উধাও। কারণ কী?'
+    hint: 'brand-এর শর্ত গোনার আগে লাগানো হয়েছে, নাকি পরে?'
+    options:
+      - text: 'brand-এর শর্ত মূল query-তে, তাই গোনা শুধু Samsung পণ্যের ওপর হয়েছে'
+        correct: true
+        why: 'Aggregation গোনে query যা মিলিয়েছে তা-ই। post_filter-এ গোনা আগে চলে, hit ছাঁটা পরে।'
+      - text: 'aggregation-এর size খুব ছোট'
+        correct: false
+        why: 'size 10 মানে দশটা brand ধরে। এখানে মিলেছেই একটা brand, তাই গোনাও হয়েছে একটাই।'
+      - text: 'brand হওয়া উচিত text field'
+        correct: false
+        why: 'text field-এ aggregation চালালে error আসে; চুপচাপ একটা brand দেখায় না।'
+      - text: 'filter cache হয়, তাই facet বাসি'
+        correct: false
+        why: 'cache গতিকে প্রভাবিত করে; গোনায় কী থাকবে তাকে নয়।'
+    ref: search-with-facets
   - q: 'BM25 অনুযায়ী কোন কোন ক্ষেত্রে একটা document-এর score বাড়ে?'
-    hint: 'বিরল, বারবার, ছোট — এই তিন শব্দ মনে করো।'
+    hint: 'বিরল, বারবার, ছোট — এই তিন শব্দ মনে করুন।'
     options:
       - text: 'মিলে যাওয়া শব্দটা পুরো index-এ খুব কম document-এ আছে'
         correct: true
@@ -524,7 +585,7 @@ quiz:
         why: 'ছোট লেখায় মিল পাওয়া মানে লেখাটা মূলত ওই বিষয়েই — তাই নম্বর বেশি।'
     ref: relevance-scoring
   - q: 'কোন কোন পরিস্থিতিতে Elasticsearch বা OpenSearch আনা যুক্তিসঙ্গত?'
-    hint: 'সমস্যাটা সত্যিই আছে কি না, আর চালানোর খরচ বইতে পারবে কি না — দুটোই ভাবো।'
+    hint: 'সমস্যাটা সত্যিই আছে কি না, আর চালানোর খরচ বইতে পারবে কি না — দুটোই ভাবুন।'
     options:
       - text: '৩০ লাখ পণ্যের ক্যাটালগ; খদ্দের বানান ভুল করে আর brand-দাম ধরে facet চায়'
         correct: true
@@ -538,6 +599,22 @@ quiz:
       - text: 'checkout-এর সময় পণ্যের স্টক আছে কি না তা যাচাই করা'
         correct: false
         why: 'স্টকের সিদ্ধান্ত নিতে হয় ডেটাবেস দেখে; search index পিছিয়ে থাকতে পারে।'
+    ref: search-engine-tradeoffs
+  - q: 'রহিম ৫ লাখ পণ্যের টেবিলে `search_vector` নামে tsvector কলাম বসিয়েছে, তবু search ধীর, আর EXPLAIN দেখাচ্ছে sequential scan। কী বাদ পড়েছে?'
+    hint: 'কলামে term জমা আছে। সেটাকে "শব্দ থেকে সারি" খোঁজায় বদলায় কী?'
+    options:
+      - text: 'search_vector-এর ওপর একটা GIN index'
+        correct: true
+        why: 'GIN-ই inverted index। না থাকলে PostgreSQL প্রতিটা সারির tsvector-এর সাথে খোঁজ মেলায়।'
+      - text: 'name-এর ওপর একটা B-tree index'
+        correct: false
+        why: 'B-tree লেখার শুরু ধরে সাজানো; "কোন সারিতে এই শব্দ আছে" তার উত্তর দিতে পারে না।'
+      - text: 'query-কে LIKE ''%শব্দ%'' বানিয়ে ফেলা'
+        correct: false
+        why: 'LIKE-ই সেই ধীর full table scan, যেটা বদলাতে tsvector কলাম।'
+      - text: 'এখনই Elasticsearch-এ চলে যাওয়া'
+        correct: false
+        why: 'এই মাপের জন্যই ডেটাবেসের পথ। একটা index না থাকলে নতুন cluster চালানোর কারণ হয় না।'
     ref: search-engine-tradeoffs
   - q: 'খদ্দের "samsang" লিখে খুঁজল, কিছুই এল না। সবচেয়ে সঠিক সমাধান কোনটা?'
     hint: 'এক-দুই অক্ষরের ভুল মেনে নেওয়ার ব্যবস্থা search engine-এ আগে থেকেই আছে।'

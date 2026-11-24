@@ -33,6 +33,9 @@ slides:
       - type: pitfalls
         items:
           - 'Adding app servers while the database is the stuck part means more connections and more queries hitting it. Things get worse, not better.'
+      - type: refs
+        items:
+          - {to: 'fix-the-slow-query', label: 'The fix for this exact query'}
     check:
       q: 'Why didn''t doubling the waiters shorten the restaurant''s line?'
       a: 'Because everyone was stuck at the cash counter, not at the waiters. Speeding up anything other than the slowest step (the bottleneck) doesn''t make the whole thing faster.'
@@ -61,12 +64,15 @@ slides:
             tip: 'Waiting in line plus the real work, added together. This is the only number the user ever feels.'
       - type: visual
         kind: bars
-        caption: 'The busier the server, the more latency jumps (each job takes 10ms, simple queue model)'
+        caption: 'The busier the server, the more latency jumps (each job takes 10ms, so one worker tops out at 100 requests/s)'
         items:
           - {label: '50% busy', value: 20, display: '20ms', tone: good, tip: 'The server is idle half the time, so almost nobody has to wait in line.'}
-          - {label: '80% busy', value: 50, display: '50ms', tip: 'The work itself is still 10ms, but waiting in line adds up to five times the total.'}
+          - {label: '80% busy', value: 50, display: '50ms', tip: 'The work itself is still 10ms, but waiting in line makes the total five times that.'}
           - {label: '90% busy', value: 100, display: '100ms', tone: warn, tip: 'Just 10% more load and latency doubled. This is where the trouble starts.'}
           - {label: '95% busy', value: 200, display: '200ms', tone: bad, tip: 'Another 5% and it doubles again. At 100% the line never empties.'}
+      - type: text
+        body: |
+          A worker that needs 10ms per request can finish at most 100 a second. At 50 a second the line is nearly empty. At 90 a second the same worker answers in 100ms, ten times the work itself. So if your busiest moment brings 700 requests a second, plan capacity for about 1,000, not 700. The price is paying for 30% idle capacity, and that idle part is what keeps the wait short.
       - type: quote
         body: 'Never plan to keep a server 100% busy. Past 70-80% the line builds up and latency jumps.'
     aside:
@@ -102,7 +108,7 @@ slides:
         items:
           - {label: 'p50 (median)', value: 120, display: '120ms', tone: good, tip: 'Half of all requests finished faster than this. It is the experience of a "typical" user.'}
           - {label: 'Average', value: 310, display: '310ms', tone: muted, tip: 'A few very slow requests dragged the average up. Almost nobody actually got an answer in this time, so the number is nobody''s real experience.'}
-          - {label: 'p95', value: 900, display: '900ms', tone: warn, tip: 'One request in every 20 is slower than this. An SLO is usually written in terms of this number.'}
+          - {label: 'p95', value: 900, display: '900ms', tone: warn, tip: 'One request in every 20 is slower than this. An SLO (the target you promise, like "p95 under 300ms") is usually written in terms of this number.'}
           - {label: 'p99', value: 4200, display: '4200ms', tone: bad, tip: 'One request in every 100 takes more than 4 seconds. You would never spot this by looking at the average.'}
       - type: text
         body: |
@@ -162,12 +168,13 @@ slides:
           - {title: '2. Measure average latency (W)', body: 'One request takes 0.25 seconds on average.', tip: 'W is how long a request stays inside the system on average. This formula needs the average, not a percentile.'}
           - {title: '3. Multiply (L)', body: '200 × 0.25 = 50 requests in flight at once.', tone: accent, tip: 'L is the number of requests inside at the same moment. In PHP-FPM every running request occupies one worker, so you need at least 50 workers.'}
           - {title: '4. Add headroom', body: 'Add 20% spare: max_children = 60.', tip: 'You need some idle workers to absorb sudden bursts. But check that it fits in RAM: 60 × 60MB ≈ 3.6GB.'}
-          - {title: '5. Think of a slow day', body: 'If W becomes 1 second, L = 200: four times the workers.', tone: bad, tip: 'The load didn''t grow at all, only the database got slow. Yet every worker gets stuck and new requests join the queue. This is how one slow query stops the whole site.'}
+          - {title: '5. Think of a slow day', body: 'If W becomes 1 second, L = 200: four times the workers.', tone: bad, tip: 'The load didn''t grow at all, only the database got slow, yet every worker gets stuck and new requests join the queue. More workers is no cure (200 × 60MB = 12GB of RAM). Cut W: fix the slow query, or set a database timeout.'}
       - type: code
         lang: ini
         file: '/etc/php/8.3/fpm/pool.d/www.conf'
         code: |
           ; L = 200 req/s x 0.25s = 50 requests in flight  ->  keep 20% spare, so 60
+          ; static keeps all 60 workers in RAM (60 x 60MB = 3.6GB), even at 3am
           pm = static
           pm.max_children = 60
 
@@ -177,8 +184,8 @@ slides:
           ; a stuck request must not hold a worker forever
           request_terminate_timeout = 30s
         marks:
-          - {line: 3, tip: 'At most 60 requests run at once. Request number 61 waits in line (the listen queue).'}
-          - {line: 6, tip: 'If the listen queue stays above zero, either workers are too few or latency has grown.'}
+          - {line: 4, tip: 'At most 60 requests run at once. Request number 61 waits in line (the listen queue).'}
+          - {line: 7, tip: 'If the listen queue stays above zero, either workers are too few or latency has grown.'}
     aside:
       - type: remember
         body: 'How many are inside = how fast they arrive × how long they stay.'
@@ -278,11 +285,85 @@ slides:
           - 'Change five things at once and you won''t know which one helped. Change one, then measure.'
       - type: refs
         items:
+          - {to: 'fix-the-slow-query', label: 'Next: the index fix, before and after'}
           - {to: 'hands-on/prototyping-profiling', label: 'Profiling: measure, then optimise'}
           - {to: 'data/indexing', label: 'Indexes and reading a query plan'}
     check:
       q: 'Of checkout''s 3 seconds, 2.5 go into one query. What happens if you double the app servers?'
       a: 'Latency stays about the same, and the database gets more pressure. Fix the query first (an index, a smaller query), then measure again to find the next bottleneck.'
+
+  - slug: fix-the-slow-query
+    title: 'The fix: an index, before and after'
+    kind: howto
+    tldr: 'A missing index made one query read 4 million rows. Add it and that step drops from 2,550ms to about 1ms, checkout from 3,000ms to about 450ms, and the next bottleneck shows itself.'
+    keywords: ['index', 'EXPLAIN ANALYZE', 'seq scan', 'CREATE INDEX CONCURRENTLY', 'slow query', 'migration']
+    blocks:
+      - type: text
+        body: |
+          Back to Ratul's checkout. The slow step looked up one product among 4 million rows. With no index on `sku` (the product code), the database read every row to find it, like reading a whole phone book to find one name. EXPLAIN ANALYZE shows that, and an index (the phone book's alphabetical order) fixes it.
+      - type: code
+        lang: text
+        file: 'EXPLAIN ANALYZE, before and after'
+        code: |
+          EXPLAIN ANALYZE SELECT quantity FROM stock_items WHERE sku = 'BR-500';
+
+          -- before: no index on sku
+          Seq Scan on stock_items  (rows=1)
+            Filter: (sku = 'BR-500'::text)
+            Rows Removed by Filter: 3999999
+          Execution Time: 2548.220 ms
+
+          -- after: index on sku
+          Index Scan using idx_stock_items_sku on stock_items  (rows=1)
+            Index Cond: (sku = 'BR-500'::text)
+          Execution Time: 0.041 ms
+        marks:
+          - {line: 6, tip: 'It read and threw away 3,999,999 rows to keep one. This is where the 2.5 seconds go.'}
+          - {line: 10, tip: 'Index Scan: it jumps straight to the row, like opening the phone book at the right letter.'}
+      - type: code
+        lang: php
+        file: 'migrations/Version20261124090000.php'
+        variant: good
+        code: |
+          final class Version20261124090000 extends AbstractMigration
+          {
+              public function isTransactional(): bool
+              {
+                  return false;   // CREATE INDEX CONCURRENTLY can't run inside a transaction
+              }
+
+              public function up(Schema $schema): void
+              {
+                  $this->addSql('CREATE INDEX CONCURRENTLY idx_stock_items_sku ON stock_items (sku)');
+              }
+
+              public function down(Schema $schema): void
+              {
+                  $this->addSql('DROP INDEX CONCURRENTLY idx_stock_items_sku');
+              }
+          }
+        marks:
+          - {line: 5, tip: 'CONCURRENTLY builds the index without blocking writes on the live table. The price: it is slower to build, and it can''t run inside a transaction.'}
+          - {line: 11, tip: 'The price of any index: more disk, and a little extra work on every INSERT and UPDATE of stock_items. Index the columns your slow queries filter on, not all of them.'}
+      - type: visual
+        kind: bars
+        caption: 'Checkout after the index: about 450ms instead of 3,000ms, and the payment API is now the biggest slice'
+        items:
+          - {label: 'Network and nginx', value: 50, display: '50ms', tone: muted, tip: 'Unchanged. The request still has to travel.'}
+          - {label: 'PHP code', value: 150, display: '150ms', tip: 'Unchanged. Twice the app servers never touched the real problem.'}
+          - {label: 'Database query', value: 1, display: '1ms', tone: good, tip: 'From 2,550ms to about 1ms: the same query, now an index lookup instead of reading every row.'}
+          - {label: 'Payment API', value: 250, display: '250ms', tone: warn, tip: 'Now the biggest slice, over half of the 450ms. This is the next bottleneck, and an index can''t help an outside service.'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'An index doesn''t cure every slow query. If EXPLAIN already shows Index Scan and it is still slow, the query returns too many rows or joins too much.'
+          - 'Running plain CREATE INDEX on a busy table blocks its writes while it builds. Use CONCURRENTLY.'
+      - type: refs
+        items:
+          - {to: 'data/indexing', label: 'Indexes and reading a query plan'}
+    check:
+      q: 'After the index, checkout takes about 450ms. What do you look at next, and why?'
+      a: 'The payment API: 250ms, over half of the total now. The bottleneck moved, so measure again. An index can''t help it; a short timeout, or moving work around it into a queue, might.'
 
 flashcards:
   - q: 'What is the difference between load and throughput?'
@@ -330,6 +411,11 @@ flashcards:
     more: |
       In a simple queue model where the work takes 10ms, latency is 20ms at 50% busy, 100ms at 90% and 200ms at 95%. That is why capacity planning treats 70-80% utilization as the limit, leaving room for sudden bursts.
     ref: load-throughput-latency
+  - q: 'EXPLAIN ANALYZE shows "Seq Scan" for a one-row lookup on a big table. What now?'
+    a: 'The database read every row. Add an index on the column in the WHERE clause, then run EXPLAIN again: it should say Index Scan.'
+    more: |
+      An index is like a phone book's alphabetical order. Build it with CREATE INDEX CONCURRENTLY in a migration, so live writes aren't blocked. The price is disk space and a little extra work on every write, so index the columns your slow queries filter on, not all of them.
+    ref: fix-the-slow-query
 
 quiz:
   - q: 'Checkout in Ratul''s shop takes 3 seconds. Measuring shows 2.5 seconds go into one database query, while the app servers'' CPU is only 20% busy. What should be the first move?'
@@ -382,9 +468,9 @@ quiz:
       - text: 'Averaging the p99 of three servers gives the p99 of the whole system'
         correct: false
         why: 'You can''t average percentiles. Combine the requests (or histograms) of all servers first, then compute.'
-      - text: 'p99 is not always greater than or equal to the average, so you don''t need to look at it'
+      - text: 'p99 usually sits close to the average, so you don''t need to look at it'
         correct: false
-        why: 'In real latency data, p99 is almost always far above the average, and that is exactly why you have to look at it separately.'
+        why: 'In real latency data, p99 is usually several times the average, and that is exactly why you have to look at it separately.'
     ref: percentiles-tail-latency
   - q: 'An API receives 300 requests per second at 200ms average latency. PHP-FPM has max_children = 40. What will happen?'
     hint: 'Little''s Law: requests in flight = arrival rate × average time.'
@@ -450,3 +536,25 @@ quiz:
         correct: false
         why: '99% fast means 1% slow, and across many calls those 1%s add up to something big.'
     ref: percentiles-tail-latency
+  - q: 'EXPLAIN ANALYZE of the slow checkout query prints the plan below. What is the right fix, and what does it cost?'
+    lang: text
+    code: |
+      Seq Scan on stock_items  (rows=1)
+        Filter: (sku = 'BR-500'::text)
+        Rows Removed by Filter: 3999999
+      Execution Time: 2548.220 ms
+    hint: 'How many rows did it throw away to return one?'
+    options:
+      - text: 'Run CREATE INDEX on a busy day, so it is done quickly'
+        correct: false
+        why: 'The index is right, but plain CREATE INDEX blocks writes to the table while it builds. Use CONCURRENTLY in a migration.'
+      - text: 'Add an index on sku with CREATE INDEX CONCURRENTLY; it costs some disk and a little extra work on every write'
+        correct: true
+        why: 'The plan reads 4 million rows to return one. An index turns that into a direct lookup. Writes get slightly slower, which is the price.'
+      - text: 'Double the database server''s RAM'
+        correct: false
+        why: 'More memory might speed up the reading a little, but it would still read every row on every checkout. The index removes the reading.'
+      - text: 'Add LIMIT 1 to the query'
+        correct: false
+        why: 'The query already returns one row. Without an index the database still scans until it finds the match, on average half the table.'
+    ref: fix-the-slow-query

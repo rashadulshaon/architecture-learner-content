@@ -81,7 +81,7 @@ slides:
   - slug: stateless-symfony
     title: 'Two steps to make Symfony stateless'
     kind: howto
-    tldr: 'Send sessions to Redis with one line of config, and store uploads in object storage through Flysystem instead of on the local disk.'
+    tldr: 'Send sessions to Redis with one line of config, and write uploads through a Flysystem storage instead of the local disk. The storage config is on the next slide.'
     keywords: ['framework.session handler_id', 'Redis', 'Flysystem', 'S3 upload', 'FilesystemOperator', 'file upload']
     blocks:
       - type: code
@@ -120,7 +120,7 @@ slides:
               }
           }
         marks:
-          - {line: 3, tip: 'The storage named `$uploadsStorage` is autowired. Whether it is S3 or local is decided in config.'}
+          - {line: 3, tip: 'The storage named `$uploadsStorage` is autowired. Whether it is S3 or local is decided in config (next slide).'}
           - {line: 15, tip: 'Keep only the file''s key in the database, not the file itself. You can build the URL later.'}
     aside:
       - type: commands
@@ -137,6 +137,66 @@ slides:
     check:
       q: 'Why store only a key in the database instead of the uploaded file itself?'
       a: 'The file lives in object storage that every server can reach, and the database holds just a small key. That keeps the database light, and you can switch storage without touching the code.'
+
+  - slug: flysystem-config
+    title: 'Point the storage name at S3 (and at disk in dev)'
+    kind: howto
+    tldr: 'One Flysystem config says what stands behind the storage name: S3 in production, a local folder in dev. The upload code never changes.'
+    keywords: ['flysystem.yaml', 'S3Client', 'uploads.storage', 'autowire', 'local adapter', 'object storage config']
+    blocks:
+      - type: text
+        body: |
+          On the last slide, `$uploadsStorage` was only a name. This file decides what stands behind it. Without it the upload lands on Server A's disk, and a request that reaches Server B gets a 404 for the photo. The price: every file read or write is now a network call, slower than a local disk, and you pay S3 per gigabyte and per request.
+      - type: code
+        lang: yaml
+        file: 'config/packages/flysystem.yaml'
+        variant: good
+        code: |
+          when@prod:
+              flysystem:
+                  storages:
+                      uploads.storage:
+                          adapter: 'aws'
+                          options:
+                              client: 'Aws\S3\S3Client'
+                              bucket: '%env(UPLOADS_BUCKET)%'
+
+          when@dev:
+              flysystem:
+                  storages:
+                      uploads.storage:
+                          adapter: 'local'
+                          options:
+                              directory: '%kernel.project_dir%/var/uploads'
+        marks:
+          - {line: 4, tip: 'The storage name `uploads.storage` becomes the autowired argument `FilesystemOperator $uploadsStorage`.'}
+          - {line: 6, tip: 'The S3 adapter. All servers write to and read from the same bucket.'}
+          - {line: 14, tip: 'In dev the same name points at a folder, so nobody needs an S3 account to work on the app.'}
+      - type: code
+        lang: yaml
+        file: 'config/services.yaml'
+        variant: good
+        code: |
+          services:
+              Aws\S3\S3Client:
+                  arguments:
+                      - version: 'latest'
+                        region: '%env(AWS_REGION)%'
+                        # no keys here: on AWS the server's IAM role supplies them
+        marks:
+          - {line: 2, tip: 'The service id the Flysystem `client:` option refers to. Symfony builds it once and shares it.'}
+    aside:
+      - type: when
+        use:
+          - 'Anything users upload or download that must survive a server dying.'
+        avoid:
+          - 'Temporary files that live and die inside one request. The local disk is faster.'
+      - type: tips
+        items:
+          - 'Add a `when@test:` block with the local adapter so tests never touch S3.'
+    check:
+      q: 'What breaks if flysystem.yaml is missing and the code still writes to $uploadsStorage?'
+      a: 'Symfony cannot autowire the storage at all. If you point it at a local folder instead, each server keeps its own files and the other server returns a 404.'
 
   - slug: serverless-what
     title: 'Serverless: like a taxi, you pay per ride'
@@ -169,6 +229,9 @@ slides:
           - 'Your code must be stateless, because an instance can be stopped or recreated at any moment.'
           - 'Every call has a time limit (for example, 15 minutes at most on Lambda).'
           - 'When many instances run at once, the number of database connections jumps with them.'
+      - type: text
+        body: |
+          That last fact bites first. 1,000 visitors at once means about 1,000 instances, each opening its own database connection. A small MySQL server accepts about 150 by default, so the rest are refused. The fix is a connection pooler or proxy (RDS Proxy, PgBouncer): instances talk to it, and it lends out, say, 50 real connections between them. Its price is one more moving part to run.
     aside:
       - type: tips
         items:
@@ -206,6 +269,9 @@ slides:
               - 'Jobs that run for hours (they hit the time limit)'
               - 'WebSockets or other long-lived connections'
               - 'Strict latency where cold starts are unacceptable'
+      - type: text
+        body: |
+          Worked numbers: a nightly 20-minute job runs about 10 hours in a 30-day month, out of 720. You pay for 10 hours, not 720. A busy API runs all 720 hours, so the saving is gone and you pay the per-use premium all month.
       - type: points
         title: 'Three questions before you decide'
         style: number
@@ -251,6 +317,16 @@ flashcards:
     more: |
       Files on a local disk are invisible to other servers and disappear when the server dies. In Symfony, Flysystem gives you one interface where you can swap the local and S3 adapters through config alone.
     ref: stateless-symfony
+  - q: 'In Flysystem, how does `$uploadsStorage` get connected to S3?'
+    a: 'A storage named `uploads.storage` in flysystem.yaml is autowired as `FilesystemOperator $uploadsStorage`. Its adapter decides S3 or local.'
+    more: |
+      Use `adapter: aws` in prod and `adapter: local` in dev under the same name, and the upload code never changes. The S3 client is a service the config points to. S3 reads and writes are network calls, so they are slower than a local disk.
+    ref: flysystem-config
+  - q: 'What does 1,000 simultaneous users do to a database behind serverless?'
+    a: 'About 1,000 instances start, each opens its own connection, and the database hits its limit. A pooler or proxy in front fixes it.'
+    more: |
+      A small MySQL server accepts about 150 connections by default. RDS Proxy or PgBouncer keeps a few real connections and lends them to the instances. It is one more piece to run and monitor.
+    ref: serverless-what
   - q: 'What does Symfony need to store sessions in Redis?'
     a: 'Set `framework.session.handler_id` to the Redis DSN, for example `%env(REDIS_URL)%`.'
     more: |
@@ -358,3 +434,16 @@ quiz:
         correct: false
         why: 'The database matters more, because that is where the state goes.'
     ref: state-goes-outside
+  - q: 'Nadia adds Flysystem, but her config points `uploads.storage` at a folder under `var/` in production. What happens with two servers?'
+    hint: 'Which disk does each server write to?'
+    options:
+      - text: 'Each server keeps its own files, so a photo uploaded via Server A is a 404 on Server B'
+        correct: true
+        why: 'A local adapter writes to that server''s disk. Production needs the S3 adapter so every server shares one bucket.'
+      - text: 'Flysystem copies the file to every server automatically'
+        correct: false
+        why: 'Flysystem only talks to the adapter you configure. It does not replicate between servers.'
+      - text: 'Nothing, because the code only stores a key in the database'
+        correct: false
+        why: 'The key is only a name. The bytes still live on one disk, and the other server cannot find them.'
+    ref: flysystem-config

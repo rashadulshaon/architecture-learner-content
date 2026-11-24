@@ -67,6 +67,7 @@ slides:
         items:
           - 'Turn on object lock (immutability) on the offsite bucket, so neither an attacker nor a mistake can delete the copies.'
           - 'Store the backup encryption key somewhere else, or you will have the files and no way to open them.'
+          - 'Price: three copies cost about three times the storage, and a locked copy can''t be deleted before its retention ends. Set a retention period, such as 30 days.'
     check:
       q: 'The primary already has a replica. Why do you still need a separate backup?'
       a: 'A replica copies every change from the primary the moment it happens, including a mistaken DELETE. A backup lets you go back to an earlier moment; a replica doesn''t.'
@@ -94,7 +95,7 @@ slides:
           - {line: 4, tip: 'Forces a WAL file out even if it isn''t full. So the RPO is about 1 minute.'}
       - type: code
         lang: bash
-        file: 'restore (on a new server)'
+        file: 'restore, then put the lost rows back'
         variant: good
         code: |
           # never on the live DB; use a new or scratch server
@@ -105,10 +106,17 @@ slides:
           sudo systemctl start postgresql
 
           psql -c 'SELECT count(*), max(created_at) FROM orders'   # check it looks right
+
+          # the lost rows go back into production through a staging table
+          psql -c "\copy orders TO 'orders.csv' CSV"                       # on the scratch server
+          psql -h prod -c 'CREATE TABLE orders_restored (LIKE orders)'
+          psql -h prod -c "\copy orders_restored FROM 'orders.csv' CSV"
+          psql -h prod -c 'INSERT INTO orders SELECT * FROM orders_restored ON CONFLICT (id) DO NOTHING'
         marks:
           - {line: 4, tip: 'The time one minute before the mistake. Don''t forget the timezone (+06) with the time.'}
           - {line: 5, tip: 'On reaching the target, the DB comes up (promote); otherwise it sits read-only, waiting.'}
           - {line: 8, tip: 'Finally count for yourself: are the orders back, is the latest timestamp right? This is the check before you go live.'}
+          - {line: 14, tip: 'ON CONFLICT DO NOTHING: orders that exist in production today stay untouched, and only the lost ones come in.'}
     aside:
       - type: tips
         items:
@@ -117,6 +125,7 @@ slides:
       - type: pitfalls
         items:
           - 'If the backup server''s clock and the DB server''s time disagree, the target time lands in the wrong place.'
+          - 'Price: the WAL archive grows with your write volume, and replaying a whole day of WAL makes the restore longer. A fresh base backup every day keeps it short.'
     check:
       q: 'Even with a 2 a.m. backup, why do you need PITR?'
       a: 'The nightly backup restores only the 2 a.m. state, losing about an hour of data up to the mistake. Replaying WAL takes you to exactly one minute before it.'
@@ -129,7 +138,7 @@ slides:
     blocks:
       - type: text
         body: |
-          A backup is trustworthy only when a machine restores it by itself once a week. This command loads the latest backup into a scratch DB, measures how long it took (that is your real **RTO**), and runs a few sanity checks: are there enough orders, and is the newest data recent?
+          A backup is trustworthy only when a machine restores it by itself once a week. This command restores the latest backup into a scratch DB, starts it, measures how long it took (that is your real **RTO**), and runs a few sanity checks: are there enough orders, and is the newest data recent?
       - type: code
         lang: php
         file: 'src/Command/BackupVerifyCommand.php'
@@ -142,8 +151,10 @@ slides:
               protected function execute(InputInterface $in, OutputInterface $out): int
               {
                   $start = microtime(true);
-                  (new Process(['pg_restore', '--clean', '--if-exists', '--no-owner',
-                      '-d', $this->scratchDsn, $this->latestDump()]))->setTimeout(3600)->mustRun();
+                  (new Process(['pgbackrest', '--stanza=main', '--delta', '--type=immediate',
+                      '--pg1-path='.$this->scratchDir, 'restore']))->setTimeout(7200)->mustRun();
+                  (new Process(['pg_ctl', '-D', $this->scratchDir, '-w', 'start',
+                      '-o', '-p 5433 -c archive_mode=off']))->mustRun();
                   $secs = (int) (microtime(true) - $start);
 
                   $orders = (int) $this->scratch->fetchOne('SELECT count(*) FROM orders');
@@ -162,8 +173,9 @@ slides:
         marks:
           - {line: 2, tip: 'Runs by itself every Sunday at 5 a.m. Nobody has to remember.'}
           - {line: 9, tip: '`mustRun()` throws if it fails; the scheduler logs the failure, so you get an alert.'}
-          - {line: 15, tip: 'Just "the restore ran" isn''t enough. Checking that the data is complete and recent is what catches an empty backup.'}
-          - {line: 20, tip: 'Chart the measured time. As the data grows the restore slows down, and the RTO quietly creeps up.'}
+          - {line: 11, tip: 'The restored copy inherits the live archive settings. Switch archiving off, or the scratch server pushes WAL into the real backup repository.'}
+          - {line: 17, tip: 'Just "the restore ran" isn''t enough. Checking that the data is complete and recent is what catches an empty backup.'}
+          - {line: 22, tip: 'Chart the measured time. As the data grows the restore slows down, and the RTO quietly creeps up.'}
       - type: visual
         kind: bars
         caption: 'How restore time (minutes) grows as the data grows'
@@ -176,6 +188,7 @@ slides:
         items:
           - 'Write the time the drill measures into the runbook as the "expected duration".'
           - 'The scratch DB holds personal data; protect it like production, and delete it when the job is done.'
+          - 'Price: the scratch server needs as much disk as production and runs for the whole restore. That is cheap next to finding out on the day of the disaster.'
       - type: refs
         items:
           - {to: 'resilience/disaster-recovery', label: 'Disaster recovery'}
@@ -210,7 +223,7 @@ slides:
                --target='T' --target-action=promote
           5. Verify: `psql -c 'SELECT count(*), max(created_at) FROM orders'`
              Expect: order count ≈ yesterday's, max(created_at) ≈ T
-          6. Pull out the deleted data and put it back into production
+          6. Copy the deleted rows back via a staging table (ON CONFLICT DO NOTHING)
              (don't swap the whole DB: valid transactions came after the mistake)
           7. Maintenance off, watch for 1 hour, write the post-mortem
 
@@ -272,6 +285,11 @@ flashcards:
     a: 'Restoring over the live DB wipes all current data. On a separate server you can verify first and bring back only the data you need.'
     more: |
       Valid transactions made after the mistake exist too. Roll the whole DB back and you lose them. So you first recover elsewhere, extract the deleted data, and then put it into production.
+    ref: point-in-time-recovery
+  - q: 'How do you put recovered rows back without losing newer valid data?'
+    a: 'Load them into a staging table on production, then `INSERT ... ON CONFLICT DO NOTHING`. Rows that exist today stay; only the lost ones come in.'
+    more: |
+      Orders placed since the mistake exist only in production, and restoring over them would destroy them. The staging table lets the database decide row by row, using the primary key.
     ref: point-in-time-recovery
   - q: 'What is a restore drill, and how often should you run one?'
     a: 'Loading the latest backup into a scratch DB, timing it and verifying the data. At least weekly, automatically.'
@@ -371,3 +389,19 @@ quiz:
         correct: false
         why: 'That is a good quality; it stops you going down a wrong path.'
     ref: runbook
+  - q: 'PITR on the scratch server brought back the 1,200,000 deleted orders. Production has 300 new orders since the mistake. How do you bring the lost ones back?'
+    hint: 'The 300 new orders exist only in production.'
+    options:
+      - text: 'Load the restored rows into a staging table, then INSERT ... ON CONFLICT DO NOTHING into orders'
+        correct: true
+        why: 'Today''s 300 orders stay untouched, and only the missing rows are added.'
+      - text: 'Swap the scratch server in as the new production DB'
+        correct: false
+        why: 'The scratch copy stops at the target time, so the 300 newer orders would vanish.'
+      - text: 'Run TRUNCATE on orders, then load the whole restored table'
+        correct: false
+        why: 'That destroys the 300 new orders for the sake of a cleaner load.'
+      - text: 'INSERT the restored rows straight into orders'
+        correct: false
+        why: 'Any overlapping id raises a duplicate-key error and the load stops halfway.'
+    ref: point-in-time-recovery

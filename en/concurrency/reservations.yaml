@@ -42,7 +42,7 @@ slides:
       - type: story
         title: 'The night Eid tickets open'
         body: |
-          Someone holds five seats, never pays and falls asleep, while a thousand people see "sold out". With no expiry, this would happen every night. A hold with an expiry exists for exactly this reason.
+          Someone holds five seats, never pays and falls asleep, while a thousand people see "sold out". With no expiry, this would happen every night. A hold with an expiry exists for exactly this reason. Its price: a held seat is out of everyone else's reach for up to 10 minutes, so also cap how many active holds one user may have (say 4).
       - type: terms
         items:
           - {term: 'Hold', meaning: 'Keeping a thing reserved for someone for a while, until it is confirmed or the time runs out.'}
@@ -91,6 +91,9 @@ slides:
     tldr: 'Put a partial unique index on active holds; expire stale ones before creating a new hold; if the unique rule fires, the seat is taken.'
     keywords: ['hold seat', 'partial unique index', 'UniqueConstraintViolationException', 'Clock', 'DQL']
     blocks:
+      - type: text
+        body: |
+          Checking first and then inserting is not enough. At 10:00:00 Rahim and Karim both ask for seat 12: both SELECTs say "free", both INSERTs run, and the seat has two holds. The index below makes the database itself refuse the second insert.
       - type: code
         lang: sql
         file: 'migration (PostgreSQL)'
@@ -143,6 +146,7 @@ slides:
         items:
           - 'For product stock, use a `reserved` column instead of per-seat rows: `UPDATE product SET reserved = reserved + :n WHERE id = :id AND stock - reserved >= :n`.'
           - 'For stock, still keep a separate reservation row for each hold request, or at expiry you can''t tell how much to give back.'
+          - 'MySQL has no partial indexes. Workaround: a nullable `active_seat_id` column equal to the seat id while the hold is active, NULL after expiry or cancel, with a UNIQUE index on it.'
       - type: refs
         items:
           - {to: 'concurrency/atomic-operations', label: 'Unique indexes and atomic UPDATE'}
@@ -243,9 +247,45 @@ slides:
           - 'Confirm with the same CAS as before; a 0 means the seat is gone.'
           - 'If the seat is gone, send an automatic refund through the gateway.'
           - 'Tell the user what happened, and let them pick a new seat.'
+      - type: code
+        lang: php
+        file: 'src/MessageHandler/PaymentSucceededHandler.php'
+        variant: good
+        code: |
+          #[AsMessageHandler]
+          final readonly class PaymentSucceededHandler
+          {
+              public function __construct(
+                  private SeatHolder $holder,
+                  private PaymentGateway $gateway,
+                  private NotifierInterface $notifier,
+              ) {
+              }
+
+              public function __invoke(PaymentSucceeded $event): void
+              {
+                  try {
+                      $this->holder->confirm($event->reservationId);
+                  } catch (HoldExpired) {
+                      // the seat is gone: refund, keyed by payment id so a retry can't refund twice
+                      $this->gateway->refund(
+                          $event->paymentId,
+                          idempotencyKey: 'refund-'.$event->paymentId,
+                      );
+                      $this->notifier->send(
+                          new SeatLostNotification($event->reservationId),
+                          $event->recipient,
+                      );
+                  }
+              }
+          }
+        marks:
+          - {line: 15, tip: 'confirm() threw HoldExpired, meaning 0 rows changed: the seat is no longer Rahim''s.'}
+          - {line: 19, tip: 'The key is built from the payment id, so if this message is delivered twice the gateway refunds once.'}
     aside:
       - type: pitfalls
         items:
+          - 'A refund is not free: some gateways keep their fee, and the money takes days to reach the customer. One more reason to keep late payments rare.'
           - 'Whether it is valid to confirm a late payment when the seat is still free is a business decision. Even then, do it with a CAS, not just by looking at `status`.'
           - 'If the hold''s expiry is shorter than the payment time, this will happen every day. Set the expiry longer than the gateway''s maximum time.'
       - type: refs
@@ -306,6 +346,11 @@ flashcards:
     a: 'Confirm with a CAS; a 0 means the seat is gone, so send a refund through the gateway and tell the user. Never quietly give one seat to two people.'
     more: |
       Slow gateways make this inevitable. Setting the hold's expiry longer than the payment's maximum time reduces how often it happens, but never to zero. So always keep the refund path ready.
+    ref: late-payment
+  - q: 'Why give the refund request an idempotency key built from the payment id?'
+    a: 'The payment message can be delivered twice. With the same key, the gateway refunds once and ignores the repeat.'
+    more: |
+      Message queues deliver at least once, so a handler may run twice for the same payment. Without a key, the customer could be refunded twice. With the key `refund-<payment id>`, the second request is recognised as a repeat and does nothing.
     ref: late-payment
 
 quiz:

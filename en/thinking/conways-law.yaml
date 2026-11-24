@@ -7,7 +7,7 @@ slides:
     blocks:
       - type: text
         body: |
-          A company has split its teams by layer: a UI team, a Backend team and a Database team. The "coupon code" feature needs just three changes: a form, an API and a table. But each change belongs to a different team, so the ticket finishes in one team's queue and then waits in the next. Two days of work takes three weeks.
+          A company has split its teams by layer: a UI team, a Backend team and a Database team. The "coupon code" feature needs just three changes: a form, an API and a table. But each change belongs to a different team, so the ticket finishes in one team's queue and then waits in the next. Two days of work takes three weeks. Put the same three people in one team that owns the form, the API and the table, and the ticket takes about its two days of real work: no handoff, no queue. The rest of this lesson shows how to get there.
       - type: visual
         kind: flow
         caption: 'The coupon ticket passes through three teams'' queues'
@@ -64,7 +64,7 @@ slides:
       - type: story
         title: 'The four-team compiler'
         body: |
-          In 1968 Melvin Conway wrote that if an organisation with four groups builds a compiler, you get a four-pass compiler. He offered it as an observation, not a rule, and for decades it has kept holding true.
+          The line people repeat is: four groups building a compiler get a four-pass compiler. That wording is a later paraphrase. Melvin Conway's 1968 paper made the general point that a design copies the communication of the organisation behind it. He offered it as an observation, not a rule, and it has kept holding true.
       - type: terms
         items:
           - {term: 'Boundary', meaning: 'The line between two parts, where one part''s responsibility ends and the other''s begins.'}
@@ -100,7 +100,10 @@ slides:
           /src/Checkout/   @shop/checkout-team
           /src/Billing/    @shop/billing-team
         marks:
-          - {line: 2, tip: 'A pull request touching this path can''t merge without the Catalog team''s review. Ownership is written right here in the code.'}
+          - {line: 2, tip: 'A pull request (a proposed change waiting for review) touching this path can''t merge without the Catalog team''s review. Ownership is written down here.'}
+      - type: text
+        body: |
+          Why the contract matters: if Checkout reads Catalog's `Product` entity directly and Catalog renames its `price` column, Checkout breaks and two teams must change together, which is the handoff all over again. The price of the fix: a contract is extra code to keep stable, and reorganising teams is disruptive. With fewer than about 5 engineers, one team and a modular monolith is enough.
       - type: code
         lang: php
         file: 'src/Checkout/Cart/AddToCart.php'
@@ -185,6 +188,59 @@ slides:
       q: 'After building eight services, every feature still makes one team change all of them. What went wrong?'
       a: 'The service boundaries don''t match how the team actually works. Work that spreads across several services within one team means they are really one boundary, so keep them together or redraw the boundaries.'
 
+  - slug: redraw-boundaries
+    title: 'Redrawing boundaries: eight services, three modules'
+    kind: howto
+    tldr: 'To redraw boundaries, list which services each recent feature touched; the ones that always change together become one module with one owner.'
+    keywords: ['redraw boundaries', 'merge services', 'change together', 'modular monolith', 'service consolidation', 'co-change']
+    blocks:
+      - type: text
+        body: |
+          Rahim's team of three runs eight services, and every feature needs a pull request (a proposed code change waiting for review) in several of them. Don't guess where the real boundaries are; read them from history. Write down which services each of the last few features touched.
+      - type: visual
+        kind: table
+        caption: 'Services touched by each recent feature, and the module they point to'
+        headers: ['Feature', 'Services it touched', 'Belongs to']
+        rows:
+          - cells: ['Coupon code', 'cart, price, coupon, order', 'Checkout']
+            tip: 'One small feature changed four services, so four pull requests and four deploys.'
+          - cells: ['Free delivery', 'cart, price, order', 'Checkout']
+            tip: 'The same group moved together again.'
+          - cells: ['Gift wrap', 'cart, price', 'Checkout']
+            tip: 'And again. Services that change together every time are one boundary drawn in the wrong place.'
+          - cells: ['Receipt email', 'invoice, mail', 'Notifications']
+            tip: 'A second group that moves together.'
+          - cells: ['Order SMS', 'mail, sms', 'Notifications']
+            tip: 'It overlaps the receipt email on mail, so invoice, mail and sms are one group.'
+          - cells: ['Password rule', 'auth', 'Accounts']
+            tip: 'auth changes alone, so it already is a good boundary. Leave it.'
+      - type: code
+        lang: text
+        file: 'repository layout'
+        variant: good
+        code: |
+          # before: 8 services, 1 team of 3. A coupon feature = 4 pull requests, 4 deploys
+          cart-service/    price-service/   coupon-service/  order-service/
+          invoice-service/ mail-service/    sms-service/     auth-service/
+
+          # after: 3 modules, the same 3 people. A coupon feature = 1 pull request
+          src/Checkout/        <- cart + price + coupon + order
+          src/Notifications/   <- invoice + mail + sms
+          src/Accounts/        <- auth
+        marks:
+          - {line: 6, tip: 'Four services that always changed together are now one module, called by plain method calls instead of network calls.'}
+      - type: text
+        body: |
+          The price: merging takes weeks of real work (joining data, rewiring calls), and the modules now deploy as one unit. Keep a part separate only if it truly needs its own scaling or its own team. Re-run this check every few months, because the answer drifts as teams change.
+    aside:
+      - type: tips
+        items:
+          - 'The git history is free evidence: `git log --name-only` over the last three months shows which folders move together.'
+          - 'If a merged module grows beyond what one team can understand, split it where changes rarely cross, not by layer.'
+    check:
+      q: 'Every feature for months changed cart, price and order together. What does that tell you?'
+      a: 'They are really one boundary. Merge them into one module with one owner, so a feature becomes one pull request instead of three.'
+
 flashcards:
   - q: 'What is Conway''s Law in one line?'
     a: 'The structure of a system copies the communication structure of the organisation that builds it.'
@@ -216,6 +272,11 @@ flashcards:
     more: |
       If you depend on internal classes, your code breaks whenever the owning team changes anything. If you depend on an interface, they can change anything inside as long as the contract holds. That is the whole point of a boundary.
     ref: inverse-conway
+  - q: 'How do you decide which services to merge when redrawing boundaries?'
+    a: 'List which services each recent feature touched. Services that keep changing together are one boundary: merge them under one owner.'
+    more: |
+      For example, if coupon, free-delivery and gift-wrap features all changed cart, price and order, those three belong in one Checkout module. The price is real merge work and one shared deploy, so keep a part separate only if it truly needs its own scaling.
+    ref: redraw-boundaries
   - q: 'Why does changing only the org chart not help?'
     a: 'The code boundaries stay as they were. New teams on the old code split keep the friction.'
     more: |
@@ -320,3 +381,19 @@ quiz:
         correct: false
         why: 'If the team is large and the load heavy, no service runs well, and then splitting into services means little.'
     ref: team-service-mismatch
+  - q: 'For three months, every feature a team shipped changed the cart, price and order services together, and never one alone. What should they do?'
+    hint: 'Services that always change together are really what?'
+    options:
+      - text: 'Add more retries and timeouts between the three services'
+        correct: false
+        why: 'That makes the calls more reliable, but the three still need a change and a deploy every time.'
+      - text: 'Treat them as one boundary: merge them into one module with one owner'
+        correct: true
+        why: 'The history shows they were split in the wrong place. One module means one pull request and one deploy per feature.'
+      - text: 'Give each service to a different team to speed things up'
+        correct: false
+        why: 'Every feature would now cross three teams and three queues, the problem from the first slide.'
+      - text: 'Nothing, because separate services are always better'
+        correct: false
+        why: 'Separate services pay off only when they can change independently. These cannot.'
+    ref: redraw-boundaries

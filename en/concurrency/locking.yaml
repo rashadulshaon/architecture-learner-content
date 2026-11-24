@@ -34,6 +34,9 @@ slides:
         items:
           - {term: 'Row lock', meaning: 'A lock on one row; other transactions cannot change it (or read it with FOR UPDATE) until it is released.'}
           - {term: 'Pessimistic', meaning: 'Assuming up front that a collision will happen, so locking first.'}
+      - type: when
+        use: ['Frequent collisions on one row: wallet, stock, the last seat', 'Short work between the read and the write']
+        avoid: ['The user thinks for minutes between read and write (a form)', 'Slow calls would end up inside the lock']
     check:
       q: 'Until phone 1''s transaction commits, what does phone 2''s `SELECT … FOR UPDATE` do?'
       a: 'It blocks and waits; it does not raise an error. When phone 1 commits, the lock is released and phone 2 reads the new balance.'
@@ -109,7 +112,7 @@ slides:
     blocks:
       - type: text
         body: |
-          Two admins open the same product form, and one of them takes 10 minutes to fill it in. You can't hold a database lock for 10 minutes, yet you can't let one admin's work silently vanish either. This is where an optimistic lock helps: everyone gets in, but on the way out the seal number on the vault is compared. If the number has changed, someone else worked in the meantime.
+          Two admins open the same product form, and one of them takes 10 minutes to fill it in. You can't hold a database lock for 10 minutes, yet you can't let one admin's work silently vanish either. This is where an optimistic lock helps: everyone gets in, but on the way out the seal number on the vault is compared. If the number has changed, someone else worked in the meantime. When to pick this over a pessimistic lock is the next slide.
       - type: visual
         kind: sequence
         caption: 'Two admins open the form at version 3; the second one''s save is caught'
@@ -155,6 +158,48 @@ slides:
       q: 'How does the database know there was a conflict when the second admin saves?'
       a: 'The UPDATE''s WHERE clause says `version = 3`, but the row is already at version 4. Zero rows change, and Doctrine throws an OptimisticLockException.'
 
+  - slug: lock-choice
+    title: 'Which lock? One rule to choose'
+    kind: compare
+    tldr: 'Rare collisions and slow humans: optimistic. Frequent collisions and quick code: pessimistic. A plain counter needs neither: one atomic UPDATE does it.'
+    keywords: ['optimistic vs pessimistic', 'choosing a lock', 'collision rate', 'atomic update', 'contention']
+    blocks:
+      - type: text
+        body: |
+          Ask two questions. How often do two requests really touch the same row at the same moment? And how long must the row be held between the read and the write? Two admins editing the same product in the same ten minutes is rare, maybe 1 save in 500. A hundred buyers chasing the last 50 tickets collide on nearly every request. Heavy collisions make an optimistic lock fail and retry again and again. And a pessimistic lock on a form left open for minutes makes everyone queue behind one sleepy admin.
+      - type: visual
+        kind: table
+        caption: 'Optimistic or pessimistic: decide by collision rate and how long the work takes'
+        headers: ['', 'Optimistic', 'Pessimistic']
+        rows:
+          - cells: ['Collisions on the same row', 'Rare (say fewer than 1 in 20 saves)', 'Common (say 1 in 5 or more)']
+            tip: 'The thresholds are a rule of thumb. What matters is that one is "almost never" and the other is "all the time".'
+          - cells: ['Time between read and write', 'Long: a form open for minutes', 'Short: milliseconds, in one transaction']
+            tip: 'You cannot hold a database lock while a person types, but you can while a function runs.'
+          - cells: ['While the work happens', 'Nothing is held; others carry on', 'The row is locked; others queue']
+            tip: 'This is why the optimistic one suits slow work: nobody waits for the person filling the form.'
+          - cells: ['The loser of a collision', 'Gets an error, reloads, redoes the work', 'Waits its turn, then reads fresh data']
+            tip: 'With an optimistic lock the loser''s work is thrown away. With a pessimistic lock it just waits.'
+          - cells: ['The price', 'Retries pile up if collisions are common', 'Queues, deadlock risk, slow if held long']
+            tip: 'Each approach hurts exactly where the other is comfortable. Pick the one whose price you can afford.'
+          - cells: ['Typical use', 'Admin edit forms, profile pages', 'Wallet balance, stock, the last seat']
+            tip: 'Think of who is colliding: a few humans taking turns, or a crowd hitting one number.'
+      - type: quote
+        body: 'Rare collisions and slow people: optimistic. Frequent collisions and quick code: pessimistic.'
+    aside:
+      - type: tips
+        items:
+          - 'If all you do is add or subtract a number (stock, a counter), skip both: one `UPDATE … SET stock = stock - 1 WHERE stock > 0` is atomic on its own.'
+      - type: pitfalls
+        items:
+          - 'The numbers are a rule of thumb, not a law. Count the OptimisticLockExceptions in your logs; if more than 1 in 20 saves hits one, move that screen to a pessimistic lock.'
+      - type: refs
+        items:
+          - {to: 'concurrency/atomic-operations', label: 'Atomic updates with no lock at all'}
+    check:
+      q: 'A shop has 50 tickets and 200 people click Buy in the first second. Which lock, and why?'
+      a: 'Pessimistic (or one atomic UPDATE on the stock). Nearly every request collides, so an optimistic lock would fail and retry over and over. The work is short, so queueing for the row is cheap.'
+
   - slug: advisory-distributed
     title: 'Advisory locks and Symfony Lock: a lock with no row'
     kind: howto
@@ -198,14 +243,18 @@ slides:
 
           -- MySQL: a named lock, waiting at most 5 seconds
           SELECT GET_LOCK('invoice-export-2026-11', 5);
+
+          -- Backstop: the export inserts its row first, so a second export of the month fails here
+          CREATE UNIQUE INDEX uniq_invoice_export_month ON invoice_export (month);
         marks:
           - {line: 2, tip: 'It is released automatically on COMMIT or ROLLBACK, so you can''t forget to release it. It works even with no row or table involved.'}
+          - {line: 8, tip: 'This is what guards correctness. Even if the TTL lock is lost and two exports start, the database refuses the second one.'}
       - type: quote
         body: 'A lock with a TTL is for efficiency only; correctness of money is guarded by a database constraint.'
     aside:
       - type: pitfalls
         items:
-          - 'If a GC pause or slow work outlasts the TTL, someone else gets the lock while the first holder still thinks it has it. Both run.'
+          - 'Say the TTL is 120 seconds and the job freezes for 150 (a long GC pause, a slow disk). The lock expires at 120, a second server takes it, and now both run.'
           - 'If a Redis node is lost or fails over, the lock can vanish. Don''t rely on it alone for the correctness of money.'
       - type: commands
         title: 'Configuration'
@@ -260,11 +309,35 @@ slides:
         marks:
           - {line: 3, tip: 'Transfers in both directions now lock the smaller id first, so nobody waits in opposite order. A cycle cannot form.'}
           - {line: 7, tip: 'Keep this code the same everywhere. If the order is wrong in even one place, deadlocks come back.'}
+      - type: code
+        lang: php
+        file: 'src/Service/TransferRetry.php'
+        variant: good
+        code: |
+          public function transferWithRetry(int $from, int $to, int $amount): void
+          {
+              for ($attempt = 1; $attempt <= 3; $attempt++) {
+                  try {
+                      $this->transfers->transfer($from, $to, $amount);   // the code above
+                      return;
+                  } catch (DeadlockException $e) {
+                      if ($attempt === 3) {
+                          throw $e;                       // give up, let the caller see it
+                      }
+                      $this->registry->resetManager();    // the old EntityManager is closed
+                      usleep(random_int(20, 120) * 1000); // random wait, 20 to 120 ms
+                  }
+              }
+          }
+        marks:
+          - {line: 7, tip: 'Only a deadlock is retried. Any other error, such as insufficient funds, is a real failure and goes up.'}
+          - {line: 11, tip: 'After an exception, wrapInTransaction() closes the EntityManager. resetManager() gives a fresh one.'}
+          - {line: 12, tip: 'A random wait, so the two collided transfers don''t restart in lockstep and collide again.'}
     aside:
       - type: pitfalls
         items:
-          - 'After a deadlock the database aborts one transaction and you get a DeadlockException. That transaction must be tried again, wholly from the start, on a fresh EntityManager or via Messenger retry.'
-          - 'Cap the retries too (say 3) and add a little jitter, or two transactions collide again at the same moment.'
+          - 'After a deadlock the database aborts one transaction and you get a DeadlockException. Retry the whole transaction from the start, as above, or let a Messenger retry do it.'
+          - 'Cap the retries (here 3) and add the random wait, or two transactions restart at the same moment and collide again.'
       - type: remember
         body: 'When you need several locks, always take them in the same order: smaller id first.'
       - type: refs
@@ -306,10 +379,10 @@ flashcards:
       In an API, send the version along with the data (in the body or as ETag/If-Match). On a conflict, show "someone else changed this first" in the client and load the latest data. In a background job, you can re-read the fresh data and try again automatically.
     ref: optimistic-lock
   - q: 'When do you pick a pessimistic lock, and when an optimistic one?'
-    a: 'Pessimistic for frequent collisions (wallet, stock). Optimistic for rare collisions and long user work (editing a form).'
+    a: 'Pessimistic when collisions are frequent and the work is quick (wallet, stock). Optimistic when collisions are rare and a person works for a while (editing a form).'
     more: |
-      With optimistic locking, heavy contention means failures and retries pile up. With pessimistic locking, you pay the lock cost on every request even when collisions are rare. So choose by collision rate and by how long the work lasts.
-    ref: optimistic-lock
+      A rough guide: if fewer than 1 in 20 saves collide, go optimistic; if 1 in 5 or more do, go pessimistic. Optimistic under heavy contention piles up failures and retries. Pessimistic on a long form makes everyone queue behind one slow person. If you only add to or subtract from a number, one atomic UPDATE needs neither.
+    ref: lock-choice
   - q: 'When do you need an advisory lock or Symfony Lock?'
     a: 'When there is no row to lock, such as "this cron job or export must run only once". You lock a name.'
     more: |
@@ -320,10 +393,20 @@ flashcards:
     more: |
       The fix: call `refresh()` during long jobs. And where a failure would be costly, such as money, don't trust the lock alone; keep a database constraint or a version check as well.
     ref: advisory-distributed
+  - q: 'What backs up a TTL lock when money or duplicates are at stake?'
+    a: 'A database constraint, such as a unique index. If the lock is lost and two jobs run, the database still refuses the second write.'
+    more: |
+      A TTL lock is only for efficiency: it keeps most duplicate work from starting. The real guarantee comes from something the database enforces, like a unique index on (month) for an export, or a version check.
+    ref: advisory-distributed
   - q: 'What is a deadlock, and how do you prevent it?'
     a: 'Two transactions lock in opposite order and wait for each other forever. Locking in the same order everywhere (smaller id first) prevents it.'
     more: |
       When the database spots a deadlock, it rolls back one transaction and you get a DeadlockException. You then retry the whole transaction, with a little jitter and a limited number of attempts. The real cure is still the same lock order.
+    ref: deadlock-ordering
+  - q: 'How do you retry safely after a deadlock in Doctrine?'
+    a: 'Catch DeadlockException, reset the closed EntityManager, wait a random 20 to 120 ms, and rerun the whole transaction, at most 3 times.'
+    more: |
+      The database has already rolled the transaction back, and wrapInTransaction() closes the EntityManager on the way out, so a retry needs a fresh one (`ManagerRegistry::resetManager()`). The random wait stops the two collided transactions from restarting together and colliding again.
     ref: deadlock-ordering
 
 quiz:
@@ -397,6 +480,22 @@ quiz:
         correct: true
         why: 'WHERE version = 3 now finds no row, and Rafiq is told to reload.'
     ref: optimistic-lock
+  - q: 'A shop has 50 tickets and 200 buyers click Buy in the first second. Which approaches fit?'
+    hint: 'Do most requests collide, and how long is the work between read and write?'
+    options:
+      - text: 'A pessimistic lock on the ticket stock row'
+        correct: true
+        why: 'Nearly every request collides and the work is short, so queueing for the row is cheap and gives correct counts.'
+      - text: 'An optimistic lock with a version column'
+        correct: false
+        why: 'Almost all of the 200 would collide, fail and retry, then collide again. That is a pile of wasted work.'
+      - text: 'One UPDATE … SET stock = stock - 1 WHERE stock > 0'
+        correct: true
+        why: 'It is atomic on its own: the database checks and subtracts in one step, so no lock code is needed.'
+      - text: 'No lock: read the stock, check it, then save'
+        correct: false
+        why: 'That is the check-then-act gap. Several buyers read "1 left" together and all get a ticket.'
+    ref: lock-choice
   - q: 'Which of these are reasonable places to use Symfony Lock or an advisory lock?'
     hint: 'Where is there no separate row to lock?'
     options:

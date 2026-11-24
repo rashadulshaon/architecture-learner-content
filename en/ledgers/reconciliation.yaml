@@ -76,33 +76,41 @@ slides:
   - slug: daily-reconcile-job
     title: 'The daily job: fetch the statement, match, write breaks'
     kind: howto
-    tldr: 'Load the statement into a table, find breaks with one FULL OUTER JOIN, and run a console command every morning with the Symfony Scheduler.'
+    tldr: 'Load the statement into a table, find all six break types with one FULL OUTER JOIN, and run a console command every morning with the Symfony Scheduler.'
     keywords: ['FULL OUTER JOIN', 'recon_break', 'Symfony Scheduler', 'AsCronTask', 'console command', 'daily job']
     blocks:
       - type: text
         body: |
-          The method has three steps. First, load the provider's statement (file or API) into a `statement_line` table. Second, run a `FULL OUTER JOIN` against `ledger_payment`: whatever fails to match on either side is a break. Third, write the results to `recon_break` with a UNIQUE on `(day, provider, ref)`, so that running the job twice never inserts the same break twice.
+          The method has three steps. First, load the provider's statement (file or API) into a `statement_line` table. Second, run one `FULL OUTER JOIN` against `ledger_payment`, with each ref counted per side and compared on amount, status and day. Anything missing on a side, counted twice, or different is a break, and the `CASE` names which of the six it is. A line whose reference matches but lands on a different day is a `timing` break. To tell that from a truly missing line, the query looks one day either side, so the job runs for two days ago, when the neighbouring day's statement has arrived. Third, write the results to `recon_break` with a UNIQUE on `(day, provider, ref)`, so that running the job twice never inserts the same break twice.
       - type: code
         lang: sql
         file: 'The query that finds breaks'
         variant: good
         code: |
-          WITH l AS (SELECT ref, amount_minor FROM ledger_payment  WHERE day = :day),
-               s AS (SELECT ref, amount_minor FROM statement_line WHERE day = :day)
+          -- :from = :day - 1, :to = :day + 1 (one day either side, to spot timing)
+          WITH l AS (SELECT ref, MIN(day) day, COUNT(*) n, MAX(amount_minor) amt, MAX(status) st
+                       FROM ledger_payment  WHERE day BETWEEN :from AND :to GROUP BY ref),
+               s AS (SELECT ref, MIN(day) day, COUNT(*) n, MAX(amount_minor) amt, MAX(status) st
+                       FROM statement_line WHERE day BETWEEN :from AND :to GROUP BY ref)
           INSERT INTO recon_break (day, provider, ref, category, our_minor, their_minor)
           SELECT :day, 'gw', COALESCE(l.ref, s.ref),
-                 CASE WHEN s.ref IS NULL THEN 'missing_at_provider'
-                      WHEN l.ref IS NULL THEN 'missing_in_ledger'
-                      ELSE 'amount_mismatch' END,
-                 l.amount_minor, s.amount_minor
+                 CASE WHEN l.n > 1 OR s.n > 1 THEN 'duplicate'
+                      WHEN s.ref IS NULL      THEN 'missing_at_provider'
+                      WHEN l.ref IS NULL      THEN 'missing_in_ledger'
+                      WHEN l.amt <> s.amt     THEN 'amount_mismatch'
+                      WHEN l.st  <> s.st      THEN 'status_mismatch'
+                      ELSE 'timing' END,
+                 l.amt, s.amt
             FROM l FULL OUTER JOIN s ON s.ref = l.ref
-           WHERE l.ref IS NULL OR s.ref IS NULL
-              OR l.amount_minor <> s.amount_minor
+           WHERE COALESCE(l.day, s.day) = :day
+             AND (l.n > 1 OR s.n > 1 OR l.ref IS NULL OR s.ref IS NULL
+                  OR l.amt <> s.amt OR l.st <> s.st OR l.day <> s.day)
           ON CONFLICT (day, provider, ref) DO NOTHING;
         marks:
-          - {line: 4, tip: 'COALESCE takes whichever side has the reference. Either side can be empty.'}
-          - {line: 5, tip: 'If it''s not in the statement it is missing_at_provider; if it''s not in the ledger it is missing_in_ledger.'}
-          - {line: 12, tip: 'On a second run the same break is not inserted again, so the job is safe to re-run.'}
+          - {line: 2, tip: 'Per side: how many lines carry this ref (`n`), plus its amount, status and day. `n` above 1 is a duplicate.'}
+          - {line: 8, tip: 'The CASE runs top to bottom. The first test that is true names the break. Whatever survives all five is the same ref on a different day: timing.'}
+          - {line: 16, tip: 'Keep only breaks that belong to this day (the ledger side''s day wins), so the next day''s run does not report the same line again.'}
+          - {line: 19, tip: 'On a second run the same break is not inserted again, so the job is safe to re-run.'}
       - type: code
         lang: php
         file: 'src/Command/ReconcileCommand.php'
@@ -119,7 +127,7 @@ slides:
 
               protected function configure(): void
               {
-                  $this->addArgument('date', InputArgument::OPTIONAL, 'Which day', 'yesterday');
+                  $this->addArgument('date', InputArgument::OPTIONAL, 'Which day', '2 days ago');
               }
 
               protected function execute(InputInterface $in, OutputInterface $out): int
@@ -133,7 +141,7 @@ slides:
           }
         marks:
           - {line: 2, tip: 'The Symfony Scheduler runs this command every day at 3 a.m. To keep it running you need `messenger:consume scheduler_default`.'}
-          - {line: 12, tip: 'Without an argument it means "yesterday". You can also re-run any earlier day by hand.'}
+          - {line: 12, tip: 'Without an argument it means "2 days ago", when the neighbouring day''s statement has arrived. You can also re-run any earlier day by hand.'}
     aside:
       - type: commands
         title: 'Commands to run it'
@@ -143,6 +151,7 @@ slides:
       - type: tips
         items:
           - 'Send an alert when the break count is above 0. If it stays silent, nobody will look.'
+          - 'Index `(day, ref)` on both tables or the join scans everything. A few million lines a day is fine; far beyond that, partition by day.'
           - 'For how the statement file gets fetched, see [[ledgers/batch-files|Batch file integration]].'
     check:
       q: 'Why is `recon_break` UNIQUE on `(day, provider, ref)`, and why `ON CONFLICT DO NOTHING`?'
@@ -178,14 +187,17 @@ slides:
 
           $txId = $ledger->post(
               memo: "Reconciliation correction: {$break->ref}",
-              postings: $postingsForMissingPayment,
+              postings: [   // pay_881: the gateway holds 500 taka we never recorded
+                  new Posting($gatewayClearing, Side::Debit,  new Money(50000, 'BDT')),
+                  new Posting($sales,           Side::Credit, new Money(50000, 'BDT')),
+              ],
           );
 
           $break->resolve($user, correctedBy: $txId);
         marks:
           - {line: 1, tip: 'Who, when and why are recorded on the break itself. That is the evidence of the investigation.'}
-          - {line: 3, tip: 'The mistake is fixed in a new transaction; no earlier entry changes.'}
-          - {line: 8, tip: 'The break is linked to the transaction that closed it, so an auditor can go straight there later.'}
+          - {line: 3, tip: 'The mistake is fixed in a new transaction; no earlier entry changes. The two sides add up, as always.'}
+          - {line: 11, tip: 'The break is linked to the transaction that closed it, so an auditor can go straight there later.'}
       - type: visual
         kind: steps
         caption: 'The life of a break'
@@ -193,7 +205,7 @@ slides:
           - {title: '1. Open', body: 'The nightly job writes the break; nobody has looked yet', tip: 'In this state the break counts as outstanding; old open breaks are the real risk.'}
           - {title: '2. Investigating', body: 'An owner finds the cause and writes it down', tip: 'A break with no owner gets no attention, so naming one is mandatory.'}
           - {title: '3. Resolved', body: 'A new entry is written and linked to the break', tip: 'The ledger changes only by adding a new entry.'}
-          - {title: '4. Written off', body: 'A small amount, closed with a second person''s approval', tip: 'You can''t chase a tiny amount forever, but the decision is written down and approved.'}
+          - {title: '4. Written off', body: 'A small amount, closed with a second person''s approval', tip: 'You can''t chase a tiny amount forever. It is posted to a write-off account as a normal entry, and the decision is written down and approved.'}
     aside:
       - type: pitfalls
         items:
@@ -228,10 +240,15 @@ flashcards:
       The first usually comes from a lost webhook or a timeout. The second is dangerous: we assumed the payment went through, but the gateway knows nothing about it, and if we release the goods the loss is ours.
     ref: match-and-break
   - q: 'What is a timing difference, and why is it not a real error?'
-    a: 'The same transaction falls on one day in one book and another day in the other (cutoff or T+1 settlement). It matches in the next day''s statement.'
+    a: 'The same reference is on both sides but on different days (cutoff or T+1 settlement). The job labels it `timing`, not missing.'
     more: |
-      If you don't flag these separately, false alarms go off every day and people learn to ignore alerts. If it still doesn't match the day after, though, it is a real break.
+      The query looks one day either side of the day it checks, so a line that merely sits on the neighbouring day is not called missing. If you don't flag these separately, false alarms go off every day and people learn to ignore alerts.
     ref: match-and-break
+  - q: 'How does one query tell six break types apart?'
+    a: 'It counts each ref per side and compares amount, status and day. A `CASE` picks the first true test: duplicate, missing either side, amount, status, else timing.'
+    more: |
+      One `FULL OUTER JOIN` keeps lines that exist on only one side. The `WHERE` also keeps lines on both sides that differ in count, amount, status or day. Order matters: a duplicate is named before it can be mistaken for an amount mismatch.
+    ref: daily-reconcile-job
   - q: 'Why should the daily reconciliation job be idempotent?'
     a: 'The job can be run again and again (a retry or by hand). With UNIQUE (day, provider, ref) and DO NOTHING, the same break is never inserted twice.'
     more: |
@@ -292,6 +309,22 @@ quiz:
         correct: false
         why: 'DO NOTHING means the old rows are not touched at all.'
     ref: daily-reconcile-job
+  - q: 'The statement says pay_77 is `refunded`, our ledger says `paid`, and both show 500 taka on the same day. Which break is it?'
+    hint: 'Reference, amount and day all agree.'
+    options:
+      - text: 'status_mismatch: a refund we never saw'
+        correct: true
+        why: 'The amount agrees but the status doesn''t. The query compares status after amount, so this is where it lands.'
+      - text: 'amount_mismatch'
+        correct: false
+        why: 'Both sides show 500 taka, so the amounts agree.'
+      - text: 'timing'
+        correct: false
+        why: 'Both lines are on the same day, so it is not a day difference.'
+      - text: 'missing_in_ledger'
+        correct: false
+        why: 'Our ledger has the line; only its status is different.'
+    ref: daily-reconcile-job
   - q: 'Why is the code below a problem?'
     lang: php
     code: |
@@ -317,15 +350,15 @@ quiz:
         correct: false
         why: 'Even if they match, the cause of the error is unknown, and the same bug can''t be caught if it happens again.'
     ref: dont-plug-the-gap
-  - q: 'The gateway statement dates a payment 21 November, but our ledger recorded it at 11:59 p.m. on 20 November. What happens in the 20 November job?'
-    hint: 'What happens when the cutoff differs between the two sides?'
+  - q: 'The gateway statement dates a payment 21 November, but our ledger recorded it at 11:59 p.m. on 20 November. How does the 20 November job label it?'
+    hint: 'The same reference is on both sides.'
     options:
-      - text: 'The day differs, so a timing break appears, and it matches the next day'
+      - text: 'As a timing break: the reference matches, only the day differs'
         correct: true
-        why: 'A cutoff difference is not a real error; flagging it separately avoids false alarms.'
-      - text: 'The payment is lost forever'
+        why: 'The query looks one day either side, finds the ref on the 21st, and labels it timing instead of missing. A cutoff difference is not a real error.'
+      - text: 'As missing_at_provider, because the 20 November statement has no such line'
         correct: false
-        why: 'It will be there in the next day''s statement; only the day is different.'
+        why: 'That would raise a false alarm. The join also looks at the neighbouring day, where the line is found.'
       - text: 'The ledger date must be changed to the 21st'
         correct: false
         why: 'Ledger entries can''t be changed, and the cause is the cutoff, not the date.'

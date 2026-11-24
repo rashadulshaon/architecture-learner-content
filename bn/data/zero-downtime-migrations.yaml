@@ -12,7 +12,7 @@ slides:
           ঢাকার ব্যস্ত সড়কের পুরনো সেতু ভাঙতে রাস্তা বন্ধ করে দিলে লাখো মানুষ আটকায়। বুদ্ধিমান প্রকৌশলী পাশে নতুন সেতু বানায়, গাড়ি সেটায় সরায়, তারপর পুরনোটা ভাঙে। ডেটাবেসের schema বদলও তাই: সরাসরি পুরনোটা ভাঙা নয়, পাশে নতুনটা বানিয়ে ধাপে ধাপে সরানো।
       - type: text
         body: |
-          রহিম দুপুরে ১ কোটি সারির `users` টেবিলে একটা কলাম বদলের migration চালাল। command ৪০ সেকেন্ড টেবিলের উপর এমন lock ধরে রাখল, যা সব পড়া-লেখা আটকে দেয়। তার পেছনে অ্যাপের হাজার হাজার query লাইনে দাঁড়াল।
+          রহিম দুপুরে ১ কোটি সারির `users` টেবিলে একটা কলাম বদলের migration চালাল। command ৪০ সেকেন্ড টেবিলের উপর এমন lock ধরে রাখল, যা সব পড়া-লেখা আটকে দেয়। প্রতি সেকেন্ডে ১০০টা অনুরোধ ধরলে ৪০ সেকেন্ডে ৪,০০০টা query তার পেছনে জমল, আর ৫০ সংযোগের connection pool প্রথম সেকেন্ডেই ভরে গেল।
       - type: visual
         kind: sequence
         caption: 'এক ধীর ALTER-এর পেছনে সবাই আটকে যায়'
@@ -26,7 +26,7 @@ slides:
           - {from: app, to: db, label: 'SELECT ... FROM users'}
           - {at: app, note: 'অপেক্ষা... অপেক্ষা... timeout', tone: bad, tip: 'connection pool ভরে যায়, এরপর অন্য পাতাও সাড়া দেয় না।'}
       - type: quote
-        body: 'migration চলার সময়ও সাইট চালু থাকবে, এটা ধরে নিয়েই migration লেখো।'
+        body: 'migration চলার সময়ও সাইট চালু থাকবে, এটা ধরে নিয়েই migration লিখুন।'
     aside:
       - type: story
         title: 'পুরনো কোড, নতুন schema'
@@ -41,14 +41,26 @@ slides:
       a: 'ALTER lock ধরে রাখায় ওই টেবিলের সব query লাইনে জমে, connection pool ভরে যায়। তখন অন্য পাতাও সাড়া দিতে পারে না।'
 
   - slug: expand-migrate-contract
-    title: 'Expand, migrate, contract: পাশে সেতু বানাও'
+    title: 'Expand, migrate, contract: পাশে সেতু বানান'
     kind: concept
     tldr: 'নিরাপদ বদলের তিন ধাপ: আগে নতুন কাঠামো যোগ (expand), তারপর ডেটা ও কোড সরানো (migrate), সবশেষে পুরনোটা সরানো (contract)। প্রতিটা ধাপ আলাদা deploy।'
     keywords: ['expand contract', 'parallel change', 'rename column', 'backward compatible migration', 'dual write']
     blocks:
       - type: text
         body: |
-          `phone` কলামের নাম `mobile_number` করতে হলে `RENAME COLUMN` একবারে নয়, কারণ deploy চলার সময় পুরনো কোড `phone` খুঁজবে। তাই তিন ধাপ। **Expand**: নতুন কলাম যোগ করো, পুরনোটা রাখো। **Migrate**: কোড দুই কলামেই লিখুক, পুরনো ডেটা নতুনে কপি হোক, তারপর কোড নতুন কলাম থেকে পড়ুক। **Contract**: কেউ আর পুরনোটা ব্যবহার না করলে তুলে ফেলো। প্রতিটা ধাপের শেষে পুরনো ও নতুন দুই ধরনের কোডই চলতে পারে।
+          `phone` কলামের নাম `mobile_number` করতে হলে `RENAME COLUMN` একবারে নয়, কারণ deploy চলার সময় পুরনো কোড `phone` খুঁজবে। তাই তিন ধাপ। **Expand**: নতুন কলাম যোগ করুন, পুরনোটা রাখুন। **Migrate**: কোড দুই কলামেই লিখুক, পুরনো ডেটা নতুনে কপি হোক, তারপর কোড নতুন কলাম থেকে পড়ুক। **Contract**: কেউ আর পুরনোটা ব্যবহার না করলে তুলে ফেলুন। প্রতিটা ধাপের শেষে পুরনো ও নতুন দুই ধরনের কোডই চলতে পারে।
+      - type: visual
+        kind: sequence
+        caption: 'এক ধাপের rename: পুরনো কোডের সার্ভারগুলো ভেঙে পড়ে'
+        actors:
+          - {id: mig, label: 'Migration', icon: tools, tip: 'RENAME COLUMN চালায়, আর একই release-এ নতুন কোডও deploy হয়।'}
+          - {id: db, label: 'ডেটাবেস', icon: db, tip: 'rename সাথে সাথে বসায়। এখন থেকে `phone` কলাম আর নেই।'}
+          - {id: old, label: 'পুরনো কোডের সার্ভার', icon: server, tip: 'rolling deploy এখনো যেখানে পৌঁছায়নি। এর কোড তখনো `phone` লেখে।'}
+        messages:
+          - {from: mig, to: db, label: 'RENAME phone TO mobile_number'}
+          - {from: old, to: db, label: 'SELECT phone FROM users'}
+          - {from: db, to: old, label: 'ERROR: column phone does not exist', dashed: true}
+          - {at: old, note: 'deploy না পৌঁছানো পর্যন্ত এই সার্ভারের প্রতিটা অনুরোধ 500 দেয়', tone: bad, tip: 'অনেক সার্ভারের rolling deploy-এ কয়েক মিনিট লাগে। পুরো সময় ট্রাফিকের একটা অংশ error পায়।'}
       - type: visual
         kind: steps
         caption: '`phone` থেকে `mobile_number`: ছয় ছোট ধাপ, প্রতিটা আলাদা deploy'
@@ -56,9 +68,9 @@ slides:
           - {title: '১. Expand', body: 'nullable `mobile_number` যোগ', tip: 'নতুন কলাম খালি; পুরনো কোড কিছুই টের পায় না।'}
           - {title: '২. Dual write', body: 'কোড দুই কলামেই লেখে', tip: 'এখন থেকে নতুন লেখা দুই জায়গায় পৌঁছায়।'}
           - {title: '৩. Backfill', body: 'পুরনো সারি ব্যাচে কপি', tip: 'পুরনো ডেটা ধীরে ধীরে নতুন কলামে যায়, যাতে lock না লাগে।'}
-          - {title: '৪. Read new', body: 'কোড নতুন কলাম থেকে পড়ে', tip: 'এই ধাপের আগে নিশ্চিত হও সব সারি কপি হয়েছে।'}
-          - {title: '৫. Stop old', body: 'পুরনো কলামে লেখা বন্ধ', tip: 'কিছুদিন পর্যবেক্ষণ করে দেখো কিছু ভাঙেনি।'}
-          - {title: '৬. Contract', body: '`phone` কলাম drop', tip: 'শেষ ধাপ। এর আগে ফেরার পথ খোলা, এর পর নয়; তাই backup নিয়ে নাও।'}
+          - {title: '৪. Read new', body: 'কোড নতুন কলাম থেকে পড়ে', tip: 'এই ধাপের আগে নিশ্চিত হোন সব সারি কপি হয়েছে।'}
+          - {title: '৫. Stop old', body: 'পুরনো কলামে লেখা বন্ধ', tip: 'কিছুদিন পর্যবেক্ষণ করে দেখুন কিছু ভাঙেনি।'}
+          - {title: '৬. Contract', body: '`phone` কলাম drop', tip: 'শেষ ধাপ। এর আগে ফেরার পথ খোলা, এর পর নয়; তাই backup নিয়ে নিন।'}
       - type: points
         title: 'নিয়ম'
         style: check
@@ -67,8 +79,14 @@ slides:
           - 'schema বদল আর কোড deploy আলাদা release-এ, কখনো একসাথে নয়।'
           - 'শেষ ধাপ (drop) সবচেয়ে শেষে, নিশ্চিত হয়ে।'
     aside:
+      - type: when
+        use:
+          - 'চলমান পুরনো কোড যে বদল সইতে পারে না: rename, drop, ধরন বদল।'
+        avoid:
+          - 'একদম নতুন nullable কলাম, যা কেউ এখনো পড়ে না: শুধু expand ধাপই যথেষ্ট।'
+          - 'সস্তা ভাববেন না: এক rename কয়েক দিনের কয়েকটা release হয়, আর ততদিন দুই কলাম মিলিয়ে রাখতে হয়।'
       - type: remember
-        body: 'আগে যোগ করো, তারপর সরাও, সবশেষে মোছো।'
+        body: 'আগে যোগ করুন, তারপর সরান, সবশেষে মুছুন।'
       - type: refs
         items:
           - {to: 'resilience/zero-downtime-deploys', label: 'কোড deploy-ও একই নিয়মে'}
@@ -80,12 +98,12 @@ slides:
   - slug: safe-doctrine-migrations
     title: 'Doctrine Migration-এ expand ধাপ'
     kind: howto
-    tldr: 'nullable কলাম যোগ, `CREATE INDEX CONCURRENTLY` ও `lock_timeout` দিয়ে Doctrine Migration লেখো। এতে lock ছোট থাকে আর ব্যর্থ হলে দ্রুত ফেরত আসে।'
+    tldr: 'nullable কলাম যোগ, `CREATE INDEX CONCURRENTLY` ও `lock_timeout` দিয়ে Doctrine Migration লিখুন। এতে lock ছোট থাকে আর ব্যর্থ হলে দ্রুত ফেরত আসে।'
     keywords: ['Doctrine Migrations', 'CREATE INDEX CONCURRENTLY', 'lock_timeout', 'isTransactional', 'nullable column']
     blocks:
       - type: text
         body: |
-          PostgreSQL-এ ডিফল্টসহ নতুন nullable কলাম যোগ প্রায় তাৎক্ষণিক। কিন্তু `CREATE INDEX` সাধারণভাবে টেবিলে লেখা আটকায়, আর `CONCURRENTLY` দিলে আটকায় না; তবে সেটা transaction-এর ভেতরে চলে না। Doctrine Migrations-এ তাই `isTransactional()` থেকে `false` ফেরত দিতে হয়। আর `lock_timeout` দাও: lock না পেলে ৩ সেকেন্ড পর migration নিজেই ফিরে আসবে, পুরো সাইট আটকাবে না।
+          PostgreSQL-এ ডিফল্টসহ নতুন nullable কলাম যোগ প্রায় তাৎক্ষণিক। কিন্তু `CREATE INDEX` সাধারণভাবে টেবিলে লেখা আটকায়, আর `CONCURRENTLY` দিলে আটকায় না; তবে সেটা transaction-এর ভেতরে চলে না। Doctrine Migrations-এ তাই `isTransactional()` থেকে `false` ফেরত দিতে হয়। এক মিলিসেকেন্ডের বদলও আগে টেবিলে চলমান সব query শেষ হওয়ার অপেক্ষা করে, আর নতুন query-গুলো তার পেছনে লাইন দেয়। তাই `lock_timeout` দিন: lock না পেলে ৩ সেকেন্ড পর migration নিজেই ফিরে আসবে, পুরো সাইট আটকাবে না।
       - type: code
         lang: php
         file: 'migrations/Version20260301000001.php'
@@ -120,8 +138,8 @@ slides:
               }
           }
         marks:
-          - {line: 11, tip: 'এই migration-এ একাধিক command আছে; transaction ছাড়া চললে মাঝপথে ব্যর্থ হলে অর্ধেক কাজ থেকে যায়, তাই ছোট রাখো।'}
-          - {line: 16, tip: 'lock না পেলে ৩ সেকেন্ডে error। migration ব্যর্থ হোক, সাইট নয়; পরে আবার চালাও।'}
+          - {line: 11, tip: 'এই migration-এ একাধিক command আছে; transaction ছাড়া চললে মাঝপথে ব্যর্থ হলে অর্ধেক কাজ থেকে যায়, তাই ছোট রাখুন।'}
+          - {line: 16, tip: 'lock না পেলে ৩ সেকেন্ডে error। migration ব্যর্থ হোক, সাইট নয়; পরে আবার চালান।'}
           - {line: 19, tip: 'CONCURRENTLY টেবিল না আটকে index বানায়। সময় বেশি লাগে, কিন্তু লেখা থামে না।'}
       - type: code
         lang: php
@@ -150,27 +168,27 @@ slides:
     aside:
       - type: pitfalls
         items:
-          - '`CONCURRENTLY` ব্যর্থ হলে একটা INVALID index থেকে যায়। `DROP INDEX CONCURRENTLY` করে আবার বানাও।'
-          - 'MySQL-এ `ALGORITHM=INPLACE, LOCK=NONE` লিখে দাও; সম্ভব না হলে error দেবে, চুপচাপ lock ধরবে না।'
+          - '`CONCURRENTLY` ব্যর্থ হলে একটা INVALID index থেকে যায়। `DROP INDEX CONCURRENTLY` করে আবার বানান।'
+          - 'MySQL-এ `ALGORITHM=INPLACE, LOCK=NONE` লিখে দিন; সম্ভব না হলে error দেবে, চুপচাপ lock ধরবে না।'
       - type: commands
         title: 'Doctrine Migrations'
         items:
-          - {cmd: 'php bin/console make:migration', desc: 'entity থেকে migration বানাও, তারপর হাতে দেখে নাও'}
-          - {cmd: 'php bin/console doctrine:migrations:migrate --dry-run', desc: 'না চালিয়ে SQL দেখো'}
+          - {cmd: 'php bin/console make:migration', desc: 'entity থেকে migration বানান, তারপর হাতে দেখে নিন'}
+          - {cmd: 'php bin/console doctrine:migrations:migrate --dry-run', desc: 'না চালিয়ে SQL দেখুন'}
           - {cmd: 'php bin/console doctrine:migrations:status', desc: 'কোনটা বাকি আছে'}
     check:
       q: '`lock_timeout = 3s` দিয়ে migration চালালে lock না পেলে কী ঘটে, আর সেটা ভালো কেন?'
       a: '৩ সেকেন্ড পর migration নিজেই error দিয়ে থামে। সাইট আটকে না গিয়ে ব্যর্থ migration শান্ত সময়ে আবার চালানো যায়।'
 
   - slug: batched-backfill
-    title: 'Backfill: লাখ সারি ছোট ছোট ব্যাচে'
+    title: 'Backfill: কোটি সারি ছোট ছোট ব্যাচে'
     kind: howto
-    tldr: 'এক `UPDATE`-এ কোটি সারি বদলালে দীর্ঘ lock ও বিশাল transaction হয়। বদলে ১০০০ সারি করে, ফাঁকে একটু থেমে, আবার চালানো যায় এমন command চালাও।'
+    tldr: 'এক `UPDATE`-এ কোটি সারি বদলালে দীর্ঘ lock ও বিশাল transaction হয়। বদলে ১০০০ সারি করে, ফাঁকে একটু থেমে, আবার চালানো যায় এমন command চালান।'
     keywords: ['backfill', 'batch update', 'resumable', 'Symfony Command', 'ArrayParameterType', 'ব্যাচ']
     blocks:
       - type: text
         body: |
-          এক কোটি সারি এক `UPDATE`-এ বদলালে কয়েক মিনিট lock, বিশাল transaction log আর replica পিছিয়ে পড়ে। ভালো উপায় বিয়েবাড়ির রান্নার মতো: একসাথে সব ডেগ নয়, একটা একটা করে। প্রতি চক্করে ১০০০ সারি, চক্রের মাঝে একটু বিরতি, আর `id` ধরে এগোনো, যেন মাঝপথে থামলে আবার সেখান থেকেই চালানো যায়।
+          এক কোটি সারি এক `UPDATE`-এ বদলালে কয়েক মিনিট lock, বিশাল transaction log আর replica পিছিয়ে পড়ে। ভালো উপায় বিয়েবাড়ির রান্নার মতো: একসাথে সব ডেগ নয়, একটা একটা করে। প্রতি চক্করে ১০০০ সারি, চক্রের মাঝে একটু বিরতি, আর `id` ধরে এগোনো, যেন মাঝপথে থামলে আবার সেখান থেকেই চালানো যায়। দাম হলো মোট সময়: ১,০০০ সারিতে প্রায় ০.০৬ সেকেন্ডের কাজ আর ০.১ সেকেন্ডের বিরতি ধরলে ১ কোটি সারিতে প্রায় ২৭ মিনিট। তাতে ক্ষতি নেই, কারণ কাজটা ব্যাকগ্রাউন্ডে চলে, কেউ অপেক্ষায় বসে নেই।
       - type: code
         lang: php
         file: 'src/Command/BackfillMobileCommand.php'
@@ -202,7 +220,7 @@ slides:
                       );
                       $lastId = (int) end($ids);
                       $out->writeln("done up to id $lastId");
-                      usleep(100_000);   // replica আর ডেটাবেসকে দম নিতে দাও
+                      usleep(100_000);   // replica আর ডেটাবেসকে দম নিতে দিন
                   }
               }
           }
@@ -211,19 +229,19 @@ slides:
           - {line: 27, tip: 'ছোট বিরতি। এতে replica পিছিয়ে পড়ে না, আর অন্য query-ও জায়গা পায়।'}
       - type: visual
         kind: bars
-        caption: '১ কোটি সারি: একসাথে বনাম ব্যাচ (প্রতি transaction-এ lock-এর সময়)'
+        caption: '১ কোটি সারি: এক transaction কতক্ষণ lock ধরে রাখে'
         items:
-          - {label: 'এক UPDATE-এ', value: 600, display: '~১০ মিনিট', tone: bad, tip: 'এত সময় সারি lock থাকে, পাশাপাশি transaction log বিশাল হয়।'}
-          - {label: '১০,০০০ করে', value: 12, display: '~১২ সেকেন্ড', tone: warn, tip: 'ভালো, কিন্তু ব্যস্ত সময়ে এখনো অনুভব করা যায়।'}
-          - {label: '১০০০ করে', value: 1, display: '~১ সেকেন্ড', tone: good, tip: 'প্রতিটা ব্যাচ এত ছোট যে কোনো query আটকাতে পারে না।'}
+          - {label: 'এক UPDATE-এ', value: 600000, display: '~১০ মিনিট', tone: bad, tip: 'এত সময় সারি lock থাকে, পাশাপাশি transaction log বিশাল হয়।'}
+          - {label: '১০,০০০ করে', value: 600, display: '~০.৬ সেকেন্ড', tone: warn, tip: 'অনেক ভালো, কিন্তু এত লম্বা lock-এও ব্যস্ত সময়ে পাতা একটু আটকে যেতে পারে।'}
+          - {label: '১০০০ করে', value: 60, display: '~০.০৬ সেকেন্ড', tone: good, tip: 'প্রতিটা ব্যাচ এত ছোট যে কোনো query আটকাতে পারে না। (সারি-প্রতি সময় একই: এক UPDATE-এ ১ কোটি সারিতে ১০ মিনিট।)'}
     aside:
       - type: tips
         items:
-          - 'আগে `--dry-run` যোগ করে কতগুলো সারি বাকি তা দেখাও; মাঝপথে progress জানা যায়।'
-          - 'replica lag মাপো। lag বাড়লে ব্যাচের আকার কমাও বা বিরতি বাড়াও।'
+          - 'আগে `--dry-run` যোগ করে কতগুলো সারি বাকি তা দেখান; মাঝপথে progress জানা যায়।'
+          - 'replica lag (কপি-সার্ভার কতটা পিছিয়ে) মাপুন। lag বাড়লে ব্যাচের আকার কমান বা বিরতি বাড়ান।'
       - type: pitfalls
         items:
-          - 'ব্যাচের সময় OFFSET নয়, `id >` দিয়ে এগোও; OFFSET সারি বাড়লে ধীর হয় আর বদলের ফাঁকে সারি এড়িয়ে যেতে পারে।'
+          - 'ব্যাচের সময় OFFSET নয়, `id >` দিয়ে এগোন; OFFSET সারি বাড়লে ধীর হয় আর বদলের ফাঁকে সারি এড়িয়ে যেতে পারে।'
     check:
       q: 'backfill command মাঝপথে বন্ধ হয়ে গেলে আবার চালালে কী হবে, আর কেন সেটা নিরাপদ?'
       a: 'যে সারির `mobile_number` ভরা আছে সেটা `IS NULL` শর্তে বাদ পড়ে, তাই শুধু বাকিগুলো আসে। কাজটা idempotent, বারবার চালানো যায়।'
@@ -236,7 +254,7 @@ slides:
     blocks:
       - type: text
         body: |
-          নতুন কলামে শেষমেশ `NOT NULL` লাগবে, কিন্তু সরাসরি `SET NOT NULL` পুরো টেবিল ঘুরে দেখে, আর তখন lock ধরে রাখে। ফরেন কি-ও তাই। সমাধান: আগে constraint-টা **NOT VALID** দিয়ে যোগ করো (শুধু নতুন লেখা যাচাই হয়, পুরনোটা না), তারপর আলাদা `VALIDATE CONSTRAINT` চালাও, যা টেবিল আটকায় না।
+          নতুন কলামে শেষমেশ `NOT NULL` লাগবে, কিন্তু সরাসরি `SET NOT NULL` পুরো টেবিল ঘুরে দেখে, আর তখন lock ধরে রাখে। ফরেন কি-ও তাই। সমাধান: আগে constraint-টা **NOT VALID** দিয়ে যোগ করুন (শুধু নতুন লেখা যাচাই হয়, পুরনোটা না), তারপর আলাদা `VALIDATE CONSTRAINT` চালান, যা টেবিল আটকায় না। দাম: ধাপ বেশি, আর `VALIDATE` কোনো খারাপ সারি পেলে ব্যর্থ হয়; ডেটা ঠিক করে আবার চালান, মাঝে কিছু ভাঙেনি। সাধারণ `CREATE INDEX` লেখা আটকায়, তাই আগের স্লাইডের মতো `CONCURRENTLY` দিন।
       - type: code
         lang: sql
         file: 'বিপজ্জনক'
@@ -248,8 +266,12 @@ slides:
           -- সব সারি যাচাই, lock ধরে
           ALTER TABLE orders
             ADD CONSTRAINT fk_orders_user FOREIGN KEY (user_id) REFERENCES users (id);
+
+          -- index বানানো শেষ না হওয়া পর্যন্ত প্রতিটা INSERT, UPDATE, DELETE আটকে
+          CREATE INDEX idx_orders_user ON orders (user_id);
         marks:
           - {line: 2, tip: 'বড় টেবিলে মিনিট লাগতে পারে, তখন লেখা আটকে থাকে।'}
+          - {line: 9, tip: 'সাধারণ CREATE INDEX পড়া চলতে দেয়, কিন্তু বানানো শেষ না হওয়া পর্যন্ত টেবিলে সব লেখা আটকে রাখে।'}
       - type: code
         lang: sql
         file: 'নিরাপদ'
@@ -266,22 +288,32 @@ slides:
           ALTER TABLE users ALTER COLUMN mobile_number SET NOT NULL;
           ALTER TABLE users DROP CONSTRAINT users_mobile_nn;
 
-          -- ফরেন কির জন্যও একই: ADD CONSTRAINT ... NOT VALID, তারপর VALIDATE
+          -- ফরেন কি: একই দুই ধাপ
+          ALTER TABLE orders
+            ADD CONSTRAINT fk_orders_user FOREIGN KEY (user_id) REFERENCES users (id) NOT VALID;
+          ALTER TABLE orders VALIDATE CONSTRAINT fk_orders_user;
+
+          -- index: লেখা চলতে থাকে (আলাদা migration-এ, transaction ছাড়া)
+          CREATE INDEX CONCURRENTLY idx_orders_user ON orders (user_id);
         marks:
           - {line: 3, tip: '`NOT VALID` দিলে এখনই শুধু নতুন লেখা যাচাই হয়; পুরোনো সারি দেখে না, তাই lock ছোট।'}
           - {line: 6, tip: '`VALIDATE` দুর্বল lock নেয়: পড়া-লেখা চলতে থাকে।'}
           - {line: 9, tip: 'PostgreSQL 12 থেকে বৈধ CHECK constraint থাকলে `SET NOT NULL` আর স্ক্যান করে না।'}
+          - {line: 14, tip: 'ফরেন কি-ও একই পথে: NOT VALID দিয়ে যোগ, তারপর ট্রাফিক চলার মধ্যেই VALIDATE।'}
       - type: quote
         body: 'বড় টেবিলে যে command পুরো টেবিল ঘুরে দেখে, তা lock-ও ধরে। আগে ছোট lock, পরে ভারী যাচাই।'
     aside:
       - type: pitfalls
         items:
           - 'কলাম মোছা (drop) সবচেয়ে শেষে: পুরনো কোড তখনো সেটা পড়লে সাথে সাথে 500 error।'
-          - 'কলামের ধরন বদল (`ALTER TYPE`) অনেক সময় পুরো টেবিল নতুন করে লেখে। নতুন কলাম বানিয়ে expand-contract করো।'
+          - 'কলামের ধরন বদল (`ALTER TYPE`) অনেক সময় পুরো টেবিল নতুন করে লেখে। নতুন কলাম বানিয়ে expand-contract করুন।'
+      - type: tips
+        items:
+          - 'মাত্র কয়েক হাজার সারির টেবিলে সরাসরি `SET NOT NULL` মিলিসেকেন্ডে শেষ হয়। দুই ধাপের পথ বড়, ব্যস্ত টেবিলের জন্য।'
       - type: remember
         body: 'বড় টেবিলে আগে NOT VALID, পরে VALIDATE।'
     check:
-      q: 'কেন সরাসরি `SET NOT NULL`-এর বদলে `CHECK ... NOT VALID` আর `VALIDATE` ব্যবহার করবে?'
+      q: 'কেন সরাসরি `SET NOT NULL`-এর বদলে `CHECK ... NOT VALID` আর `VALIDATE` ব্যবহার করবেন?'
       a: 'সরাসরি করলে পুরো টেবিল স্ক্যানের সময় lock ধরা থাকে। দুই ধাপে lock ছোট থাকে, আর যাচাই চলার সময় লেখা আটকায় না।'
 
 flashcards:
@@ -289,6 +321,11 @@ flashcards:
     a: 'schema বদলের সময়ও সাইট চালু থাকে আর পুরনো ও নতুন কোড দুটোই কাজ করে।'
     more: |
       লক্ষ্য দুটো: দীর্ঘ lock এড়ানো, আর deploy-এর সময় পুরনো-নতুন কোডের মিশ্র অবস্থা সামলানো। ফলে migration সাধারণত কয়েকটা ছোট, আলাদা release-এ ভাগ হয়।
+    ref: alter-table-freeze
+  - q: 'প্রতি সেকেন্ডে ১০০ অনুরোধের সাইটে ৪০ সেকেন্ডের ALTER পুরো সাইট থামিয়ে দেয় কেন?'
+    a: 'ওই টেবিলের প্রতিটা query lock-এর পেছনে লাইনে দাঁড়ায়: ৪০ সেকেন্ডে ৪,০০০টা, যা ৫০ সংযোগের pool এক সেকেন্ডেই ভরে দেয়।'
+    more: |
+      connection pool ভরে গেলে যে পাতা ওই টেবিল ছোঁয়ই না, সেও সংযোগ পায় না। CPU কম থাকে, কারণ সবাই অপেক্ষা করছে, কাজ করছে না। তাই `lock_timeout` জরুরি: সাইটের বদলে ALTER-ই হাল ছেড়ে দেয়।
     ref: alter-table-freeze
   - q: 'Expand–migrate–contract কী?'
     a: 'তিন ধাপের নিরাপদ বদল: নতুন কাঠামো যোগ, ডেটা ও কোড সরানো, তারপর পুরনোটা মোছা।'
@@ -298,27 +335,32 @@ flashcards:
   - q: 'কেন একই release-এ কলাম rename আর কোড বদল বিপজ্জনক?'
     a: 'deploy চলাকালে কিছু সার্ভারে পুরনো কোড থাকে, যে পুরনো নামের কলাম খোঁজে, অথচ সেটা আর নেই।'
     more: |
-      rolling deploy-এ পুরনো ও নতুন কোড কিছুক্ষণ একসাথে চলে। migration আর কোড একই সময়ে বদলানো অসম্ভব। তাই schema এমন রাখো যেন দুই সংস্করণই কাজ করে।
+      rolling deploy-এ পুরনো ও নতুন কোড কিছুক্ষণ একসাথে চলে। migration আর কোড একই সময়ে বদলানো অসম্ভব। তাই schema এমন রাখুন যেন দুই সংস্করণই কাজ করে।
     ref: expand-migrate-contract
   - q: 'Doctrine Migration-এ `CREATE INDEX CONCURRENTLY` চালাতে কী করতে হয়?'
     a: '`isTransactional()` থেকে `false` ফেরত দিতে হয়, কারণ PostgreSQL এই command transaction-এর ভেতরে চালাতে দেয় না।'
     more: |
-      `CONCURRENTLY` টেবিল না আটকে index বানায় কিন্তু সময় বেশি নেয়। ব্যর্থ হলে INVALID index পড়ে থাকে; `DROP INDEX CONCURRENTLY` করে আবার বানাও। migration-এ এমন command একা রাখাই ভালো।
+      `CONCURRENTLY` টেবিল না আটকে index বানায় কিন্তু সময় বেশি নেয়। ব্যর্থ হলে INVALID index পড়ে থাকে; `DROP INDEX CONCURRENTLY` করে আবার বানান। এমন migration ছোট রাখুন, কারণ transaction ছাড়া মাঝপথে ব্যর্থ হলে rollback হয় না।
     ref: safe-doctrine-migrations
   - q: 'migration-এ `lock_timeout` দেওয়ার লাভ কী?'
     a: 'lock না পেলে কিছুক্ষণ পর migration নিজেই ব্যর্থ হয়ে ফেরে, তাই তার পেছনে সব query আটকে সাইট বন্ধ হয় না।'
     more: |
       `SET lock_timeout = '3s'` দিলে lock-এর জন্য ৩ সেকেন্ডের বেশি অপেক্ষা করবে না। তখন migration ব্যর্থ হয়, কিন্তু সাইট চলে। শান্ত সময়ে আবার চেষ্টা করা যায়।
     ref: safe-doctrine-migrations
-  - q: 'বড় টেবিলে backfill কীভাবে করবে?'
+  - q: 'বড় টেবিলে backfill কীভাবে করবেন?'
     a: 'ছোট ব্যাচে (যেমন ১০০০ সারি), `id` ধরে এগিয়ে, ফাঁকে বিরতি দিয়ে, আবার চালানো যায় এমন command-এ।'
     more: |
-      এক `UPDATE`-এ কোটি সারি বদলালে দীর্ঘ lock ও বিশাল transaction তৈরি হয়। ব্যাচ করলে প্রতিটা lock ছোট। `IS NULL` শর্ত রাখলে আবার চালানো নিরাপদ। replica lag মেপে গতি ঠিক করো।
+      এক `UPDATE`-এ কোটি সারি বদলালে দীর্ঘ lock ও বিশাল transaction তৈরি হয়। ব্যাচ করলে প্রতিটা lock ছোট: ১০ মিনিটের বদলে ১,০০০ সারিতে প্রায় ০.০৬ সেকেন্ড। দাম হলো লম্বা মোট সময়, ১ কোটি সারিতে প্রায় ২৭ মিনিট। `IS NULL` শর্ত রাখলে আবার চালানো নিরাপদ। replica lag মেপে গতি ঠিক করুন।
     ref: batched-backfill
   - q: '`ADD CONSTRAINT ... NOT VALID` কী কাজ করে?'
     a: 'constraint নতুন লেখায় সাথে সাথে খাটায়, কিন্তু পুরনো সারি যাচাই পরে করে। ফলে lock ছোট থাকে।'
     more: |
       পরে `VALIDATE CONSTRAINT` চালালে পুরনো সারি যাচাই হয়, আর সেই সময় পড়া-লেখা চলতে থাকে। foreign key ও CHECK constraint-এ এটা কাজে লাগে। PostgreSQL 12+-এ বৈধ CHECK থাকলে `SET NOT NULL` স্ক্যান ছাড়াই হয়।
+    ref: dangerous-ddl
+  - q: 'বিশাল টেবিলে লেখা না আটকে ফরেন কি কীভাবে যোগ করবেন?'
+    a: 'আগে `NOT VALID` দিয়ে যোগ করুন, তারপর আলাদা statement-এ `VALIDATE CONSTRAINT` চালান; ট্রাফিক চলতে থাকে।'
+    more: |
+      সাধারণ `ADD FOREIGN KEY` lock ধরে সব পুরনো সারি যাচাই করে। `NOT VALID` দিলে শুরুতে শুধু নতুন লেখা যাচাই হয়, তাই lock সংক্ষিপ্ত। পরে `VALIDATE CONSTRAINT` দুর্বল lock নিয়ে পুরনো সারি যাচাই করে।
     ref: dangerous-ddl
 quiz:
   - q: 'টিম `orders.status` কলামের নাম `state` করতে চায়, আর deploy rolling। সবচেয়ে নিরাপদ পথ?'
@@ -377,7 +419,7 @@ quiz:
         why: 'RAM ফুরোয়, আর প্রতি সারিতে আলাদা round trip।'
     ref: batched-backfill
   - q: '৫ কোটি সারির `payments` টেবিলে কলাম `reference` এখন ভরা। এতে `NOT NULL` যোগ করতে সবচেয়ে নিরাপদ পথ?'
-    hint: 'lock-এর সময় ছোট রাখো, যাচাই আলাদা করো।'
+    hint: 'lock-এর সময় ছোট রাখুন, যাচাই আলাদা করুন।'
     options:
       - text: 'CHECK (reference IS NOT NULL) NOT VALID যোগ, তারপর VALIDATE, তারপর SET NOT NULL'
         correct: true
@@ -392,6 +434,22 @@ quiz:
         correct: false
         why: 'অ্যাপ বাইপাস করে ডেটাবেসে ফাঁকা ঢুকতে পারে; ডেটাবেস constraint-ই শেষ প্রহরী।'
     ref: dangerous-ddl
+  - q: '৩ কোটি সারির `orders` টেবিলে নিচের কোন statement চলার পুরো সময় লেখা আটকে রাখবে?'
+    hint: 'কোনটা lock ধরে পুরো স্ক্যান বা পুরো build করে?'
+    options:
+      - text: '`CREATE INDEX idx_orders_user ON orders (user_id)` (সাধারণ)'
+        correct: true
+        why: 'সাধারণ index build শেষ না হওয়া পর্যন্ত প্রতিটা INSERT, UPDATE, DELETE আটকে রাখে। `CONCURRENTLY` এটা এড়ায়।'
+      - text: '`ALTER TABLE orders VALIDATE CONSTRAINT fk_orders_user`'
+        correct: false
+        why: 'VALIDATE দুর্বল lock নেয়, তাই পুরনো সারি যাচাইয়ের সময় পড়া-লেখা চলে।'
+      - text: '`ALTER TABLE orders ADD CONSTRAINT fk_orders_user FOREIGN KEY (user_id) REFERENCES users (id)` (NOT VALID ছাড়া)'
+        correct: true
+        why: 'lock ধরে সব পুরনো সারি যাচাই করে। আগে `NOT VALID` দিয়ে যোগ করলে lock ছোট থাকে।'
+      - text: '`CREATE INDEX CONCURRENTLY idx_orders_user ON orders (user_id)`'
+        correct: false
+        why: 'CONCURRENTLY লেখা না আটকে index বানায়, শুধু সময় বেশি নেয়।'
+    ref: dangerous-ddl
   - q: 'দুপুরে একটা `ALTER TABLE` চালানোর পর ডেটাবেস CPU কম, তবু সাইট থমকে আছে। সবচেয়ে সম্ভাব্য কারণ?'
     hint: 'CPU কম মানে কাজ নয়, অপেক্ষা।'
     options:
@@ -403,7 +461,7 @@ quiz:
         why: 'disk ভরলে write error আসে, আর অন্য লক্ষণ দেখা যেত।'
       - text: 'নতুন কোডে bug'
         correct: false
-        why: 'সময় ও ঘটনার মিল ALTER-এর সাথে; ডেটাবেসের lock তালিকা আগে দেখো।'
+        why: 'সময় ও ঘটনার মিল ALTER-এর সাথে; ডেটাবেসের lock তালিকা আগে দেখুন।'
       - text: 'DNS সমস্যা'
         correct: false
         why: 'DNS সমস্যায় সংযোগই হতো না; এখানে সংযোগ আছে কিন্তু query আটকে।'

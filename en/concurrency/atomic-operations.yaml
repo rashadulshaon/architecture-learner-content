@@ -10,6 +10,19 @@ slides:
         title: 'The bus conductor''s seat card'
         body: |
           A bus conductor hangs a card on a seat: looking and hanging happen in one motion. If it took three steps ("see if the seat is free, think about it, then hang the card"), another passenger could sit down in the middle. An atomic operation is exactly that one motion: checking the condition and making the change happen in a single database step.
+      - type: code
+        lang: php
+        file: 'src/Service/OrderService.php'
+        variant: bad
+        code: |
+          $p = $em->find(Product::class, $id);      // both requests read stock = 1
+          if ($p->getStock() >= 1) {                // both pass the check
+              $p->setStock($p->getStock() - 1);     // both write 0
+              $em->flush();                         // two orders confirmed, one phone
+          }
+        marks:
+          - {line: 1, tip: 'The read happens in one step and the write in another. Karim''s request can read in the gap, and still sees 1.'}
+          - {line: 4, tip: 'Nothing fails: 0 is a perfectly legal stock value, so the database accepts both writes. Hence a plain CHECK would not catch this either.'}
       - type: visual
         kind: sequence
         caption: 'One phone in stock, two buyers at once. With a single UPDATE, only one gets it'
@@ -86,6 +99,11 @@ slides:
         items:
           - 'A DQL bulk UPDATE bypasses the Unit of Work; a `$product` loaded earlier will show the old stock, so call `$em->refresh($product)`. If you use #[ORM\Version], also write `p.version = p.version + 1`.'
           - 'There is no point if you don''t look at the result of `execute()`; if the code carries on after a 0, you get the same oversell.'
+      - type: when
+        use:
+          - 'One row and one condition: stock, counters, status changes.'
+        avoid:
+          - 'A rule spanning several tables or needing a long calculation: lock the rows inside a transaction instead.'
       - type: tips
         items:
           - 'Without Doctrine, running SQL directly with `$connection->executeStatement($sql, $params)` returns the same number.'
@@ -101,7 +119,7 @@ slides:
     blocks:
       - type: text
         body: |
-          Compare-and-swap (CAS) means: "only put in the new value if the current value is what I think it is". In SQL, that is `WHERE status = 'pending'`. When the same payment's webhook arrives twice, both try to mark it paid, but the database lets only one win. Only the winner sends the receipt.
+          Compare-and-swap (CAS) means: "only put in the new value if the current value is what I think it is". In SQL, that is `WHERE status = 'pending'`. When the same payment's webhook arrives twice, a plain "read status, then mark paid" lets both pass, and the customer gets two receipts. With CAS the database lets only one win, and only the winner sends the receipt.
       - type: visual
         kind: sequence
         caption: 'Two webhooks for the same payment: only the first sends a receipt'
@@ -124,6 +142,25 @@ slides:
           -- affected rows = 1 → I won; 0 → someone else got there first
         marks:
           - {line: 3, tip: 'This `status = pending` part is the compare. If the old state doesn''t match, nothing changes.'}
+      - type: code
+        lang: php
+        file: 'src/Webhook/PaymentWebhookHandler.php'
+        variant: good
+        code: |
+          $won = $this->connection->executeStatement(
+              "UPDATE orders SET status = 'paid', paid_at = NOW()
+               WHERE id = :id AND status = 'pending'",
+              ['id' => $orderId],
+          );
+
+          if (0 === $won) {
+              return new Response('', Response::HTTP_OK);   // done already: quietly say 200
+          }
+
+          $this->bus->dispatch(new SendReceipt($orderId));   // only the winner gets here
+        marks:
+          - {line: 7, tip: 'The loser must not return an error: the gateway would only retry again. Reply 200 so it stops.'}
+          - {line: 11, tip: 'Receipt, stock and emails belong after this line, so they run exactly once.'}
     aside:
       - type: remember
         body: 'Put the old state in the WHERE, then count affected rows: 1 means you won.'
@@ -143,7 +180,7 @@ slides:
     blocks:
       - type: text
         body: |
-          A unique index isn't only a performance tool, it's a correctness tool. The rule "a user votes only once in a poll" doesn't belong in an `if` in your code; write it as `UNIQUE (poll_id, user_id)`. And instead of the two-step "check whether it exists first", use an **upsert**: create if missing, update if present, all in one statement.
+          A unique index isn't only a performance tool, it's a correctness tool. The rule "a user votes only once in a poll" doesn't belong in an `if` in your code: a double tap sends two requests, both find no vote yet, and both insert. Write it as `UNIQUE (poll_id, user_id)` instead. And instead of the two-step "check whether it exists first", use an **upsert**: create if missing, update if present, all in one statement.
       - type: visual
         kind: table
         caption: 'When a rule becomes an index in the database'
@@ -179,6 +216,7 @@ slides:
       - type: tips
         items:
           - 'If you only want to know whether it already exists, use `ON CONFLICT DO NOTHING` (`INSERT IGNORE` in MySQL) and look at affected rows.'
+          - 'A unique index costs a little on every insert, and the losing insert throws UniqueConstraintViolationException: catch it and show a friendly message.'
           - 'Doctrine ORM has no built-in upsert; for this, run native SQL through `$connection->executeStatement()`.'
       - type: refs
         items:
@@ -216,19 +254,21 @@ slides:
         file: 'src/Service/OrderService.php'
         variant: good
         code: |
-          $taken = $this->em->createQuery(
-              'UPDATE App\Entity\Product p SET p.stock = p.stock - 1
-               WHERE p.id = :id AND p.stock >= 1'
-          )->setParameter('id', $productId)->execute();
+          $this->em->wrapInTransaction(function () use ($productId, $order): void {
+              $taken = $this->em->createQuery(
+                  'UPDATE App\Entity\Product p SET p.stock = p.stock - 1
+                   WHERE p.id = :id AND p.stock >= 1'
+              )->setParameter('id', $productId)->execute();
 
-          if ($taken === 0) {
-              throw new OutOfStock($productId);   // rolls back if inside a transaction
-          }
+              if ($taken === 0) {
+                  throw new OutOfStock($productId);   // 0 rows: stop here, nothing to undo
+              }
 
-          $order->confirm();
-          $this->em->flush();
+              $order->confirm();         // if this fails, the stock change rolls back with it
+          });
         marks:
-          - {line: 6, tip: 'If the result is 0, stop right here. Decide before doing the rest of the work.'}
+          - {line: 1, tip: 'Stock change and order confirmation commit together or not at all, so stock can''t drop without an order.'}
+          - {line: 7, tip: 'If the result is 0, stop right here. Decide before doing the rest of the work.'}
     aside:
       - type: pitfalls
         items:

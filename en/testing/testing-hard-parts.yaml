@@ -47,12 +47,12 @@ slides:
   - slug: concurrency-test
     title: '10 buyers at once: writing a concurrency test'
     kind: howto
-    tldr: 'Launch many buyers in separate processes, start them all at the same instant, then check that stock never went negative and exactly one item sold. The right fix is a single atomic UPDATE.'
+    tldr: 'Launch many buyers in separate processes, start them all at the same instant, then check that stock never went negative and exactly one item sold. The next slide shows the bug it catches.'
     keywords: ['concurrency test', 'Symfony Process', 'atomic update', 'barrier', 'overselling', 'parallel']
     blocks:
       - type: text
         body: |
-          To build a real crowd, launch 10 separate PHP processes at once. Each buys through its own database connection. To make them all start at the same instant, give everyone a start time (`--start-at`) and have each process wait until then. At the end, check the state of the database, not what each buyer did.
+          To build a real crowd, launch 10 separate PHP processes at once. Each buys through its own database connection. To make them all start at the same instant, give everyone a start time (`--start-at`). Each process calls `time_sleep_until($startAt)` before it buys, like runners waiting for the starter's whistle. That shared start is called a **barrier**. At the end, check the state of the database, not what each buyer did.
       - type: code
         lang: php
         file: 'tests/Concurrency/StockConcurrencyTest.php'
@@ -86,6 +86,55 @@ slides:
           - {line: 7, tip: 'Each process is separate, so each takes a different time to start. If they all wait until this moment, they run off together.'}
           - {line: 15, tip: 'start() doesn''t wait, so all 10 processes run almost at once. With run() or mustRun() they would run one after another.'}
           - {line: 21, tip: 'The question isn''t "who won" but "is the final state correct": whatever the buggy order of events, these two numbers will catch it.'}
+      - type: quote
+        body: 'In a concurrency test, check the final state: stock is never negative, and sales never exceed the items available.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'This test can''t run inside a transaction-wrapped test (DAMA): other processes can''t see uncommitted data. Keep a separate suite and TRUNCATE the tables yourself at the start.'
+          - 'Run this test against the old, broken code and check that it fails. If it doesn''t, the test itself is weak.'
+      - type: terms
+        items:
+          - {term: 'Barrier', meaning: 'A shared start time everyone waits for, so they all begin together.'}
+          - {term: 'DAMA', meaning: 'A test bundle that wraps each test in a transaction and rolls it back, so every test starts clean.'}
+      - type: commands
+        items:
+          - {cmd: 'php bin/phpunit --group concurrency', desc: 'Run only the concurrency tests'}
+    check:
+      q: 'Why does the test launch each Process with `start()` and not `mustRun()`?'
+      a: '`mustRun()` waits for one process to finish, so the buyers arrive one after another and there is no race. `start()` launches them all at almost the same time.'
+
+  - slug: atomic-stock-fix
+    title: 'Read first, write later oversells: one atomic UPDATE fixes it'
+    kind: pitfall
+    tldr: 'Checking stock in one statement and decrementing in another leaves a gap where other buyers slip in. One UPDATE with `stock > 0` closes it, but only for a single row; bigger rules need a lock.'
+    keywords: ['atomic update', 'overselling', 'check then act', 'read then write', 'OutOfStock', 'stock']
+    blocks:
+      - type: text
+        body: |
+          Run the concurrency test against the usual first draft below and it fails, say with `stock = -3`: four orders went through for one item. The number changes from run to run, but anything except 0 means the test caught the bug. The gap is the line between the SELECT and the UPDATE: the moment both brothers have seen 1,000 on their ATM screens and neither has withdrawn yet.
+      - type: code
+        lang: php
+        file: 'src/Stock/StockService.php'
+        variant: bad
+        code: |
+          public function buy(string $sku, int $buyerId): void
+          {
+              $stock = (int) $this->connection->fetchOne(
+                  'SELECT stock FROM product WHERE sku = :sku', ['sku' => $sku],
+              );
+              if ($stock < 1) {
+                  throw new OutOfStock($sku);
+              }
+              // gap: other buyers have read stock = 1 by now too
+              $this->connection->executeStatement(
+                  'UPDATE product SET stock = stock - 1 WHERE sku = :sku', ['sku' => $sku],
+              );
+              $this->connection->insert('orders', ['sku' => $sku, 'buyer_id' => $buyerId]);
+          }
+        marks:
+          - {line: 6, tip: 'The check uses a value that is already out of date by the time the write happens.'}
+          - {line: 11, tip: 'Nothing re-checks the stock here, so every buyer who passed the check decrements it: stock goes to -3.'}
       - type: code
         lang: php
         file: 'src/Stock/StockService.php'
@@ -111,25 +160,23 @@ slides:
               }
           }
         marks:
+          - {line: 3, tip: 'The transaction makes the decrement and the order one unit: if the INSERT fails, the decrement is rolled back too.'}
           - {line: 6, tip: 'Reading and writing in one SQL statement: the stock > 0 check and the decrement happen together, and nobody can slip in between. That is what atomic means.'}
           - {line: 9, tip: '0 rows changed means the condition didn''t match, in other words there is no stock. That is how we know who lost the race.'}
-      - type: quote
-        body: 'In a concurrency test, check the final state: stock is never negative, and sales never exceed the items available.'
     aside:
-      - type: pitfalls
-        items:
-          - 'This test can''t run inside a transaction-wrapped test (DAMA): other processes can''t see uncommitted data. Keep a separate suite and TRUNCATE the tables yourself at the start.'
-          - 'Run this test against the old, broken code and check that it fails. If it doesn''t, the test itself is weak.'
-      - type: commands
-        items:
-          - {cmd: 'php bin/phpunit --group concurrency', desc: 'Run only the concurrency tests'}
+      - type: when
+        use:
+          - 'A counter or stock held in a single row: put the condition inside the UPDATE.'
+        avoid:
+          - 'Rules spanning several rows or tables (seat, wallet and coupon together): use a lock or a unique constraint.'
+          - 'One very hot row: buyers queue on it, so keep the transaction short.'
       - type: refs
         items:
           - {to: 'concurrency/atomic-operations', label: 'Atomic operations'}
           - {to: 'concurrency/locking', label: 'Handling it with locks'}
     check:
-      q: 'Why does the test launch each Process with `start()` and not `mustRun()`?'
-      a: '`mustRun()` waits for one process to finish, so the buyers arrive one after another and there is no race. `start()` launches them all at almost the same time.'
+      q: 'Why does `UPDATE ... WHERE stock > 0` not oversell, when SELECT followed by UPDATE does?'
+      a: 'The check and the decrement happen as one step inside the database, so no other buyer can slip in between. If 0 rows change, the stock was already gone.'
 
   - slug: idempotency-test
     title: 'Pressing the lift button again and again: idempotency tests'
@@ -191,14 +238,26 @@ slides:
         marks:
           - {line: 4, tip: 'The HTTP header Idempotency-Key becomes HTTP_IDEMPOTENCY_KEY in the test client (upper case, - turned into _, prefixed with HTTP_).'}
           - {line: 12, tip: 'Counting charges isn''t enough; the response must be identical too, or the client gets confused the second time.'}
+          - {line: 13, tip: 'On an API with no key handling the second POST charges again, this count is 2, and the test fails.'}
           - {line: 24, tip: 'The same key with a different amount is a client mistake. Quietly returning the earlier result would hide the mistake, so reject it.'}
+      - type: code
+        lang: sql
+        file: 'migrations: unique key'
+        variant: good
+        code: |
+          CREATE UNIQUE INDEX uniq_payment_idempotency_key ON payment (idempotency_key);
+
+          -- request A: INSERT (idempotency_key = 'order-42-attempt-1') succeeds, so A charges
+          -- request B, same instant: the same INSERT fails with a unique violation,
+          --   so B does not charge; it returns A's stored result, or 409 while A is running
+        marks:
+          - {line: 1, tip: 'The database lets only one INSERT claim the key. Claim it before charging, and a simultaneous twin cannot charge twice.'}
       - type: quote
         body: 'Test idempotency by sending twice: the same response, and the effect (the charge) only once.'
     aside:
       - type: tips
         items:
-          - 'Also send two requests with the same key at the same time (using the Process technique from the previous slide). Most bugs live here: both see "new key" and charge twice.'
-          - 'The surest protection is a UNIQUE constraint on the key in the database, so one of the two loses the collision.'
+          - 'Also send two requests with the same key at the same time (using the Process technique from the earlier slides). Most bugs live here: both see "new key" and charge twice. The UNIQUE index above is what makes one of them lose.'
       - type: refs
         items:
           - {to: 'payments/idempotency-keys', label: 'How to build idempotency keys'}
@@ -214,7 +273,7 @@ slides:
     blocks:
       - type: text
         body: |
-          A migration on an empty test database always passes. In production the trouble is the data: NULLs, duplicates, odd values. So the recipe for a migration test is: put real-shaped data in the earlier state, run the migration, then ask two questions. Did the data survive? Does the old code still run?
+          A migration on an empty test database always passes. In production the trouble is the data: NULLs, duplicates, odd values. Say we add a `mobile` column to `user`. A first draft that makes it NOT NULL fails on any user with no phone, and also breaks the old servers' INSERTs. So the recipe for a migration test is: put real-shaped data in the earlier state, run the migration, then ask two questions. Did the data survive? Does the old code still run?
       - type: visual
         kind: steps
         caption: 'Five steps of a migration test'
@@ -224,6 +283,24 @@ slides:
           - {title: '3. Run the migration', body: 'Now migrate to the new version.', tip: 'If it fails, the error message will tell you which data caused the trouble.'}
           - {title: '4. Data intact', body: 'Row counts and values are the same as before.', tone: good, tip: 'Lost or changed data is the scariest kind, because it happens silently.'}
           - {title: '5. Old code works', body: 'An old-style INSERT still works.', tone: good, tip: 'During a deploy the old servers keep running. If their queries break, some users get errors.'}
+      - type: code
+        lang: php
+        file: 'migrations/Version20261120100000.php'
+        variant: good
+        code: |
+          public function up(Schema $schema): void
+          {
+              // expand: add the column as nullable, copy what exists, change nothing else
+              $this->addSql('ALTER TABLE "user" ADD mobile VARCHAR(20) DEFAULT NULL');
+              $this->addSql('UPDATE "user" SET mobile = phone WHERE phone IS NOT NULL');
+
+              // NOT: ALTER TABLE "user" ALTER mobile SET NOT NULL
+              // it fails on a user with no phone, and breaks the old code's INSERT.
+              // Do it in a later "contract" migration, once every server runs the new code.
+          }
+        marks:
+          - {line: 3, tip: 'Expand first: old rows and old code keep working because nothing new is required yet.'}
+          - {line: 7, tip: 'The tempting version. The corner-case row in the test below makes it fail, which is exactly what the test is for.'}
       - type: code
         lang: php
         file: 'tests/Migration/UserMobileMigrationTest.php'
@@ -245,6 +322,7 @@ slides:
 
                   self::assertSame(2, (int) $db->fetchOne('SELECT COUNT(*) FROM "user"'));
                   self::assertSame('01711111111', $db->fetchOne('SELECT phone FROM "user" WHERE id = 1'));
+              self::assertSame('01711111111', $db->fetchOne('SELECT mobile FROM "user" WHERE id = 1'));
 
                   // old code doesn't know about mobile: its INSERT must still work
                   $db->insert('"user"', ['id' => 3, 'phone' => '01822222222']);
@@ -259,7 +337,7 @@ slides:
           }
         marks:
           - {line: 11, tip: 'NULL, empty and oddly shaped values. If the migration adds NOT NULL or UNIQUE, this is where it breaks.'}
-          - {line: 19, tip: 'Imitating the old code: an INSERT without the new column. If this fails, the expand step isn''t really backward compatible.'}
+          - {line: 20, tip: 'Imitating the old code: an INSERT without the new column. If this fails, the expand step isn''t really backward compatible.'}
       - type: quote
         body: 'Test migrations on messy, production-like data, not on an empty database.'
     aside:
@@ -318,7 +396,7 @@ slides:
               }
           }
         marks:
-          - {line: 3, tip: 'Green once means nothing. If 20 runs never produce a single mistake, your confidence grows.'}
+          - {line: 3, tip: 'Green once means nothing. If one round catches the bug one time in three, 20 rounds miss it only about once in 3,000 runs.'}
           - {line: 4, tip: 'Every round starts from a clean state. Data from the previous round doesn''t affect the next.'}
       - type: points
         title: 'Three more mistakes that weaken the test'
@@ -354,8 +432,8 @@ flashcards:
   - q: 'What is the simplest atomic way to prevent overselling?'
     a: 'One SQL statement with the condition and the decrement together: UPDATE product SET stock = stock - 1 WHERE sku = :sku AND stock > 0. 0 rows changed means no stock.'
     more: |
-      Split the read from the write and someone else can slip in between. In one SQL statement the database keeps the order itself. And when the affected row count is 0, you know someone else got there first, so throw OutOfStock.
-    ref: concurrency-test
+      Split the read from the write and someone else can slip in between: four buyers read stock 1, all pass the check, and the stock ends at -3. In one SQL statement the database keeps the order itself. When the affected row count is 0, someone else got there first, so throw OutOfStock. The price: it protects one row only; rules over several rows need a lock.
+    ref: atomic-stock-fix
   - q: 'What two things do you verify in an idempotency test?'
     a: 'Sending the same key twice gives an identical response, and the effect (the charge) happens only once. Different data with the same key is rejected.'
     more: |
@@ -371,6 +449,16 @@ flashcards:
     more: |
       The fix: give everyone the same start time (a barrier), run 20 rounds rather than once, and run it once against the old buggy code to see the test fail. If it doesn't fail, the test can't cause the race.
     ref: flaky-race-tests
+  - q: 'How do you stop two simultaneous requests with the same Idempotency-Key from both charging?'
+    a: 'Claim the key first with a UNIQUE index: only one INSERT wins and charges, the other fails and returns the stored result, or a 409 while the first is running.'
+    more: |
+      Checking "have I seen this key?" and then charging leaves a gap, just like read-then-write on stock. The unique index closes the gap because the database lets only one INSERT through. Test it by sending two requests at once with the Process technique.
+    ref: idempotency-test
+  - q: 'Why add a new column as nullable in the first migration?'
+    a: 'Old rows have no value yet, and old servers still INSERT without the column. NOT NULL would fail both. Tighten it in a later contract step.'
+    more: |
+      This is the expand step of expand-contract. A migration test with a NULL row and an old-style INSERT catches the NOT NULL mistake before production does.
+    ref: migration-test
   - q: 'Why can''t a concurrency test run inside a transaction-wrapped test (DAMA)?'
     a: 'DAMA wraps each test in a transaction, so other processes can''t see its uncommitted data.'
     more: |
@@ -446,6 +534,51 @@ quiz:
       - text: 'Running a migration test on a separate database is wrong'
         correct: false
         why: 'It should run on a separate test database, never on production.'
+    ref: migration-test
+  - q: 'Ten buyers hit this code for the last item and stock ends at -3. Why?'
+    lang: php
+    code: |
+      $stock = (int) $this->connection->fetchOne(
+          'SELECT stock FROM product WHERE sku = :sku', ['sku' => $sku],
+      );
+      if ($stock < 1) {
+          throw new OutOfStock($sku);
+      }
+      $this->connection->executeStatement(
+          'UPDATE product SET stock = stock - 1 WHERE sku = :sku', ['sku' => $sku],
+      );
+    hint: 'What can happen between the SELECT and the UPDATE?'
+    options:
+      - text: 'Several buyers pass the `< 1` check before any of them decrements, because the check and the write are separate steps'
+        correct: true
+        why: 'All of them read stock = 1. The fix is one UPDATE with `AND stock > 0` and a check of the affected row count.'
+      - text: 'The UPDATE should say `SET stock = :stock` instead of `stock - 1`'
+        correct: false
+        why: 'Writing back the value each buyer read would end at 0, but still sell the item to all of them.'
+      - text: 'OutOfStock is never thrown'
+        correct: false
+        why: 'It is thrown when a buyer reads 0 or less, but by then the damage is done: the early buyers all passed.'
+      - text: 'Ten processes are too many for one product'
+        correct: false
+        why: 'Real traffic is bigger than that. The code must be correct under any number of buyers.'
+    ref: atomic-stock-fix
+  - q: 'This migration test fails on the user with no phone. Which line is the problem?'
+    lang: php
+    code: |
+      $this->addSql('ALTER TABLE "user" ADD mobile VARCHAR(20) DEFAULT NULL');
+      $this->addSql('UPDATE "user" SET mobile = phone');
+      $this->addSql('ALTER TABLE "user" ALTER mobile SET NOT NULL');
+    hint: 'What does a user with no phone get as mobile?'
+    options:
+      - text: 'The first line: a new column must never allow NULL'
+        correct: false
+        why: 'A nullable column is the safe first step. It lets old rows and old code carry on.'
+      - text: 'The second line: UPDATE should not copy existing values'
+        correct: false
+        why: 'Copying is fine. The trouble is what happens to rows that have nothing to copy.'
+      - text: 'The third line: SET NOT NULL fails on the NULL row, and would also break old servers'' INSERTs without mobile'
+        correct: true
+        why: 'Make the column NOT NULL only in a later contract migration, after every server writes it.'
     ref: migration-test
   - q: 'A team has written a race test. Which changes would make it more reliable?'
     hint: 'Can the test itself catch the bug? How would you confirm it?'

@@ -100,12 +100,32 @@ slides:
         items:
           - 'Return the new order in the POST response itself, so the page doesn''t need a read at all.'
           - 'Always read critical things like money, stock or permissions from the primary.'
-          - 'Pin each user to one replica (hash of the user id), so time doesn''t go backwards.'
+          - 'Pin each user to one replica (code below), so time never goes backwards.'
+      - type: code
+        lang: php
+        file: 'src/Db/ReplicaPicker.php'
+        variant: good
+        code: |
+          public function replicaFor(int $userId): Connection
+          {
+              // the same user always lands on the same replica, so a second refresh
+              // can't show an older copy than the first one did
+              return $this->replicas[$userId % count($this->replicas)];
+          }
+        marks:
+          - {line: 5, tip: 'The price: if that replica dies, its users move to another one and may see an older copy once. Load can also be uneven between replicas.'}
     aside:
       - type: tips
         items:
           - 'Measure lag: on a PostgreSQL replica, `SELECT now() - pg_last_xact_replay_timestamp();`. Keep an alert on it at all times.'
           - 'Keep the sticky window longer than the p99 of the lag, or gaps will remain.'
+      - type: when
+        use:
+          - 'Right after a user''s own write: a post, an edit, an order'
+          - 'Everything else may read a replica: feeds, counts, lists that can be a few seconds old'
+        avoid:
+          - 'Money, stock, permissions: always read the primary, not just for 5 seconds'
+          - 'If lag often runs past 5 seconds: fix the lag first, the window can''t cover it'
       - type: commands
         title: 'Checking lag (PostgreSQL)'
         items:
@@ -131,7 +151,7 @@ slides:
         caption: 'The plan for moving big data, the same for a new database, a new shard or a new table'
         steps:
           - {title: '1. Build the new place', body: 'An empty schema, indexes ready', tip: 'The new table, shard or database is ready in advance. Nothing has changed in the old system yet.'}
-          - {title: '2. Turn on dual write', body: 'New writes go to both old and new', tip: 'From this step on, new data no longer falls behind. Only the old data is left.'}
+          - {title: '2. Turn on dual write', body: 'New writes go to both old and new', tip: 'From this step on, new data no longer falls behind. Write it as an upsert, so a change to a row the backfill hasn''t copied yet still lands.'}
           - {title: '3. Backfill', body: 'Copy old data slowly, in small batches', tip: 'It runs slowly so the live site isn''t put under pressure. The next slide has the code.'}
           - {title: '4. Verify', body: 'Match counts and checksums, shadow read', tip: 'A shadow read means reading from the new place too and comparing the results, while the user still sees the old one.'}
           - {title: '5. Move reads', body: '1% → 10% → 100% from the new place', tip: 'Moving in steps means that if a problem shows up, few users suffer, and you can step back one stage.', tone: accent}
@@ -146,6 +166,7 @@ slides:
           - 'Changing the structure of a big table'
         avoid:
           - 'A small table that copies in a minute: the simple way is enough'
+          - 'When a short planned downtime is fine: dual write doubles the writes and adds code you must remove later'
       - type: refs
         items:
           - {to: 'data/zero-downtime-migrations', label: 'Expand/contract migrations'}
@@ -168,7 +189,7 @@ slides:
           INSERT INTO orders_v2 (id, status, total_cents)
           SELECT id, status, total_cents FROM orders;
         marks:
-          - {line: 1, tip: 'Tens of millions of rows in one transaction: long locks, a surge of WAL, replica lag for minutes on end. If it fails halfway, everything rolls back.'}
+          - {line: 1, tip: 'Tens of millions of rows in one transaction: long locks, a surge of WAL (the log of every change that replicas replay), replica lag for minutes on end. If it fails halfway, everything rolls back.'}
       - type: code
         lang: php
         file: 'src/Command/BackfillOrdersCommand.php'
@@ -203,12 +224,13 @@ slides:
           }
         marks:
           - {line: 7, tip: 'Keyset with id > ?, not OFFSET. Every batch is equally fast, even at the 10-millionth row.'}
-          - {line: 14, tip: 'ON CONFLICT DO NOTHING makes it idempotent. If dual write already inserted some rows, or you rerun the command, no harm is done.'}
+          - {line: 14, tip: 'ON CONFLICT DO NOTHING makes it idempotent: rerunning is harmless, and a row dual write already put in the new table, with a newer value, isn''t overwritten by this older copy.'}
           - {line: 23, tip: 'If replica lag is over 5 seconds, pause for 5 seconds, otherwise 0.2. That way reads on the live site don''t slow down either.'}
     aside:
       - type: tips
         items:
           - 'Keep each batch a small transaction (about 1000 rows). Bigger ones increase locks and lag.'
+          - 'Slow is fine: 10 million rows at 1,000 per batch with 0.2s pauses is 10,000 batches, about 33 minutes of pauses plus the copying. One quiet night is enough.'
           - 'Run it in the quiet of the night, and make the batch size and pause options of the command so you can change them while it runs.'
       - type: commands
         title: 'Running it'
@@ -238,7 +260,7 @@ slides:
               $this->oldStore->save($order);            // source of truth: the old one
 
               try {
-                  $this->newStore->save($order);
+                  $this->newStore->save($order);       // upsert, so a missing row is created
               } catch (\Throwable $e) {
                   // if the new one fails, don't block the order; we'll fix it later
                   $this->logger->error('dual_write_failed', ['order' => $order->id, 'e' => $e]);
@@ -266,6 +288,7 @@ slides:
         items:
           - 'If writes reach the old and new in different orders ("A then B" vs "B then A"), the final values can differ. Keep writes to the same row in order, through one queue.'
           - 'Counts on live data never match exactly. Use a quiet night, or an older cutoff on updated_at.'
+          - 'If the process dies between the two writes, no repair job exists. Only the checksum run will catch that gap.'
       - type: refs
         items:
           - {to: 'ledgers/reconciliation', label: 'Reconciliation: matching two sets of books'}
@@ -310,6 +333,16 @@ flashcards:
     more: |
       Two tables can have the same count even if one row says 'paid' and the other 'pending'. Matching checksums by range tells you exactly which slice differs, so you only need to copy that part again.
     ref: dual-write-verify
+  - q: 'How do you stop a user seeing time go backwards across replicas?'
+    a: 'Pin each user to one replica, for example user id modulo the number of replicas. One replica only moves forward, so what they see never jumps back.'
+    more: |
+      Without pinning, one refresh may hit a replica that has the new post and the next refresh one that doesn't. Pinning fixes the choice per user. The price: if that replica dies, its users move to another one and may see an older copy once, and the load can be uneven.
+    ref: read-your-writes
+  - q: 'In a migration, why does dual write upsert while the backfill uses DO NOTHING?'
+    a: 'A row can change while the backfill copies it. The upsert puts the newest value in the new table, and DO NOTHING stops the backfill''s older copy from overwriting it.'
+    more: |
+      Picture the order: the backfill reads a row, the customer changes it, dual write stores the new value, and only then does the backfill insert its old copy. With DO NOTHING that insert is skipped and the newer value stays. If dual write only updated, it would find no row yet and the change would be lost.
+    ref: batched-backfill
 
 quiz:
   - q: 'A user posts a comment and refreshes the page, but doesn''t see their comment until 10 seconds later. Which solutions are right?'
@@ -381,6 +414,22 @@ quiz:
         correct: false
         why: 'Verification and backfill aren''t finished. Switching the source of truth in this state is a path to data loss.'
     ref: dual-write-verify
+  - q: 'The backfill has read order #9 as "pending". The customer pays, so the old table now says "paid". Which setup keeps "paid" in the new table?'
+    hint: 'Who writes last, and what does the backfill''s INSERT do when the row exists?'
+    options:
+      - text: 'Dual write upserts into the new table, and the backfill inserts with ON CONFLICT DO NOTHING'
+        correct: true
+        why: 'If the upsert comes first, the backfill''s old copy is skipped. If the backfill comes first, the upsert overwrites it with "paid". Either way "paid" wins.'
+      - text: 'Dual write only UPDATEs, and the backfill uses ON CONFLICT DO UPDATE'
+        correct: false
+        why: 'An UPDATE finds no row if the backfill hasn''t reached it, and a later DO UPDATE would overwrite "paid" with the older "pending".'
+      - text: 'Stop the site while the backfill runs'
+        correct: false
+        why: 'It would work, but it defeats the point of a migration with the shop open.'
+      - text: 'Run the backfill twice and keep the second result'
+        correct: false
+        why: 'The second run reads at some moment too, so the same race is still there.'
+    ref: batched-backfill
   - q: 'Before cutover, both tables have the same number of rows (1,200,000). Why must you still compare checksums?'
     hint: 'If two rows have the same id, must their values be the same?'
     options:

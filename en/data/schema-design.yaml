@@ -66,9 +66,25 @@ slides:
           - 'One value per cell, never a comma-separated list (phone: ''017.., 018..'' is not allowed).'
           - 'Each fact lives in the table of the thing that owns it: the name goes in customer, not in order.'
           - 'Every column in a row must describe that row''s subject and nothing else.'
+      - type: code
+        lang: sql
+        file: 'Changing Rahim''s number, before and after'
+        code: |
+          -- Before: the number sits in every order row
+          UPDATE customer_order SET customer_phone = '01711-000002'
+          WHERE customer_name = 'Rahim Uddin';   -- misses the row typed 'Rahim Uddeen'
+
+          -- After: the number sits in one row, so one UPDATE is the whole job
+          UPDATE customer SET phone = '01711-000002' WHERE id = 12;
+        marks:
+          - {line: 3, tip: 'Finding Rahim''s rows by name only works if every copy is spelled the same. Order 102 is not matched, so it keeps the old number.'}
+          - {line: 6, tip: 'The customer has one row, found by its id, so there is no copy to forget.'}
     aside:
       - type: remember
         body: 'The rule: write a fact once, and refer to it by ID from everywhere else.'
+      - type: tips
+        items:
+          - 'The price: showing an order with the customer''s name now needs a JOIN. With an index on customer_id that is fast. The next slides cover guards, and the last one the cases where a copy is the better choice.'
       - type: terms
         items:
           - {term: 'Primary key', meaning: 'The column that identifies a row uniquely.'}
@@ -144,7 +160,7 @@ slides:
     aside:
       - type: tips
         items:
-          - 'Give users a friendly message through the validator (Assert\NotBlank) and keep the constraint as the last line of defence. You need both.'
+          - 'Show friendly errors with the validator (`UniqueEntity`), and also catch `UniqueConstraintViolationException` around `flush()`: when two requests race, only the database stops the second.'
           - 'Adding a constraint to a big live table means cleaning bad rows first; see [[data/zero-downtime-migrations|migrations without downtime]].'
       - type: refs
         items:
@@ -161,7 +177,7 @@ slides:
     blocks:
       - type: text
         body: |
-          The opposite mistake exists too: normalizing everything and reading an order's price from the product's current price. If a product goes from 100 to 120, last month's invoice total changes with it. So the price at the moment of the order must be copied into the order's own row. That is legitimate denormalization: a copy made on purpose, for a known reason.
+          The opposite mistake exists too: normalizing everything and reading an order's price from the product's current price. If a product goes from 100 to 120 taka, last month's invoice for 3 of them quietly changes from 300 to 360. So the price at the moment of the order must be copied into the order's own row. That is legitimate denormalization: a copy made on purpose, for a known reason.
       - type: code
         lang: sql
         file: 'Dangerous: reading the price through a join'
@@ -178,15 +194,17 @@ slides:
         file: 'Safe: the price at order time, in the row itself'
         variant: good
         code: |
-          ALTER TABLE order_item
-            ADD COLUMN unit_price_in_poisha INT NOT NULL;
+          ALTER TABLE order_item ADD COLUMN unit_price_in_poisha INT;
+          UPDATE order_item oi SET unit_price_in_poisha = p.price_in_poisha
+          FROM product p WHERE p.id = oi.product_id;
+          ALTER TABLE order_item ALTER COLUMN unit_price_in_poisha SET NOT NULL;
 
           SELECT SUM(unit_price_in_poisha * quantity) AS total
           FROM order_item
           WHERE order_id = 130;
         marks:
-          - {line: 2, tip: 'When the order is created, the product''s price is copied into this column. It never changes afterwards.'}
-          - {line: 4, tip: 'No join is needed and the result is always the same. This is a snapshot.'}
+          - {line: 2, tip: 'Old rows get today''s price once, the best value we have. From now on the order code copies `$product->getPriceInPoisha()` into every new order_item when it is created, and it never changes afterwards.'}
+          - {line: 6, tip: 'No join is needed and the result is always the same: 3 × 100 = 300, even after the price becomes 120. This is a snapshot.'}
       - type: visual
         kind: compare
         caption: 'Which copies are fine and which are a danger'
@@ -258,6 +276,11 @@ flashcards:
     more: |
       This is called a snapshot. The price, tax rate or address at the moment of the order is part of history. The current value and the historical value are different facts, so it is right to keep them in different places.
     ref: when-to-duplicate
+  - q: 'What does normalization cost you?'
+    a: 'Reading a record with its related facts needs a JOIN (or a second query). With an index on the foreign key this is usually fast.'
+    more: |
+      That is the whole price: a few more tables and some joins. It is almost always worth it, because wrong data costs far more than a join. Only when you have measured that a specific join is too slow, and an index does not help, should you consider a copy.
+    ref: normalization-one-home
 
 quiz:
   - q: 'A table has customer_address copied into every order row. The customer changes their address. What problem arises?'
@@ -348,3 +371,23 @@ quiz:
         correct: false
         why: 'A join is usually fast when indexed. Copying without measuring only adds risk.'
     ref: when-to-duplicate
+  - q: 'Rahim''s phone is copied into every order row. A developer runs the UPDATE below. What goes wrong?'
+    lang: sql
+    code: |
+      UPDATE customer_order SET customer_phone = '01711-000002'
+      WHERE customer_name = 'Rahim Uddin';
+    hint: 'Look at how the name was typed in the other rows.'
+    options:
+      - text: 'Rows where the name was typed differently ("Rahim Uddeen") are missed and keep the old number'
+        correct: true
+        why: 'With copies, you find them by matching text, and any variant slips through. One person ends up with two numbers.'
+      - text: 'Nothing, the UPDATE fixes every row of that customer'
+        correct: false
+        why: 'It fixes only rows whose text matches exactly.'
+      - text: 'The database refuses because the column is duplicated'
+        correct: false
+        why: 'The database has no idea the columns are copies of one fact; it just runs the UPDATE.'
+      - text: 'It is slow, but the result is correct'
+        correct: false
+        why: 'Speed is not the issue; the missed rows are.'
+    ref: normalization-one-home

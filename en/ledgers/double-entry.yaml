@@ -80,7 +80,7 @@ slides:
       - type: terms
         items:
           - {term: 'Entry', meaning: 'One line on one side of an account: the account, debit or credit, and an amount.'}
-          - {term: 'Debit / Credit', meaning: 'The two sides of the book. On liability-type accounts such as a wallet or income, credit increases and debit decreases.'}
+          - {term: 'Debit / Credit', meaning: 'The two sides of the book. On accounts like a wallet (our liability) or fee income, credit increases the balance and debit decreases it.'}
           - {term: 'Derived balance', meaning: 'Not a separate number but one computed from the sum of the entries.'}
       - type: problem
         body: 'Every amount has a source and a destination, so money that vanishes or appears from nowhere gets caught.'
@@ -91,12 +91,12 @@ slides:
   - slug: ledger-schema
     title: 'Building the tables: account, transaction, entry'
     kind: howto
-    tldr: 'Three tables: account, transaction, entry. CHECK and REVOKE block bad amounts and edits; balance = SUM of entries.'
+    tldr: 'Three tables: account, transaction, entry. CHECK, a currency foreign key and REVOKE block bad amounts, wrong-currency entries and edits; balance = SUM of entries.'
     keywords: ['ledger schema', 'SQL', 'CHECK constraint', 'REVOKE', 'SUM', 'ledger_entry']
     blocks:
       - type: text
         body: |
-          Three tables are enough. An **account** is a page in the book, a **transaction** is one event (one transfer), and an **entry** is each line of that event. The amount is always a positive integer; the `side` column says which direction. And the app's database user is never granted UPDATE or DELETE at all.
+          Three tables are enough. An **account** is a page in the book, in one currency; a **transaction** is one event (one transfer), and an **entry** is each line of that event. The amount is always a positive integer; the `side` column says which direction. And the app's database user is never granted UPDATE or DELETE at all. The price: a mistake can only be fixed by a new reversing transaction, never by an edit.
       - type: code
         lang: sql
         file: 'migrations — ledger schema'
@@ -105,7 +105,8 @@ slides:
           CREATE TABLE ledger_account (
             id       bigserial PRIMARY KEY,
             code     text UNIQUE NOT NULL,      -- 'wallet:rahim', 'income:fees'
-            currency char(3) NOT NULL
+            currency char(3) NOT NULL,
+            UNIQUE (id, currency)
           );
           CREATE TABLE ledger_transaction (
             id          uuid PRIMARY KEY,
@@ -116,19 +117,21 @@ slides:
           CREATE TABLE ledger_entry (
             id             bigserial PRIMARY KEY,
             transaction_id uuid    NOT NULL REFERENCES ledger_transaction (id),
-            account_id     bigint  NOT NULL REFERENCES ledger_account (id),
+            account_id     bigint  NOT NULL,
             side           char(1) NOT NULL CHECK (side IN ('D', 'C')),
             amount_minor   bigint  NOT NULL CHECK (amount_minor > 0),
-            currency       char(3) NOT NULL
+            currency       char(3) NOT NULL,
+            FOREIGN KEY (account_id, currency) REFERENCES ledger_account (id, currency)
           );
           CREATE INDEX ON ledger_entry (account_id);
 
           REVOKE UPDATE, DELETE
             ON ledger_entry, ledger_transaction FROM app_user;
         marks:
-          - {line: 9, tip: '`UNIQUE` means a transaction can be reversed at most once, which prevents a double reversal.'}
-          - {line: 17, tip: 'The amount is always above 0. The `side` decides whether the balance goes up or down, not a negative number.'}
-          - {line: 22, tip: 'The app''s user can''t change an entry, whether by mistake or through a bug. It''s like a page written in ink.'}
+          - {line: 10, tip: '`UNIQUE` means a transaction can be reversed at most once, which prevents a double reversal.'}
+          - {line: 18, tip: 'The amount is always above 0. The `side` decides whether the balance goes up or down, not a negative number.'}
+          - {line: 20, tip: 'The entry''s currency must match its account''s currency. A USD entry on a BDT wallet is rejected by the database itself.'}
+          - {line: 24, tip: 'The app''s user can''t change an entry, whether by mistake or through a bug. It''s like a page written in ink.'}
       - type: code
         lang: sql
         file: 'Computing the balance'
@@ -157,12 +160,12 @@ slides:
   - slug: posting-service
     title: 'The posting service: unbalanced means not written'
     kind: howto
-    tldr: 'One service writes all entries in one transaction after checking debits = credits. A mistake is never deleted; you write a reversing transaction.'
+    tldr: 'One service writes all entries in one transaction after checking debits = credits in each currency. A mistake is never deleted; you write a reversing transaction.'
     keywords: ['posting service', 'reversing entry', 'Symfony', 'DBAL transactional', 'Uuid::v7', 'reversal']
     blocks:
       - type: text
         body: |
-          Every write goes through one door: `LedgerService::post()`. It first checks that the two sides add up, then writes the transaction and its entries in a single DB transaction. A wrong transaction can't be deleted or edited. Instead you write a **reversing entry**: a new transaction with every line on the opposite side.
+          Every write goes through one door: `LedgerService::post()`. It first checks that the two sides add up in each currency, then writes the transaction and its entries in a single DB transaction. A wrong transaction can't be deleted or edited. Instead you write a **reversing entry**: a new transaction with every line on the opposite side.
       - type: code
         lang: php
         file: 'src/Ledger/LedgerService.php'
@@ -171,10 +174,13 @@ slides:
           /** @param list<Posting> $postings */
           public function post(string $memo, array $postings, ?Uuid $reverses = null): Uuid
           {
-              $sum = fn (Side $s) => array_sum(array_map(
-                  fn (Posting $p) => $p->side === $s ? $p->money->amount : 0, $postings));
-              if ($sum(Side::Debit) !== $sum(Side::Credit) || 0 === $sum(Side::Debit)) {
-                  throw new \DomainException('Debits and credits are not equal');
+              $net = [];                                    // currency => debits minus credits
+              foreach ($postings as $p) {
+                  $signed = Side::Debit === $p->side ? $p->money->amount : -$p->money->amount;
+                  $net[$p->money->currency] = ($net[$p->money->currency] ?? 0) + $signed;
+              }
+              if ([] === $net || [] !== array_filter($net)) {
+                  throw new \DomainException('Debits and credits must be equal in every currency');
               }
 
               return $this->db->transactional(function () use ($memo, $postings, $reverses) {
@@ -197,9 +203,9 @@ slides:
               });
           }
         marks:
-          - {line: 6, tip: 'If the two sides don''t match, it stops before touching the DB. An unbalanced transaction is never written.'}
-          - {line: 10, tip: 'The transaction and all its entries go in together. If it fails halfway, nothing is written and no half transaction is left behind.'}
-          - {line: 14, tip: 'For a reversal, the original transaction''s id goes here; the UNIQUE constraint prevents reversing it twice.'}
+          - {line: 9, tip: 'Every currency must net to exactly zero on its own. 500 BDT debited against 500 USD credited leaves BDT at +500 and USD at -500, so it is refused. See the next slide.'}
+          - {line: 13, tip: 'The transaction and all its entries go in together. If it fails halfway, nothing is written and no half transaction is left behind.'}
+          - {line: 17, tip: 'For a reversal, the original transaction''s id goes here; the UNIQUE constraint prevents reversing it twice.'}
       - type: code
         lang: php
         file: 'Reversing: an opposite entry, not a delete'
@@ -242,6 +248,55 @@ slides:
       q: 'What is the benefit of writing an opposite entry instead of deleting a wrong transaction?'
       a: 'History stays intact: both the original mistake and its reversal are visible. An auditor can see what happened, when, and how it was corrected.'
 
+  - slug: each-currency-balances
+    title: 'Debits equal credits in every currency'
+    kind: pitfall
+    tldr: 'Adding amounts without looking at the currency lets 500 BDT debit and 500 USD credit pass as balanced. Each currency must balance alone; a conversion goes through FX accounts.'
+    keywords: ['multi-currency', 'FX', 'currency check', 'balanced', 'conversion', 'clearing account']
+    blocks:
+      - type: text
+        body: |
+          A transfer is posted as 500 BDT debited from Rahim and 500 USD credited to Karim. A check that only adds the plain numbers sees 50000 = 50000 and accepts it. But 500 USD is about 60,000 BDT at 120 taka to the dollar, so the bank just handed over 59,500 taka for nothing. You can't add a taka note to a dollar note and call it a total.
+      - type: code
+        lang: php
+        file: 'Wrong: the check ignores currency'
+        variant: bad
+        code: |
+          // 500 BDT out, 500 USD in: the plain numbers match, so it "balances"
+          $this->post('Send money', [
+              new Posting($rahimBdt, Side::Debit,  new Money(50000, 'BDT')),
+              new Posting($karimUsd, Side::Credit, new Money(50000, 'USD')),
+          ]);
+        marks:
+          - {line: 4, tip: 'Two different currencies. With a total that ignores the currency, this is accepted and money appears from nowhere.'}
+      - type: visual
+        kind: table
+        caption: 'The right way: Rahim pays 60,000 BDT, Karim receives 500 USD (1 USD = 120 BDT)'
+        headers: ['Account', 'Debit', 'Credit']
+        rows:
+          - cells: ['Rahim''s wallet (BDT)', '60,000 BDT', '—']
+            tip: 'Rahim''s taka leave his wallet.'
+          - cells: ['FX clearing (BDT)', '—', '60,000 BDT']
+            tip: 'The bank''s own taka account takes the taka in. Now the BDT side has both a debit and a credit.'
+          - cells: ['FX clearing (USD)', '500 USD', '—']
+            tip: 'The bank''s own dollar account gives the dollars out.'
+          - cells: ['Karim''s wallet (USD)', '—', '500 USD']
+            tip: 'Karim''s wallet receives the dollars.'
+          - cells: ['BDT total', '60,000', '60,000']
+            tip: 'The BDT entries balance on their own.'
+          - cells: ['USD total', '500', '500']
+            tip: 'The USD entries balance on their own. Both currencies pass the check.'
+      - type: quote
+        body: 'Debits equal credits in every currency, not in total.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'The price: you need an FX clearing account per currency, and the rate used must be stored with the transaction (for example in the memo), or nobody can audit the conversion later.'
+          - 'The database backs this up: an entry''s currency must equal its account''s currency, so a USD entry can never land on a BDT wallet.'
+    check:
+      q: 'Why is a BDT 500 debit with a USD 500 credit refused, and how do you post a real conversion?'
+      a: 'BDT nets to +500 and USD to -500, so neither balances. Post four entries through FX clearing accounts, so each currency has its own debit and credit that match.'
+
 flashcards:
   - q: 'What is the core rule of a double-entry ledger?'
     a: 'Every transaction has at least two entries, and total debits always equal total credits.'
@@ -273,6 +328,16 @@ flashcards:
     more: |
       A UNIQUE constraint on `reverses_id` means the same transaction can't be reversed twice. After the reversal, write the corrected transaction separately.
     ref: posting-service
+  - q: 'Why must debits equal credits in each currency, not just in total?'
+    a: 'Plain numbers hide the currency: 500 BDT out and 500 USD in look equal, yet they are not the same money. Each currency must balance on its own.'
+    more: |
+      The service adds up debits minus credits per currency and refuses unless every currency is exactly zero. The database also insists that an entry's currency matches its account's currency.
+    ref: each-currency-balances
+  - q: 'How do you post a currency conversion in a ledger?'
+    a: 'Four entries: customer wallet and FX clearing account in the old currency, then FX clearing account and customer wallet in the new one.'
+    more: |
+      Example: Rahim pays 60,000 BDT, Karim gets 500 USD. BDT: Rahim debit 60,000, FX clearing credit 60,000. USD: FX clearing debit 500, Karim credit 500. Each currency balances, and the rate is stored with the transaction.
+    ref: each-currency-balances
   - q: 'Why does LedgerService write all entries in one DB transaction?'
     a: 'If it fails halfway, everything rolls back. So you never have a half-written transaction with a debit but no credit.'
     more: |
@@ -349,6 +414,47 @@ quiz:
         correct: false
         why: 'The opposite. Entries are the source of truth; the balance is a figure computed from them.'
     ref: ledger-schema
+  - q: 'What is wrong with this posting check?'
+    lang: php
+    code: |
+      $debits  = array_sum(array_map(fn (Posting $p) =>
+          Side::Debit === $p->side ? $p->money->amount : 0, $postings));
+      $credits = array_sum(array_map(fn (Posting $p) =>
+          Side::Credit === $p->side ? $p->money->amount : 0, $postings));
+      if ($debits !== $credits) {
+          throw new \DomainException('Not balanced');
+      }
+    hint: 'What if one debit is in BDT and one credit is in USD?'
+    options:
+      - text: 'It adds amounts of different currencies together, so 500 BDT against 500 USD passes'
+        correct: true
+        why: 'The check must total each currency separately and require every currency to net to zero.'
+      - text: 'It should compare with `==` instead of `!==`'
+        correct: false
+        why: 'The comparison operator is not the problem; what is being compared is.'
+      - text: 'It should throw only when `$debits` is larger than `$credits`'
+        correct: false
+        why: 'A credit larger than the debit is just as unbalanced.'
+      - text: 'Nothing; equal totals always mean a balanced transaction'
+        correct: false
+        why: 'Equal totals mean balanced only when everything is in one currency.'
+    ref: each-currency-balances
+  - q: 'Rahim pays 60,000 BDT and Karim must receive 500 USD. Which posting is correct?'
+    hint: 'Each currency needs its own matching pair.'
+    options:
+      - text: 'Rahim D 60,000 BDT, FX BDT C 60,000 BDT, FX USD D 500 USD, Karim C 500 USD'
+        correct: true
+        why: 'BDT: 60,000 = 60,000. USD: 500 = 500. Each currency balances on its own.'
+      - text: 'Rahim D 60,000 BDT, Karim C 500 USD'
+        correct: false
+        why: 'BDT nets to +60,000 and USD to -500; neither balances.'
+      - text: 'Rahim D 60,000 BDT, Karim C 60,000 USD'
+        correct: false
+        why: 'It balances as plain numbers, but Karim would receive 60,000 dollars, not 500.'
+      - text: 'Convert 500 USD to BDT in the code and post one 60,000 BDT entry to Karim''s USD wallet'
+        correct: false
+        why: 'The entry''s currency must match the wallet''s currency, and the conversion would leave no trace in the books.'
+    ref: each-currency-balances
   - q: 'To cancel a wrong transaction #1, reverse() is run twice. What happens?'
     hint: 'What constraint does the reverses_id column have in the schema?'
     options:

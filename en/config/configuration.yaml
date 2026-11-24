@@ -33,6 +33,19 @@ slides:
               - 'The address comes from an environment variable'
               - 'One build for every environment'
               - 'Secrets live in a separate, safe place'
+      - type: code
+        lang: diff
+        file: 'src/Db/ShopConnection.php, and the servers'
+        code: |
+          -    private const DB_URL = 'mysql://root:secret@prod-db.internal/shop';
+          +    #[Autowire(env: 'DATABASE_URL')] private string $dbUrl,
+
+           # staging server:     DATABASE_URL=mysql://app:...@staging-db.internal/shop
+           # production server:  DATABASE_URL=mysql://app:...@prod-db.internal/shop
+        marks:
+          - {line: 1, tip: 'The host and password are baked into the code, and into every git copy of it. Staging runs this same line, so it would write to the production database.'}
+          - {line: 2, tip: 'The code only names the variable. Its value is supplied from outside when the app starts.'}
+          - {line: 4, tip: 'Each server holds its own value and the code is identical everywhere, so staging can no longer reach the production database by mistake.'}
       - type: quote
         body: 'Whatever changes between environments belongs outside the code.'
     aside:
@@ -60,7 +73,7 @@ slides:
           The cook makes a single pot. If one table wants it spicier, the chilli goes in a separate bowl; nobody cooks the dish again. A built image is that pot, and the env variables are the bowl of chilli.
       - type: visual
         kind: flow
-        caption: 'One image, three places, different env variables'
+        caption: 'One image, two environments, different env variables'
         nodes:
           - {id: ci, label: 'CI build', sub: 'code, once', icon: gear, col: 0, row: 1, tip: 'Builds one image after the tests pass. No environment ever gets a build of its own.'}
           - {id: image, label: 'Image v42', sub: 'immutable', icon: box, tone: accent, col: 1.5, row: 1, tip: 'No passwords or addresses inside. Every environment gets this same image.'}
@@ -80,6 +93,9 @@ slides:
       - type: quote
         body: 'Build the code once. Decide its behaviour at run time, with environment variables.'
     aside:
+      - type: tips
+        items:
+          - 'One catch: a Vue app built with Vite bakes its `VITE_` values into the files at build time. For one build everywhere, load a small `config.json` when the app starts.'
       - type: problem
         body: '"It was fine on staging, but broke on prod" often means the two places were actually running different code or different builds.'
       - type: refs
@@ -98,7 +114,7 @@ slides:
     blocks:
       - type: text
         body: |
-          Symfony reads the `.env` file, but real environment variables on the server always win. `.env` goes into git and holds only safe defaults. Changes for your own machine go in `.env.local`, which stays out of git. Env variables are always strings, so when you need a number or a true/false, add a processor (`int:`, `bool:`).
+          Symfony reads the `.env` file, but real environment variables on the server always win. `.env` goes into git and holds only safe defaults. Changes for your own machine go in `.env.local`, which stays out of git. Env variables are always strings, so when you need a number or a true/false, add a processor (`int:`, `bool:`). In YAML the same thing reads `timeout: '%env(int:PAYMENT_TIMEOUT)%'`.
       - type: code
         lang: env
         file: '.env  (committed to git: safe defaults only)'
@@ -140,7 +156,7 @@ slides:
         marks:
           - {line: 7, tip: 'The int: processor turns the value into a number as it is read. Passing the string "5" as a timeout would be wrong.'}
           - {line: 9, tip: 'The bool: processor turns "1", "true", "on" and similar values into true.'}
-          - {line: 18, tip: 'No address or number is written in the code. It all came from outside.'}
+          - {line: 16, tip: 'No address or number is written in the code. It all came from outside.'}
     aside:
       - type: commands
         title: 'Where does each value come from?'
@@ -180,6 +196,30 @@ slides:
             tip: 'Encrypted or stored separately, and never in the repository as plain text.'
           - cells: ['Your own machine', 'Your local DB password', '.env.local (not in git)']
             tip: 'Check once that it is listed in .gitignore.'
+      - type: code
+        lang: env
+        file: '.env  (committed to git)'
+        variant: bad
+        code: |
+          # the "quick" way
+          PAYMENT_API_KEY=sk_live_4f9c0a7e21b8d3
+        marks:
+          - {line: 2, tip: 'Now the live key sits in git history and in every clone. Deleting this line later removes it from the file, not from the history.'}
+      - type: code
+        lang: php
+        file: 'src/Payment/PaymentGateway.php'
+        variant: good
+        code: |
+          final readonly class PaymentGateway
+          {
+              public function __construct(
+                  #[Autowire(env: 'PAYMENT_API_KEY')]   // decrypted from the vault
+                  private string $apiKey,
+              ) {
+              }
+          }
+        marks:
+          - {line: 4, tip: 'A secret is read like any other env variable, so the code doesn''t change. Where the value lives (vault, server, .env.local) is decided outside.'}
       - type: quote
         body: 'A secret never goes into git. If one gets there by mistake, don''t just delete it: rotate the key.'
     aside:
@@ -191,7 +231,7 @@ slides:
           - {cmd: 'php bin/console secrets:set PAYMENT_API_KEY --env=prod', desc: 'A separate value for prod'}
       - type: tips
         items:
-          - 'The vault''s encrypted files and the encrypt key go into git. The decrypt key doesn''t: give prod the SYMFONY_DECRYPTION_SECRET variable.'
+          - 'The vault''s encrypted files and the encrypt key go into git. The prod decrypt key must not (the dev one may): give prod the SYMFONY_DECRYPTION_SECRET variable.'
           - 'Larger systems use a cloud secret manager or HashiCorp Vault. These also give you value rotation and audit trails.'
       - type: refs
         items:
@@ -208,7 +248,7 @@ slides:
     blocks:
       - type: text
         body: |
-          Two kitchens use the same recipe, but one cook quietly adds more sugar. After a few months the two dishes taste different. That is **config drift**. The most common cause is writing `if (prod)` inside the code. Then prod's path never runs on staging, and it runs for the first time right in front of the customer.
+          Two kitchens use the same recipe, but one cook quietly adds more sugar. After a few months the two dishes taste different. That is **config drift**. The most common cause is writing `if (prod)` inside the code. Then prod's path never runs on staging, and it runs for the first time right in front of the customer. The cure is one code path everywhere, where only the values change.
       - type: code
         lang: php
         file: 'src/Notification/OrderSms.php'
@@ -232,20 +272,24 @@ slides:
         code: |
           services:
               App\Sms\SmsGateway: '@App\Sms\BulkSmsGateway'
+              App\Sms\BulkSmsGateway:
+                  arguments:
+                      $baseUrl: '%env(SMS_BASE_URL)%'   # staging: sandbox URL, prod: the real one
 
           when@dev:
               services:
                   App\Sms\SmsGateway: '@App\Sms\LogSmsGateway'
         marks:
           - {line: 2, tip: 'The code always calls the SmsGateway interface, with no new if. Config decides which implementation it gets.'}
-          - {line: 4, tip: 'In dev, a log replaces the real SMS. The difference sits in one place where you can see it.'}
+          - {line: 5, tip: 'Staging and prod run the very same sending code. Only the address differs: staging points at the SMS provider''s sandbox, so nobody gets a real text.'}
+          - {line: 7, tip: 'In dev, a log replaces the real SMS. The difference sits in one place where you can see it.'}
       - type: points
         title: 'Four ways to stop drift'
         style: check
         items:
           - 'Give staging the same database version, the same image and the same list of env variables as prod.'
           - 'Change config through code review or the deploy tool, never by hand on a server.'
-          - 'At startup, detect missing required env variables and fail fast and clearly.'
+          - 'Fail fast on a missing env variable: Symfony throws `EnvNotFoundException` when a service first needs it, so run a smoke request after every deploy.'
           - 'Regularly compare the env variable names on staging and prod.'
     aside:
       - type: pitfalls
@@ -290,12 +334,17 @@ flashcards:
   - q: 'How does the Symfony secrets vault work?'
     a: 'secrets:set encrypts a value. The encrypted file goes into git, while the decrypt key reaches the server separately.'
     more: |
-      The encrypt (public) key and the encrypted values live in the repository. The decrypt (private) key never goes into git; in production it is supplied through the `SYMFONY_DECRYPTION_SECRET` env variable or a separate file. Dev and prod have separate vaults.
+      The encrypt (public) key and the encrypted values live in the repository. The prod decrypt (private) key never goes into git; in production it is supplied through the `SYMFONY_DECRYPTION_SECRET` env variable or a separate file. Dev and prod have separate vaults.
     ref: secrets-vs-config
   - q: 'What is config drift and why is it dangerous?'
     a: 'Environments slowly moving apart, so that tests on staging no longer show how prod behaves.'
     more: |
       Causes include hand edits on a server, different database versions, and if (prod) in the code. To prevent it: use the same image, change config through code review, and detect missing required env variables at startup.
+    ref: config-drift
+  - q: 'How can staging run the real SMS-sending code without texting customers?'
+    a: 'Use the same gateway class everywhere and give staging the SMS provider''s sandbox URL through an env variable.'
+    more: |
+      An `if (prod)` that skips sending means the real path is never tested before prod. With a sandbox URL in the staging env, the same code runs, the provider accepts the request, and no customer gets a text. Only dev swaps in a log gateway, from one visible place in config.
     ref: config-drift
 
 quiz:

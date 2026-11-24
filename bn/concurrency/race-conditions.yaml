@@ -7,7 +7,7 @@ slides:
     blocks:
       - type: text
         body: |
-          রহিমের ওয়ালেটে ১০০০ টাকা। সে দুই ফোন থেকে প্রায় একই সেকেন্ডে ৮০০ টাকা করে পাঠাল। কোড প্রতিবার ঠিকই ব্যালেন্স দেখে নিচ্ছে, তবু দুটো পাঠানোই সফল হলো। একা একা টেস্ট করলে এই ভুল কখনো ধরা পড়ে না, কারণ ভুলটা আসে শুধু দুইটা request-এর **সময় মিলে গেলে**।
+          রহিমের ওয়ালেটে ১০০০ টাকা। সে দুই ফোন থেকে প্রায় একই সেকেন্ডে ৮০০ টাকা করে পাঠাল। কোড প্রতিবার ঠিকই ব্যালেন্স দেখে নিচ্ছে, তবু দুটো পাঠানোই সফল হলো। একা একা টেস্ট করলে এই ভুল কখনো ধরা পড়ে না, কারণ ভুলটা আসে শুধু দুইটা request-এর **সময় মিলে গেলে**। সমাধান ডায়াগ্রামের নিচে: ডেটাবেসকে দিয়ে দেখা আর কাটা এক statement-এ করানো।
       - type: code
         lang: php
         file: 'src/Service/WalletService.php'
@@ -31,17 +31,34 @@ slides:
         kind: sequence
         caption: 'রহিমের দুই ফোন একই ব্যালেন্স পড়ে, দুবারই ৮০০ টাকা বেরিয়ে যায়'
         actors:
-          - {id: p1, label: 'রহিমের ফোন ১', icon: phone, tip: 'প্রথম request: ৮০০ টাকা পাঠাও।'}
-          - {id: p2, label: 'রহিমের ফোন ২', icon: phone, tip: 'দ্বিতীয় request: আবারও ৮০০ টাকা পাঠাও, প্রায় একই মুহূর্তে।'}
+          - {id: p1, label: 'রহিমের ফোন ১', icon: phone, tip: 'প্রথম request: ৮০০ টাকা পাঠাতে চায়।'}
+          - {id: p2, label: 'রহিমের ফোন ২', icon: phone, tip: 'দ্বিতীয় request: আবারও ৮০০ টাকা পাঠাতে চায়, প্রায় একই মুহূর্তে।'}
           - {id: db, label: 'ডেটাবেস', icon: db, tip: 'রহিমের ওয়ালেট সারিতে ব্যালেন্স ১০০০ টাকা।'}
         messages:
-          - {from: p1, to: db, label: 'ব্যালেন্স পড়ো', tip: 'SELECT balance — কোনো lock নেই, তাই কেউ কাউকে আটকায় না।'}
+          - {from: p1, to: db, label: 'ব্যালেন্স পড়ে', tip: 'SELECT balance — কোনো lock নেই, তাই কেউ কাউকে আটকায় না।'}
           - {from: db, to: p1, label: '১০০০ টাকা', dashed: true}
-          - {from: p2, to: db, label: 'ব্যালেন্স পড়ো', tip: 'প্রথমজন এখনো লেখেনি, তাই এও পুরনো মান পায়।'}
+          - {from: p2, to: db, label: 'ব্যালেন্স পড়ে', tip: 'প্রথমজন এখনো লেখেনি, তাই এও পুরনো মান পায়।'}
           - {from: db, to: p2, label: '১০০০ টাকা', dashed: true}
           - {from: p1, to: db, label: 'ব্যালেন্স = ১০০০ − ৮০০ = ২০০'}
           - {from: p2, to: db, label: 'ব্যালেন্স = ১০০০ − ৮০০ = ২০০', tone: bad, tip: 'ফোন ২ জানেই না যে ফোন ১ ব্যালেন্স বদলে দিয়েছে।'}
           - {at: db, note: '১৬০০ টাকা বেরোল, ব্যালেন্স ২০০', tone: bad, tip: 'ঠিক হিসাবে দ্বিতীয় পাঠানোটা ব্যর্থ হওয়ার কথা ছিল। ৬০০ টাকা শূন্য থেকে তৈরি হলো।'}
+      - type: code
+        lang: php
+        file: 'src/Service/WalletService.php'
+        variant: good
+        code: |
+          // একটাই statement: দেখা আর কাটা একসাথে হয়
+          $changed = $this->em->getConnection()->executeStatement(
+              'UPDATE wallet SET balance = balance - ? WHERE id = ? AND balance >= ?',
+              [$amount, $walletId, $amount],
+          );
+
+          if ($changed === 0) {           // ফোন ২: ব্যালেন্স এখন ২০০, তাই কোনো সারি মেলে না
+              throw new InsufficientFunds();
+          }
+        marks:
+          - {line: 3, tip: 'WHERE হলো দেখা, SET হলো লেখা। ডেটাবেস একটা সারিতে দুটোই করে, একবারে একটা request-এর জন্য; তাই ফোন ২ দেখে ২০০ < ৮০০, কোনো সারি মেলে না।'}
+          - {line: 7, tip: '০টা সারি বদলানো মানে দেখা ব্যর্থ। ফোন ১ ১টা সারি বদলে সফল; ফোন ২ ০টা বদলে ফিরে যায়।'}
     aside:
       - type: story
         title: 'ক্যাম্পেইনের রাতের কুপন'
@@ -51,6 +68,10 @@ slides:
         items:
           - {term: 'Race condition', meaning: 'ফল নির্ভর করে দুটো কাজের সময় কীভাবে মিলেছে তার ওপর; একা চালালে ঠিক, একসাথে চালালে ভুল।'}
           - {term: 'Double-spend', meaning: 'একই টাকা দুইবার খরচ হয়ে যাওয়া।'}
+      - type: refs
+        items:
+          - {to: 'concurrency/atomic-operations', label: 'Atomic update বিস্তারিত, আর কোথায় এটা চলে না'}
+          - {to: 'concurrency/locking', label: 'একাধিক সারির সিদ্ধান্তে lock'}
     check:
       q: 'দুই request-ই কোড অনুযায়ী ঠিকঠাক চলেছে, তবু ব্যালেন্স ভুল হলো কেন?'
       a: 'দুটোই লেখার আগে একই পুরনো ব্যালেন্স পড়েছিল। দেখা আর লেখার মাঝখানের ফাঁকে অন্যজন ঢুকে পড়েছে।'
@@ -58,7 +79,7 @@ slides:
   - slug: read-modify-write
     title: 'ফাঁকটা কোথায়: check-then-act আর read-modify-write'
     kind: concept
-    tldr: 'প্রায় সব race condition একই ছাঁচের: কিছু একটা পড়ো, ভাবো, তারপর লেখো — আর পড়া ও লেখার মাঝখানে অন্য কেউ ঢুকতে পারে।'
+    tldr: 'প্রায় সব race condition একই ছাঁচের: কিছু একটা পড়া, ভাবা, তারপর লেখা — আর পড়া ও লেখার মাঝখানে অন্য কেউ ঢুকতে পারে।'
     keywords: ['check-then-act', 'read-modify-write', 'lost update', 'double booking', 'ফাঁক']
     blocks:
       - type: metaphor
@@ -69,27 +90,28 @@ slides:
       - type: visual
         kind: table
         caption: 'একই ফাঁক, চার রকম চেহারা'
-        headers: ['নাম', 'কোডে দেখতে', 'ফল']
+        headers: ['নাম', 'কোডে দেখতে', 'ফল', 'সমাধান']
         rows:
-          - cells: ['Check-then-act', 'if (খালি) { বুক করো }', 'একই সিট দুইবার বুক']
+          - cells: ['Check-then-act', 'if (খালি) { বুক করা }', 'একই সিট দুইবার বুক', 'দেখা আর করা এক statement-এ, বা আগে lock']
             tip: 'শর্ত দেখার পর অবস্থা বদলে যেতে পারে, তবু কোড আগের দেখাটাকেই সত্য ধরে এগোয়।'
-          - cells: ['Read-modify-write', '$n = পড়ো; $n + 1 লেখো', 'counter বা স্টকের হিসাব হারায়']
+          - cells: ['Read-modify-write', '$n = পড়া; $n + 1 লেখা', 'counter বা স্টকের হিসাব হারায়', 'Atomic UPDATE: SET stock = stock - 1']
             tip: 'দুটো request একই মান পড়ে, নিজের নিজের হিসাব লেখে; শেষের লেখাটা আগেরটাকে মুছে দেয়, একে lost update বলে।'
-          - cells: ['Double-spend', 'ব্যালেন্স দেখো, তারপর কাটো', 'নেই এমন টাকা খরচ']
+          - cells: ['Double-spend', 'ব্যালেন্স দেখা, তারপর কাটা', 'নেই এমন টাকা খরচ', 'UPDATE … WHERE balance >= পরিমাণ']
             tip: 'check-then-act-এরই টাকার রূপ। ওয়ালেট, পয়েন্ট, ক্রেডিট, কুপন — সবখানে একই।'
-          - cells: ['Double-booking', 'আসন বা slot দেখো, তারপর ধরো', 'একই জিনিস দুজনের নামে']
+          - cells: ['Double-booking', 'আসন বা slot দেখা, তারপর ধরা', 'একই জিনিস দুজনের নামে', 'সিট বা slot-এ unique constraint']
             tip: 'সিট, ডাক্তারের slot, মিটিং রুম, ডেলিভারি স্লট — যা-ই একজনের জন্য, তাতেই এই ভুল।'
       - type: quote
         body: 'পড়া আর লেখার মাঝের ফাঁকে অন্য request ঢুকতে পারে।'
     aside:
       - type: remember
-        body: 'দেখো-তারপর-করো দুই ধাপে লিখলেই ফাঁক। ফাঁক বুজাও, নয়তো ধাপ দুটোকে এক করো।'
+        body: 'দেখা-তারপর-করা দুই ধাপে লিখলেই ফাঁক। ফাঁক বুজান, নয়তো ধাপ দুটোকে এক করুন।'
       - type: problem
         body: 'ফাঁকটা মিলিসেকেন্ডের, তাই কম traffic-এ বছরে একবার ঘটে। বেশি traffic বা retry থাকলে রোজ ঘটে, আর তখন ধরা সবচেয়ে কঠিন।'
       - type: refs
         items:
           - {to: 'concurrency/isolation-levels', label: 'Isolation level আর lost update'}
           - {to: 'concurrency/acid', label: 'Transaction কী রক্ষা করে না'}
+          - {to: 'concurrency/atomic-operations', label: 'সমাধানগুলো বিস্তারিত'}
     check:
       q: 'counter বাড়ানোর কোড `$n = $row->count; $row->count = $n + 1;` কোন ধরনের race, আর কেন?'
       a: 'Read-modify-write। দুই request একই `$n` পড়ে দুজনেই `$n + 1` লেখে, ফলে দুটো বাড়ার জায়গায় একটাই বাড়ে।'
@@ -97,11 +119,11 @@ slides:
   - slug: spot-and-reproduce
     title: 'নিজের কোডে race condition ধরার উপায়'
     kind: howto
-    tldr: 'কোডে পড়া-পরে-লেখা দেখলেই সন্দেহ করো, তারপর একই request একসাথে ২০টা পাঠিয়ে ফল মিলিয়ে দেখো।'
+    tldr: 'কোডে পড়া-পরে-লেখা দেখলেই সন্দেহ করুন, তারপর একই request একসাথে ২০টা পাঠিয়ে ফল মিলিয়ে দেখুন।'
     keywords: ['race condition খোঁজা', 'parallel request', 'xargs', 'review checklist', 'reproduce']
     blocks:
       - type: points
-        title: 'কোড রিভিউয়ে এই গন্ধগুলো খোঁজো'
+        title: 'কোড রিভিউয়ে এই গন্ধগুলো খুঁজুন'
         style: check
         items:
           - '`find` বা `findOneBy`-এর পরে `if`, তারপর `persist` বা setter।'
@@ -110,7 +132,7 @@ slides:
           - 'কোডের পাশে মন্তব্য “এটা একসাথে দুজন করবে না” — আসলে করবে।'
       - type: text
         body: |
-          সন্দেহ হলে প্রমাণ করো। একই request একসাথে অনেকগুলো পাঠাও, তারপর ডেটাবেসে হিসাব মেলাও। ১০০০ টাকার ওয়ালেট থেকে ২০টা ১০০ টাকার পাঠানো একসাথে চালালে ঠিক ১০টা সফল হওয়ার কথা। ১০টার বেশি সফল হলে বা ব্যালেন্স ০ না হলে race আছে।
+          সন্দেহ হলে প্রমাণ করুন। একই request একসাথে অনেকগুলো পাঠান, তারপর ডেটাবেসে হিসাব মেলান। ১০০০ টাকার ওয়ালেট থেকে ২০টা ১০০ টাকার পাঠানো একসাথে চালালে ঠিক ১০টা সফল হওয়ার কথা। ১০টার বেশি সফল হলে বা ব্যালেন্স ০ না হলে race আছে। কোড ঠিক করার পরে একই script আবার চালান: ঠিক ১০টা সফল আর ব্যালেন্স ০ হলেই প্রমাণ হলো।
       - type: code
         lang: bash
         file: 'scripts/race-test.sh'
@@ -121,7 +143,7 @@ slides:
             -H 'Content-Type: application/json' \
             -d '{"amount": 100}' | sort | uniq -c
 
-          # তারপর হিসাব মেলাও
+          # তারপর হিসাব মেলান
           psql app -c "SELECT balance FROM wallet WHERE id = 1;"
         marks:
           - {line: 2, tip: '-P 20 মানে ২০টা curl একসাথে চলবে। একটার পর একটা চালালে race কখনো দেখা যাবে না।'}
@@ -129,7 +151,7 @@ slides:
     aside:
       - type: tips
         items:
-          - 'development-এ একটা কৃত্রিম `usleep(200000)` দেয় পড়া আর লেখার মাঝে — ফাঁক বড় হয়ে race সহজে দেখা যায়। পরে সরিয়ে ফেলো।'
+          - 'development-এ একটা কৃত্রিম `usleep(200000)` দেয় পড়া আর লেখার মাঝে — ফাঁক বড় হয়ে race সহজে দেখা যায়। পরে সরিয়ে ফেলুন।'
           - 'এই ধরনের পরীক্ষা PHPUnit-এ না লিখে আলাদা script বা k6 দিয়ে চালানো সহজ, কারণ দরকার সত্যিকারের parallel HTTP request।'
       - type: commands
         title: 'দরকারি কমান্ড'
@@ -143,12 +165,12 @@ slides:
   - slug: unique-check-trap
     title: '“আগে দেখি আছে কি না” ফাঁদ আর তার সমাধান'
     kind: pitfall
-    tldr: 'নতুন সারি বানানোর আগে খোঁজা race করে; সত্যিকারের পাহারাদার ডেটাবেসের unique constraint, তার exception ধরে সামলাও।'
+    tldr: 'নতুন সারি বানানোর আগে খোঁজা race করে; সত্যিকারের পাহারাদার ডেটাবেসের unique constraint, তার exception ধরে সামলান।'
     keywords: ['unique constraint', 'duplicate', 'UniqueConstraintViolationException', 'exists check', 'ডুপ্লিকেট']
     blocks:
       - type: text
         body: |
-          সবচেয়ে চেনা race হলো “এই ইমেইল দিয়ে আগে কেউ রেজিস্টার করেছে কি না দেখো, না করলে নতুন বানাও”। দেখা আর বানানোর মাঝে আরেকটা request ঢুকলে দুটো একাউন্ট তৈরি হয়। অ্যাপের কোড এখানে দেখার কাজ করে ভালোই, কিন্তু **পাহারা** দিতে পারে না। পাহারা দিতে পারে শুধু ডেটাবেস, যে সব request-কে একটা লাইনে দাঁড় করায়।
+          সবচেয়ে চেনা race হলো “এই ইমেইল দিয়ে আগে কেউ রেজিস্টার করেছে কি না দেখা, না করলে নতুন বানানো”। দেখা আর বানানোর মাঝে আরেকটা request ঢুকলে দুটো একাউন্ট তৈরি হয়। অ্যাপের কোড এখানে দেখার কাজ করে ভালোই, কিন্তু **পাহারা** দিতে পারে না। পাহারা দিতে পারে শুধু ডেটাবেস, যে সব request-কে একটা লাইনে দাঁড় করায়।
       - type: code
         lang: php
         file: 'src/Service/RegistrationService.php'
@@ -189,14 +211,15 @@ slides:
           }
         marks:
           - {line: 2, tip: 'এই constraint ডেটাবেসের ভেতরে থাকে। দুই request একসাথে এলেও একটাই insert টেকে।'}
-          - {line: 12, tip: 'হেরে যাওয়া request ডেটাবেস থেকে exception পায়; সেটাকে সুন্দর ব্যবহারকারী-বান্ধব error বানাও। এরপর EntityManager বন্ধ, নতুন request-এ আবার শুরু।'}
+          - {line: 12, tip: 'হেরে যাওয়া request ডেটাবেস থেকে exception পায়; সেটাকে সুন্দর ব্যবহারকারী-বান্ধব error বানান। এরপর EntityManager বন্ধ, নতুন request-এ আবার শুরু।'}
       - type: quote
-        body: 'অ্যাপ ঠিক করে না, ডেটাবেস ঠিক করে: ডুপ্লিকেট আটকাতে unique constraint দাও।'
+        body: 'অ্যাপ ঠিক করে না, ডেটাবেস ঠিক করে: ডুপ্লিকেট আটকাতে unique constraint দিন।'
     aside:
       - type: pitfalls
         items:
           - 'PHP-র static ভ্যারিয়েবল, ফাইলের flag বা session lock দিয়ে এই race আটকানো যায় না। কয়েকটা সার্ভার বা worker থাকলে তারা একে অপরকে দেখেই না।'
           - 'বাটন disable করা শুধু UX। কেউ curl দিয়ে সরাসরি request পাঠালে বা retry হলে সেটা কোনো কাজেই আসে না।'
+          - 'Unique constraint শুধু ডুপ্লিকেট আটকায়। “ব্যালেন্স কখনো ০-র নিচে নয়” নিয়মের জন্য লাগে atomic UPDATE বা lock।'
       - type: refs
         items:
           - {to: 'concurrency/atomic-operations', label: 'Atomic update ও unique constraint'}
@@ -214,7 +237,7 @@ flashcards:
   - q: 'Check-then-act কী, আর কেন বিপজ্জনক?'
     a: 'আগে একটা শর্ত দেখে তার ভরসায় কাজ করা। দেখা আর করার মাঝে শর্তটা বদলে যেতে পারে, তাই ফল ভুল হয়।'
     more: |
-      যেমন “সিট খালি আছে কি না দেখে বুক করো”। দুই request একসাথে দেখলে দুজনেই “খালি” পায়। শর্ত দেখা আর কাজ করা এক অবিভাজ্য ধাপ না হলে এই ফাঁক থাকবেই।
+      যেমন “সিট খালি আছে কি না দেখে বুক করা”। দুই request একসাথে দেখলে দুজনেই “খালি” পায়। শর্ত দেখা আর কাজ করা এক অবিভাজ্য ধাপ না হলে এই ফাঁক থাকবেই।
     ref: read-modify-write
   - q: 'Read-modify-write কী?'
     a: 'একটা মান পড়ে, মেমোরিতে বদলে, আবার লেখা। দুই request একই মান পড়লে একটার লেখা অন্যটাকে মুছে দেয়।'
@@ -226,18 +249,23 @@ flashcards:
     more: |
       নাম আলাদা, কারণ ক্ষতি আলাদা: একটায় টাকা হারায়, অন্যটায় দুজন গ্রাহক মুখোমুখি হয়। প্রতিকারও এক পরিবারের: lock, atomic update, বা unique constraint।
     ref: read-modify-write
-  - q: 'কোডে race condition সন্দেহ করবে কখন?'
+  - q: 'কোডে race condition সন্দেহ করবেন কখন?'
     a: 'যেখানেই কিছু পড়ে, if বা অঙ্ক কষে, তারপর লেখা হয়, বিশেষ করে ব্যালেন্স, স্টক, সিট, কুপন বা “আগে আছে কি না” খোঁজার জায়গায়।'
     more: |
-      দুইটা লক্ষণ বিশেষ ইঙ্গিত দেয়: getter দিয়ে পড়া মান থেকে setter-এ নতুন মান বসানো, আর `findOneBy` এর পর `if (!$x) { persist }`। এই দুটো দেখলেই থামো আর ভাবো, “একসাথে দুজন এলে?”
+      দুইটা লক্ষণ বিশেষ ইঙ্গিত দেয়: getter দিয়ে পড়া মান থেকে setter-এ নতুন মান বসানো, আর `findOneBy` এর পর `if (!$x) { persist }`। এই দুটো দেখলেই থামুন আর ভাবুন, “একসাথে দুজন এলে?”
     ref: spot-and-reproduce
-  - q: 'Race condition ধরতে কীভাবে পরীক্ষা করবে?'
-    a: 'একই request ২০টা একসাথে পাঠাও (যেমন xargs -P) এবং শেষ হিসাব মেলাও। একটার পর একটা চালালে race ধরা পড়ে না।'
+  - q: 'ওয়ালেটের double-spend এক SQL statement-এ কীভাবে ঠেকাবেন?'
+    a: 'UPDATE wallet SET balance = balance - 800 WHERE id = 1 AND balance >= 800। ০টা সারি বদলালে ব্যালেন্স কম ছিল: পাঠানো ফিরিয়ে দিন।'
+    more: |
+      WHERE হলো দেখা, SET হলো লেখা; ডেটাবেস একটা সারিতে দুটো একসাথে করে। ১০০০ টাকায় দুই ফোন: ফোন ১ ১টা সারি বদলায় (ব্যালেন্স ২০০); ফোন ২ দেখে ২০০ < ৮০০, কিছু মেলে না, ০ সারি পায়। এটা এক সারির হিসাবে চলে; একাধিক সারি জুড়ে নিয়মে lock বা SERIALIZABLE লাগে।
+    ref: two-phones
+  - q: 'Race condition ধরতে কীভাবে পরীক্ষা করবেন?'
+    a: 'একই request ২০টা একসাথে পাঠান (যেমন xargs -P) এবং শেষ হিসাব মেলান। একটার পর একটা চালালে race ধরা পড়ে না।'
     more: |
       দরকারি হলো সত্যিকারের parallel request। ১০০০ টাকা ওয়ালেট থেকে ২০টা ১০০ টাকার request-এ ঠিক ১০টা সফল আর ব্যালেন্স ০ হওয়ার কথা। এর বেশি সফল হলে বা ব্যালেন্স নেগেটিভ হলে race প্রমাণিত।
     ref: spot-and-reproduce
-  - q: 'দুজন একই ইমেইলে রেজিস্টার করা কীভাবে আটকাবে?'
-    a: 'email কলামে unique constraint দাও, আর insert-এর UniqueConstraintViolationException ধরে ভালো error দেখাও। শুধু if দিয়ে খোঁজা যথেষ্ট না।'
+  - q: 'দুজন একই ইমেইলে রেজিস্টার করা কীভাবে আটকাবেন?'
+    a: 'email কলামে unique constraint দিন, আর insert-এর UniqueConstraintViolationException ধরে ভালো error দেখান। শুধু if দিয়ে খোঁজা যথেষ্ট না।'
     more: |
       অ্যাপের `if` দুই request-কেই “নেই” বলে। ডেটাবেসের unique index সব insert-কে লাইনে দাঁড় করায়, তাই একটাই টেকে। ব্যর্থ request-টাকে ব্যবহারকারীর ভাষায় বুঝিয়ে দিলেই হলো।
     ref: unique-check-trap
@@ -269,8 +297,24 @@ quiz:
         correct: false
         why: 'transaction আধা কাজ ঠেকায়, কিন্তু দুই transaction-এর একই পুরনো মান পড়া ঠেকায় না।'
     ref: read-modify-write
+  - q: 'প্রথম slide-এর ওয়ালেট কোডের ফাঁক কোন পরিবর্তনে বন্ধ হয়?'
+    hint: 'কোন সংস্করণে দেখা আর লেখার মাঝে কোনো মুহূর্তই থাকে না?'
+    options:
+      - text: 'একটাই UPDATE … SET balance = balance - ? WHERE id = ? AND balance >= ?, আর ০টা সারি বদলালে “টাকা অপর্যাপ্ত”'
+        correct: true
+        why: 'দেখা আর কাটা এক statement-এ হয়, তাই ফোন ২ দেখে ২০০, কোনো সারি মেলে না, আর সে ফিরে যায়।'
+      - text: 'লেখার ঠিক আগে ব্যালেন্স দ্বিতীয়বার পড়া'
+        correct: false
+        why: 'দ্বিতীয়বার পড়া আরেকটা ফাঁক। সেই পড়া আর আপনার লেখার মাঝেও আরেকজন লিখে ফেলতে পারে।'
+      - text: 'PHP-র check রেখে লেখার আগে usleep() দেওয়া'
+        correct: false
+        why: 'অপেক্ষা শুধু সময়ের ছক বদলায়; দুজনেই তখনো একই পুরনো ব্যালেন্স পড়তে পারে।'
+      - text: 'wallet.id-তে unique constraint দেওয়া'
+        correct: false
+        why: 'id এমনিতেই unique, আর এখানে ডুপ্লিকেট সারির প্রশ্ন নেই। সমস্যা একই সারিতে দুটো লেখা।'
+    ref: two-phones
   - q: 'কোনগুলো check-then-act ধরনের race condition-এর উদাহরণ?'
-    hint: 'প্রতিটায় “আগে দেখো, তারপর করো” আছে কি না ভাবো।'
+    hint: 'প্রতিটায় “আগে দেখা, তারপর করা” আছে কি না ভাবুন।'
     options:
       - text: 'সিট খালি দেখে বুক করা'
         correct: true
@@ -307,12 +351,12 @@ quiz:
       - text: 'ঠিক ০'
         correct: false
         why: 'ঠিক হিসাব হতো ০, কিন্তু ১০-এর বেশি সফল মানে কিছু request একই পুরনো মান থেকে লিখেছে, ব্যালেন্স তাই সাধারণত ০ হয় না।'
-      - text: 'শূন্যের বেশি, যদিও ১৩০০ টাকা বেরিয়েছে'
+      - text: 'সম্ভবত শূন্যের বেশি, যদিও ১৩০০ টাকা বেরিয়েছে'
         correct: true
         why: 'কিছু request পরস্পরের লেখা মুছেছে (lost update), তাই ব্যালেন্স ঠিকের চেয়ে বেশি দেখায় — ৩০০ টাকা শূন্য থেকে তৈরি।'
       - text: 'নিশ্চিতভাবে −৩০০'
         correct: false
-        why: 'ফল অনিশ্চিত, কারণ শেষ লেখাটা কোন পুরনো মান থেকে এসেছে তা সময়ের ওপর নির্ভর করে।'
+        why: 'এখানে ০-র নিচে নামা অসম্ভব: প্রতিটা request লেখার আগে অন্তত ১০০ আছে কি না দেখেছে, তাই কোনো লেখা নেগেটিভ নয়। Lost update ব্যালেন্সকে ওপরে ঠেলে, নিচে নয়।'
     ref: spot-and-reproduce
   - q: 'ইমেইল unique করতে একজন বলল “রেজিস্টারের আগে findOneBy দিয়ে দেখলেই হবে”। সঠিক মত কোনটা?'
     hint: 'পাহারাটা কোথায় থাকলে সব request একজায়গায় এসে মেলে?'

@@ -7,7 +7,7 @@ slides:
     blocks:
       - type: text
         body: |
-          রহিমের অ্যাপে অর্ডারের পুরো কাজ একটা controller-এ: JSON পড়া, SQL চালানো, ছাড়ের হিসাব আর ইমেইল পাঠানো। ছয় মাস পরে বলা হলো, "৫০০০ টাকার ওপরে ১০% ছাড়, কিন্তু প্রথম অর্ডারে ১৫%"। এই নিয়ম আরেকটা API আর আরেকটা অ্যাডমিন পেজেও লাগবে। কিন্তু নিয়মটা controller-এর ভেতরে আটকা, তাই কপি করা ছাড়া উপায় নেই।
+          রহিমের অ্যাপে অর্ডারের পুরো কাজ একটা controller-এ: JSON পড়া, SQL চালানো, ছাড়ের হিসাব আর ইমেইল পাঠানো। নিয়মটা "৫০০০ টাকার ওপরে ১০% ছাড়", আর একই নিয়ম আরেকটা API আর অ্যাডমিন পেজেও লাগে। নিয়মটা controller-এর ভেতরে আটকা, তাই রহিম প্রতিটায় কপি করে। ছয় মাস পরে প্রথম অর্ডারে ১৫% ছাড় যোগ হলো। সে দুই কপি বদলাল, তৃতীয়টা ভুলে গেল; ফলে ৬০০০ টাকার প্রথম অর্ডারে ৫,১০০ টাকা কাটা হয়, কিন্তু অ্যাডমিন পেজে দেখায় ৫,৪০০।
       - type: code
         lang: php
         file: 'src/Controller/OrderController.php'
@@ -117,39 +117,82 @@ slides:
           - {line: 17, tip: 'controller শুধু একটা service ডাকছে আর উত্তর সাজাচ্ছে। এটাই তার পুরো কাজ।'}
       - type: code
         lang: php
-        file: 'src/Order/PlaceOrder.php'
+        file: 'src/Order/DiscountPolicy.php + PlaceOrder.php'
         variant: good
         code: |
-          final readonly class PlaceOrder
+          // src/Order/DiscountPolicy.php: নিয়মটা একবারই লেখা
+          final readonly class DiscountPolicy
           {
-              public function __construct(
-                  private ProductRepository $products,   // interface
-                  private OrderRepository $orders,       // interface
-                  private MessageBusInterface $bus,
-              ) {
-              }
-
-              public function __invoke(string $userId, string $productId, int $qty): Order
+              public function apply(int $subtotalPaisa, bool $firstOrder): int
               {
-                  $product = $this->products->get($productId);
+                  $percent = match (true) {
+                      $firstOrder => 15,
+                      $subtotalPaisa > 500_000 => 10,   // ৫,০০০ টাকার ওপরে
+                      default => 0,
+                  };
 
-                  // ছাড়ের নিয়ম Order-এর ভেতরে, একটা জায়গায়
-                  $order = Order::place($userId, $product, $qty);
-
-                  $this->orders->save($order);
-                  $this->bus->dispatch(new OrderPlaced((string) $order->getId()));
-
-                  return $order;
+                  return $subtotalPaisa - intdiv($subtotalPaisa * $percent, 100);
               }
           }
+
+          // src/Order/PlaceOrder.php: constructor-এ দুটো repository interface,
+          // DiscountPolicy আর message bus ইনজেক্ট হয়
+          public function __invoke(string $userId, string $productId, int $qty): Order
+          {
+              $product = $this->products->get($productId);
+              $first = !$this->orders->hasAnyFor($userId);
+              $total = $this->discounts->apply($product->priceFor($qty), $first);
+
+              $order = Order::place($userId, $product, $qty, $total);
+              $this->orders->save($order);
+              $this->bus->dispatch(new OrderPlaced((string) $order->getId()));
+
+              return $order;
+          }
+
+          // অন্য API আর অ্যাডমিন পেজও একই এক লাইন ডাকে:
+          // $total = $this->discounts->apply($subtotal, $first);
         marks:
-          - {line: 4, tip: 'service interface চেনে, Doctrine নয়। Doctrine implementation থাকে নিচের স্তরে।'}
-          - {line: 18, tip: 'ইমেইল পাঠানো এখানে নয়। OrderPlaced event ধরে আলাদা handler পাঠাবে, তাই এখানে HTTP বা mailer কিছুই নেই।'}
+          - {line: 7, tip: 'প্রথম অর্ডারে ১৫%, অঙ্ক যা-ই হোক। নতুন নিয়ম এখানেই, আর কোথাও নেই।'}
+          - {line: 8, tip: '৫,০০০ টাকার (৫,০০,০০০ পয়সা) ওপরে ছাড় ১০%। বাকিদের ছাড় নেই।'}
+          - {line: 20, tip: 'products আর orders হলো interface। Doctrine-এর রূপ থাকে নিচের স্তরে, এই ক্লাস তা দেখেই না।'}
+          - {line: 22, tip: 'service মোট দাম চায় DiscountPolicy-র কাছে, তাই নিজের কোনো ছাড়ের নিয়ম রাখে না। ২য় আর ৩য় caller-ও তা-ই করে।'}
+          - {line: 26, tip: 'এখানে ইমেইল নেই। OrderPlaced শোনা আলাদা handler তা পাঠায়, তাই এই ক্লাসে HTTP বা mailer নেই।'}
+      - type: visual
+        kind: compare
+        caption: '৬০০০ টাকার একটা প্রথম অর্ডার: নিয়ম সরানোর আগে ও পরে'
+        columns:
+          - title: 'আগে: তিনটা কপি'
+            tone: bad
+            icon: cross
+            tip: 'প্রতিটা জায়গা নিজে ছাড় হিসাব করত, তাই প্রতিটা হাতে হাতে বদলাতে হতো।'
+            items:
+              - 'Checkout ১৫%-এ বদলানো: ৫,১০০ টাকা কাটে'
+              - 'অ্যাডমিন পেজে বদল বাদ পড়েছে: দেখায় ৫,৪০০'
+              - 'একই অর্ডারের দুই রকম দাম'
+          - title: 'পরে: DiscountPolicy'
+            tone: good
+            icon: check
+            tip: 'নিয়ম থাকে এক ক্লাসে, আর প্রতিটা জায়গা তাকেই জিজ্ঞেস করে।'
+            items:
+              - 'নিয়ম এক ক্লাসে, নিজের test-সহ'
+              - 'Checkout, অন্য API আর অ্যাডমিন পেজ সবাই apply() ডাকে'
+              - 'পরের বদলে হাত পড়ে এক ফাইলে, আর তিনটাই একমত থাকে'
     aside:
       - type: tips
         items:
-          - 'service-এর নাম রাখো কাজ ধরে (`PlaceOrder`, `CancelOrder`), `OrderManager` ধরনের অস্পষ্ট নাম নয়।'
+          - 'service-এর নাম রাখুন কাজ ধরে (`PlaceOrder`, `CancelOrder`), `OrderManager` ধরনের অস্পষ্ট নাম নয়।'
           - 'একটা service-এ একটাই কাজ রাখলে টেস্ট লেখা সহজ হয়।'
+      - type: terms
+        items:
+          - {term: 'DTO', meaning: 'Data Transfer Object: শুধু তথ্য বহনকারী সাধারণ object, এখানে যাচাই-করা request-এর ফিল্ড।'}
+          - {term: 'Event', meaning: 'কিছু ঘটে গেছে তার বার্তা, যেমন OrderPlaced। আগ্রহী যে কেউ শুনে নিজের কাজ করে।'}
+      - type: when
+        use:
+          - 'যে নিয়ম দুই বা তার বেশি জায়গায় লাগে, বা প্রায়ই বদলায়।'
+        avoid:
+          - 'এক জায়গায় ব্যবহৃত একবারের যাচাই: private method-ই যথেষ্ট।'
+          - 'দাম: খুঁজে পেতে আর গুছিয়ে রাখতে আরেকটা ক্লাস।'
       - type: refs
         items:
           - {to: 'messaging/background-jobs', label: 'পরে করার কাজ queue-তে'}
@@ -160,7 +203,7 @@ slides:
   - slug: strangler-fig
     title: 'লিগ্যাসি সরানো: strangler fig, এক টুকরো এক টুকরো'
     kind: howto
-    tldr: 'পুরনো অ্যাপ বন্ধ না করে সামনে একটা router বসাও, তারপর এক এক করে পথ নতুন কোডে সরাও, শেষে পুরনোটা মুছো।'
+    tldr: 'পুরনো অ্যাপ বন্ধ না করে সামনে একটা router বসান, তারপর এক এক করে পথ নতুন কোডে সরান, শেষে পুরনোটা মুছুন।'
     keywords: ['strangler fig', 'legacy migration', 'incremental rewrite', 'nginx routing', 'লিগ্যাসি', 'ধাপে ধাপে বদল']
     blocks:
       - type: metaphor
@@ -168,6 +211,29 @@ slides:
         title: 'পুরনো সেতুর পাশে নতুন সেতু'
         body: |
           ব্যস্ত সেতু মেরামতের সময় সেটা বন্ধ রাখা যায় না। তাই পাশে নতুন সেতু বানানো হয়, আর এক এক লেন করে গাড়ি সরানো হয়। নতুন লেন ঠিক চললে পুরনো লেন ভেঙে ফেলা হয়। লিগ্যাসি সরানোও একই: একটা router সামনে বসে, আর পথ ধরে ধরে ট্রাফিক সরে।
+      - type: visual
+        kind: compare
+        caption: 'একই পুনর্লিখন, দুই পথে: ক্যালেন্ডারে কী দাঁড়ায়'
+        columns:
+          - title: 'একবারে সব নতুন করে লেখা'
+            tone: bad
+            icon: cross
+            tip: 'বড় এক ধাক্কার পুনর্লিখন সাধারণত যেভাবে শেষ হয়। সংখ্যাগুলো উদাহরণ, পরিসংখ্যান নয়।'
+            items:
+              - 'পরিকল্পনা ৬ মাস। বাস্তবে ১৪ মাস, কারণ পুরনো অ্যাপে বদল চলতেই থাকে'
+              - 'এতদিন ব্যবহারকারীর কাছে কিছুই পৌঁছায় না'
+              - 'লঞ্চের দিন লুকানো নিয়ম, যেমন ২০,০০০ টাকার ওপরে cash on delivery নেই, বাদ পড়ে'
+              - 'অর্ডার ভুল হয়, দল ফেরত যায়: ১৪ মাস, কিছুই পাঠানো হয়নি'
+          - title: 'Strangler fig'
+            tone: good
+            icon: check
+            tip: 'ছোট, ফেরানো-যায় এমন ধাপ, প্রতিটা ইতিমধ্যে সত্যিকারের ব্যবহারকারীর সামনে।'
+            items:
+              - 'সপ্তাহ ১: সামনে router বসে। ব্যবহারকারীর কিছুই বদলায় না'
+              - 'সপ্তাহ ২: এক nginx লাইনে /orders নতুন অ্যাপে যায়'
+              - 'bug ধরা পড়লে লাইনটা সরান, কয়েক সেকেন্ডে পুরনো পথ ফেরত'
+              - 'প্রতি সপ্তাহে সত্যিকারের কিছু পৌঁছায়, আর যেকোনো জায়গায় থামা যায়'
+              - 'দাম: কয়েক মাস দুই অ্যাপ চালাতে হয়, আর ভাগ করা ডেটা সাবধানে সামলাতে হয়'
       - type: visual
         kind: flow
         caption: 'Router সামনে বসে /orders নতুন অ্যাপে পাঠাচ্ছে'
@@ -198,26 +264,88 @@ slides:
         title: 'ধাপগুলো'
         style: number
         items:
-          - 'পুরনো অ্যাপের সামনে router বসাও; আচরণ বদলাবে না।'
-          - 'একটা ছোট, কম ঝুঁকির পথ বেছে নতুন করে লেখো।'
-          - 'কিছুদিন দুইটা পাশাপাশি চালিয়ে উত্তর মিলিয়ে দেখো।'
-          - 'ট্রাফিক সরাও, তারপর পুরনো কোড মুছো।'
+          - 'পুরনো অ্যাপের সামনে router বসান; আচরণ বদলাবে না।'
+          - 'একটা ছোট, কম ঝুঁকির পথ বেছে নতুন করে লিখুন।'
+          - 'কিছুদিন দুটো পাশাপাশি চালিয়ে উত্তর মিলিয়ে দেখুন।'
+          - 'ট্রাফিক সরান, তারপর পুরনো কোড মুছুন।'
     aside:
       - type: terms
         items:
           - {term: 'Strangler fig', meaning: 'যে গাছ পুরনো গাছের গা বেয়ে বেড়ে ধীরে তার জায়গা নিয়ে নেয়। এই কৌশলের নাম সেখান থেকে।'}
       - type: pitfalls
         items:
-          - 'একসাথে সব পথ সরাতে যেয়ো না। এক পথ, এক সপ্তাহ, একটা ফল।'
+          - 'একসাথে সব পথ সরাতে যাবেন না। এক পথ, এক সপ্তাহ, একটা ফল।'
           - 'পুরনো কোড মোছা ভুলে গেলে দুই সিস্টেমই চিরকাল চলতে থাকে।'
     check:
       q: 'Strangler fig-এ ঝুঁকি কম কেন, পুরো অ্যাপ নতুন করে লেখার তুলনায়?'
       a: 'প্রতিবার একটা ছোট পথ সরে, আর সমস্যা হলে router-এর এক লাইনে ফেরা যায়। পুরো সিস্টেম একদিনে বদলাতে হয় না, ব্যবহারকারীও কিছু টের পায় না।'
 
+  - slug: shared-database-session
+    title: 'দুই অ্যাপ, এক ডেটাবেস, এক login'
+    kind: pitfall
+    tldr: 'দুই অ্যাপ চলার সময় তারা ডেটাবেস আর login cookie ভাগ করে। ভাগ করা ডেটা আগে যোগ করে পরে সরান, আর নতুন অ্যাপ পুরনোকে জিজ্ঞেস করুক কে login করেছে।'
+    keywords: ['shared database', 'expand and contract', 'session', 'strangler fig', 'migration', 'ডেটাবেস ভাগ']
+    blocks:
+      - type: text
+        body: |
+          দুই অ্যাপ একসাথে চলার সময় তারা দুটো জিনিস ভাগ করে। **ডেটাবেস**: দুজনেই একই টেবিল পড়ে-লেখে, তাই নতুন অ্যাপের জন্য একটা কলামের নাম বদলালে পুরনোটা সাথে সাথে ভেঙে যায়। **login**: ব্রাউজারে থাকে একটাই session cookie, কিন্তু প্রতিটা অ্যাপ নিজের session রাখে, তাই পুরনো অ্যাপে login করা ব্যবহারকারী নতুনটার কাছে অচেনা।
+      - type: code
+        lang: sql
+        file: 'db/migration.sql'
+        variant: bad
+        code: |
+          -- নতুন অ্যাপ পূর্ণসংখ্যার পয়সা চায়, তাই কলামের নাম বদলানো হলো
+          ALTER TABLE orders RENAME COLUMN total TO total_paisa;
+
+          -- পুরনো অ্যাপ এখনো চলছে, আর এখন প্রতিটা অর্ডার-পেজে ব্যর্থ:
+          -- SELECT total FROM orders  ->  ERROR: unknown column 'total'
+        marks:
+          - {line: 2, tip: 'পুরনো অ্যাপ এখনো `total` চায়, তাই এটা চালানোর মুহূর্তেই অর্ডার দেখানো প্রতিটা পেজ ভেঙে যায়।'}
+      - type: code
+        lang: sql
+        file: 'db/migration.sql'
+        variant: good
+        code: |
+          -- ১. Expand: নতুন কলাম যোগ করুন। পুরনো অ্যাপ তা দেখেই না।
+          ALTER TABLE orders ADD COLUMN total_paisa BIGINT NULL;
+
+          -- ২. আগের সারিগুলো backfill করুন।
+          UPDATE orders SET total_paisa = ROUND(total * 100) WHERE total_paisa IS NULL;
+
+          -- ৩. পুরনো অ্যাপ যাওয়া পর্যন্ত নতুন অ্যাপ দুই কলামেই লেখে।
+
+          -- ৪. Contract: পুরনো অ্যাপ মুছে ফেলার পরেই।
+          ALTER TABLE orders DROP COLUMN total;
+        marks:
+          - {line: 2, tip: 'nullable কলাম যোগ করলে কারও কিছু ভাঙে না, কারণ পুরনো অ্যাপ তা select করে না।'}
+          - {line: 5, tip: 'পুরনো সারিগুলো পয়সার মান পায়, তাই নতুন অ্যাপ প্রতিটা অর্ডার পড়তে পারে।'}
+          - {line: 10, tip: 'drop-ই একমাত্র ধাপ যা ফেরানো যায় না। কোনো পুরনো কোড `total` না পড়া পর্যন্ত তা অপেক্ষা করে।'}
+      - type: visual
+        kind: steps
+        caption: 'দুই অ্যাপ চলার সময় login ভাগ করা'
+        steps:
+          - {title: '১. এক ঠিকানা', body: 'Router দুই অ্যাপকে এক domain-এ দেয়, তাই ব্রাউজার দুটোতেই একই cookie পাঠায়।', tip: 'Cookie থাকে domain-এর, অ্যাপের নয়। সামনে এক domain থাকলে ব্যবহারকারীকে দ্বিতীয়বার login করতে হয় না।'}
+          - {title: '২. পুরনোকে জিজ্ঞেস', body: 'নতুন অ্যাপ cookie-টা পুরনো অ্যাপের গোপন /internal/whoami-তে পাঠায়, আর user id ফেরত পায়।', tip: 'নিজের session পুরনো অ্যাপই চেনে। তাকে জিজ্ঞেস করলে দুই অ্যাপের মাঝে session-এর ডেটা কপি করতে হয় না।'}
+          - {title: '৩. গোপন রাখুন', body: 'ওই endpoint শুধু আপনার নেটওয়ার্কের ভেতর থেকে ডাকা যাবে, ইন্টারনেট থেকে কখনো নয়।', tip: 'চুরি-হওয়া cookie নিয়ে কেউ এটা ডাকতে পারলে জেনে ফেলবে cookie কার, তাই এটা ইন্টারনেটের মুখোমুখি হওয়া চলবে না।'}
+          - {title: '৪. login শেষে সরান', body: '/login নিজেই নতুন অ্যাপে এলে whoami-র ডাক মুছে দিন।', tip: 'নতুন অ্যাপ নিজেই session বানালে তার আর জিজ্ঞেস করার দরকার নেই।'}
+      - type: quote
+        body: 'দুই অ্যাপ চলার সময় ভাগ করা ডেটায় শুধু যোগ করুন। মুছুন পুরনো অ্যাপ যাওয়ার পরে।'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Session cookie', meaning: 'ব্রাউজার প্রতি request-এ যে ছোট টোকেন পাঠায়, যাতে সার্ভার বোঝে কোন login-করা ব্যবহারকারী।'}
+          - {term: 'Expand and contract', meaning: 'ভাগ করা টেবিল দুই নিরাপদ ধাপে বদলানো: আগে নতুনটা যোগ, পুরনোটা সরানো অনেক পরে।'}
+      - type: pitfalls
+        items:
+          - 'whoami প্রতি request-এ একটা বাড়তি নেটওয়ার্ক-ডাক। উত্তর অল্প সময় cache করুন, নইলে পুরনো অ্যাপই বোতলের গলা হয়ে যায়।'
+    check:
+      q: 'পুরনো অ্যাপ চলা অবস্থায় `total` কলামের নাম সোজা বদলে ফেললে কী ভুল?'
+      a: 'পুরনো অ্যাপ এখনো `total` select করে, তাই সাথে সাথে ভেঙে যায়। আগে নতুন কলাম যোগ করুন, backfill করুন, নতুন অ্যাপ সরান, আর পুরনোটা drop করুন পুরনো অ্যাপ যাওয়ার পরে।'
+
   - slug: anti-corruption-layer
-    title: 'Anti-corruption layer: পুরনোর অদ্ভুত ভাষা আটকে রাখো'
+    title: 'Anti-corruption layer: পুরনোর অদ্ভুত ভাষা আটকে রাখুন'
     kind: concept
-    tldr: 'লিগ্যাসির অদ্ভুত নাম আর ফরম্যাট নতুন কোডে ঢুকতে না দিয়ে, একটা অনুবাদক class-এ আটকে রাখো।'
+    tldr: 'লিগ্যাসির অদ্ভুত নাম আর ফরম্যাট নতুন কোডে ঢুকতে না দিয়ে, একটা অনুবাদক class-এ আটকে রাখুন।'
     keywords: ['anti-corruption layer', 'ACL', 'adapter', 'legacy integration', 'অনুবাদক', 'লিগ্যাসি']
     blocks:
       - type: text
@@ -235,6 +363,18 @@ slides:
           - {from: acl, to: legacy, label: 'অনুবাদক পুরনো ভাষায় request পাঠায়'}
           - {from: legacy, to: acl, label: 'পুরনো ফরম্যাটে উত্তর আসে', dashed: true}
           - {from: acl, to: modern, label: 'অনুবাদক পরিষ্কার Customer অবজেক্ট ফেরত দেয়', tone: good, dashed: true}
+      - type: code
+        lang: php
+        file: 'src/Controller/ProfileController.php'
+        variant: bad
+        code: |
+          // অনুবাদক ছাড়া পুরনোর ভাষা নতুন কোডে ছড়িয়ে পড়ে
+          if ('A' === $row['st'] && (float) $row['bal'] > 0) {   // "A" কী? bal-এর একক কী?
+              $newBalance = $row['bal'] * 1.05;                  // টাকায় float হিসাব
+          }
+        marks:
+          - {line: 2, tip: 'পুরনো row যে-ই পড়ে, তাকে জানতে হয় "A" মানে active। নামটা একবার বদলালে সব জায়গায় খুঁজতে হয়।'}
+          - {line: 3, tip: 'ব্যালেন্স এখনো "1250.50" স্ট্রিং, তাই টাকার ওপর float হিসাব চলছে।'}
       - type: code
         lang: php
         file: 'src/Customer/Infrastructure/LegacyCustomerGateway.php'
@@ -264,8 +404,15 @@ slides:
           - {line: 16, tip: 'পুরনোর `st` মান নতুন কোডের `active` bool-এ রূপ নিল। এই অনুবাদ শুধু এখানেই হয়।'}
           - {line: 17, tip: 'দশমিকের টাকা পয়সায় integer করা হলো, কারণ নতুন কোড টাকায় float ব্যবহার করে না।'}
       - type: quote
-        body: 'পুরনো সিস্টেমের ভাষা নতুন কোডে ঢুকতে দিও না; সীমান্তে অনুবাদ করে ঢোকাও।'
+        body: 'পুরনো সিস্টেমের ভাষা নতুন কোডে ঢুকতে দেবেন না; সীমান্তে অনুবাদ করে ঢোকান।'
     aside:
+      - type: when
+        use:
+          - 'পুরনো সিস্টেমের সাথে মাসের পর মাস বা বছর কথা বলতে হবে।'
+          - 'তার নাম বা ফরম্যাট অদ্ভুত, অথবা বদলানোর সম্ভাবনা আছে।'
+        avoid:
+          - 'একবারের ফেলনা import: script-এই বদলে নিয়ে শেষ করুন।'
+          - 'দাম: আরেকটা ক্লাস লিখতে হয়, আর পুরনোর সাথে তাল রেখে চলতে হয়।'
       - type: refs
         items:
           - {to: 'thinking/hexagonal', label: 'Port ও adapter'}
@@ -275,7 +422,7 @@ slides:
       a: 'শুধু LegacyCustomerGateway-তে। বাকি নতুন কোড `Customer::active` চেনে, পুরনোর ফিল্ডের নাম নয়, তাই তাদের কিছু টের পেতে হয় না।'
 
 flashcards:
-  - q: 'Controller, service আর repository-র কাজ আলাদা করে বলো।'
+  - q: 'Controller, service আর repository-র কাজ আলাদা করে বলুন।'
     a: 'Controller HTTP সামলায়, service ব্যবসার নিয়ম চালায়, repository ডেটা আনে-রাখে।'
     more: |
       রেস্টুরেন্টে ওয়েটার, বাবুর্চি আর ভাঁড়ারি যেমন আলাদা। এতে একটার বদল (যেমন HTTP থেকে queue handler) বাকিদের ছোঁয় না, আর প্রতিটাকে আলাদা করে টেস্ট করা যায়।
@@ -290,6 +437,11 @@ flashcards:
     more: |
       একই নিয়ম কপি করতে হয়, আর কপিগুলো কালক্রমে ভিন্ন হয়ে যায়। নিয়ম service-এ নিয়ে এলে এক জায়গায় বদলালেই সব জায়গায় বদলে যায়।
     ref: fat-controller
+  - q: 'একটা ছাড়ের নিয়ম তিন জায়গায় লাগে। সেগুলো কীভাবে একসুরে রাখবেন?'
+    a: 'নিয়মটা নিজের ক্লাসে একবার লিখুন, যেমন `DiscountPolicy`, আর checkout, অন্য API ও অ্যাডমিন পেজ সবাই সেটাকে ডাকুক।'
+    more: |
+      তিনটা কপি থাকলে দুটো বদলে তৃতীয়টা পুরনো দাম দেখায়: ৬০০০ টাকার একই প্রথম অর্ডারে checkout-এ ৫,১০০, অ্যাডমিন পেজে ৫,৪০০। এক ক্লাস থাকলে এক বদলে সব caller বদলায়, আর নিয়মের নিজের test থাকে।
+    ref: layered-symfony
   - q: 'Service-এর ভেতরে `Request` object ধরা কেন ভুল?'
     a: 'তাতে ব্যবসার নিয়ম HTTP-র সাথে বাঁধা পড়ে, আর কনসোল কমান্ড বা queue handler-এ সেই নিয়ম ব্যবহার করা যায় না।'
     more: |
@@ -301,10 +453,20 @@ flashcards:
       নাম এসেছে সেই গাছ থেকে, যে অন্য গাছের গা বেয়ে বেড়ে ধীরে তার জায়গা নেয়। পুরো সিস্টেম একদিনে নতুন করে লেখার ঝুঁকির চেয়ে এর ঝুঁকি অনেক কম, কারণ প্রতিটা ধাপ ছোট ও ফেরানো যায়।
     ref: strangler-fig
   - q: 'Strangler fig-এর চার ধাপ কী?'
-    a: 'সামনে router বসাও, একটা ছোট পথ নতুন করে লেখো, পাশাপাশি চালিয়ে মেলাও, ট্রাফিক সরিয়ে পুরনো কোড মুছো।'
+    a: 'সামনে router বসান, একটা ছোট পথ নতুন করে লিখুন, পাশাপাশি চালিয়ে মেলান, ট্রাফিক সরিয়ে পুরনো কোড মুছুন।'
     more: |
-      প্রথম পথ বাছার সময় কম ঝুঁকির, কম নির্ভরতার পথ নাও (যেমন একটা রিপোর্ট)। শেষ ধাপে পুরনো কোড মুছতে ভুলো না, নইলে দুই সিস্টেমই চিরকাল চলতে থাকে।
+      প্রথম পথ বাছার সময় কম ঝুঁকির, কম নির্ভরতার পথ নিন (যেমন একটা রিপোর্ট)। শেষ ধাপে পুরনো কোড মুছতে ভুলবেন না, নইলে দুই সিস্টেমই চিরকাল চলতে থাকে।
     ref: strangler-fig
+  - q: 'দুই অ্যাপ একই টেবিল ভাগ করলে কলামের নাম বদলালে কী ভাঙে?'
+    a: 'পুরনো অ্যাপ এখনো পুরনো নাম পড়ে, তাই সাথে সাথে ব্যর্থ হয়। নতুন কলাম যোগ করুন, backfill করুন, নতুন অ্যাপ সরান, আর পুরনোটা drop করুন পুরনো অ্যাপ যাওয়ার পরে।'
+    more: |
+      একে বলে expand and contract। nullable কলাম যোগ করলে কারও কিছু ভাঙে না। drop-ই একমাত্র ধাপ যা ফেরানো যায় না, তাই সেটা শেষে আসে, যখন কোনো পুরনো কোড কলামটা পড়ে না।
+    ref: shared-database-session
+  - q: 'Strangler migration-এর সময় নতুন অ্যাপ কীভাবে জানে কে login করেছে?'
+    a: 'ব্রাউজার দুই অ্যাপেই একই cookie পাঠায়। নতুন অ্যাপ গোপন endpoint দিয়ে পুরনোকে জিজ্ঞেস করে cookie-টা কার। login সরানো হয় সবার শেষে।'
+    more: |
+      Router দুই অ্যাপকে এক domain-এ রাখে, তাই দ্বিতীয় login লাগে না। গোপন endpoint ইন্টারনেট থেকে কখনো ডাকা যাবে না, আর তার উত্তর অল্প সময় cache করা যায়, যাতে পুরনো অ্যাপ বোতলের গলা না হয়।
+    ref: shared-database-session
   - q: 'Anti-corruption layer কী কাজে লাগে?'
     a: 'পুরনো সিস্টেমের অদ্ভুত নাম ও ফরম্যাট একটা অনুবাদক class-এ আটকে রাখে, যাতে নতুন কোড পরিষ্কার থাকে।'
     more: |
@@ -313,7 +475,7 @@ flashcards:
   - q: 'লিগ্যাসি সিস্টেম নতুন করে একবারে লিখে ফেলা কেন ঝুঁকির?'
     a: 'পুরনো কোডে বছরের পর বছরের লুকানো নিয়ম আছে, যেগুলো নতুন লেখায় হারায়, আর কাজ শেষ হতে অনুমানের চেয়ে অনেক বেশি সময় লাগে।'
     more: |
-      লেখার পুরো সময়ে পুরনো সিস্টেম আলাদা করে বদলাতে থাকে, তাই নতুনটা সবসময় পিছিয়ে থাকে। ধাপে ধাপে সরালে প্রতিটা ধাপ সত্যিকারের ব্যবহারকারী দিয়ে যাচাই হয়।
+      লেখার পুরো সময়ে পুরনো সিস্টেম আলাদা করে বদলাতে থাকে, তাই নতুনটা সবসময় পিছিয়ে থাকে: ৬ মাসের পরিকল্পনা সহজেই ১৪ মাস হয়ে যায়। ধাপে ধাপে সরালে প্রতিটা ধাপ সত্যিকারের ব্যবহারকারী দিয়ে যাচাই হয়।
     ref: strangler-fig
 
 quiz:
@@ -377,7 +539,7 @@ quiz:
         why: 'টাকার হিসাব string বা float দিয়ে করলে গোলমাল হয়; পয়সার integer নিরাপদ।'
     ref: anti-corruption-layer
   - q: 'নিচের কোনগুলো controller-এর কাজ?'
-    hint: 'ওয়েটারের কাজ ভাবো: নেয়, ডাকে, ফেরত দেয়।'
+    hint: 'ওয়েটারের কাজ ভাবুন: নেয়, ডাকে, ফেরত দেয়।'
     options:
       - text: 'DTO-তে request বাঁধা আর যাচাই করা'
         correct: true
@@ -391,6 +553,22 @@ quiz:
       - text: 'SQL দিয়ে সরাসরি টেবিলে লেখা'
         correct: false
         why: 'ডেটা রাখা repository-র কাজ।'
+    ref: layered-symfony
+  - q: 'Checkout এখন প্রথম অর্ডারে ১৫% ছাড় দেয়, কিন্তু অ্যাডমিন পেজ এখনো পুরনো দাম দেখায়। আসল সমাধান কী?'
+    hint: 'ছাড়ের নিয়ম কতগুলো জায়গা জানা উচিত?'
+    options:
+      - text: 'নতুন নিয়মটা অ্যাডমিন পেজেও কপি করা'
+        correct: false
+        why: 'আজকের সমস্যা মেটে, কিন্তু এখন তিন কপি, যা আবার আলাদা হয়ে যাবে।'
+      - text: 'নিয়মটা একটা ক্লাসে, যেমন `DiscountPolicy`, রাখা, যাকে checkout, অন্য API আর অ্যাডমিন পেজ সবাই ডাকে'
+        correct: true
+        why: 'এক বদলে সব caller বদলায়, আর নিয়মের একটাই test থাকে।'
+      - text: 'প্রতিটা কপির ওপর comment লেখা: "checkout-এর সাথে মিলিয়ে রাখুন"'
+        correct: false
+        why: 'comment চলে না। পরের বদলেও একটা কপি বাদ পড়বে।'
+      - text: 'অ্যাডমিন পেজে দাম লুকিয়ে ফেলা'
+        correct: false
+        why: 'এতে লক্ষণ ঢাকে মাত্র। দুই জায়গা তবু একমত নয়।'
     ref: layered-symfony
   - q: 'strangler fig-এ router-এ কোন কনফিগ বদল করলে একটা পথ পুরনো থেকে নতুন অ্যাপে সরে যায়?'
     hint: 'router-এর একটা নিয়ম বদলে কীভাবে সুইচ হয়?'
@@ -408,3 +586,19 @@ quiz:
         correct: false
         why: 'ব্যবহারকারী একই URL-এ থাকে; router ভেতরে পথ বদলায়।'
     ref: strangler-fig
+  - q: 'নতুন আর পুরনো অ্যাপ একই `orders` টেবিল ভাগ করে। নতুন অ্যাপ `total`-এর বদলে integer `total_paisa` চায়। নিরাপদ ধাপের ক্রম কী?'
+    hint: 'কোন ধাপ ফেরানো যায় না, আর কখন তা নিরাপদ?'
+    options:
+      - text: 'এক migration-এ `total`-এর নাম বদলে `total_paisa` করা'
+        correct: false
+        why: 'পুরনো অ্যাপ এখনো `total` select করে, তাই সাথে সাথে ভেঙে যায়।'
+      - text: 'নতুন অ্যাপের জন্য ডেটাবেসের আলাদা কপি বানিয়ে আর কখনো না মেলানো'
+        correct: false
+        why: 'দুই ডেটাবেস মানে প্রতিটা অর্ডারের দুই সংস্করণ; এক জায়গায় দেওয়া অর্ডার অন্যটায় থাকে না।'
+      - text: '`total_paisa` যোগ করা, backfill করা, নতুন অ্যাপ সরানো, আর পুরনো অ্যাপ যাওয়ার পরে `total` drop করা'
+        correct: true
+        why: 'প্রতিটা ধাপ পুরনো অ্যাপের জন্য নিরাপদ, আর যে ধাপ ফেরানো যায় না সেটা শেষে।'
+      - text: 'আগে `total` drop করা, তারপর `total_paisa` যোগ করা'
+        correct: false
+        why: 'পুরনো অ্যাপ ভাঙে, আর `total`-এর ডেটা কপির আগেই হারিয়ে যায়।'
+    ref: shared-database-session

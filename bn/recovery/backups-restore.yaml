@@ -18,7 +18,7 @@ slides:
         messages:
           - {from: dev, to: db, label: '৩:০২ — DELETE FROM orders (WHERE নেই)'}
           - {at: db, note: '১২ লাখ অর্ডার উধাও', tone: bad}
-          - {from: dev, to: bk, label: '৩:১২ — গতরাতের backup restore করো'}
+          - {from: dev, to: bk, label: '৩:১২ — গতরাতের backup restore করা হোক'}
           - {from: bk, to: dev, label: 'ফাইল ০ বাইট — ৩ সপ্তাহ ধরে খালি', dashed: true, tone: bad, tip: 'ডিস্ক ভরা ছিল, backup job চুপচাপ ব্যর্থ হয়েছিল। কেউ alert সাজায়নি।'}
           - {at: bk, note: 'কেউ কখনো restore করে দেখেনি', tone: warn}
       - type: quote
@@ -53,7 +53,7 @@ slides:
         nodes:
           - {id: prod, label: 'Production DB', sub: 'কপি ১ (আসল)', icon: db, tone: accent, col: 0, row: 1, tip: 'চালু ডেটাবেস। এটাও গোনা হয়, কিন্তু একা যথেষ্ট নয়।'}
           - {id: local, label: 'আলাদা ডিস্ক', sub: 'কপি ২ (একই অঞ্চল)', icon: archive, col: 2, row: 0, tip: 'আলাদা মেশিন বা ডিস্কে নিয়মিত backup আর WAL। দ্রুত restore-এর জন্য।'}
-          - {id: remote, label: 'অন্য অঞ্চলের bucket', sub: 'কপি ৩ (offsite)', icon: cloud, tone: good, col: 4, row: 1, tip: 'অন্য শহর বা region-এ object storage। এখানে immutability (মোছা-নিষেধ) চালু রাখো।'}
+          - {id: remote, label: 'অন্য অঞ্চলের bucket', sub: 'কপি ৩ (offsite)', icon: cloud, tone: good, col: 4, row: 1, tip: 'অন্য শহর বা region-এ object storage। এখানে immutability (মোছা-নিষেধ) চালু রাখুন।'}
         edges:
           - {from: prod, to: local, label: 'রোজ full-incremental backup আর WAL আলাদা ডিস্কে যায়'}
           - {from: local, to: remote, label: 'সেই কপি অন্য অঞ্চলের bucket-এ যায়, immutable করে'}
@@ -65,8 +65,9 @@ slides:
         body: 'একটাই কপি থাকলে আগুন, ডিস্ক ক্ষয়, ভুল আদেশ বা হ্যাকার — যেকোনো একটাতেই সব শেষ।'
       - type: tips
         items:
-          - 'Offsite bucket-এ object lock (immutability) চালু করো, যাতে হ্যাকার বা ভুলে মোছা না যায়।'
-          - 'Backup-এর encryption key আলাদা জায়গায় রাখো, নইলে ফাইল থাকলেও খোলা যাবে না।'
+          - 'Offsite bucket-এ object lock (immutability) চালু করুন, যাতে হ্যাকার বা ভুলে মোছা না যায়।'
+          - 'Backup-এর encryption key আলাদা জায়গায় রাখুন, নইলে ফাইল থাকলেও খোলা যাবে না।'
+          - 'দাম: তিন কপি মানে প্রায় তিন গুণ জায়গা, আর locked কপি retention শেষের আগে মোছা যায় না। ৩০ দিনের মতো retention ঠিক করুন।'
     check:
       q: 'Primary-র একটা replica আছে। তাহলে আলাদা backup লাগে কেন?'
       a: 'Replica primary-র সব বদল সাথে সাথে নকল করে, ভুল DELETE-ও। Backup পুরনো একটা মুহূর্তে ফেরার সুযোগ দেয়, replica দেয় না।'
@@ -88,13 +89,13 @@ slides:
           wal_level = replica
           archive_mode = on
           archive_command = 'pgbackrest --stanza=main archive-push %p'
-          archive_timeout = 60        # অন্তত প্রতি ৬০ সেকেন্ডে WAL ফাইল পাঠাও
+          archive_timeout = 60        # অন্তত প্রতি ৬০ সেকেন্ডে WAL ফাইল পাঠান
         marks:
           - {line: 3, tip: 'প্রতিটা সম্পূর্ণ WAL ফাইল backup repository-তে (আদর্শে offsite) চলে যায়। এটাই "মাঝের সব লেখা"-র সংরক্ষণ।'}
           - {line: 4, tip: 'WAL ফাইল পূর্ণ না হলেও জোর করে পাঠায়। RPO তাই প্রায় ১ মিনিট।'}
       - type: code
         lang: bash
-        file: 'restore (নতুন সার্ভারে)'
+        file: 'restore, তারপর হারানো সারি ফেরত'
         variant: good
         code: |
           # চালু DB-র ওপর কখনো নয়; নতুন বা scratch সার্ভারে
@@ -104,32 +105,40 @@ slides:
             --target-action=promote
           sudo systemctl start postgresql
 
-          psql -c 'SELECT count(*), max(created_at) FROM orders'   # ঠিক আছে কি দেখো
+          psql -c 'SELECT count(*), max(created_at) FROM orders'   # ঠিক আছে কি দেখুন
+
+          # হারানো সারি staging table দিয়ে production-এ ফেরত যায়
+          psql -c "\copy orders TO 'orders.csv' CSV"                       # scratch সার্ভারে
+          psql -h prod -c 'CREATE TABLE orders_restored (LIKE orders)'
+          psql -h prod -c "\copy orders_restored FROM 'orders.csv' CSV"
+          psql -h prod -c 'INSERT INTO orders SELECT * FROM orders_restored ON CONFLICT (id) DO NOTHING'
         marks:
-          - {line: 4, tip: 'ভুলের ঠিক এক মিনিট আগের সময়। সময়ের সাথে timezone (+06) লিখতে ভুলো না।'}
+          - {line: 4, tip: 'ভুলের ঠিক এক মিনিট আগের সময়। সময়ের সাথে timezone (+06) লিখতে ভুলবেন না।'}
           - {line: 5, tip: 'লক্ষ্যে পৌঁছে DB চালু (promote) হয়; নইলে read-only অপেক্ষায় থাকে।'}
-          - {line: 8, tip: 'শেষে নিজে গুনে দেখো: অর্ডার ফিরেছে কি না, সর্বশেষ সময় ঠিক কি না। চালু করার আগে এই যাচাই।'}
+          - {line: 8, tip: 'শেষে নিজে গুনে দেখুন: অর্ডার ফিরেছে কি না, সর্বশেষ সময় ঠিক কি না। চালু করার আগে এই যাচাই।'}
+          - {line: 14, tip: 'ON CONFLICT DO NOTHING: production-এ আজ যে অর্ডারগুলো আছে সেগুলো অক্ষত থাকে, শুধু হারানোগুলো ঢোকে।'}
     aside:
       - type: tips
         items:
-          - 'আগে scratch সার্ভারে PITR করে যাচাই করো, তারপর ঠিক ডেটা production-এ ফেরত নাও। পুরো DB উল্টে দিলে ভুল মুহূর্তের পরের সব বৈধ লেনদেনও হারায়।'
+          - 'আগে scratch সার্ভারে PITR করে যাচাই করুন, তারপর ঠিক ডেটা production-এ ফেরত নিন। পুরো DB উল্টে দিলে ভুল মুহূর্তের পরের সব বৈধ লেনদেনও হারায়।'
           - 'pgBackRest ছাড়া নিজের হাতে করলে `restore_command`, `recovery_target_time` আর `recovery.signal` ফাইল লাগে।'
       - type: pitfalls
         items:
           - 'Backup সার্ভারের ঘড়ি আর DB সার্ভারের সময় না মিললে target time ভুল জায়গায় যায়।'
+          - 'দাম: WAL archive লেখার পরিমাণের সাথে বাড়ে, আর পুরো দিনের WAL চালাতে restore লম্বা হয়। প্রতিদিন নতুন base backup নিলে তা ছোট থাকে।'
     check:
       q: 'রাত ২টার backup থাকতেও PITR লাগে কেন?'
       a: 'রাতের backup শুধু ২টার অবস্থা ফেরায়, ফলে ভুলের আগ পর্যন্ত ঘণ্টাখানেকের ডেটা হারায়। WAL চালিয়ে ঠিক ভুলের এক মিনিট আগে ফেরা যায়।'
 
   - slug: restore-drill
-    title: 'Restore drill: নিজে ভেঙে দেখো'
+    title: 'Restore drill: নিজে ভেঙে দেখুন'
     kind: howto
-    tldr: 'সপ্তাহে একবার সর্বশেষ backup scratch DB-তে restore করে সময় মাপো আর ডেটা যাচাই করো; ব্যর্থ হলে সাথে সাথে alert।'
+    tldr: 'সপ্তাহে একবার সর্বশেষ backup scratch DB-তে restore করে সময় মাপুন আর ডেটা যাচাই করুন; ব্যর্থ হলে সাথে সাথে alert।'
     keywords: ['restore drill', 'backup verification', 'scratch database', 'Symfony Scheduler', 'RTO', 'AsCronTask']
     blocks:
       - type: text
         body: |
-          Backup তখনই বিশ্বাসযোগ্য, যখন সপ্তাহে একবার মেশিন নিজে সেটা restore করে দেখে। এই command সর্বশেষ backup scratch DB-তে ঢালে, কত সময় লাগল মাপে (এটাই আপনার আসল **RTO**), আর কয়েকটা সুস্থতা পরীক্ষা চালায়: অর্ডার সংখ্যা যথেষ্ট কি না, সর্বশেষ ডেটা নতুন কি না।
+          Backup তখনই বিশ্বাসযোগ্য, যখন সপ্তাহে একবার মেশিন নিজে সেটা restore করে দেখে। এই command সর্বশেষ backup scratch DB-তে restore করে চালু করে, কত সময় লাগল মাপে (এটাই আপনার আসল **RTO**), আর কয়েকটা সুস্থতা পরীক্ষা চালায়: অর্ডার সংখ্যা যথেষ্ট কি না, সর্বশেষ ডেটা নতুন কি না।
       - type: code
         lang: php
         file: 'src/Command/BackupVerifyCommand.php'
@@ -142,8 +151,10 @@ slides:
               protected function execute(InputInterface $in, OutputInterface $out): int
               {
                   $start = microtime(true);
-                  (new Process(['pg_restore', '--clean', '--if-exists', '--no-owner',
-                      '-d', $this->scratchDsn, $this->latestDump()]))->setTimeout(3600)->mustRun();
+                  (new Process(['pgbackrest', '--stanza=main', '--delta', '--type=immediate',
+                      '--pg1-path='.$this->scratchDir, 'restore']))->setTimeout(7200)->mustRun();
+                  (new Process(['pg_ctl', '-D', $this->scratchDir, '-w', 'start',
+                      '-o', '-p 5433 -c archive_mode=off']))->mustRun();
                   $secs = (int) (microtime(true) - $start);
 
                   $orders = (int) $this->scratch->fetchOne('SELECT count(*) FROM orders');
@@ -162,8 +173,9 @@ slides:
         marks:
           - {line: 2, tip: 'সপ্তাহে একবার রবিবার ভোর ৫টায় নিজে চলে। কারো মনে রাখার দরকার নেই।'}
           - {line: 9, tip: '`mustRun()` ব্যর্থ হলে exception ওঠে; scheduler ব্যর্থতা লগ করে, তাই alert পাওয়া যায়।'}
-          - {line: 15, tip: 'শুধু "restore হয়েছে" যথেষ্ট নয়। ডেটা পূর্ণ ও সাম্প্রতিক কি না, এই দুটো পরীক্ষা খালি backup ধরে ফেলে।'}
-          - {line: 20, tip: 'মাপা সময়টা চার্টে রাখো। ডেটা বাড়লে restore ধীর হয়, আর RTO নীরবে বেড়ে যায়।'}
+          - {line: 11, tip: 'Restore করা কপি চালু DB-র archive সেটিং পায়। archiving বন্ধ না করলে scratch সার্ভার আসল backup repository-তে WAL ঠেলে দেবে।'}
+          - {line: 17, tip: 'শুধু "restore হয়েছে" যথেষ্ট নয়। ডেটা পূর্ণ ও সাম্প্রতিক কি না, এই দুটো পরীক্ষা খালি backup ধরে ফেলে।'}
+          - {line: 22, tip: 'মাপা সময়টা চার্টে রাখুন। ডেটা বাড়লে restore ধীর হয়, আর RTO নীরবে বেড়ে যায়।'}
       - type: visual
         kind: bars
         caption: 'Restore সময় (মিনিট) ডেটা বাড়ার সাথে কীভাবে বাড়ে'
@@ -174,8 +186,9 @@ slides:
     aside:
       - type: tips
         items:
-          - 'Drill চলার সময় যে মাপ বেরোয়, সেটাই runbook-এ "আনুমানিক সময়" হিসেবে লেখো।'
-          - 'Scratch DB-তে ব্যক্তিগত ডেটা থাকে; সেটা production-এর মতোই সুরক্ষিত রাখো, কাজ শেষে মুছে দাও।'
+          - 'Drill চলার সময় যে মাপ বেরোয়, সেটাই runbook-এ "আনুমানিক সময়" হিসেবে লিখুন।'
+          - 'Scratch DB-তে ব্যক্তিগত ডেটা থাকে; সেটা production-এর মতোই সুরক্ষিত রাখুন, কাজ শেষে মুছে দিন।'
+          - 'দাম: scratch সার্ভারে production-এর সমান ডিস্ক লাগে আর পুরো restore-এর সময় চালু থাকে। বিপদের দিনে জানার চেয়ে এটা অনেক সস্তা।'
       - type: refs
         items:
           - {to: 'resilience/disaster-recovery', label: 'Disaster recovery'}
@@ -191,7 +204,7 @@ slides:
     blocks:
       - type: text
         body: |
-          রাত ৩টায় বিপদে মাথা কাজ করে না। তখন দরকার একটা কাগজ, যার প্রতিটা ধাপ এত সহজ যে আধা-ঘুমের মানুষও পারে। **Runbook** ঠিক তা-ই: কে ডাকবে, কোন কমান্ড, কী দেখলে বুঝবে ঠিক হয়েছে, কী দেখলে থামবে। বিপদে পরিকল্পনা বানানো নয়, লেখা পরিকল্পনা অনুসরণ করা।
+          রাত ৩টায় বিপদে মাথা কাজ করে না। তখন দরকার একটা কাগজ, যার প্রতিটা ধাপ এত সহজ যে আধা-ঘুমের মানুষও পারে। **Runbook** ঠিক তা-ই: কাকে ডাকবেন, কোন কমান্ড, কী দেখলে বুঝবেন ঠিক হয়েছে, কী দেখলে থামবেন। বিপদে পরিকল্পনা বানানো নয়, লেখা পরিকল্পনা অনুসরণ করা।
       - type: code
         lang: text
         file: 'runbooks/restore-production-db.md'
@@ -202,19 +215,19 @@ slides:
 
           কখন: ভুল DELETE/UPDATE, ডিস্ক নষ্ট, ransomware সন্দেহ
 
-          ১. incident channel খোলো, incident commander ঠিক করো
+          ১. incident channel খুলুন, incident commander ঠিক করুন
           ২. লেখা বন্ধ: `php bin/console app:maintenance on`
-          ৩. ভুলের সঠিক সময় লিখে রাখো (logs থেকে) → T
+          ৩. ভুলের সঠিক সময় লিখে রাখুন (logs থেকে) → T
           ৪. নতুন সার্ভারে restore: T-র ১ মিনিট আগের target
              pgbackrest --stanza=main restore --type=time \
                --target='T' --target-action=promote
           ৫. যাচাই: `psql -c 'SELECT count(*), max(created_at) FROM orders'`
              প্রত্যাশা: অর্ডার সংখ্যা ≈ গতকালের, max(created_at) ≈ T
-          ৬. মোছা ডেটা বের করে production-এ ফেরত নাও
-             (পুরো DB বদলে দিও না; ভুলের পর বৈধ লেনদেন আছে)
-          ৭. maintenance off, ১ ঘণ্টা নজর রাখো, post-mortem লেখো
+          ৬. মোছা সারি staging table দিয়ে ফেরত নিন (ON CONFLICT DO NOTHING)
+             (পুরো DB বদলে দেবেন না; ভুলের পর বৈধ লেনদেন আছে)
+          ৭. maintenance off, ১ ঘণ্টা নজর রাখুন, post-mortem লিখুন
 
-          থামো যদি: restore ১২০ মিনিট পেরোয় → ডেটা-লিডকে ফোন
+          থামুন যদি: restore ১২০ মিনিট পেরোয় → ডেটা-লিডকে ফোন
         marks:
           - {line: 2, tip: 'শেষ drill-এর তারিখ আর সময় লেখা থাকলে বোঝা যায় কাগজ কত পুরনো আর কতক্ষণ লাগবে।'}
           - {line: 9, tip: 'কমান্ড হুবহু লেখা, কপি-পেস্ট করার মতো। বিপদে কেউ মনে করে টাইপ করে না।'}
@@ -227,7 +240,7 @@ slides:
           - 'প্রতিটা ধাপ ছোট, ক্রমিক আর কপি-পেস্টযোগ্য।'
           - 'প্রতিটা ধাপের পাশে "কী দেখলে ঠিক" লেখা।'
           - 'কে মালিক, শেষ কবে drill হয়েছে লেখা।'
-          - 'কখন থামবে আর কাকে ডাকবে, তা স্পষ্ট।'
+          - 'কখন থামবেন আর কাকে ডাকবেন, তা স্পষ্ট।'
           - 'প্রতিটা drill বা ঘটনার পর হালনাগাদ হয়।'
       - type: quote
         body: 'রাত ৩টায় পরিকল্পনা বানানো যায় না। লেখা পরিকল্পনা অনুসরণ করা যায়।'
@@ -237,10 +250,10 @@ slides:
           - {to: 'observability/incident-response', label: 'Incident response'}
           - {to: 'recovery/corrective-actions', label: 'ভুল ডেটা শুধরানো'}
       - type: remember
-        body: 'Runbook পুরনো হলে ভুল। প্রতিটা drill-এ পড়ো, পুরনো ধাপ বদলাও।'
+        body: 'Runbook পুরনো হলে ভুল। প্রতিটা drill-এ পড়ুন, পুরনো ধাপ বদলান।'
     check:
       q: 'Runbook-এ "ধাপের পাশে কী দেখলে ঠিক" লেখা কেন জরুরি?'
-      a: 'ভয়ের মধ্যে ধাপ ভুল হলেও টের পাওয়া যায় না। প্রত্যাশিত ফল লেখা থাকলে সাথে সাথে বোঝা যায় ঠিক পথে আছি কি না।'
+      a: 'ভয়ের মধ্যে ধাপ ভুল হলেও টের পাওয়া যায় না। প্রত্যাশিত ফল লেখা থাকলে সাথে সাথে বোঝা যায় ঠিক পথে আছেন কি না।'
 
 flashcards:
   - q: 'Backup restore করে না দেখলে ঠিক কী ঝুঁকি?'
@@ -273,6 +286,11 @@ flashcards:
     more: |
       ভুলের পরে আসা বৈধ লেনদেনও থাকে। পুরো DB উল্টে দিলে সেগুলো হারায়। তাই আগে আলাদা জায়গায় ফিরে, মোছা ডেটা বের করে production-এ বসানো নিরাপদ।
     ref: point-in-time-recovery
+  - q: 'নতুন বৈধ ডেটা না হারিয়ে উদ্ধার করা সারি কীভাবে ফেরত আনা হয়?'
+    a: 'Production-এ একটা staging table-এ ঢেলে `INSERT ... ON CONFLICT DO NOTHING` চালাতে হয়। আজ যা আছে তা থাকে, শুধু হারানোগুলো ঢোকে।'
+    more: |
+      ভুলের পর যে অর্ডারগুলো এসেছে সেগুলো শুধু production-এ আছে; তার ওপর restore করলে নষ্ট হবে। Staging table-এ database নিজেই primary key দেখে সারি ধরে ধরে সিদ্ধান্ত নেয়।
+    ref: point-in-time-recovery
   - q: 'Restore drill কী, আর কতবার চালানো উচিত?'
     a: 'সর্বশেষ backup scratch DB-তে ঢেলে সময় মাপা আর ডেটা যাচাই করা। অন্তত সপ্তাহে একবার, স্বয়ংক্রিয়ভাবে।'
     more: |
@@ -302,7 +320,7 @@ quiz:
         why: 'Replica-তেও DELETE সাথে সাথে পৌঁছেছে।'
     ref: point-in-time-recovery
   - q: 'কোনগুলো ৩-২-১ নিয়মের অংশ?'
-    hint: 'সংখ্যা তিনটার প্রতিটার মানে ভাবো।'
+    hint: 'সংখ্যা তিনটার প্রতিটার মানে ভাবুন।'
     options:
       - text: 'মোট তিনটা কপি (আসলসহ)'
         correct: true
@@ -366,8 +384,24 @@ quiz:
         why: 'ভয়ের মধ্যে অস্পষ্ট নির্দেশ অনুসরণ করা যায় না।'
       - text: 'কখন থেমে কাকে ডাকতে হবে, তা লেখা নেই'
         correct: true
-        why: 'আটকে গেলে কী করবে জানা না থাকলে সময় নষ্ট হয়।'
+        why: 'আটকে গেলে কী করবেন জানা না থাকলে সময় নষ্ট হয়।'
       - text: 'প্রতিটা ধাপের পাশে প্রত্যাশিত ফল লেখা'
         correct: false
         why: 'এটা ভালো গুণ; ভুল পথে এগোনো ঠেকায়।'
     ref: runbook
+  - q: 'Scratch সার্ভারে PITR করে মোছা ১২ লাখ অর্ডার ফিরেছে। ভুলের পর production-এ নতুন ৩০০ অর্ডার এসেছে। হারানোগুলো কীভাবে ফেরত আনবেন?'
+    hint: 'নতুন ৩০০ অর্ডার শুধু production-এ আছে।'
+    options:
+      - text: 'উদ্ধার করা সারি staging table-এ ঢেলে orders-এ INSERT ... ON CONFLICT DO NOTHING চালানো'
+        correct: true
+        why: 'আজকের ৩০০ অর্ডার অক্ষত থাকে, আর শুধু হারানো সারিগুলো যোগ হয়।'
+      - text: 'Scratch সার্ভারকেই নতুন production DB বানিয়ে দেওয়া'
+        correct: false
+        why: 'Scratch কপি target সময়েই থেমে আছে, তাই নতুন ৩০০ অর্ডার উধাও হবে।'
+      - text: 'orders-এ TRUNCATE চালিয়ে পুরো restore করা টেবিল ঢালা'
+        correct: false
+        why: 'পরিষ্কার লোডের জন্য নতুন ৩০০ অর্ডার নষ্ট করা হয়।'
+      - text: 'উদ্ধার করা সারি সরাসরি orders-এ INSERT করা'
+        correct: false
+        why: 'কোনো id মিলে গেলে duplicate-key ত্রুটি হয়ে লোড মাঝপথে থেমে যায়।'
+    ref: point-in-time-recovery

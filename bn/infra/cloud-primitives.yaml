@@ -24,11 +24,26 @@ slides:
         marks:
           - {line: 3, tip: '3306 হলো MySQL-এর দরজা। এই দরজা দিয়ে ঢোকার কথা শুধু অ্যাপ সার্ভারের।'}
           - {line: 6, tip: '0.0.0.0/0 মানে পুরো ইন্টারনেটের যে কোনো ঠিকানা। দুনিয়ার সবাই এখানে কড়া নাড়তে পারে।'}
+      - type: code
+        lang: text
+        file: 'network.tf (HCL)'
+        variant: good
+        code: |
+          resource "aws_security_group_rule" "db_from_app" {
+            type                     = "ingress"
+            from_port                = 3306
+            to_port                  = 3306
+            protocol                 = "tcp"
+            source_security_group_id = aws_security_group.app.id
+            security_group_id        = aws_security_group.db.id
+          }
+        marks:
+          - {line: 6, tip: 'Source হলো ঠিকানা নয়, অ্যাপের security group। ওই ব্যাজ-পরা সার্ভারই শুধু কড়া নাড়তে পারে; আর ডেটাবেস নিজে থাকে private subnet-এ।'}
       - type: quote
         body: 'ডেটাবেস কখনো ইন্টারনেট থেকে সরাসরি ধরা যাবে না।'
     aside:
       - type: problem
-        body: 'ক্লাউড তোমাকে হার্ডওয়্যার কেনার ঝামেলা থেকে বাঁচায়, কিন্তু কে কোথায় ঢুকতে পারবে — সেই নিয়ম বানানোর দায় তোমারই। এই segment সেই নিয়মগুলোর মূল ইটগুলো চেনায়।'
+        body: 'ক্লাউড আপনাকে হার্ডওয়্যার কেনার ঝামেলা থেকে বাঁচায়, কিন্তু কে কোথায় ঢুকতে পারবে — সেই নিয়ম বানানোর দায় আপনারই। এই segment সেই নিয়মগুলোর মূল ইটগুলো চেনায়।'
       - type: story
         title: 'খোলা ডেটাবেসের পরিণতি'
         body: |
@@ -40,14 +55,14 @@ slides:
   - slug: vpc-subnets-sg
     title: 'VPC, subnet আর security group'
     kind: concept
-    tldr: 'VPC তোমার নিজস্ব বন্ধ নেটওয়ার্ক; public subnet-এ থাকে শুধু দরজা (load balancer), private subnet-এ অ্যাপ আর ডেটাবেস।'
+    tldr: 'VPC আপনার নিজস্ব বন্ধ নেটওয়ার্ক; public subnet-এ থাকে শুধু দরজা (load balancer), private subnet-এ অ্যাপ আর ডেটাবেস।'
     keywords: ['VPC', 'subnet', 'security group', 'private subnet', 'networking', 'নেটওয়ার্ক']
     blocks:
       - type: metaphor
         icon: building
         title: 'ভাড়া নেওয়া ফ্লোরের ঘরগুলো'
         body: |
-          ক্লাউড একটা বিশাল ভবন; তুমি তার একটা ফ্লোর ভাড়া নিয়েছ — সেটাই **VPC** (Virtual Private Cloud, তোমার নিজের বন্ধ নেটওয়ার্ক)। ফ্লোরের সামনের বৈঠকখানা **public subnet**, ভেতরের সিন্দুক-ঘর **private subnet**। প্রতিটা ঘরের দরজায় দারোয়ান বসে — সেই **security group**, যার খাতায় লেখা কাকে ঢুকতে দেবে।
+          ক্লাউড একটা বিশাল ভবন; আপনি তার একটা ফ্লোর ভাড়া নিয়েছেন — সেটাই **VPC** (Virtual Private Cloud, আপনার নিজের বন্ধ নেটওয়ার্ক)। ফ্লোরের সামনের বৈঠকখানা **public subnet**, ভেতরের সিন্দুক-ঘর **private subnet**। প্রতিটা ঘরের দরজায় দারোয়ান বসে — সেই **security group**, যার খাতায় লেখা কাকে ঢুকতে দেবে।
       - type: visual
         kind: flow
         caption: 'ইন্টারনেটের ঢোকার একটাই পথ — load balancer; তার পরে ধাপে ধাপে ভেতরে'
@@ -68,7 +83,7 @@ slides:
           - 'অ্যাপ: শুধু load balancer-এর group থেকে 8080'
           - 'ডেটাবেস: শুধু অ্যাপের group থেকে 3306'
       - type: quote
-        body: 'IP নয়, group-এর নাম দিয়ে নিয়ম লেখো — অ্যাপ বাড়লেও নিয়ম বদলাতে হয় না।'
+        body: 'IP নয়, group-এর নাম দিয়ে নিয়ম লিখুন — অ্যাপ বাড়লেও নিয়ম বদলাতে হয় না।'
     aside:
       - type: terms
         items:
@@ -77,7 +92,7 @@ slides:
           - {term: 'Availability zone', meaning: 'একই শহরের আলাদা ভবন, যার বিদ্যুৎ আলাদা। দুই zone-এ সার্ভার রাখলে এক ভবন গেলেও সাইট চলে।'}
       - type: tips
         items:
-          - 'Subnet প্রতিটা availability zone-এ বানাও, যাতে এক zone গেলেও আরেকটা চলে।'
+          - 'Subnet প্রতিটা availability zone-এ বানান, যাতে এক zone গেলেও আরেকটা চলে।'
           - 'Security group "stateful": ঢোকা request-এর জবাব নিজে থেকেই বেরোতে পারে, আলাদা নিয়ম লাগে না।'
     check:
       q: 'ডেটাবেসের security group-এ কোন source লিখলে সবচেয়ে নিরাপদ, আর কেন?'
@@ -86,7 +101,7 @@ slides:
   - slug: iam-least-privilege
     title: 'IAM: কার হাতে কোন চাবি'
     kind: howto
-    tldr: 'IAM বলে কে কোন resource-এ কোন কাজ করতে পারবে; অ্যাপকে role দাও, শুধু দরকারি action আর resource-এর অনুমতি দিয়ে।'
+    tldr: 'IAM বলে কে কোন resource-এ কোন কাজ করতে পারবে; অ্যাপকে role দিন, শুধু দরকারি action আর resource-এর অনুমতি দিয়ে।'
     keywords: ['IAM', 'role', 'policy', 'least privilege', 'access key', 'অনুমতি']
     blocks:
       - type: metaphor
@@ -121,14 +136,14 @@ slides:
           - {line: 3, tip: 'শুধু পড়া আর লেখা। মুছার অনুমতি নেই — অ্যাপ ভুল করলেও invoice হারাবে না।'}
           - {line: 4, tip: 'একটা bucket-এর একটা ফোল্ডার। অন্য কোনো ডেটায় এই অ্যাপের হাত পৌঁছায় না।'}
       - type: quote
-        body: 'যার যতটুকু দরকার, তাকে ততটুকুই অনুমতি দাও — এক ইঞ্চিও বেশি নয়।'
+        body: 'যার যতটুকু দরকার, তাকে ততটুকুই অনুমতি দিন — এক ইঞ্চিও বেশি নয়।'
         by: 'Least privilege'
     aside:
       - type: pitfalls
         items:
-          - 'Access key কোডে বা .env ফাইলে git-এ তুলো না — অ্যাপ সার্ভারে role জুড়ে দাও, key লাগবেই না।'
-          - 'মানুষের জন্য আলাদা user, অ্যাপের জন্য role — দুটো এক করো না।'
-          - 'Root অ্যাকাউন্টে MFA দাও, আর দৈনন্দিন কাজে root ব্যবহার করো না।'
+          - 'Access key কোডে বা .env ফাইলে git-এ তুলবেন না — অ্যাপ সার্ভারে role জুড়ে দিন, key লাগবেই না।'
+          - 'মানুষের জন্য আলাদা user, অ্যাপের জন্য role — দুটো এক করবেন না।'
+          - 'Root অ্যাকাউন্টে MFA দিন, আর দৈনন্দিন কাজে root ব্যবহার করবেন না।'
       - type: terms
         items:
           - {term: 'Role', meaning: 'এমন পরিচয়, যা কোনো মানুষের নয় — অ্যাপ বা সার্ভিস সাময়িকভাবে নিজের গায়ে পরে নেয়।'}
@@ -143,71 +158,174 @@ slides:
   - slug: compute-and-managed
     title: 'Compute-এর তিন রকম আর managed service'
     kind: compare
-    tldr: 'VM, container আর serverless-এ তোমার দায় ধাপে ধাপে কমে; managed service (RDS, S3, SQS) আরও বেশি কাজ ক্লাউডকে দেয়।'
+    tldr: 'VM, container আর serverless-এ আপনার দায় ধাপে ধাপে কমে, আর প্রতি ধাপের একটা দামও আছে; managed service (RDS, S3, SQS) আরও বেশি কাজ ক্লাউডকে দেয়।'
     keywords: ['compute', 'VM', 'EC2', 'serverless', 'managed service', 'RDS', 'ম্যানেজড সার্ভিস']
     blocks:
       - type: metaphor
         icon: home
         title: 'বাসা, হোটেলের রুম আর খাবারের ডেলিভারি'
         body: |
-          নিজের বাসায় রান্না করলে চুলা, গ্যাস আর বাজার সবই তোমার (VM)। হোটেলের রুমে ঘর ও বিছানা তৈরি, তুমি শুধু নিজের জিনিস নিয়ে ঢোকো (container)। আর ডেলিভারি অর্ডার করলে শুধু যা খেলে তার দাম দাও (serverless)। **Managed service** হলো রান্না-করা খাবার — ডেটাবেস, queue, ফাইল রাখার কাজ ক্লাউডই চালায়।
+          নিজের বাসায় রান্না করলে চুলা, গ্যাস আর বাজার সবই আপনার (VM)। হোটেলের রুমে ঘর ও বিছানা তৈরি, আপনি শুধু নিজের জিনিস নিয়ে ঢোকেন (container)। আর ডেলিভারি অর্ডার করলে শুধু যা খেলে তার দাম দেন (serverless)। **Managed service** হলো রান্না-করা খাবার — ডেটাবেস, queue, ফাইল রাখার কাজ ক্লাউডই চালায়।
       - type: visual
         kind: table
         caption: 'তিন রকম compute: কে কী সামলায়'
         headers: ['', 'VM (EC2)', 'Container', 'Serverless']
         rows:
-          - cells: ['তুমি সামলাও', 'OS, runtime, কোড', 'শুধু image আর কোড', 'শুধু function-এর কোড']
-            tip: 'ডানে গেলে তোমার দায় কমে, কিন্তু নিয়ন্ত্রণও কমে।'
+          - cells: ['আপনি সামলান', 'OS, runtime, কোড', 'শুধু image আর কোড', 'শুধু function-এর কোড']
+            tip: 'ডানে গেলে আপনার দায় কমে, কিন্তু নিয়ন্ত্রণও কমে।'
           - cells: ['শুরু হতে সময়', 'মিনিট', 'সেকেন্ড', 'মিলিসেকেন্ড (cold start বাদে)']
             tip: 'Serverless-এ অনেকক্ষণ অলস থাকলে প্রথম call ধীর হয়, একে cold start বলে।'
           - cells: ['বিল ধরা হয়', 'চালু থাকার ঘণ্টায়', 'চালু থাকা node-এর ঘণ্টায়', 'কতবার চলল তার হিসাবে']
             tip: 'কম ব্যবহারে serverless সস্তা; সারাদিন একটানা চললে VM বা container সস্তা।'
           - cells: ['কখন ভালো', 'পুরনো অ্যাপ, বিশেষ দরকার', 'সাধারণ Symfony API', 'হঠাৎ-আসা ছোট কাজ']
             tip: 'বেশিরভাগ নতুন Symfony অ্যাপের জন্য container-ই ডিফল্ট বাছাই।'
+          - cells: ['দাম কোথায়', 'Patch, অলস সময়ের বিল', 'Orchestrator শেখা', 'Cold start, সময়সীমা, lock-in']
+            tip: 'প্রতিটা কলামেরই একটা শর্ত আছে। পরের স্লাইডে serverless-এরটার হিসাব দেখানো হয়েছে।'
       - type: points
-        title: 'Managed service কখন নেবে'
+        title: 'Managed service কখন নেবেন'
         style: check
         items:
           - 'ডেটাবেস, cache, queue, ফাইল — এগুলো নিজে চালিয়ে লাভ নেই'
-          - 'Backup, patch, failover তারা করে — তুমি শুধু চালু ও পরীক্ষা করো'
-          - 'দাম একটু বেশি, কিন্তু রাত ৩টায় তোমাকে জাগতে হয় না'
+          - 'Backup, patch, failover তারা করে — আপনি শুধু চালু ও পরীক্ষা করেন'
+          - 'দাম: বিল বেশি, আর নিজের হাতে বদলানোর সুযোগ কম। লুকানো সেটিং লাগলে নিজে চালান'
     aside:
       - type: when
-        use: ['যেটা তোমার ব্যবসার বিশেষত্ব নয়, সেটা managed নাও', 'ছোট টিমে অপারেশনের লোক কম থাকলে']
+        use: ['যেটা আপনার ব্যবসার বিশেষত্ব নয়, সেটা managed নিন', 'ছোট টিমে অপারেশনের লোক কম থাকলে']
         avoid: ['খুব বিশেষ কনফিগারেশন লাগলে, যা managed service দেয় না']
       - type: terms
         items:
           - {term: 'RDS', meaning: 'AWS-এর managed রিলেশনাল ডেটাবেস। Backup আর failover তারাই চালায়।'}
           - {term: 'S3', meaning: 'ফাইল রাখার managed ঘর (object storage), প্রায় অসীম জায়গা।'}
-          - {term: 'SQS', meaning: 'managed queue; message জমা রাখে, তুমি worker চালাও।'}
+          - {term: 'SQS', meaning: 'managed queue; message জমা রাখে, আপনি worker চালান।'}
     check:
       q: 'রাতে খুব কম ব্যবহার হয়, কিন্তু মাঝে মাঝে হঠাৎ ছবি resize করতে হয়। কোন compute মানানসই?'
-      a: 'Serverless। অলস সময়ে বিল শূন্য, আর কাজ এলে চলে — সারাদিন VM চালু রেখে ঘণ্টা-বিল দেওয়ার দরকার নেই।'
+      a: 'Serverless। অলস সময়ে বিল প্রায় শূন্য, আর কাজ এলে চলে। মাঝে মাঝে প্রথম call ধীর হলে (cold start) ব্যাকগ্রাউন্ড resize-এ ক্ষতি নেই।'
+
+  - slug: compute-costs-and-rule
+    title: 'Serverless-এর দাম, আর বাছাইয়ের নিয়ম'
+    kind: pitfall
+    tldr: 'Serverless অলস সময়ে সস্তা, কিন্তু প্রথম call ধীর, একটানা চাপে দামি আর এক ক্লাউডে বাঁধা। বাছুন ট্রাফিকের ধরন দেখে।'
+    keywords: ['cold start', 'serverless খরচ', 'lock-in', 'Lambda', 'Bref', 'বাছাইয়ের নিয়ম']
+    blocks:
+      - type: points
+        title: '"চললেই বিল" কথার আড়ালের শর্ত'
+        style: cross
+        items:
+          - 'Cold start: কিছুক্ষণ চুপ থাকার পর প্রথম call-কে function চালু হওয়া পর্যন্ত অপেক্ষা করতে হয়, সেকেন্ডের ভগ্নাংশ থেকে কয়েক সেকেন্ড'
+          - 'একটানা চাপ: প্রতিবার-চলার বিল জমে যায়; কখনো না-থামা function একই কাজের container-এর দ্বিগুণের বেশি পড়ে'
+          - 'Lock-in: trigger আর handler-এর ধরন একটা ক্লাউডের নিজস্ব, তাই ছাড়তে হলে ওই জোড়ার কোড নতুন করে লিখতে হয়'
+      - type: visual
+        kind: bars
+        caption: 'একই ছবি-resize কাজের এক মাসের মোটামুটি খরচ, list price ধরে'
+        items:
+          - {label: 'Serverless, কম ব্যবহার', value: 1, display: '$0.19', tone: good, tip: '৫১২ MB function-এ ২০০ ms করে ১ লাখ resize। এক ডলারের কম, আর ঘুমিয়ে থাকলে কোনো বিল নেই।'}
+          - {label: 'Container, সবসময় চালু', value: 35, display: '$35', tip: 'একটা ছোট container (১ vCPU, ২ GB), ঘণ্টা-হারে ফ্ল্যাট দাম। ব্যস্ত থাকুক বা ঘুমাক, একই বিল।'}
+          - {label: 'Serverless, সারাক্ষণ ব্যস্ত', value: 76, display: '$76', tone: bad, tip: 'একই ১ vCPU-র কাজ, কিন্তু মাসের প্রতি সেকেন্ডই চলার হিসাবে বিল। container-এর দ্বিগুণের বেশি।'}
+      - type: code
+        lang: php
+        file: 'src/Service/InvoiceThumbnailer.php'
+        variant: good
+        code: |
+          // সাধারণ PHP: কোনো ক্লাউডের কথা জানে না, তাই যেকোনো জায়গায় চলে
+          final readonly class InvoiceThumbnailer
+          {
+              public function __construct(private FilesystemOperator $storage) {}
+
+              public function thumbnail(string $path): string
+              {
+                  $image = (new ImageManager(new Driver()))->read($this->storage->read($path));
+                  $small = $path.'.thumb.jpg';
+                  $this->storage->write($small, (string) $image->scaleDown(width: 400)->toJpeg());
+
+                  return $small;
+              }
+          }
+
+          // Lambda-র একমাত্র নিজস্ব ফাইল (Bref): পাতলা handler, শুধু ওপরেরটাকে ডাকে
+          final readonly class ResizeHandler implements Handler
+          {
+              public function __construct(private InvoiceThumbnailer $thumbnailer) {}
+
+              public function handle(mixed $event, Context $context): array
+              {
+                  return ['thumbnail' => $this->thumbnailer->thumbnail($event['path'])];
+              }
+          }
+        marks:
+          - {line: 1, tip: 'আসল কাজ সব এখানে। কাল container-এ গেলেও এই class বদলাতে হয় না।'}
+          - {line: 18, tip: 'Serverless ছাড়তে হলে শুধু এই কয়েক লাইনের জোড়া নতুন লিখতে হয়, business logic নয়।'}
+      - type: quote
+        body: 'কাজ কম বা হঠাৎ-আসা আর প্রথম call ধীর হলে চলে: serverless। একটানা, বা ব্যবহারকারী অপেক্ষা করে: container।'
+    aside:
+      - type: when
+        use: ['কম বা হঠাৎ-আসা কাজ: webhook, রাতের রিপোর্ট, ছবি resize', 'প্রথম call ধীর হলে সমস্যা নেই']
+        avoid: ['সারাদিন একটানা ট্রাফিক', 'যেখানে cold start-এ ক্ষতি, বা কাজ সময়সীমা ছাড়ায় (AWS Lambda-য় ১৫ মিনিট)']
+      - type: tips
+        items:
+          - 'টাকা দিয়ে function গরম রাখা যায় (AWS-এ provisioned concurrency), কিন্তু তখন আবার অলস সময়ের বিল দিতে হয়।'
+          - 'দাম বদলায়, region-ভেদেও আলাদা: bar-গুলো ধরন দেখাচ্ছে, সিদ্ধান্তের আগে বর্তমান price page দেখে নিন।'
+    check:
+      q: 'একটা Symfony API-তে সারাদিন একটানা ট্রাফিক, আর ক্রেতারা প্রতিটা response-এর জন্য অপেক্ষা করেন। Serverless না container, আর কেন?'
+      a: 'Container। একটানা চাপে প্রতিবার-চলার বিল ফ্ল্যাট ঘণ্টা-দামের চেয়ে বেশি পড়ে, আর cold start-এ কিছু ক্রেতাকে অপেক্ষা করতে হতো।'
 
   - slug: shared-responsibility
     title: 'Shared responsibility: কোন দায় কার?'
     kind: pitfall
-    tldr: 'ক্লাউড ভবন আর যন্ত্র সামলায়; তোমার ডেটা, অ্যাক্সেস আর কনফিগারেশনের দায় সবসময় তোমার — managed হলেও।'
+    tldr: 'ক্লাউড ভবন আর যন্ত্র সামলায়; আপনার ডেটা, অ্যাক্সেস আর backup-এর সেটিংয়ের দায় সবসময় আপনার — managed হলেও।'
     keywords: ['shared responsibility', 'cloud security', 'দায়িত্ব', 'backup', 'ক্লাউড নিরাপত্তা']
     blocks:
       - type: text
         body: |
-          ফ্লোর ভাড়া নিলেও ভবন মালিক তোমার ঘরের দরজায় তালা লাগাবে না — সেটা তোমার কাজ। ক্লাউডও তাই: **ক্লাউডের দায় "of the cloud"** (ভবন, বিদ্যুৎ, হার্ডওয়্যার), আর **তোমার দায় "in the cloud"** (ডেটা, অ্যাক্সেস, কনফিগারেশন)। সার্ভিস যত managed, দায়ের ভাগ তত ক্লাউডের দিকে সরে — কিন্তু শূন্য হয় না।
+          ফ্লোর ভাড়া নিলেও ভবন মালিক আপনার ঘরের দরজায় তালা লাগাবে না — সেটা আপনার কাজ। ক্লাউডও তাই: **ক্লাউডের দায় "of the cloud"** (ভবন, বিদ্যুৎ, হার্ডওয়্যার), আর **আপনার দায় "in the cloud"** (ডেটা, অ্যাক্সেস, কনফিগারেশন)। সার্ভিস যত managed, দায়ের ভাগ তত ক্লাউডের দিকে সরে — কিন্তু শূন্য হয় না।
       - type: visual
         kind: table
         caption: 'কোন কাজ কার — তিন রকম সেটআপে'
         headers: ['', 'VM-এ নিজের DB', 'Managed DB', 'Serverless']
         rows:
           - cells: ['ভবন, বিদ্যুৎ, হার্ডওয়্যার', 'ক্লাউড', 'ক্লাউড', 'ক্লাউড']
-            tip: 'এই স্তর কোনো ক্ষেত্রেই তোমার নয়।'
-          - cells: ['OS ও DB-র patch', 'তুমি', 'ক্লাউড', 'ক্লাউড']
+            tip: 'এই স্তর কোনো ক্ষেত্রেই আপনার নয়।'
+          - cells: ['OS ও DB-র patch', 'আপনি', 'ক্লাউড', 'ক্লাউড']
             tip: 'VM-এ patch ভুলে যাওয়াই পুরনো সার্ভার হ্যাক হওয়ার বড় কারণ।'
-          - cells: ['Backup চালু ও restore পরীক্ষা', 'তুমি', 'তুমি', 'তুমি']
-            tip: 'Managed হলেও retention ঠিক করা আর restore চালিয়ে দেখা তোমার কাজ।'
-          - cells: ['Network নিয়ম, IAM', 'তুমি', 'তুমি', 'তুমি']
+          - cells: ['Backup চালু ও restore পরীক্ষা', 'আপনি', 'আপনি', 'আপনি']
+            tip: 'Managed হলেও retention ঠিক করা আর restore চালিয়ে দেখা আপনার কাজ।'
+          - cells: ['Network নিয়ম, IAM', 'আপনি', 'আপনি', 'আপনি']
             tip: 'খোলা security group বা বেশি অনুমতির দোষ ক্লাউডকে দেওয়া যায় না।'
-          - cells: ['ডেটা ও কোডের নিরাপত্তা', 'তুমি', 'তুমি', 'তুমি']
-            tip: 'SQL injection বা ফাঁস হওয়া password তোমার কোডের দোষ।'
+          - cells: ['ডেটা ও কোডের নিরাপত্তা', 'আপনি', 'আপনি', 'আপনি']
+            tip: 'SQL injection বা ফাঁস হওয়া password আপনার কোডের দোষ।'
+      - type: code
+        lang: text
+        file: 'database.tf (HCL)'
+        variant: good
+        code: |
+          resource "aws_db_instance" "main" {
+            identifier                  = "shop-db"
+            engine                      = "mysql"
+            instance_class              = "db.t3.medium"
+            allocated_storage           = 50
+            db_subnet_group_name        = aws_db_subnet_group.private.name
+            manage_master_user_password = true
+            backup_retention_period     = 14
+            publicly_accessible         = false
+            deletion_protection         = true
+          }
+        marks:
+          - {line: 8, tip: '১৪ দিনের restore point। গল্পের টিমের ছিল ১ দিন, তাই ভুল migration-এর আগের সবই গেল। ১৪ দিন থাকলে তিন দিন দেরিতেও ফেরা যেত।'}
+          - {line: 9, tip: 'কোনো public ঠিকানা নেই। সঠিক security group-এর সঙ্গে মিলে শুধু অ্যাপই এখানে পৌঁছাতে পারে।'}
+      - type: code
+        lang: bash
+        file: 'restore-test.sh'
+        variant: good
+        code: |
+          # মাসে একবার: অস্থায়ী কপিতে restore করে ডেটা মিলিয়ে দেখুন
+          aws rds restore-db-instance-to-point-in-time \
+            --source-db-instance-identifier shop-db \
+            --target-db-instance-identifier shop-db-restore-test \
+            --restore-time 2025-03-01T09:00:00Z
+          # কানেক্ট করে orders-এর row গুনুন, তারপর কপিটা মুছে দিন
+          aws rds delete-db-instance --skip-final-snapshot \
+            --db-instance-identifier shop-db-restore-test
+        marks:
+          - {line: 2, tip: 'যে backup কেউ restore করে দেখেনি, সেটা শুধু ভরসা। এই কমান্ড প্রমাণ করে ওটা কাজ করে, আর আসল restore-এ কত সময় লাগে তাও দেখায়।'}
       - type: quote
         body: 'Managed মানে "আমার দায় নেই" নয়; মানে "কম দায়"।'
     aside:
@@ -223,14 +341,14 @@ slides:
         items:
           - {to: 'recovery/backups-restore', label: 'Backup আর restore পরীক্ষা'}
     check:
-      q: 'Managed ডেটাবেসে কোন দুটো কাজ তবুও তোমারই থাকে?'
+      q: 'Managed ডেটাবেসে কোন দুটো কাজ তবুও আপনারই থাকে?'
       a: 'Backup retention ঠিক করে restore পরীক্ষা করা, আর network ও IAM নিয়ম ঠিক রাখা। Patch আর failover ক্লাউড সামলায়।'
 
 flashcards:
   - q: 'ক্লাউডে VPC বলতে কী বোঝায়?'
-    a: 'ক্লাউডে তোমার নিজস্ব বন্ধ, বিচ্ছিন্ন নেটওয়ার্ক। এর ভেতরে তুমি subnet আর নিয়ম বানাও।'
+    a: 'ক্লাউডে আপনার নিজস্ব বন্ধ, বিচ্ছিন্ন নেটওয়ার্ক। এর ভেতরে আপনি subnet আর নিয়ম বানান।'
     more: |
-      ভবনের একটা ফ্লোর ভাড়া নেওয়ার মতো: ফ্লোরটা তোমার, অন্য ভাড়াটেরা ঢুকতে পারে না। VPC-র ভেতরেই সার্ভার, ডেটাবেস আর load balancer বসে।
+      ভবনের একটা ফ্লোর ভাড়া নেওয়ার মতো: ফ্লোরটা আপনার, অন্য ভাড়াটেরা ঢুকতে পারে না। VPC-র ভেতরেই সার্ভার, ডেটাবেস আর load balancer বসে।
     ref: vpc-subnets-sg
   - q: 'Public আর private subnet-এর পার্থক্য কী?'
     a: 'Public subnet-এর সার্ভার ইন্টারনেট থেকে সরাসরি পৌঁছানো যায়। Private subnet-এ বাইরে থেকে সরাসরি পথ নেই।'
@@ -245,12 +363,12 @@ flashcards:
   - q: 'ডেটাবেসের security group-এ 0.0.0.0/0 দিলে কী হয়?'
     a: 'পুরো ইন্টারনেট ডেটাবেসের পোর্টে কড়া নাড়তে পারে। বট কয়েক ঘণ্টায় খুঁজে পায় আর পাসওয়ার্ড আন্দাজ শুরু করে।'
     more: |
-      সঠিক উপায়: ডেটাবেসকে private subnet-এ রাখা আর security group-এ শুধু অ্যাপের group-কে অনুমতি দেওয়া। নিজে কানেক্ট করতে হলে VPN বা bastion host ব্যবহার করো।
+      সঠিক উপায়: ডেটাবেসকে private subnet-এ রাখা আর security group-এ শুধু অ্যাপের group-কে অনুমতি দেওয়া। নিজে কানেক্ট করতে হলে VPN বা bastion host ব্যবহার করুন।
     ref: open-door-database
   - q: 'Least privilege নীতি কী?'
-    a: 'প্রতিটা ব্যবহারকারী বা অ্যাপকে শুধু ততটুকু অনুমতি দাও, যতটুকু তার কাজের জন্য সত্যিই দরকার।'
+    a: 'প্রতিটা ব্যবহারকারী বা অ্যাপকে শুধু ততটুকু অনুমতি দিন, যতটুকু তার কাজের জন্য সত্যিই দরকার।'
     more: |
-      Action আর resource দুটোই সীমিত করো: "s3:*" আর "*" না লিখে নির্দিষ্ট action আর নির্দিষ্ট bucket-পথ লেখো। তাতে একটা key ফাঁস হলে বা bug থাকলেও ক্ষতি ছোট থাকে।
+      Action আর resource দুটোই সীমিত করুন: "s3:*" আর "*" না লিখে নির্দিষ্ট action আর নির্দিষ্ট bucket-পথ লিখুন। তাতে একটা key ফাঁস হলে বা bug থাকলেও ক্ষতি ছোট থাকে।
     ref: iam-least-privilege
   - q: 'অ্যাপের জন্য IAM role, না access key — কোনটা ভালো?'
     a: 'Role। এর অস্থায়ী চাবি নিজে থেকে বদলায় আর কোডে বা ফাইলে রাখতে হয় না।'
@@ -258,14 +376,34 @@ flashcards:
       Access key স্থায়ী secret; git-এ বা log-এ গেলেই বিপদ। অ্যাপ সার্ভার বা container-এ role জুড়ে দিলে SDK নিজেই অস্থায়ী credential তুলে নেয়।
     ref: iam-least-privilege
   - q: 'VM, container আর serverless-এর মূল পার্থক্য কী?'
-    a: 'ক্রমে তোমার দায় কমে: VM-এ OS পর্যন্ত, container-এ শুধু image আর কোড, serverless-এ শুধু function-এর কোড।'
+    a: 'ক্রমে আপনার দায় কমে: VM-এ OS পর্যন্ত, container-এ শুধু image আর কোড, serverless-এ শুধু function-এর কোড।'
     more: |
       দায় কমলে নিয়ন্ত্রণও কমে। বিলও আলাদা: VM চালু থাকার ঘণ্টায়, serverless শুধু চলার হিসাবে। বেশিরভাগ Symfony API-র জন্য container ভালো মাঝামাঝি।
     ref: compute-and-managed
-  - q: 'Shared responsibility model-এ কোন দায় ক্লাউডের, কোনটা তোমার?'
-    a: 'ক্লাউডের: ভবন, হার্ডওয়্যার, হাইপারভাইজার। তোমার: ডেটা, IAM, network নিয়ম আর backup পরীক্ষা।'
+  - q: 'Shared responsibility model-এ কোন দায় ক্লাউডের, কোনটা আপনার?'
+    a: 'ক্লাউডের: ভবন, হার্ডওয়্যার, হাইপারভাইজার। আপনার: ডেটা, IAM, network নিয়ম আর backup পরীক্ষা।'
     more: |
       সার্ভিস যত managed, ক্লাউড তত বেশি স্তর সামলায় (OS patch, DB patch)। কিন্তু ডেটা আর অ্যাক্সেসের দায় কোনো অবস্থাতেই ক্লাউডের হয় না।
+    ref: shared-responsibility
+  - q: 'Serverless-এ cold start কী?'
+    a: 'কিছুক্ষণ চুপ থাকার পর প্রথম call-এর বাড়তি অপেক্ষা, কারণ ক্লাউড আপনার function-কে শূন্য থেকে চালু করে।'
+    more: |
+      Runtime আর কোডের আকারভেদে এটা সেকেন্ডের ভগ্নাংশ থেকে কয়েক সেকেন্ড হতে পারে। টাকা দিয়ে function গরম রাখা যায়, কিন্তু তখন অলস সময়ের বিল আবার দিতে হয়। সবসময়-চালু container-এ cold start নেই।
+    ref: compute-costs-and-rule
+  - q: 'কখন serverless, container-এর চেয়ে বেশি খরচ করে?'
+    a: 'যখন সারাক্ষণ ব্যস্ত থাকে। প্রতিবার-চলার বিল জমে যায়; কখনো না-থামা function container-এর দ্বিগুণের বেশি পড়তে পারে।'
+    more: |
+      List price ধরে মোটামুটি ছবি: ১ vCPU-র কাজ পুরো মাস চললে serverless-এ প্রায় ৭৬ ডলার, সবসময়-চালু container-এ প্রায় ৩৫। একই function কম ব্যবহারে এক ডলারের কম। বর্তমান price page দেখে নিন; সংখ্যার চেয়ে ধরনটাই জরুরি।
+    ref: compute-costs-and-rule
+  - q: 'Serverless-এর lock-in ছোট রাখবেন কীভাবে?'
+    a: 'Business logic সাধারণ PHP class-এ রাখুন, আর ক্লাউডের নিজস্ব handler হোক পাতলা মোড়ক, যা শুধু ওই class-গুলোকে ডাকে।'
+    more: |
+      Trigger আর handler-এর ধরন একটা ক্লাউডের নিজস্ব। মাত্র কয়েক লাইনের জোড়া সেটা জানলে container-এ যেতে ওই কয়েক লাইনই নতুন করে লিখতে হয়, পুরো অ্যাপ নয়।
+    ref: compute-costs-and-rule
+  - q: 'Managed ডেটাবেসে backup-এর কোন সেটিং নিজে ঠিক করতে হয়?'
+    a: 'কত দিনের backup রাখবেন, আর নিয়মিত test restore। Backup ক্লাউড নেয়, কিন্তু এই সিদ্ধান্তগুলো আপনার।'
+    more: |
+      ১ দিনের retention তিন দিন পরে ধরা পড়া ভুল migration ফেরাতে পারে না। ভুল ধরতে যত সময় লাগতে পারে, retention তার চেয়ে বেশি রাখুন; আর মাসে একবার অস্থায়ী কপিতে restore করে প্রমাণ করুন backup কাজ করে।
     ref: shared-responsibility
 
 quiz:
@@ -341,19 +479,61 @@ quiz:
         correct: false
         why: 'কাজ নেই, তবু বিল চলতে থাকবে।'
     ref: compute-and-managed
-  - q: 'Managed ডেটাবেস নিলে নিচের কোন কাজগুলো তখনও তোমার দায়?'
+  - q: 'Managed ডেটাবেস নিলে নিচের কোন কাজগুলো তখনও আপনার দায়?'
     hint: 'ডেটা আর অ্যাক্সেস — এ দুটোর মালিক কে?'
     options:
       - text: 'Restore পরীক্ষা করা আর backup retention ঠিক করা'
         correct: true
-        why: 'Backup নেওয়া ক্লাউড করে, কিন্তু সেটা কাজ করে কি না আর কত দিন থাকবে — সেটা তোমার সিদ্ধান্ত ও দায়।'
+        why: 'Backup নেওয়া ক্লাউড করে, কিন্তু সেটা কাজ করে কি না আর কত দিন থাকবে — সেটা আপনার সিদ্ধান্ত ও দায়।'
       - text: 'ডেটাবেসের security group আর IAM নিয়ম ঠিক রাখা'
         correct: true
-        why: 'কে ঢুকতে পারবে, সেই নিয়ম সবসময় তোমার।'
+        why: 'কে ঢুকতে পারবে, সেই নিয়ম সবসময় আপনার।'
       - text: 'ডেটাবেস ইঞ্জিনের security patch বসানো'
         correct: false
         why: 'এটা managed সার্ভিসের মূল কাজ — ক্লাউডই maintenance window-এ করে।'
       - text: 'ডেটাসেন্টারের বিদ্যুৎ আর হার্ডওয়্যার'
         correct: false
         why: 'এই স্তর সবসময় ক্লাউডের।'
+    ref: shared-responsibility
+  - q: 'একটা Symfony API-তে সারাদিন প্রায় ৪০ request/সেকেন্ড আসে, আর ক্রেতারা প্রতিটা response-এর জন্য অপেক্ষা করেন। কোন compute সবচেয়ে মানানসই?'
+    hint: 'ট্রাফিক হঠাৎ-আসা না একটানা, আর প্রথম call ধীর হলে কি ক্ষতি?'
+    options:
+      - text: 'Serverless, কারণ চললেই শুধু বিল'
+        correct: false
+        why: 'এখানে ওটা কখনোই থামে না, তাই বাঁচানোর মতো অলস সময় নেই; আর একটানা চাপে প্রতিবার-চলার বিল ফ্ল্যাট দামের চেয়ে বেশি পড়ে।'
+      - text: 'সবসময়-চালু container (নিরাপত্তার জন্য দুটো)'
+        correct: true
+        why: 'একটানা চাপে ফ্ল্যাট ঘণ্টা-দামই জেতে, আর cold start নেই বলে ক্রেতাকে অপেক্ষাও করতে হয় না।'
+      - text: 'Serverless, কারণ রাতে শূন্যে নেমে যায়'
+        correct: false
+        why: 'শূন্যে নামা তখনই কাজে লাগে যখন রাত সত্যিই ফাঁকা। সকালের প্রথম request-এ cold start ক্রেতাকেও ভোগাবে।'
+    ref: compute-costs-and-rule
+  - q: 'Serverless বেছে নিলে নিচের কোনগুলো সত্যিকারের দাম?'
+    hint: 'প্রথম call, handler-এর ধরন আর বিলের হিসাব ভাবুন।'
+    options:
+      - text: 'কিছুক্ষণ চুপ থাকার পর প্রথম call ধীর হয় (cold start)'
+        correct: true
+        why: 'উত্তর দেওয়ার আগে ক্লাউডকে function শূন্য থেকে চালু করতে হয়।'
+      - text: 'Handler আর trigger-এর ধরন আপনাকে একটা ক্লাউডে বেঁধে ফেলে'
+        correct: true
+        why: 'ছাড়তে হলে ওই জোড়ার কোড নতুন লিখতে হয়। Business logic সাধারণ class-এ রাখলে সেই লেখা ছোট থাকে।'
+      - text: 'প্রতি মাসে operating system-এ patch বসাতে হয়'
+        correct: false
+        why: 'Runtime-এর patch ক্লাউড করে। এই কাজ আপনার ঘাড় থেকে নামানোই serverless-এর মূল কথা।'
+      - text: 'এতে PHP চলেই না'
+        correct: false
+        why: 'AWS Lambda-য় Bref-এর মতো layer দিয়ে PHP চলে।'
+    ref: compute-costs-and-rule
+  - q: 'একটা managed ডেটাবেসে ১ দিনের backup রাখা ছিল, আর ভুল migration ধরা পড়ল তিন দিন পরে। কী ঠিক করা থাকা উচিত ছিল?'
+    hint: 'ভুল ধরতে আপনার কত সময় লাগতে পারে?'
+    options:
+      - text: 'কিছু না; ক্লাউড নিজেই চিরকাল backup রাখে'
+        correct: false
+        why: 'Retention আপনার সেটিং, আর default গল্পের ১ দিনের মতো ছোটও হতে পারে।'
+      - text: 'বড় retention (ধরুন ১৪ দিন) আর মাসে একবার test restore'
+        correct: true
+        why: '১৪ দিন থাকলে migration-এর আগের restore point তখনও থাকত, আর test restore প্রমাণ করে সেটা কাজ করে।'
+      - text: 'আরও বড় ডেটাবেস instance'
+        correct: false
+        why: 'Instance-এর আকার backup কত দিন থাকবে তা বদলায় না।'
     ref: shared-responsibility

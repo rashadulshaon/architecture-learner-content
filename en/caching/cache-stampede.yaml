@@ -10,6 +10,9 @@ slides:
         title: 'The train timetable board at the station'
         body: |
           Before Eid, the train times are written on a board at the station, so nobody goes to the ticket counter. Then the board is suddenly wiped. Within a second, a thousand passengers rush to the counter and ask the same thing: "When does it leave?" One clerk can't handle a thousand people. The board is the cache, and the counter is the database.
+      - type: text
+        body: |
+          One heavy query takes 800ms. A thousand of them in the same second is about 800 seconds of database work, roughly 13 minutes squeezed into one second. The database can't keep up, so every other request waits in the queue too.
       - type: visual
         kind: flow
         caption: 'Exactly what happens when an entry expires'
@@ -107,7 +110,7 @@ slides:
               );
           }
         marks:
-          - {line: 7, tip: 'Even entries built at the same moment die at different times, so many keys together can''t make a storm.'}
+          - {line: 7, tip: 'Entries built at the same moment now die at different times: 1,000 entries spread over 2 minutes expire about 8 a second, not 1,000 at once.'}
           - {line: 11, tip: '1.0 is the default. A higher value starts trying earlier, but costs more extra cooking.'}
       - type: visual
         kind: table
@@ -178,9 +181,9 @@ slides:
           - {line: 4, tip: 'If soft time remains, return straight away. Most requests end right here.'}
           - {line: 9, tip: 'By default acquire() doesn''t wait; it returns true or false at once. So nobody gets stuck.'}
           - {line: 11, tip: 'beta: INF means "rebuild now", even though the cache entry hasn''t expired.'}
-          - {line: 13, tip: 'Always release the lock in finally. If you don''t, the others stay in limbo for at least 30 seconds (the lock''s TTL).'}
+          - {line: 13, tip: 'Always release the lock in finally. If you don''t, nobody can refresh for up to 30 seconds (the lock''s TTL) and users keep getting the old value.'}
       - type: quote
-        body: 'Giving the user a 10-minute-old answer is often better than making them sit through 800ms.'
+        body: 'Giving the user a 5-minute-old answer is often better than making them sit through 800ms.'
     aside:
       - type: when
         use:
@@ -189,6 +192,7 @@ slides:
           - 'Accuracy-critical data such as money or stock.'
       - type: tips
         items:
+          - 'The hard TTL is only a safety net: a busy key is refreshed at the soft time and never reaches it. A quiet key can, and the next requests then miss together.'
           - 'In bigger systems, don''t do the refresh inside the request; send a Messenger message and let a worker do it, so no user is ever slowed.'
       - type: refs
         items:
@@ -206,6 +210,8 @@ slides:
       - type: text
         body: |
           If the cook takes the key to the pot and goes home, the other 100 people wait forever. The same happens in code: the request holding the lock crashes, and the rest sit in `acquire(true)`. Every waiting request holds on to a PHP worker, so soon the workers run out and the whole site stops.
+
+          A typical PHP server has maybe 20 workers (processes that each handle one request at a time). Twenty waiting requests are enough to freeze it.
       - type: code
         lang: php
         file: 'src/Catalog/Rebuild.php'
@@ -257,6 +263,11 @@ flashcards:
     a: 'When a popular entry expires, many requests miss at once and send the same heavy query to the database.'
     more: |
       Each request gets its own miss, and none knows the others are doing the same job. The database suddenly takes a thousand times the load. The cache had been keeping the database alive, so when the cache fails, the database falls over too.
+    ref: herd-at-the-counter
+  - q: 'A key takes 800ms to rebuild and 1,000 requests miss together. How much work is that?'
+    a: 'About 800 seconds of query work arriving in one second, far more than the database can do, so everything slows down.'
+    more: |
+      Each query is normal on its own; a thousand identical ones at the same moment are not. The fix is to turn them into one query (a lock) or to stop the entries dying together (jitter).
     ref: herd-at-the-counter
   - q: 'Are a thundering herd and a cache stampede different?'
     a: 'Nearly the same thing: many processes waking up and pouncing on one resource together. In the cache context it is called a stampede.'

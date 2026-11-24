@@ -64,6 +64,9 @@ slides:
           - {from: perday, to: qps, label: 'Divide by the 86,400 seconds in a day to get the average QPS'}
           - {from: qps, to: peak, label: 'Multiply the average by 5 to cover the busy hour'}
           - {from: peak, to: servers, label: 'Divide by one server''s capacity, then add a spare'}
+      - type: text
+        body: |
+          Picture 300 QPS as 300 people pressing "track my parcel" in the very same second, like a full cricket stadium all knocking at once. If one server can answer about 150 of them per second (an assumed figure, you would measure it), you need 2, plus a spare.
       - type: code
         lang: text
         file: 'The formulas'
@@ -129,7 +132,7 @@ slides:
             tip: 'The speed of light is the limit. This is why CDNs and nearby data centres exist.'
     aside:
       - type: remember
-        body: 'RAM is nanoseconds, SSD is microseconds, network is milliseconds: roughly a thousand times per step.'
+        body: 'RAM takes nanoseconds, an SSD read or a nearby network hop a fraction of a millisecond, a trip across continents hundreds of milliseconds.'
       - type: tips
         items:
           - 'These numbers drift over time. What matters is the magnitude, not the exact figure.'
@@ -145,7 +148,7 @@ slides:
     blocks:
       - type: text
         body: |
-          Assumptions: 1 million DAU, each person views parcels 5 times a day. There are 200,000 new parcels a day, each with 8 status events of 200 bytes. A Symfony server handles about 150 QPS in the busy hour (you would confirm this later with a load test). Now work out each step separately.
+          Assumptions: 1 million DAU, each person views parcels 5 times a day. There are 200,000 new parcels a day, each with 8 status events of 200 bytes. A Symfony server handles about 150 QPS in the busy hour (you would confirm this later with a load test). Each machine (app server, database or Redis) costs about 8,000 taka a month, also an assumption. Now work out each step separately.
       - type: visual
         kind: table
         caption: 'The full estimate for the courier tracking app'
@@ -163,8 +166,8 @@ slides:
             tip: 'Tiny. For this app the network is no problem, since we left images out.'
           - cells: ['Cache memory', '200,000 active parcels x 2 KB', '≈ 400 MB']
             tip: 'You only cache parcels that are in transit right now. A small Redis holds it.'
-          - cells: ['Monthly cost', '5 machines x 8,000 taka (assumed)', '≈ 40,000 taka']
-            tip: '3 app servers, 1 database, 1 Redis. The per-machine price is an assumption; plug in the real one.'
+          - cells: ['Monthly cost', '(3 app + 1 DB + 1 Redis) x 8,000', '≈ 40,000 taka']
+            tip: 'The 3 from the Servers row are app servers only. The database and Redis are 2 more machines, so 5 in all. The price is assumed; plug in the real one.'
       - type: quote
         body: 'End with one question: "Does the answer match reality?" 5 Mbps and 3 servers? Yes, it does.'
     aside:
@@ -204,9 +207,12 @@ slides:
             tip: 'The opposite habit blocks each trap.'
             items:
               - 'Average x peak factor, with the source of the factor noted'
-              - 'Storage x indexes (2) x replicas (2-3)'
+              - 'Storage x 2-3 for indexes and replicas'
               - 'Writing down each assumption separately'
               - '"About 3", a rounded answer'
+      - type: text
+        body: |
+          See two traps on the courier app. Average only: 60 QPS looks like one 150-QPS server is plenty, but the busy hour brings 300, twice what it can do, so replies crawl or time out. Raw storage only: 120 GB fits a 200 GB disk, but with indexes and a replica you need 240-360 GB, and the disk is full before the year ends.
       - type: points
         title: 'Three things to do after the sum'
         style: check
@@ -252,7 +258,7 @@ flashcards:
   - q: 'Roughly how long do a RAM read, an SSD read and a network round trip take?'
     a: 'RAM ≈ 100 nanoseconds, random SSD read ≈ 0.1 ms, round trip within one data centre ≈ 0.5 ms.'
     more: |
-      Each step is about a thousand times slower. That is why caches live in RAM, and why many small service calls add up to a lot of network time.
+      Going from RAM to SSD is about a thousand times slower, and a network round trip is a few times slower again. That is why caches live in RAM, and why many small service calls add up to a lot of network time.
     ref: numbers-to-memorise
   - q: 'What else must a storage estimate include beyond the raw data?'
     a: 'Indexes and replicas. In practice you need 2-3x the raw data.'
@@ -264,6 +270,11 @@ flashcards:
     more: |
       Writing "57.3 servers" is false precision. A range plus a list of assumptions lets anyone see how much the answer moves if an assumption changes. That makes the discussion easier.
     ref: estimation-pitfalls
+  - q: 'The sum gives 3 servers, so why does the courier cost line count 5 machines?'
+    a: 'The 3 are app servers only. The database and Redis each need a machine too, so 3 + 1 + 1 = 5 machines.'
+    more: |
+      A cost line must count every machine, not just the ones the QPS sum produced. At 8,000 taka per machine (an assumed price), 5 machines come to about 40,000 taka a month.
+    ref: worked-example
   - q: 'After the estimate, what comes next: guess more or measure?'
     a: 'Measure whichever assumption changes the answer most, for example with a load test or the access log.'
     more: |
@@ -356,3 +367,16 @@ quiz:
         correct: false
         why: 'A rough sum is possible and enough; skip it and you won''t catch a 10x error.'
     ref: estimation-pitfalls
+  - q: 'The QPS sum gives 3 app servers. The database and Redis each need one machine too, at 8,000 taka a month per machine. What is the monthly bill?'
+    hint: 'Count every machine, not only the app servers.'
+    options:
+      - text: 'About 24,000 taka'
+        correct: false
+        why: 'That is 3 machines x 8,000. It leaves out the database and Redis.'
+      - text: 'About 40,000 taka'
+        correct: true
+        why: '3 app + 1 database + 1 Redis = 5 machines, and 5 x 8,000 = 40,000.'
+      - text: 'About 16,000 taka'
+        correct: false
+        why: 'That counts only the 2 machines needed for capacity and drops both the spare and the other services.'
+    ref: worked-example

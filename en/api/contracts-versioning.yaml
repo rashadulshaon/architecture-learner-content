@@ -83,6 +83,61 @@ slides:
       q: 'Why doesn''t adding a new field called `phone` to an API response break old clients?'
       a: 'Old clients only read the fields they know. They never even look at the unknown one, so their behaviour stays as before.'
 
+  - slug: safe-rename
+    title: 'Renaming safely: send both for a while'
+    kind: howto
+    tldr: 'To rename a field without blanking old phones, add the new name, keep the old one, wait until nobody reads it, then remove it.'
+    keywords: ['safe rename', 'expand and contract', 'deprecate field', 'both fields', 'backward compatibility', 'field migration']
+    blocks:
+      - type: text
+        body: |
+          Rahim still wants `fullName`. The safe way takes several releases instead of one. First he sends both keys, so old and new apps are both happy. Later, when nobody reads `name` any more, he deletes it.
+      - type: code
+        lang: php
+        file: 'src/Controller/Api/V1/ProfileController.php'
+        variant: bad
+        code: |
+          return $this->json([
+              'id' => $user->getId(),
+              'fullName' => $user->getFullName(),   // name vanished: 30,000 phones go blank
+          ]);
+        marks:
+          - {line: 3, tip: 'One deploy, one rename. Every app that still looks for name now finds nothing, and the server logs no error.'}
+      - type: code
+        lang: php
+        file: 'src/Controller/Api/V1/ProfileController.php'
+        variant: good
+        code: |
+          return $this->json([
+              'id' => $user->getId(),
+              'fullName' => $user->getFullName(),
+              'name' => $user->getFullName(),   // DEPRECATED: remove after mobile v1.x is gone
+          ]);
+        marks:
+          - {line: 3, tip: 'New apps and the Vue app move to this key.'}
+          - {line: 4, tip: 'Old apps keep working. Both keys come from the same call, so they can never disagree.'}
+      - type: visual
+        kind: steps
+        caption: 'The safe rename, in four releases'
+        steps:
+          - {title: '1. Add the new', body: 'Send fullName beside name', tip: 'This release is purely additive, so it is safe on its own.'}
+          - {title: '2. Move clients', body: 'Web and new app versions read fullName', tip: 'Ship the new client versions. Old apps still read name and keep working.'}
+          - {title: '3. Measure', body: 'Log how many calls come from old app versions', tip: 'Count by the app-version header. Do not guess whether anyone still needs name.'}
+          - {title: '4. Remove the old', body: 'Delete name once that count is about zero', tip: 'Only now is deleting safe. If some phones never update, ask them to update, or version the API instead.'}
+    aside:
+      - type: when
+        use:
+          - 'Renaming or reshaping a field that clients you do not control already read'
+        avoid:
+          - 'A field only your own web app reads, deployed together with the API: just rename it'
+          - 'A change you cannot express by adding (a type change that must replace the old shape): use a new API version'
+      - type: pitfalls
+        items:
+          - 'The price: the response is a little bigger and you carry two keys for months. Fill both from one value, or they will drift apart.'
+    check:
+      q: 'Why is sending both `name` and `fullName` safe, and when can you delete `name`?'
+      a: 'Old apps still find `name`, new ones read `fullName`, so nobody breaks. Delete `name` only when your logs show almost no calls from old app versions.'
+
   - slug: versioning-strategies
     title: 'When you must break: which versioning method'
     kind: compare
@@ -122,6 +177,29 @@ slides:
         marks:
           - {line: 4, tip: 'Every controller in the V1 folder gets a route starting with /api/v1. You don''t repeat the prefix in each controller.'}
           - {line: 9, tip: 'V2 sits right beside it. Both controllers call the same application service; only the shape of the response differs.'}
+      - type: code
+        lang: php
+        file: 'src/Controller/Api/OrderController.php'
+        variant: good
+        code: |
+          // Api/V1/OrderController.php (frozen: the old shape stays exactly as it was)
+          public function show(int $id): JsonResponse
+          {
+              $order = $this->orderService->get($id);   // one set of rules for both versions
+
+              return $this->json(['id' => $order->id, 'price' => $order->priceAsString()]);
+          }
+
+          // Api/V2/OrderController.php (the new shape)
+          public function show(int $id): JsonResponse
+          {
+              $order = $this->orderService->get($id);
+
+              return $this->json(['id' => $order->id, 'priceInPaisa' => $order->priceInPaisa]);
+          }
+        marks:
+          - {line: 4, tip: 'Both versions call the same service. A bug fixed in the business rules is fixed once, for everybody.'}
+          - {line: 14, tip: 'Only the outside differs: v1 keeps price as the string "12.50", v2 sends whole paisa as a number.'}
       - type: quote
         body: 'A new version doesn''t mean a new house. The logic under both versions stays the same; only the outside looks different.'
     aside:
@@ -135,6 +213,7 @@ slides:
         items:
           - 'Keep the number of versions low. Running more than two at once is usually a burden on the team.'
           - 'Bump the major version (v1, v2) only for a real break. Additive changes can go into any version quietly.'
+          - 'The price of versions: every extra one needs its own tests and its own docs until it is retired.'
     check:
       q: 'What is the best way to cut the extra maintenance when you run two versions side by side?'
       a: 'Give each version its own controller, but share the application service underneath. Then there is one set of business rules and only the response shape comes in two forms.'
@@ -286,6 +365,16 @@ flashcards:
     more: |
       There are header-based and date-based methods too, but they are harder to see and test. For most teams the URL path is the default. If only your own Vue app calls the API and both sides deploy together, you may not need versions at all.
     ref: versioning-strategies
+  - q: 'How do you rename an API field without breaking old clients?'
+    a: 'Send both names for a while, move clients to the new one, measure old usage, and delete the old name only when almost nobody reads it.'
+    more: |
+      One deploy that renames the field blanks every app that still looks for the old name. Sending both keys is a purely additive change, so it is safe. The price is a slightly bigger response and two keys to keep in step, so fill both from one value.
+    ref: safe-rename
+  - q: 'How do you run two API versions without writing the logic twice?'
+    a: 'Give each version its own controller and response shape, but call the same application service underneath.'
+    more: |
+      The business rules live once in the service, so a bug fix helps every version. Only the thin outside layer, the shape of the response, is duplicated. Each extra version still costs tests and docs until it is retired.
+    ref: versioning-strategies
   - q: 'What do the Deprecation and Sunset headers say?'
     a: 'Deprecation: this API is declared old. Sunset: the exact date it will be shut down.'
     more: |
@@ -329,7 +418,7 @@ quiz:
       - text: 'Rename it without bumping the version, and just write a changelog entry'
         correct: false
         why: 'Nobody reads the changelog, and an old app''s code certainly doesn''t.'
-    ref: compatible-changes
+    ref: safe-rename
   - q: 'In the routes configuration below, which controller runs when v2 is called?'
     lang: yaml
     code: |

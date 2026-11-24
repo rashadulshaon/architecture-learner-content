@@ -118,7 +118,7 @@ slides:
               }
           }
         marks:
-          - {line: 11, tip: 'After a write, note the leader''s WAL position (LSN): "my write is at or before this point".'}
+          - {line: 11, tip: 'After a write, note the leader''s WAL position (LSN): the page number in the database''s change log. It means "my write is at or before this page".'}
           - {line: 25, tip: 'If the replica hasn''t reached that LSN yet, this read goes to the primary, so you can''t miss your own write.'}
       - type: points
         title: 'The easy way to get monotonic reads'
@@ -143,12 +143,12 @@ slides:
   - slug: causal-order
     title: 'Causal: the question before the answer'
     kind: pitfall
-    tldr: 'When events depend on each other (a question and its answer), breaking their order makes users see nonsense. Causal consistency preserves that order.'
-    keywords: ['causal consistency', 'causality', 'happens before', 'ordering', 'orphan reply', 'cause and effect']
+    tldr: 'When events depend on each other (a question and its answer), breaking their order makes users see nonsense. Causal consistency keeps it: the answer points to its cause, and a read waits for that cause.'
+    keywords: ['causal consistency', 'causality', 'happens before', 'ordering', 'orphan reply', 'cause and effect', 'cause_lsn']
     blocks:
       - type: text
         body: |
-          Karim asks "What time is the train?" and Rahim answers "At 9". The two live on different shards, so the question reaches the reader late. The reader sees only "At 9", with no question in sight. A single-leader replica usually keeps writes in order; this situation comes from shards, multi-leader setups or separate services that take different paths.
+          Karim asks "What time is the train?" and Rahim answers "At 9". The question and the answers sit on different shards (the data split across separate databases), and the question's copy is slow to reach this reader. The reader sees only "At 9", with no question in sight. A single-leader replica usually keeps writes in order; this situation comes from shards, multi-leader setups or separate services that take different paths.
       - type: visual
         kind: sequence
         caption: 'The answer arrives first, the question later'
@@ -162,43 +162,76 @@ slides:
           - {from: pathok, to: q, label: 'Where is the question?'}
           - {from: q, to: pathok, label: 'No such question (it''s still arriving)', dashed: true, tone: bad}
           - {at: pathok, note: 'An answer with no question: nonsense', tone: bad}
+      - type: text
+        body: |
+          The fix: the answer stores a pointer to its cause, a position in the question shard's change log (its LSN) that already contains the question. Before showing the answer, the app checks that the question shard's replica has reached that position; if not, it reads the question from the primary. The price: one extra column, one cheap query per reply, and a few reads on the primary while the replica lags. If cause and effect live in one single-leader table, skip all this: the order is already kept.
+      - type: visual
+        kind: sequence
+        caption: 'With the pointer, the question is fetched before the answer is shown'
+        actors:
+          - {id: app, label: 'App server', icon: server, tip: 'Builds the comments page.'}
+          - {id: ans, label: 'Answer shard', icon: db, tip: 'Holds Rahim''s answer, which carries cause_lsn.'}
+          - {id: q, label: 'Question shard', icon: db, tip: 'Its replica lags a little; its primary always has the question.'}
+        messages:
+          - {from: app, to: ans, label: 'Give me the answers'}
+          - {from: ans, to: app, label: '"At 9" with cause_lsn 0/5A8', dashed: true, tip: 'cause_lsn is a position on the question shard that already includes Karim''s question.'}
+          - {from: app, to: q, label: 'Has the replica reached 0/5A8?'}
+          - {from: q, to: app, label: 'No, it is only at 0/5A0', dashed: true, tone: warn}
+          - {from: app, to: q, label: 'Read the question from the primary'}
+          - {from: q, to: app, label: '"What time is the train?"', dashed: true, tone: good}
+          - {at: app, note: 'Question first, then answer', tone: good}
       - type: code
-        lang: vue
-        file: 'CommentList.vue'
+        lang: php
+        file: 'src/Data/CausalReplies.php'
         variant: good
         code: |
-          <script setup lang="ts">
-          import { computed } from 'vue'
+          final readonly class CausalReplies
+          {
+              public function __construct(
+                  private Connection $questionPrimary,
+                  private Connection $questionReplica,
+                  private Connection $answerDb,
+              ) {}
 
-          interface Comment { id: string; parentId: string | null; text: string }
-          const props = defineProps<{ comments: Comment[] }>()
+              public function reply(int $questionId, string $text): void
+              {
+                  $this->answerDb->insert('reply', [
+                      'question_id' => $questionId,
+                      'text' => $text,
+                      // a position that already contains the question
+                      'cause_lsn' => $this->questionPrimary->fetchOne('SELECT pg_current_wal_lsn()'),
+                  ]);
+              }
 
-          const known = computed(() => new Set(props.comments.map((c) => c.id)))
+              public function questionFor(array $reply): array|false
+              {
+                  $caughtUp = $this->questionReplica->fetchOne(
+                      'SELECT pg_last_wal_replay_lsn() >= CAST(? AS pg_lsn)', [$reply['cause_lsn']],
+                  );
+                  $db = $caughtUp ? $this->questionReplica : $this->questionPrimary;
 
-          // hide a reply whose parent hasn't arrived yet
-          const visible = computed(() =>
-            props.comments.filter((c) => c.parentId === null || known.value.has(c.parentId)),
-          )
-          </script>
-
-          <template>
-            <ul>
-              <li v-for="c in visible" :key="c.id">{{ c.text }}</li>
-            </ul>
-          </template>
+                  return $db->fetchAssociative(
+                      'SELECT * FROM question WHERE id = ?', [$reply['question_id']],
+                  );
+              }
+          }
         marks:
-          - {line: 10, tip: 'The cause-and-effect link is stored in the data via parentId, so the client can tell which reply''s cause hasn''t arrived yet.'}
+          - {line: 15, tip: 'The reply keeps a position on the question shard that already includes the question: its cause.'}
+          - {line: 24, tip: 'If the replica hasn''t reached that position, read the question from the primary. An answer is never shown without its question.'}
     aside:
+      - type: pitfalls
+        items:
+          - 'Hiding replies in the browser whose parent is missing only hides the symptom. An email, an API client or a search index still gets the answer without the question.'
       - type: tips
         items:
-          - 'Put a parent_id on every reply. Once the relationship is in the data, you can enforce the ordering rule.'
-          - 'Best of all is a database that gives you causal ordering itself (some distributed databases offer it). If yours doesn''t, the app can hide or wait.'
+          - 'Check once per page, not once per reply: the highest cause_lsn on the page is enough.'
+          - 'Some databases give causal ordering built in (MongoDB has causally consistent sessions). If yours does, use that instead.'
       - type: refs
         items:
           - {to: 'time/ordering-events', label: 'How event order is decided'}
     check:
-      q: 'What kind of nonsense does causal consistency prevent?'
-      a: 'Seeing an effect without its cause, such as an answer without the question. An event that depends on another is shown after it.'
+      q: 'What kind of nonsense does causal consistency prevent, and what does the answer carry to prevent it?'
+      a: 'Seeing an effect without its cause, such as an answer without its question. The answer carries a pointer to its cause (cause_lsn), and a read waits until that cause is visible.'
 
   - slug: choose-per-feature
     title: 'A different rule for each feature'
@@ -274,7 +307,12 @@ flashcards:
   - q: 'What is causal consistency?'
     a: 'An event that depends on another is seen after it: the question comes before the answer.'
     more: |
-      A single-leader replica keeps write order, but with separate shards or multi-leader the answer can arrive first. With a parent_id on each reply, the app can wait or hide the reply until its parent is there.
+      A single-leader replica keeps write order, but with separate shards or multi-leader the answer can arrive first. The fix is to store a pointer to the cause on the reply and not show the reply until that cause is readable.
+    ref: causal-order
+  - q: 'How can an app give causal order when a question and its answer live on different shards?'
+    a: 'Store a pointer to the cause on the answer (the question shard''s log position). Before showing the answer, check the cause is readable, else read it from the primary.'
+    more: |
+      Hiding orphan replies in the browser is not enough, because emails and API clients still see them. The price is one extra column, one cheap query per reply, and some primary reads while the replica lags. A single-leader table keeps order by itself and needs none of this.
     ref: causal-order
   - q: 'Which consistency rules fit a balance and a like count?'
     a: 'Balance: strong (read from the primary). Like count: eventual is enough.'
@@ -362,10 +400,23 @@ quiz:
       - text: 'When you read in order from one replica of a single leader'
         correct: false
         why: 'A single-leader replica preserves write order, so causal ordering is unlikely to break.'
-      - text: 'By keeping a parent_id and not showing a reply until its parent has arrived'
+      - text: 'By storing the cause''s log position on the reply and reading the question from the primary until the replica reaches it'
         correct: true
-        why: 'When the cause-and-effect link is in the data, the app can enforce the order itself.'
+        why: 'When the link to the cause is in the data, the app can make sure the cause is readable before it shows the effect.'
       - text: 'By keeping every comment in its own small file'
         correct: false
         why: 'Splitting into files scrambles the order even more; keeping the relationship is the fix.'
+    ref: causal-order
+  - q: 'A teammate hides, in the browser, every reply whose parent hasn''t arrived. Why is that not causal consistency?'
+    hint: 'Who else reads the reply besides the browser?'
+    options:
+      - text: 'It hides the symptom in one client; emails, API clients and search indexes still get the answer without its question'
+        correct: true
+        why: 'Causal order has to be enforced where the data is read, so every consumer gets cause before effect.'
+      - text: 'Hiding replies is slower than reading from the primary'
+        correct: false
+        why: 'Speed is not the issue; a filter is cheap. The issue is that it only fixes one consumer.'
+      - text: 'The browser cannot know which reply belongs to which question'
+        correct: false
+        why: 'With a parent id it can know. But knowing the link is not the same as making the cause readable.'
     ref: causal-order

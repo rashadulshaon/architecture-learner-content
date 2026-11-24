@@ -40,6 +40,22 @@ slides:
           - {label: 'SMS', value: 1200, display: '1.2s', tip: 'Waiting for the SMS gateway. When the gateway is slow, this can stretch to 30 seconds.'}
           - {label: 'Invoice PDF', value: 900, display: '0.9s', tip: 'Heavy CPU work, and the customer isn''t opening the PDF right now anyway.'}
           - {label: 'Courier API', value: 2500, display: '2.5s', tone: bad, tip: 'The slowest and most fragile step: another company''s server, which you don''t control.'}
+      - type: code
+        lang: php
+        file: 'src/Controller/OrderController.php'
+        variant: good
+        code: |
+          #[Route('/orders', methods: ['POST'])]
+          public function create(#[MapRequestPayload] CreateOrder $dto): JsonResponse
+          {
+              $order = $this->orders->place($dto, $this->getUser());    // 40ms
+
+              $this->bus->dispatch(new OrderPlaced($order->getId()));   // about 2ms: a note in the queue
+
+              return $this->json(['id' => $order->getId()], 201);       // about 42ms in total
+          }
+        marks:
+          - {line: 6, tip: 'One note replaces four slow calls. The email, SMS, PDF and courier jobs become handlers that a worker runs later, so a slow courier API can no longer break the order.'}
       - type: quote
         body: 'Make the user wait only for what the response truly needs.'
     aside:
@@ -92,7 +108,21 @@ slides:
               - 'A new job is just a new handler'
       - type: text
         body: |
-          The real difference isn't the name but **who knows whom**. Send commands, and the order code knows about the email, the courier and the invoice. Publish an event, and the order code knows nobody. If you add "loyalty points" tomorrow, you don't touch the order code at all.
+          The real difference isn't the name but **who knows whom**. Send commands, and the order code knows about the email, the courier and the invoice. Publish an event, and the order code knows nobody. If you add "loyalty points" tomorrow, you don't touch the order code at all. The price: nobody can read in one place what an order sets off, so list the listeners with `debug:messenger`.
+      - type: code
+        lang: php
+        file: 'src/Controller/OrderController.php'
+        code: |
+          // Commands: the order code names every job. Loyalty points tomorrow means editing it.
+          $this->bus->dispatch(new SendInvoiceEmail($id));
+          $this->bus->dispatch(new BookCourier($id));
+          $this->bus->dispatch(new AddLoyaltyPoints($id));   // a new line in the order code
+
+          // Event: one announcement. Loyalty points tomorrow is a new handler class.
+          $this->bus->dispatch(new OrderPlaced($id));
+        marks:
+          - {line: 4, tip: 'Every new job is a change to the sender, and a bug here can break ordering itself.'}
+          - {line: 7, tip: 'The sender never changes. Each listener is its own handler class that subscribes to `OrderPlaced`.'}
       - type: quote
         body: 'A command says "do this". An event says "this happened".'
     aside:
@@ -101,6 +131,12 @@ slides:
           - 'Start command names with a verb: `GenerateInvoicePdf`, `BookCourier`.'
           - 'Put event names in the past tense: `OrderPlaced`, `PaymentFailed`.'
           - 'An event carries what happened and an id, not instructions about who should do what.'
+      - type: when
+        use:
+          - 'An event, when several independent things react to a fact, or more reactions are likely to be added later.'
+          - 'A command, when one specific job must happen and the sender cares that it does.'
+        avoid:
+          - 'An event for a step the flow cannot continue without. Hidden listeners make a required step easy to lose.'
       - type: pitfalls
         items:
           - 'An event called `OrderPlacedSendEmail` is a command in disguise: the sender is again telling the listener what to do.'
@@ -188,7 +224,7 @@ slides:
                       # without this line the handler runs inside the request
                       'App\Message\OrderPlaced': async
         marks:
-          - {line: 5, tip: 'To switch transports, change only the DSN in `.env`. A small app can start with the Doctrine transport and needs no extra server.'}
+          - {line: 5, tip: 'To switch transports, change only the DSN in `.env`. A small app can start with the Doctrine transport and needs no extra server, but it polls your database, so move to RabbitMQ or SQS as volume grows.'}
           - {line: 9, tip: 'Message class → transport. If the class isn''t listed here, Messenger sends the message nowhere and runs the handler on the spot.'}
     aside:
       - type: commands
@@ -290,7 +326,7 @@ slides:
           - {line: 7, tip: 'The worker may run 3 seconds from now, or fail. By then the customer has seen "payment successful" and closed the page.'}
       - type: code
         lang: php
-        file: 'src/Controller/PaymentController.php'
+        file: 'PaymentController.php and ChargeOrderHandler.php'
         variant: good
         code: |
           #[Route('/orders/{id}/pay', methods: ['POST'])]
@@ -308,9 +344,26 @@ slides:
                   Response::HTTP_ACCEPTED,                        // 202: received, work in progress
               );
           }
+
+          // the worker later moves the order out of "pending"
+          #[AsMessageHandler]
+          final readonly class ChargeOrderHandler
+          {
+              public function __construct(
+                  private PaymentGateway $gateway,
+                  private OrderService $orders,
+              ) {}
+
+              public function __invoke(ChargeOrder $m): void
+              {
+                  $result = $this->gateway->charge($m->orderId);   // slow, can fail
+                  $this->orders->settle($m->orderId, $result);     // pending becomes paid or failed
+              }
+          }
         marks:
           - {line: 8, tip: 'Write the true state to the database and commit first, then dispatch. Do it the other way round and the worker looks for an order that isn''t saved yet.'}
           - {line: 13, tip: '`202 Accepted` means "request received, not finished yet". The client uses `statusUrl` or live updates to learn the final result.'}
+          - {line: 29, tip: 'The state does not stay "pending" forever: the handler settles it to paid or failed, and the status URL shows whichever it became.'}
       - type: visual
         kind: compare
         caption: 'Which work goes to the queue and which stays in the request'
@@ -342,6 +395,7 @@ slides:
         items:
           - 'Dispatch before the transaction commits and the worker may look for a row it can''t see yet. Commit first, then dispatch.'
           - 'Once work is async, the handler must be ready to run twice: the same message can arrive again.'
+          - 'Commit then dispatch can still lose the message if the app dies in between, leaving the order "pending" forever. The outbox pattern closes that gap.'
       - type: refs
         items:
           - {to: 'workflows/outbox-inbox', label: 'Making commit and dispatch happen together: the outbox'}
@@ -354,7 +408,7 @@ flashcards:
   - q: 'What is the core difference between a command and an event?'
     a: 'A command is an order to do a job ("do this") with exactly one handler. An event announces something that happened ("this happened") and has zero to many handlers.'
     more: |
-      With a command, the sender knows who will do the job and expects it to be done. With an event, the sender only states the fact and doesn't need to know who is listening. That's why you can add new work to an event by writing one more handler, without touching the sender's code.
+      With a command, the sender knows who will do the job and expects it to be done. With an event, the sender only states the fact and doesn't need to know who is listening. That's why you can add new work to an event by writing one more handler, without touching the sender's code. The price is that nobody can read in one place what an event sets off, so list the listeners with `debug:messenger`.
     ref: command-vs-event
   - q: 'How do you name commands and events?'
     a: 'Commands as orders: `SendInvoiceEmail`, `BookCourier`. Events in the past tense: `OrderPlaced`, `PaymentFailed`.'
@@ -394,7 +448,7 @@ flashcards:
   - q: 'What is the honest response after you queue a job?'
     a: '`202 Accepted`, a `pending` state, and a URL to check status, because the job hasn''t run yet.'
     more: |
-      `dispatch()` only writes the message to the queue. The worker may run a few seconds later, and it may fail. So saying "success" is a lie. Write the `pending` state to the database first, then dispatch, and let the client learn the final result from a status URL or a live update.
+      `dispatch()` only writes the message to the queue. The worker may run a few seconds later, and it may fail. So saying "success" is a lie. Write the `pending` state to the database first, then dispatch, and let the client learn the final result from a status URL or a live update. The handler then settles the state to paid or failed.
     ref: async-is-not-done
 
 quiz:

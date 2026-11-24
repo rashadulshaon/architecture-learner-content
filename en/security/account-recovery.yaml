@@ -19,7 +19,7 @@ slides:
               return md5($user->getEmail());
           }
         marks:
-          - {line: 3, tip: 'md5 is not a secret. If you know the input (the email), the output is the same for everyone, so it is no secret key.'}
+          - {line: 4, tip: 'md5 is a fingerprint function: the same email always gives the same result, and anyone can compute it. A reset token must be something only the server and the inbox owner know.'}
       - type: visual
         kind: sequence
         caption: 'The attacker built the token from the email himself and took Sumi''s account'
@@ -72,8 +72,12 @@ slides:
       - type: quote
         body: 'A reset token is random, stored hashed, expiring and single-use. Not one of the four may be missing.'
     aside:
+      - type: terms
+        items:
+          - {term: 'CSPRNG', meaning: 'A cryptographically secure random number generator: the operating system''s source of randomness, which nobody can predict.'}
       - type: tips
         items:
+          - 'The price of storing only the hash: you can never show or re-send the same link. A second "forgot" request makes a new token, and the old ones should be voided.'
           - 'Use `random_bytes(32)` or `bin2hex(random_bytes(32))` for tokens. Never `rand()`, `uniqid()`, the time or a user id.'
           - 'Instead of building it yourself, you can use SymfonyCasts ResetPasswordBundle, which already follows these rules and throttles requests.'
       - type: refs
@@ -91,7 +95,7 @@ slides:
     blocks:
       - type: text
         body: |
-          If you say "no account with this email", an attacker can ask about a thousand emails and learn exactly who your users are. This is **user enumeration**. So the answer is always the same: "If the email exists, a link has been sent." The real work happens in the background, in a Messenger handler, so even the response time reveals nothing.
+          If you say "no account with this email", a script can ask about 1,000 emails in under a minute and learn exactly who your users are. This is **user enumeration**. So the answer is always the same: "If the email exists, a link has been sent." The real work happens in the background, in a Messenger handler, so even the response time reveals nothing.
       - type: code
         lang: php
         file: 'src/Controller/PasswordController.php'
@@ -102,22 +106,24 @@ slides:
               #[MapRequestPayload] ForgotPassword $dto,
               Request $request,
               RateLimiterFactory $passwordResetLimiter,
+              RateLimiterFactory $passwordResetEmailLimiter,
               MessageBusInterface $bus,
           ): JsonResponse {
-              $limit = $passwordResetLimiter->create($request->getClientIp())->consume();
-              if (!$limit->isAccepted()) {
+              $email = mb_strtolower($dto->email);
+              if (!$passwordResetLimiter->create($request->getClientIp())->consume()->isAccepted()
+                  || !$passwordResetEmailLimiter->create($email)->consume()->isAccepted()) {
                   throw new TooManyRequestsHttpException();
               }
 
               // we don't check whether the email exists here; the handler will, in the background
-              $bus->dispatch(new SendPasswordReset(mb_strtolower($dto->email)));
+              $bus->dispatch(new SendPasswordReset($email));
 
               return $this->json(['message' => 'If the email exists, a link has been sent.'], 202);
           }
         marks:
-          - {line: 8, tip: 'A rate limit by IP; excess requests stop email bombing and enumeration. Also add a separate limit per email.'}
-          - {line: 14, tip: 'The server never looks up whether the user exists here, so even timing differences leak nothing.'}
-          - {line: 16, tip: 'Whether the email exists or not, the answer is identical: the same words, the same status.'}
+          - {line: 10, tip: 'Two limits: per IP (say 5 requests an hour, set in rate_limiter.yaml) and per email, so one victim can''t be mail-bombed from many IPs. Both count requests whether or not the email exists.'}
+          - {line: 16, tip: 'The server never looks up whether the user exists here, so even timing differences leak nothing.'}
+          - {line: 18, tip: 'Whether the email exists or not, the answer is identical: the same words, the same status.'}
       - type: code
         lang: php
         file: 'src/MessageHandler/SendPasswordResetHandler.php'
@@ -174,8 +180,8 @@ slides:
         caption: 'The order for completing a reset'
         steps:
           - {title: '1. Match the hash', body: 'Look up the row by the token''s SHA-256', tip: 'The database holds only the hash; hash the token the user sent and compare.'}
-          - {title: '2. Expiry and use', body: 'Reject if expired or used', tip: 'In both cases give the same generic message: the link is invalid or old.'}
-          - {title: '3. Change the password', body: 'Store the new hash, mark the token used', tip: 'Both in the same transaction. If it isn''t marked used, the same link will work again.'}
+          - {title: '2. Claim the token', body: 'One atomic UPDATE: only if unused and not expired', tip: 'If it fails, give one generic message: the link is invalid or old. Two clicks at the same instant can''t both win.'}
+          - {title: '3. Change the password', body: 'Store the new hash', tip: 'If saving fails after the claim, the token is spent and the user simply asks again. That is the safe side to fail on.'}
           - {title: '4. Revoke everything old', body: 'Sessions, refresh tokens, remember-me', tip: 'When the password hash changes, Symfony logs the user out of other sessions itself; API tokens must be revoked separately.'}
           - {title: '5. Notify by email', body: 'A "your password was changed" message', tip: 'If the user didn''t do it themselves, this email is the first warning sign.'}
       - type: code
@@ -189,25 +195,46 @@ slides:
               ResetTokenRepository $tokens,
               UserPasswordHasherInterface $hasher,
               RefreshTokenRepository $refresh,
+              MessageBusInterface $bus,
               EntityManagerInterface $em,
           ): JsonResponse {
-              $row = $tokens->findOneBy(['tokenHash' => hash('sha256', $dto->token)]);
-              if (null === $row || $row->isUsed() || $row->isExpired(new \DateTimeImmutable())) {
+              $row = $tokens->claim(hash('sha256', $dto->token), new \DateTimeImmutable());
+              if (null === $row) {
                   return $this->json(['error' => 'The link is invalid or has expired'], 400);
               }
 
               $user = $row->getUser();
               $user->setPassword($hasher->hashPassword($user, $dto->newPassword));
-              $row->markUsed();                 // works only once
               $refresh->revokeAllFor($user);    // revoke the old API tokens
               $em->flush();
+              $bus->dispatch(new PasswordChanged($user->getId()));   // the warning email
 
               return $this->json(['message' => 'Your password has been changed.']);
           }
         marks:
-          - {line: 9, tip: 'The database lookup is by hash, so no timing comparison is done on the plain token.'}
-          - {line: 16, tip: 'The same link can''t work twice. If two requests arrive at once, make it atomic with UPDATE ... WHERE used_at IS NULL.'}
+          - {line: 10, tip: 'The lookup is by hash, so the plain token is never compared in PHP. claim() also marks the token used (see below), so a second click gets null.'}
           - {line: 17, tip: 'The user''s session cookies stop working on their own, but unless you revoke refresh tokens a thief stays in through the API.'}
+          - {line: 19, tip: 'The owner learns about the change at once. If it wasn''t them, this email is the first alarm.'}
+      - type: code
+        lang: php
+        file: 'src/Repository/ResetTokenRepository.php'
+        variant: good
+        code: |
+          public function claim(string $hash, \DateTimeImmutable $now): ?ResetToken
+          {
+              $claimed = $this->getEntityManager()->createQueryBuilder()
+                  ->update(ResetToken::class, 't')
+                  ->set('t.usedAt', ':now')
+                  ->where('t.tokenHash = :hash AND t.usedAt IS NULL AND t.expiresAt > :now')
+                  ->setParameter('hash', $hash)
+                  ->setParameter('now', $now)
+                  ->getQuery()->execute();    // number of rows changed
+
+              return 1 === $claimed ? $this->findOneBy(['tokenHash' => $hash]) : null;
+          }
+        marks:
+          - {line: 6, tip: 'Check and mark happen in one UPDATE. A separate "if not used, then mark used" lets two simultaneous requests both pass the check.'}
+          - {line: 11, tip: 'Only the request that changed exactly one row wins. The loser changed zero rows and gets null.'}
     aside:
       - type: tips
         items:
@@ -248,6 +275,7 @@ slides:
         items:
           - 'When MFA is turned on, show 10 one-time recovery codes, store them hashed, and void each one when it is used.'
           - 'When the account email or MFA changes, send a warning to the old email and ask for extra verification on sensitive actions for a while.'
+          - 'The price of a waiting period: the real owner who lost their phone waits 24 to 72 hours too. Say why, and issue recovery codes up front so most people never need it.'
       - type: refs
         items:
           - {to: 'security/threat-modeling', label: 'A way to think about which paths an attacker looks for'}
@@ -285,6 +313,11 @@ flashcards:
     a: 'All the user''s other sessions, refresh tokens and remember-me cookies. Then send a "your password was changed" email.'
     more: |
       In Symfony, changing the password hash invalidates other sessions on its own. Refresh tokens are separate, so you must revoke them yourself. Otherwise a thief who was already logged in stays in after the change.
+    ref: consume-reset
+  - q: 'How do you make a reset token truly single-use when two requests arrive at once?'
+    a: 'Claim it with one atomic UPDATE ... WHERE used_at IS NULL AND expires_at > now, and proceed only if exactly one row changed.'
+    more: |
+      "Read the row, check it is unused, then mark it used" has a gap between the check and the write, and two simultaneous requests can both pass. A single conditional UPDATE lets the database pick one winner; the other changes zero rows.
     ref: consume-reset
   - q: 'How should a reset handle MFA?'
     a: 'MFA stays on after a reset. If MFA is lost, it is restored through recovery codes, or through a waiting period and warning messages.'
@@ -370,6 +403,28 @@ quiz:
       - text: 'Log them in directly'
         correct: false
         why: 'The link would become a way in without a password.'
+    ref: consume-reset
+  - q: 'Two tabs submit the same reset link at the same instant. Which code lets both succeed?'
+    lang: php
+    code: |
+      $row = $tokens->findOneBy(['tokenHash' => $hash]);
+      if (null === $row || $row->isUsed()) {
+          return $this->json(['error' => 'Invalid link'], 400);
+      }
+      $user->setPassword($hasher->hashPassword($user, $newPassword));
+      $row->markUsed();
+      $em->flush();
+    hint: 'What happens between the isUsed() check and the flush()?'
+    options:
+      - text: 'This one: both requests read the row as unused before either one writes'
+        correct: true
+        why: 'The check and the write are separate steps. Use one UPDATE ... WHERE used_at IS NULL and check that one row changed.'
+      - text: 'None: isUsed() always stops the second request'
+        correct: false
+        why: 'It only stops a request that arrives after the first has been saved. Simultaneous ones both see "unused".'
+      - text: 'None: hashing the token prevents it'
+        correct: false
+        why: 'Hashing protects a leaked database; it does nothing about two requests racing.'
     ref: consume-reset
   - q: 'Which measures keep the recovery path as strong as login?'
     hint: 'The back door must not be weaker than the front door.'

@@ -81,7 +81,7 @@ slides:
         body: '4xx: "you change something", 5xx: "we are fixing it".'
       - type: pitfalls
         items:
-          - 'Mixing up 404 and 403: answering 404 for someone else''s order hides that it exists, while 403 leaks the fact that the order is there.'
+          - '404 or 403 for someone else''s order? A 403 tells a stranger the order exists; a 404 hides it. For private data, prefer 404.'
           - 'A 400 for every mistake, or a 500 for every mistake: the client then can''t tell what kind of mistake it was.'
       - type: refs
         items:
@@ -114,7 +114,7 @@ slides:
         file: 'src/EventListener/ApiProblemListener.php'
         variant: good
         code: |
-          #[AsEventListener]
+          #[AsEventListener(priority: -10)]
           final class ApiProblemListener
           {
               public function __invoke(ExceptionEvent $event): void
@@ -150,6 +150,7 @@ slides:
               }
           }
         marks:
+          - {line: 1, tip: 'Symfony''s own logger runs at priority 0. Running after it (-10) means a 500 is still written to the log, even though the client sees only a generic message.'}
           - {line: 10, tip: 'When #[MapRequestPayload] validation fails, Symfony throws an HttpException whose previous is a ValidationFailedException.'}
           - {line: 14, tip: 'This picks the status and a fixed code from our own exception. This is what the client reads.'}
           - {line: 25, tip: 'For a 5xx the real message is not given to the client. A leaked stack trace or SQL helps an attacker.'}
@@ -318,6 +319,98 @@ slides:
       q: 'What is the risk if the app simply resends after a timeout on POST /payments, and how do you make it safe?'
       a: 'A timeout doesn''t mean the job wasn''t done, only that no answer arrived, so the money may be charged twice. With an idempotency key the server won''t do the same job a second time.'
 
+  - slug: idempotency-fix
+    title: 'The fix: the same key on every retry'
+    kind: howto
+    tldr: 'The client makes one Idempotency-Key per user action and reuses it on every retry. The server runs the job once per key and replays the saved answer.'
+    keywords: ['idempotency key', 'safe retry', 'POST retry', 'Idempotency-Key header', 'duplicate payment', 'replay']
+    blocks:
+      - type: text
+        body: |
+          Back to the timed-out payment. The trouble was that the server could not tell "a second attempt at the same payment" from "a brand-new payment". A key fixes that: it is a label, like a token number at a bank counter, that the client makes once and sends again on each retry. The server charges once per key.
+      - type: visual
+        kind: sequence
+        caption: 'A retry that does not charge twice'
+        actors:
+          - {id: app, label: 'Vue app', icon: browser, tip: 'It made one key for this payment and keeps it for every retry of that payment.'}
+          - {id: api, label: 'Payments API', icon: api, tip: 'It remembers which keys it has already handled and what it answered.'}
+        messages:
+          - {from: app, to: api, label: 'POST /payments, key k-77'}
+          - {at: api, note: 'Charges 500 taka, saves the answer under k-77', tone: good, tip: 'The charge and the saved answer belong together: the next request with k-77 will find them.'}
+          - {at: app, note: 'The answer never arrives: timeout', tone: warn, tip: 'The client cannot know whether the charge happened. This is the exact moment a blind retry would hurt.'}
+          - {from: app, to: api, label: 'POST /payments, key k-77 (retry)'}
+          - {from: api, to: app, label: '201 with the first answer, no second charge', dashed: true, tone: good, tip: 'The server sees a key it has handled and replays the saved answer instead of running the job again.'}
+      - type: code
+        lang: ts
+        file: 'src/api/pay.ts'
+        variant: good
+        code: |
+          export async function pay(payment: Payment): Promise<PaymentResult> {
+            const key = crypto.randomUUID() // once per user action, not per attempt
+
+            for (let attempt = 0; attempt < 3; attempt++) {
+              let status: number | null = null
+              try {
+                const res = await fetch('/api/v1/payments', {
+                  method: 'POST',
+                  headers: { 'Idempotency-Key': key, 'Content-Type': 'application/json' },
+                  body: JSON.stringify(payment),
+                })
+                if (res.ok) return await res.json()
+                status = res.status
+              } catch {
+                // timeout or network error: status stays null
+              }
+              if (!canRetry('POST', status, true)) break
+              await sleep(500 * 2 ** attempt) // wait longer after each failure
+            }
+            throw new Error('payment failed')
+          }
+        marks:
+          - {line: 2, tip: 'If the key were made inside the loop, every retry would look like a new payment and the fix would do nothing.'}
+          - {line: 9, tip: 'The same key travels with every attempt.'}
+      - type: code
+        lang: php
+        file: 'src/Controller/Api/V1/PaymentController.php'
+        variant: good
+        code: |
+          #[Route('/api/v1/payments', methods: ['POST'])]
+          public function create(
+              Request $request,
+              #[MapRequestPayload] PaymentRequest $dto,
+          ): JsonResponse {
+              $key = $request->headers->get('Idempotency-Key')
+                  ?? throw new BadRequestHttpException('Idempotency-Key header is required');
+
+              $saved = $this->cache->get('idem_'.$key, function (ItemInterface $item) use ($dto) {
+                  $item->expiresAfter(86400);
+                  $payment = $this->payments->charge($dto);   // runs once per key
+
+                  return ['status' => 201, 'body' => ['id' => $payment->id]];
+              });
+
+              return $this->json($saved['body'], $saved['status']);
+          }
+        marks:
+          - {line: 9, tip: 'cache->get() runs the callback only when the key is not saved yet. A retry gets the saved array back.'}
+          - {line: 11, tip: 'The money moves here, once per key. If it throws, nothing is saved, so a later retry may run it again.'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'Use a shared cache (Redis), not a per-server one, or a retry that lands on another server charges again.'
+          - 'Reject a reused key that arrives with a different body: it is a client bug, not a retry.'
+      - type: when
+        use:
+          - 'Any POST that moves money or creates something you cannot cheaply undo'
+        avoid:
+          - 'GET, PUT and DELETE: they are already safe to repeat, so a key only adds storage'
+      - type: refs
+        items:
+          - {to: 'payments/idempotency-keys', label: 'Idempotency keys in depth'}
+    check:
+      q: 'Why must the client create the idempotency key once per payment, and not once per attempt?'
+      a: 'The key is how the server recognises a retry. A fresh key on each attempt makes every retry look like a new payment, so the double charge comes back.'
+
 flashcards:
   - q: 'Why is it wrong to return 200 OK with "success: false" in the body for a failed job?'
     a: 'If the status code lies, monitoring, caching and retry tools all make the wrong decision.'
@@ -349,6 +442,11 @@ flashcards:
     more: |
       400, 401, 403, 404 and 422 are input or permission mistakes, and sending again gets the same answer. With a 500, if there is a bug, it breaks the same way every time. Before a retry, ask: does doing this job twice do harm?
     ref: blind-retry
+  - q: 'How does an idempotency key stop a retry from charging twice?'
+    a: 'The client makes one key per payment and sends it on every retry. The server does the job once per key and replays the saved answer.'
+    more: |
+      The key lets the server tell a retry from a new payment. It must be made once per user action, not per attempt, and stored where every server can see it. The price is some storage for saved answers, kept for a day or so.
+    ref: idempotency-fix
   - q: 'Which HTTP methods are idempotent?'
     a: 'GET, HEAD, PUT, DELETE and OPTIONS. POST usually isn''t, so you make it safe with an idempotency key.'
     more: |
@@ -356,6 +454,22 @@ flashcards:
     ref: blind-retry
 
 quiz:
+  - q: 'The Vue app retries a timed-out payment with a key made inside the retry loop, so each attempt gets a fresh UUID. What happens?'
+    hint: 'How does the server decide that two requests are the same payment?'
+    options:
+      - text: 'Nothing is fixed: every attempt looks like a new payment, so the customer can still be charged twice'
+        correct: true
+        why: 'The key only works when it is shared by all attempts of one payment. Make it once, before the loop.'
+      - text: 'The server rejects every retry with a 409'
+        correct: false
+        why: 'A new key looks like a brand-new payment, so the server happily processes it.'
+      - text: 'It is safe, because a UUID is unique and that is what idempotency needs'
+        correct: false
+        why: 'Uniqueness per attempt is exactly the problem. The server needs the same key to recognise a repeat.'
+      - text: 'The retry is skipped because POST is never retried'
+        correct: false
+        why: 'canRetry allows POST when an idempotency key exists, which is the point of having one.'
+    ref: idempotency-fix
   - q: 'What is wrong with the response in the code below?'
     lang: php
     code: |

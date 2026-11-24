@@ -47,7 +47,7 @@ slides:
         icon: hourglass
         title: 'The cook takes a pot'
         body: |
-          Once a cook picks up a pot, nobody else touches it, because it's his now. But if he doesn't bring it back within 30 minutes, the manager assumes he has gone missing and gives the pot to someone else. Those 30 minutes are the **visibility timeout**. The manager also keeps a separate "urgent pot" shelf, so a guest's tea doesn't get stuck behind the biryani.
+          Once a cook picks up a pot, nobody else touches it, because it's his now. But if he doesn't bring it back within the agreed time, the manager assumes he has gone missing and gives the pot to someone else. That agreed time is the **visibility timeout**. The manager also keeps a separate "urgent pot" shelf, so a guest's tea doesn't get stuck behind the biryani.
       - type: visual
         kind: sequence
         caption: 'Visibility timeout: if a worker dies, the message goes to someone else'
@@ -75,6 +75,7 @@ slides:
       - type: pitfalls
         items:
           - 'The job takes 5 minutes but the timeout is 30 seconds: someone else picks up the message while the job is still running.'
+          - 'A timeout that is far too long has a price too: after a worker dies, the message waits out the whole timeout before anyone retries it.'
     check:
       q: 'A job takes up to 2 minutes, and the visibility timeout is 30 seconds. What happens?'
       a: 'The worker is still working, but after 30 seconds the message becomes visible again and another worker gets it. The same job then runs in two places.'
@@ -85,6 +86,9 @@ slides:
     tldr: 'Instead of cron, keep the schedule in code, use a lock so it runs on only one server, and give urgent work its own transport.'
     keywords: ['Symfony Scheduler', 'RecurringMessage', 'AsSchedule', 'cron', 'priority transport', 'schedule lock']
     blocks:
+      - type: text
+        body: |
+          Without a lock, two servers that each run a Scheduler worker both release `BuildDailyReport` at 02:00: two reports and two payslip emails. With a lock, the first worker takes it and the second finds it taken and skips. The price: the lock only works if `framework.lock` points at a store all servers share, such as Redis or the database. The default local store protects nothing across servers. The simplest alternative is to run just one Scheduler worker under a supervisor, at the cost that nothing is released while it is down.
       - type: code
         lang: php
         file: 'src/Scheduler/MainSchedule.php'
@@ -143,6 +147,7 @@ slides:
         items:
           - '`RecurringMessage::cron()` needs the `dragonmantank/cron-expression` package.'
           - 'A Scheduler job is just a Messenger message, so retries and the failure transport apply to it too.'
+          - 'Test the lock by starting two `scheduler_default` workers on different machines. If the job is released twice, the lock store is not shared.'
     check:
       q: 'With workers on two servers, how do you stop a Scheduler job from being released twice?'
       a: 'Add `->lock(...)` to the schedule so only one worker can release the message at a time. Add `stateful()` as well and you don''t need to worry about missed runs either.'
@@ -153,6 +158,9 @@ slides:
     tldr: 'Split big work into small chunks. Each chunk is one message, and the next chunk''s message carries a checkpoint (the last id), so a crash reruns only the current chunk.'
     keywords: ['chunk', 'checkpoint', 'cursor', 'batch', 'long running', 'keyset pagination']
     blocks:
+      - type: text
+        body: |
+          The 2 a.m. report has 1 million rows (ids 1 to 1,000,000). In chunks of 500 that is 2,000 small messages. If the server dies after 600,000 rows, the broker hands out chunk 1,201 again, which carries `afterId` 600000, and only 500 rows are redone instead of 600,000. The price: 2,000 trips through the queue instead of one loop, and chunks run one after another, so the total is a little slower. A 10-second job doesn't need this.
       - type: code
         lang: php
         file: 'src/MessageHandler/ExportUsersHandler.php'
@@ -211,6 +219,9 @@ slides:
     tldr: 'Background jobs die quietly. Measure queue depth, the age of the oldest message, the failure rate and the run time, and set alerts on them.'
     keywords: ['observability', 'queue depth', 'queue age', 'messenger:stats', 'WorkerMessageFailedEvent', 'monitoring']
     blocks:
+      - type: text
+        body: |
+          A queue holding 10 messages is nothing, and 100,000 that grows by 500 a minute is a flood. But 10 messages can still hurt if the oldest has waited 30 minutes. So alert on how long work waits, not only on how many items there are.
       - type: visual
         kind: table
         caption: 'Four signals for background jobs'
@@ -246,11 +257,24 @@ slides:
         marks:
           - {line: 6, tip: 'Messenger fires this event whenever a worker fails on a message.'}
           - {line: 10, tip: 'If `will_retry` is false, the message is heading to the DLQ, which deserves its own alert.'}
+      - type: code
+        lang: sql
+        file: 'age of the oldest message (Doctrine transport, PostgreSQL)'
+        variant: good
+        code: |
+          SELECT now() AT TIME ZONE 'UTC' - min(created_at) AS oldest_age
+          FROM messenger_messages
+          WHERE queue_name = 'default';
+        marks:
+          - {line: 1, tip: 'Rows are deleted on ack, so the oldest row is the longest-waiting or longest-stuck message. Alert when this passes your limit, say 5 minutes for emails.'}
     aside:
       - type: commands
         items:
           - {cmd: 'php bin/console messenger:stats', desc: 'How many messages are waiting in each transport'}
           - {cmd: 'php bin/console messenger:failed:show', desc: 'See the failed messages and their causes'}
+      - type: tips
+        items:
+          - 'On SQS the same number is the CloudWatch metric `ApproximateAgeOfOldestMessage`.'
       - type: remember
         body: 'Not the queue depth but the age of the oldest message tells you how far behind the user is.'
       - type: refs
@@ -296,6 +320,16 @@ flashcards:
     more: |
       Also measure the failure rate, the run time and the DLQ size. Even one message in the DLQ means a piece of work was lost, so it deserves its own alert.
     ref: job-observability
+  - q: 'A 1-million-row job runs in chunks of 500 and crashes after 600,000 rows. How much is redone?'
+    a: 'Only the chunk in progress, 500 rows. Its message still carries the last id, so the rerun starts from there, not from row one.'
+    more: |
+      That is 2,000 chunk messages in total. The price is 2,000 trips through the queue and chunks that run one after another. Chunking is not worth it for a job that takes seconds.
+    ref: chunks-and-checkpoints
+  - q: 'Why can a Scheduler lock fail to stop a double run across servers?'
+    a: 'The lock store must be shared by all servers, such as Redis or the database. A local file lock only protects one machine.'
+    more: |
+      Without a shared store, every server thinks it holds the lock and releases the job. Check `framework.lock`. The simpler alternative is a single Scheduler worker, which means nothing is released while that worker is down.
+    ref: scheduler-and-lanes
 
 quiz:
   - q: 'The app runs on two servers, each with a Scheduler worker. The 2 a.m. report is released twice every night. What is the fix?'
@@ -375,3 +409,16 @@ quiz:
         correct: false
         why: 'A stuck worker may be waiting on I/O, with low CPU, so this tells you nothing.'
     ref: job-observability
+  - q: 'Two servers run Scheduler workers with `->lock(...)`, yet the report is still released twice. What is the most likely cause?'
+    hint: 'Where does each server keep its lock?'
+    options:
+      - text: 'The lock store is local to each server, so neither sees the other''s lock'
+        correct: true
+        why: 'A lock only excludes workers that look at the same store. Point `framework.lock` at Redis or the database.'
+      - text: 'The cron expression is wrong'
+        correct: false
+        why: 'The time is right. The same slot is released twice because two workers both think they hold the lock.'
+      - text: 'Messenger retries the message'
+        correct: false
+        why: 'A retry only happens after a failure, and here both releases succeed.'
+    ref: scheduler-and-lanes

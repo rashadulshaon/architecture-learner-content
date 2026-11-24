@@ -12,13 +12,21 @@ slides:
           A library holds 2 million books. To find "Gitanjali by Rabindranath Tagore", you walk the shelves and check every book from the first to the last. Go to the catalogue cards instead, sorted by author, and you get "shelf 14, third row" straight away. A database index is exactly that catalogue: a sorted list where each entry says where the row is.
       - type: text
         body: |
-          In Rahim's app the `customer_order` table has 2 million rows. The "My orders" page was fast a week ago and now takes about 0.4 seconds every time. The code hasn't changed at all; only the number of rows has grown.
+          In Rahim's app the `customer_order` table has 2 million rows. The "My orders" page was fast a week ago and now takes about 0.4 seconds every time. The code hasn't changed at all; only the number of rows has grown. The fix is one line, shown below. The rest of this segment is about doing it well, and what it costs.
       - type: visual
         kind: bars
         caption: 'Time to find customer_id = 42 in a table of 2 million rows'
         items:
           - {label: 'Without an index', value: 412, display: '412ms', tone: bad, tip: 'The database read all 2 million rows, then picked out 20. This is called a sequential scan.'}
           - {label: 'With an index', value: 1, display: '0.12ms', tone: good, tip: 'It followed the sorted list straight to customer 42''s rows and never touched the other 1.9 million or so.'}
+      - type: code
+        lang: sql
+        file: 'The one-line fix'
+        variant: good
+        code: |
+          CREATE INDEX idx_order_customer ON customer_order (customer_id);
+          -- on a live PostgreSQL table, add CONCURRENTLY so writes are not blocked
+          -- price: every new row now also goes into this index (see the last slide)
       - type: quote
         body: 'Without an index, every lookup reads the whole table. Add rows and the time grows at the same rate.'
     aside:
@@ -125,6 +133,8 @@ slides:
             tip: 'Equality, then a range. Both columns are used.'
           - cells: ['created_at > ''2026-01-01''', 'No, the left column is skipped']
             tip: 'Without the first column you cannot even begin. Like searching the phone book by first name only.'
+          - cells: ['If it were (created_at, customer_id): customer_id = 42', 'No: the wrong column leads']
+            tip: 'The same two columns in the opposite order help a different set of queries. The order is a decision, not a detail.'
       - type: quote
         body: 'Column order: equality conditions first, then the range or ORDER BY column. And if a condition does not start from the left, the index is useless.'
     aside:
@@ -197,6 +207,7 @@ slides:
         items:
           - 'EXPLAIN ANALYZE really runs the query. For an INSERT or UPDATE, run it inside BEGIN ... ROLLBACK.'
           - 'On a small table the database picks Seq Scan on purpose, because it is cheaper. Test with production-sized data.'
+          - 'A covering index (INCLUDE) makes the index bigger and every write costlier. Keep it for your one or two hottest queries.'
     check:
       q: 'What do you conclude when EXPLAIN shows "Seq Scan" and "Rows Removed by Filter: 1999980"?'
       a: 'The database read the whole table and threw away nearly every row. There is no index in the right order on the filter column, or the database is not using it.'
@@ -221,7 +232,7 @@ slides:
             icon: check
             tip: 'Each index exists for some important query, and the extra cost on writes is small.'
             items:
-              - 'Each INSERT updates 2 indexes'
+              - 'Each INSERT: 1 table write + 2 index writes = 3 writes'
               - 'Less disk space'
               - 'Every index serves some query'
           - title: '10 "might need" indexes'
@@ -229,7 +240,7 @@ slides:
             icon: warning
             tip: 'Most of these indexes are never read, yet every write updates all of them.'
             items:
-              - 'Each INSERT updates 10 indexes'
+              - 'Each INSERT: 1 table write + 10 index writes = 11 writes'
               - 'The indexes can grow bigger than the table'
               - 'An unused index is just dead weight'
       - type: code
@@ -257,6 +268,7 @@ slides:
           - {cmd: 'SELECT relname, indexrelname, idx_scan FROM pg_stat_user_indexes WHERE idx_scan = 0;', desc: 'Indexes that have never been used'}
       - type: tips
         items:
+          - 'A partial index is used only when the query repeats its condition (WHERE status = ''pending''). Leave the condition out and the database cannot use it.'
           - 'Before dropping an index, check that idx_scan stayed at zero over several weeks of full traffic, month-end reports included.'
           - 'On tables that are written to very often (logs, events), keep indexes to the bare minimum.'
     check:
@@ -297,7 +309,7 @@ flashcards:
   - q: 'What is a partial index, and when is it useful?'
     a: 'An index over only some rows, chosen by a WHERE condition (such as status = pending). It stays small and does not slow writes of the other rows.'
     more: |
-      When most rows in a table are "finished" and queries care only about the active ones, an index over the whole table is a waste. In Doctrine, #[ORM\Index(options: ['where' => '...'])] creates a partial index on PostgreSQL.
+      When most rows in a table are "finished" and queries care only about the active ones, an index over the whole table is a waste. In Doctrine, #[ORM\Index(options: ['where' => '...'])] creates a partial index on PostgreSQL. A query uses it only when it repeats the same WHERE condition.
     ref: write-cost-of-indexes
   - q: 'What is the cost of having many indexes?'
     a: 'Every INSERT, UPDATE and DELETE must update every index, so writes get slower and disk use grows.'

@@ -140,7 +140,7 @@ slides:
           }
         marks:
           - {line: 5, tip: 'If the saga isn''t at the expected step, the event is old or a duplicate. Do nothing and return.'}
-          - {line: 9, tip: 'The flush and the dispatch are separate steps with a gap between them. Close it with an outbox.'}
+          - {line: 10, tip: 'The flush and the dispatch are separate steps with a gap between them. Close it with an outbox.'}
           - {line: 24, tip: 'Compensation runs in reverse: the refund happens only after the news that stock was released.'}
     aside:
       - type: tips
@@ -197,12 +197,12 @@ slides:
   - slug: timeouts-and-failing-compensations
     title: 'Stuck sagas and failing compensations'
     kind: pitfall
-    tldr: 'When a deadline passes, a sweeper treats the saga as timed out and starts compensation; compensations must be idempotent and retried forever, and steps that can''t be undone go last.'
+    tldr: 'A deadline lets a sweeper catch silence, but a timeout only means "no answer yet"; compensations must be idempotent and retried forever, and steps that can''t be undone go last.'
     keywords: ['saga timeout', 'compensation failure', 'idempotent compensation', 'pivot step', 'deadline', 'sweeper']
     blocks:
       - type: text
         body: |
-          The hardest thing to handle is silence: the courier service simply never answers. The saga would hang forever. So every saga gets a **deadline**, and a sweeper treats sagas past their deadline as timed out and starts compensation.
+          The hardest thing to handle is silence: the courier service simply never answers. The saga would hang forever. So every saga gets a **deadline**, and a sweeper treats sagas past their deadline as timed out and starts compensation. One warning: silence is not the same as failure. The next slide shows why.
       - type: code
         lang: php
         file: 'src/Saga/SagaTimeoutSweeper.php'
@@ -224,7 +224,7 @@ slides:
           }
         marks:
           - {line: 8, tip: 'Sagas stuck at a step that isn''t finished, and whose time has run out.'}
-          - {line: 11, tip: 'A timeout is just another event. The orchestrator treats it like any other failure and starts compensation.'}
+          - {line: 11, tip: 'A timeout is an event the orchestrator can react to. It is not a plain failure: the step may have worked (next slide).'}
       - type: points
         title: 'Rules for compensations'
         style: check
@@ -246,6 +246,96 @@ slides:
     check:
       q: 'If the refund compensation fails with a network error, what should the saga do, and why?'
       a: 'Try again with the same idempotency key. If it stopped, the customer''s money would stay taken, and the key guarantees that a retry won''t refund twice.'
+
+  - slug: timeout-is-not-failure
+    title: 'A timeout is not a failure: the step may have worked'
+    kind: pitfall
+    tldr: 'A timed-out step has an unknown outcome: cancel it too, by its own key, before undoing the earlier steps, and refuse its late reply.'
+    keywords: ['saga timeout', 'unknown outcome', 'late reply', 'cancel by key', 'idempotent cancel', 'lost response']
+    blocks:
+      - type: text
+        body: |
+          The saga is at `reserved`, waiting for the courier. Five minutes pass and the sweeper fires. But the courier service isn't dead, only slow: at minute six it books van #88, and its reply gets lost. If the saga now undoes only the stock and the payment, Rina gets her money back, and a courier turns up for an order that no longer exists. A timeout means "no answer yet", not "it failed". The step's outcome is **unknown**, so undo it as if it had worked.
+      - type: visual
+        kind: compare
+        caption: 'The same timeout, handled two ways'
+        columns:
+          - title: 'Timeout = plain failure'
+            tone: bad
+            icon: cross
+            tip: 'The saga assumes the courier step never ran, so nothing undoes it.'
+            items:
+              - 'Undo only stock and payment'
+              - 'The courier step is treated as "never happened"'
+              - 'Minute 6: van #88 is booked and nobody cancels it'
+              - 'A courier arrives for a dead order'
+          - title: 'Timeout = outcome unknown'
+            tone: good
+            icon: check
+            tip: 'The saga cancels the courier step by its key, which is safe whether or not it ran.'
+            items:
+              - 'Cancel the courier step too, by its own key'
+              - 'Cancel works whether the booking exists or not'
+              - 'A late "book" request hits the cancelled key and is refused'
+              - 'Then release stock, then refund, as before'
+      - type: code
+        lang: php
+        file: 'src/Saga/OrderSagaOrchestrator.php'
+        variant: good
+        code: |
+          #[AsMessageHandler]
+          public function onTimedOut(SagaTimedOut $e): void
+          {
+              $saga = $this->sagas->find($e->orderId);
+              if (!\in_array($saga->step(), ['started', 'paid', 'reserved'], true)) {
+                  return;                          // already compensating: duplicate sweep
+              }
+              $saga->moveTo('compensating');
+              $this->em->flush();
+              // the courier step may have worked: cancel it too, by its own key
+              $this->bus->dispatch(new CancelCourierBooking($e->orderId, 'book-'.$e->orderId));
+          }
+
+          #[AsMessageHandler]
+          public function onCourierCancelled(CourierBookingCancelled $e): void
+          {
+              $this->bus->dispatch(new ReleaseStock($e->orderId));   // then stock, then money
+          }
+        marks:
+          - {line: 5, tip: 'The sweeper may fire again before this handler finishes. Only a saga still in progress is compensated.'}
+          - {line: 11, tip: 'The step in flight gets its own cancel, with the same key that booked it.'}
+      - type: code
+        lang: php
+        file: 'src/Courier/CancelCourierBookingHandler.php'
+        variant: good
+        code: |
+          #[AsMessageHandler]
+          public function __invoke(CancelCourierBooking $c): void
+          {
+              $booking = $this->bookings->findByKey($c->key);
+              if (null === $booking) {
+                  // never arrived, or still on its way: leave a cancelled marker,
+                  // so a late BookCourier with this key is refused
+                  $this->bookings->save(Booking::cancelled($c->key));
+              } else {
+                  $booking->cancel();              // already cancelled? nothing changes
+              }
+              $this->bus->dispatch(new CourierBookingCancelled($c->orderId));
+          }
+        marks:
+          - {line: 5, tip: 'The cancel may arrive before the booking it cancels. The marker closes that race.'}
+          - {line: 10, tip: 'Cancelling twice is harmless, so the saga can retry this as often as it needs.'}
+    aside:
+      - type: tips
+        items:
+          - 'The same goes for any step in flight: after a timeout at `started`, the payment may have gone through, so cancel it by its key too.'
+          - 'Price: one extra message and one marker row per timed-out step. Skip it for steps that only read data, since there is nothing to cancel.'
+      - type: refs
+        items:
+          - {to: 'payments/idempotency-keys', label: 'Idempotency keys'}
+    check:
+      q: 'The saga timed out waiting for the courier. Why must it cancel the courier step too, not just stock and payment?'
+      a: 'A timeout means no answer, not no booking. The courier may have booked a van and lost its reply. Cancelling by key is safe either way, and the marker refuses a late booking.'
 
 flashcards:
   - q: 'What is a saga, and why do you need one?'
@@ -279,10 +369,15 @@ flashcards:
       Orchestration lets you read the whole flow in one place, but the orchestrator knows everyone. Choreography couples services loosely, but the flow is scattered. With many steps, orchestration is usually easier.
     ref: orchestration-vs-choreography
   - q: 'How do you handle timeouts in a saga?'
-    a: 'Give every saga a deadline. A sweeper treats a saga as timed out once the deadline passes and starts compensation.'
+    a: 'Give every saga a deadline. A sweeper catches overdue sagas and starts compensation, treating the step in flight as outcome unknown.'
     more: |
-      If another service stays silent, a saga could hang forever. A deadline and a sweeper let you handle silence as an ordinary failure event.
+      If another service stays silent, a saga could hang forever. A deadline and a sweeper turn silence into an event you can handle. But silence says nothing about whether the step worked, so see the next card.
     ref: timeouts-and-failing-compensations
+  - q: 'A saga step times out. Did it fail?'
+    a: 'Not necessarily: it may have worked and its reply got lost. Cancel it by its own idempotency key, then undo the earlier steps.'
+    more: |
+      Silence tells you nothing about the other service. Cancelling by key is safe both ways: if the booking exists it is cancelled, and if not, a cancelled marker makes a late request be refused. Skip this only for steps that change nothing.
+    ref: timeout-is-not-failure
   - q: 'What if a compensation fails, and what must it be like?'
     a: 'It must be retried until it succeeds, so it has to be idempotent (for example the same key on the refund).'
     more: |
@@ -383,3 +478,19 @@ quiz:
         correct: false
         why: 'A restart loses everything. The step must be kept in the database.'
     ref: timeouts-and-failing-compensations
+  - q: 'The saga waits for the courier and times out at minute 5. At minute 6 the courier service books a van, but its reply is lost. What should the saga do at minute 5?'
+    hint: 'The timeout told you nothing about whether the booking exists.'
+    options:
+      - text: 'Cancel the courier booking by its key, then release stock and refund'
+        correct: true
+        why: 'The step''s outcome is unknown, so it is undone too. The cancel works whether or not the booking exists, and a late booking is refused.'
+      - text: 'Release stock and refund only, because the courier step failed'
+        correct: false
+        why: 'It didn''t necessarily fail. If the van gets booked at minute 6, a courier arrives for a dead order.'
+      - text: 'Wait until the courier answers, however long that takes'
+        correct: false
+        why: 'The saga hangs forever and the customer''s money stays taken. The deadline exists to stop that.'
+      - text: 'Send a new BookCourier with a fresh key and hope one succeeds'
+        correct: false
+        why: 'If the first booking worked, you now have two vans. A retry must reuse the same key.'
+    ref: timeout-is-not-failure

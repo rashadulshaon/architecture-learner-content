@@ -7,7 +7,7 @@ slides:
     blocks:
       - type: text
         body: |
-          রহিমের পার্টনার কোম্পানির একটা script-এ ভুলে `while(true)` লুপ ঢুকে গেল, আর সেটা প্রতি সেকেন্ডে ৩০ বার রহিমের API ডাকতে লাগল। কয়েক মিনিটে ডেটাবেসের সংযোগ ফুরিয়ে গেল, আর সাধারণ ব্যবহারকারীদের পাতা ৩০ সেকেন্ডেও খুলছে না। কেউ আক্রমণ করেনি, একজনের ভুলেই সবার ক্ষতি।
+          রহিমের পার্টনার কোম্পানির একটা script-এ ভুলে `while(true)` লুপ ঢুকে গেল, আর সেটা প্রতি সেকেন্ডে ৩০ বার রহিমের API ডাকতে লাগল। প্রতিটা call প্রায় এক সেকেন্ড ডেটাবেসের একটা সংযোগ ধরে রাখত, আর pool-এ ছিল মাত্র কয়েক ডজন, তাই কয়েক মিনিটে সংযোগ ফুরিয়ে গেল, আর সাধারণ ব্যবহারকারীদের পাতা ৩০ সেকেন্ডেও খুলছে না। কেউ আক্রমণ করেনি, একজনের ভুলেই সবার ক্ষতি। সমাধান হলো প্রতি client-এর আলাদা সীমা, শেষ bar-এ দেখুন।
       - type: visual
         kind: bars
         caption: 'প্রতি মিনিটে client-ভিত্তিক request (উদাহরণ)'
@@ -15,7 +15,8 @@ slides:
           - {label: 'ব্যবহারকারী ক', value: 12, display: '12', tone: good, tip: 'সাধারণ ব্যবহারকারী, মিনিটে হাতে-গোনা request করে।'}
           - {label: 'ব্যবহারকারী খ', value: 15, display: '15', tone: good, tip: 'আরেকজন সাধারণ ব্যবহারকারী। দুজনেই সীমার অনেক নিচে।'}
           - {label: 'ব্যবহারকারী গ', value: 8, display: '8', tone: good, tip: 'আরও কম। এরা সবাই নিয়মিত কাজ করছে।'}
-          - {label: 'পার্টনারের লুপ', value: 1800, display: '1800', tone: bad, tip: 'ভুল লুপের কারণে একাই সবার মোট ভারের কয়েকশো গুণ। সীমা থাকলে এখানেই থামানো যেত।'}
+          - {label: 'পার্টনারের লুপ', value: 1800, display: '1800', tone: bad, tip: 'ভুল লুপের কারণে একাই তিনজন ব্যবহারকারীর মোট ভারের (মিনিটে ৩৫) প্রায় ৫০ গুণ।'}
+          - {label: 'একই লুপ, ১০০/মিনিট সীমা', value: 100, display: '100', tone: good, tip: 'একই লুপ, কিন্তু client-প্রতি সীমা আছে: প্রতি মিনিটে ১০০টা request পার হয়, বাকিগুলো 429 পায়। উপরের তিনজন কিছুই টের পান না।'}
       - type: quote
         body: 'সীমা ছাড়া API মানে নিজের দরজা সবার জন্য খুলে রাখা, একজনের ভুল বা অসততাও সবাইকে ভোগায়।'
     aside:
@@ -39,7 +40,7 @@ slides:
         icon: ticket
         title: 'ফুচকার মামার কুপন'
         body: |
-          মামা প্রতি মিনিটে ১০টা কুপন ছাপান, আর কাউন্টারের বাক্সে সর্বোচ্চ ২০টা জমে। কুপন দিলে এক প্লেট ফুচকা। হঠাৎ ভিড় এলে জমানো ২০টা কুপনে ২০ প্লেট একসাথে যায় (burst), কিন্তু তারপর শুধু মিনিটে ১০টা। বাক্স খালি থাকলে "একটু পরে এসো"।
+          মামা প্রতি মিনিটে ১০টা কুপন ছাপান, আর কাউন্টারের বাক্সে সর্বোচ্চ ২০টা জমে। কুপন দিলে এক প্লেট ফুচকা। হঠাৎ ভিড় এলে জমানো ২০টা কুপনে ২০ প্লেট একসাথে যায় (burst), কিন্তু তারপর শুধু মিনিটে ১০টা। বাক্স খালি থাকলে "একটু পরে আসুন"।
       - type: visual
         kind: table
         caption: 'তিনটা প্রচলিত পদ্ধতির তুলনা'
@@ -65,14 +66,14 @@ slides:
       a: 'কারণ মিনিট শেষ হলেই গোনা শূন্য হয়। এক মিনিটের শেষে ১০০ আর পরের মিনিটের শুরুতে ১০০, কয়েক সেকেন্ডে ২০০ চলে যায়।'
 
   - slug: symfony-rate-limiter
-    title: 'Symfony RateLimiter দিয়ে সীমা বসাও'
+    title: 'Symfony RateLimiter দিয়ে সীমা বসান'
     kind: howto
-    tldr: 'framework.rate_limiter-এ policy, limit আর rate দাও; listener-এ client-এর key ধরে consume() ডাকো; সীমা পেরোলে TooManyRequestsHttpException।'
+    tldr: 'framework.rate_limiter-এ policy, limit আর rate দিন; listener-এ client-এর key ধরে consume() ডাকুন; সীমা পেরোলে TooManyRequestsHttpException।'
     keywords: ['RateLimiterFactory', 'rate_limiter', 'consume', 'TooManyRequestsHttpException', 'Retry-After', 'symfony/rate-limiter']
     blocks:
       - type: text
         body: |
-          প্রথমে `composer require symfony/rate-limiter`। তারপর config-এ একটা নামকরা limiter ঘোষণা করো। সেখানে `limit` হলো বাক্সের আকার, আর `rate` হলো কত সময়ে কয়টা টোকেন ভরবে। state এমন জায়গায় রাখো যা সব অ্যাপ সার্ভার ভাগ করে, যেমন Redis, নইলে প্রতি সার্ভারের গোনা আলাদা হয়ে যায়।
+          প্রথমে `composer require symfony/rate-limiter`। তারপর config-এ একটা নামকরা limiter ঘোষণা করুন। সেখানে `limit` হলো বাক্সের আকার, আর `rate` হলো কত সময়ে কয়টা টোকেন ভরবে। state এমন জায়গায় রাখুন যা সব অ্যাপ সার্ভার ভাগ করে, যেমন Redis, নইলে প্রতি সার্ভারের গোনা আলাদা হয়ে যায়।
       - type: code
         lang: yaml
         file: 'config/packages/rate_limiter.yaml'
@@ -112,7 +113,7 @@ slides:
                       return;
                   }
 
-                  $key = $request->headers->get('X-Api-Key') ?? $request->getClientIp();
+                  $key = $request->headers->get('X-Api-Key') ?? $request->getClientIp() ?? 'anonymous';
                   $limit = $this->apiPerClientLimiter->create($key)->consume();
 
                   if (!$limit->isAccepted()) {
@@ -124,16 +125,17 @@ slides:
           }
         marks:
           - {line: 4, tip: 'config-এ limiter-এর নাম api_per_client, তাই autowire-এর argument-এর নাম $apiPerClientLimiter।'}
-          - {line: 15, tip: 'key ঠিক করে কার হিসাব আলাদা হবে। সম্ভব হলে API key বা user id, না থাকলে IP।'}
+          - {line: 15, tip: 'key ঠিক করে কার হিসাব আলাদা হবে। যাচাই-করা key (চেনা API key বা user id) নিন, না থাকলে IP। যাচাই-না-করা header প্রতি request-এ নতুন বানানো যায়।'}
           - {line: 16, tip: 'consume() একটা টোকেন নেওয়ার চেষ্টা করে। বাক্স খালি হলে isAccepted() false।'}
           - {line: 21, tip: 'এই exception-টা 429 আর Retry-After header-সহ response বানায়।'}
     aside:
       - type: commands
         items:
-          - {cmd: 'composer require symfony/rate-limiter', desc: 'component ইনস্টল করো'}
-          - {cmd: 'php bin/console debug:container --env-vars', desc: 'Redis-এর env ঠিক আছে কি না দেখো'}
+          - {cmd: 'composer require symfony/rate-limiter', desc: 'component ইনস্টল করুন'}
+          - {cmd: 'php bin/console debug:container --env-vars', desc: 'Redis-এর env ঠিক আছে কি না দেখুন'}
       - type: pitfalls
         items:
+          - 'header থেকে পড়া API key যাচাই না করলে সেটা নিরাপদ key নয়: client প্রতি request-এ নতুন একটা বানিয়ে প্রতিবার নতুন বাক্স পেয়ে যায়। আগে key ডেটাবেসে খুঁজে দেখুন, নইলে IP ধরুন।'
           - 'load balancer-এর পেছনে trusted_proxies না দিলে getClientIp() সবার জন্য একই IP দেয়, আর সীমা সবাইকে একসাথে আটকায়।'
       - type: refs
         items:
@@ -150,7 +152,7 @@ slides:
     blocks:
       - type: text
         body: |
-          429 পেয়ে client যদি সাথে সাথে আবার পাঠায়, সে সমস্যাটা আরও বাড়ায়। সঠিক আচরণ: সার্ভার `Retry-After` দিলে ততক্ষণ থামো, না দিলে প্রতিবার অপেক্ষা দ্বিগুণ করো। আর একসাথে হাজার client একই মুহূর্তে আবার চেষ্টা করলে আবার ভিড় হয়, তাই অপেক্ষাটা এলোমেলো রাখো, একে **jitter** বলে।
+          429 পেয়ে client যদি সাথে সাথে আবার পাঠায়, সে সমস্যাটা আরও বাড়ায়। সঠিক আচরণ: সার্ভার `Retry-After` দিলে ততক্ষণ থামুন, না দিলে প্রতিবার অপেক্ষা দ্বিগুণ করুন। আর একসাথে হাজার client একই মুহূর্তে আবার চেষ্টা করলে আবার ভিড় হয়, তাই অপেক্ষাটা এলোমেলো রাখুন, একে **jitter** বলে।
       - type: visual
         kind: bars
         caption: 'প্রতি চেষ্টায় সর্বোচ্চ অপেক্ষা দ্বিগুণ (jitter-এ আসল অপেক্ষা ০ থেকে এর মধ্যে এলোমেলো)'
@@ -164,7 +166,7 @@ slides:
         file: 'src/api/backoff.ts'
         variant: good
         code: |
-          // শুধু idempotent request-এ ব্যবহার করো (GET, PUT, DELETE)
+          // শুধু idempotent request-এ ব্যবহার করুন (GET, PUT, DELETE)
           export async function fetchWithBackoff(
             url: string,
             init: RequestInit = {},
@@ -193,8 +195,8 @@ slides:
           একটা সার্ভিস ১ মিনিটের জন্য নিচে নামল, আর হাজার হাজার client ঠিক ১ সেকেন্ড, ২ সেকেন্ড, ৪ সেকেন্ড পরে একসাথে ফিরে সার্ভিসকে বারবার ধরাশায়ী করল। jitter না থাকলে সবার ঘড়ি একই তালে চলে।
       - type: tips
         items:
-          - 'Retry-After HTTP-তারিখও হতে পারে, শুধু সেকেন্ড নয়। production কোডে দুটোই সামলাও।'
-          - 'অপেক্ষার সময় ব্যবহারকারীকে জানাও: "একটু পরে আবার চেষ্টা হচ্ছে"।'
+          - 'Retry-After HTTP-তারিখও হতে পারে, শুধু সেকেন্ড নয়। production কোডে দুটোই সামলান।'
+          - 'অপেক্ষার সময় ব্যবহারকারীকে জানান: "একটু পরে আবার চেষ্টা হচ্ছে"।'
       - type: refs
         items:
           - {to: 'api/error-design', label: 'কোন error retry করা যায়'}
@@ -205,12 +207,12 @@ slides:
   - slug: choose-the-key
     title: 'কার ওপর সীমা: IP, user নাকি key'
     kind: pitfall
-    tldr: 'IP ধরে সীমা দিলে এক মোবাইল ক্যারিয়ারের হাজার ব্যবহারকারী একজন গোনা হয়। সম্ভব হলে user id বা API key ধরো, আর login-এর মতো জায়গায় কড়া আলাদা সীমা।'
+    tldr: 'IP ধরে সীমা দিলে এক মোবাইল ক্যারিয়ারের হাজার ব্যবহারকারী একজন গোনা হয়। সম্ভব হলে user id বা API key ধরুন, আর login-এর মতো জায়গায় কড়া আলাদা সীমা।'
     keywords: ['rate limit key', 'per IP', 'per user', 'API key', 'login throttling', 'quota', 'CGNAT']
     blocks:
       - type: text
         body: |
-          বাংলাদেশে মোবাইল ডেটায় হাজার হাজার ব্যবহারকারী প্রায়ই একই পাবলিক IP থেকে বেরোয়। শুধু IP ধরে সীমা বসালে একজনের দোষে তাদের সবার request আটকে যায়। উল্টো দিকে, শুধু user id ধরলে লগইন-না-করা আক্রমণকারীকে ধরা যায় না। তাই কাজ বুঝে key বাছো।
+          বাংলাদেশে মোবাইল ডেটায় হাজার হাজার ব্যবহারকারী প্রায়ই একই পাবলিক IP থেকে বেরোয়। শুধু IP ধরে সীমা বসালে একজনের দোষে তাদের সবার request আটকে যায়। উল্টো দিকে, শুধু user id ধরলে লগইন-না-করা আক্রমণকারীকে ধরা যায় না। তাই কাজ বুঝে key বাছুন।
       - type: visual
         kind: table
         caption: 'সীমার key বাছাই'
@@ -247,16 +249,32 @@ slides:
           - {line: 3, tip: 'বিনা পয়সার ব্যবহারকারীর জন্য ছোট সীমা।'}
           - {line: 7, tip: 'পার্টনারের জন্য বড় সীমা, চুক্তি অনুযায়ী। প্রতিটা plan-এর আলাদা limiter।'}
           - {line: 11, tip: 'login-এ sliding window: ১৫ মিনিটের যেকোনো জানালায় ৫ বারের বেশি নয়। brute force ঠেকায়।'}
+      - type: code
+        lang: php
+        file: 'src/EventListener/ApiRateLimitListener.php'
+        variant: good
+        code: |
+          // লগইন থাকলে মানুষ গুনুন; না থাকলে IP গুনুন
+          $key = $user !== null ? 'user-'.$user->getUserIdentifier() : 'ip-'.$request->getClientIp();
+          $this->apiFreeLimiter->create($key)->consume()->ensureAccepted();
+
+          // login: IP + email, যাতে আক্রমণকারী ভুক্তভোগীকে তার নিজের IP থেকে আটকাতে না পারে
+          $loginKey = $request->getClientIp().'|'.mb_strtolower($email);
+          $this->loginLimiter->create($loginKey)->consume()->ensureAccepted();
+        marks:
+          - {line: 2, tip: 'prefix থাকায় user আর IP-র হিসাব আলাদা থাকে। মোবাইল ডেটার একজন নিজের নামেই গোনা হয়, একই IP-র হাজার মানুষের একজন হিসেবে নয়।'}
+          - {line: 6, tip: 'শুধু email ধরলে আক্রমণকারী ভুক্তভোগীর ৫টা সুযোগ শেষ করে দিতে পারত। key-তে IP থাকলে শুধু আক্রমণকারীর নিজের বাক্স ভরে।'}
       - type: quote
         body: 'Rate limit হলো প্রতি মিনিটের হার; quota হলো মাসের মোট বরাদ্দ। দুটোই লাগে, আর দুটো আলাদা।'
     aside:
       - type: pitfalls
         items:
           - 'quota আলাদা জিনিস: মাসে ১ লাখ request-এর বরাদ্দ সাধারণত ডেটাবেস বা Redis counter-এ রাখা হয়, rate limiter-এ নয়।'
-          - 'নিরাপদ error বার্তা দাও: "অনেক বেশি চেষ্টা" ভালো, "এই ইমেইলের জন্য সীমা শেষ" নয়, কারণ তাতে ইমেইলটা আছে কি না জানা যায়।'
+          - 'নিরাপদ error বার্তা দিন: "অনেক বেশি চেষ্টা" ভালো, "এই ইমেইলের জন্য সীমা শেষ" নয়, কারণ তাতে ইমেইলটা আছে কি না জানা যায়।'
       - type: tips
         items:
           - 'login-এর জন্য Symfony Security-র `login_throttling` চালু করলে এই কাজ অনেকটা তৈরিই পাবে।'
+          - 'কড়া login সীমার দাম: ৫ বার ভুল টাইপ করা আসল ব্যবহারকারী ১৫ মিনিট আটকে যান। পরিষ্কার বার্তা আর রিসেট লিংক দিন।'
       - type: refs
         items:
           - {to: 'security/authn-authz', label: 'login আর পাসওয়ার্ড অনুমান ঠেকানো'}
@@ -290,15 +308,20 @@ flashcards:
     more: |
       Symfony-তে `TooManyRequestsHttpException($retryAfterSeconds)` ছুঁড়লে এই দুটোই তৈরি হয়। client Retry-After দেখে সঠিক সময়ে ফেরে। না থাকলে নিজে backoff করে।
     ref: symfony-rate-limiter
+  - q: 'Rate limit-এর key কেন এমন হতে হবে যা client বিনা খরচে বানাতে পারে না?'
+    a: 'key যদি যাচাই-না-করা header হয়, client প্রতি request-এ নতুন এলোমেলো মান পাঠিয়ে প্রতিবার নতুন বাক্স পায়। যাচাই-করা key, user id বা IP ব্যবহার করুন।'
+    more: |
+      প্রতিটা আলাদা key-র নিজস্ব বাক্স থাকে, তাই client ইচ্ছেমতো key বানাতে পারলে সীমা টেকে না। API key আগে ডেটাবেসে খুঁজে দেখুন; চেনা না হলে IP ধরুন। client-এর হাতের যেকোনো মানের বেলায় একই কথা খাটে।
+    ref: symfony-rate-limiter
   - q: 'Exponential backoff আর jitter কেন একসাথে?'
     a: 'Backoff প্রতিবার অপেক্ষা দ্বিগুণ করে। Jitter তাকে এলোমেলো করে, যাতে হাজার client একই মুহূর্তে ফিরে না আসে।'
     more: |
-      jitter ছাড়া সব client একই তালে ১, ২, ৪ সেকেন্ড পরে ফেরে, আর সার্ভার আবার ধরাশায়ী হয়। এলোমেলো অপেক্ষা তাদের সময়ে ছড়িয়ে দেয়। retry শুধু idempotent request-এ করো।
+      jitter ছাড়া সব client একই তালে ১, ২, ৪ সেকেন্ড পরে ফেরে, আর সার্ভার আবার ধরাশায়ী হয়। এলোমেলো অপেক্ষা তাদের সময়ে ছড়িয়ে দেয়। retry শুধু idempotent request-এ করুন।
     ref: backoff-with-jitter
   - q: 'শুধু IP ধরে rate limit বসালে কী সমস্যা?'
     a: 'অনেক মানুষ একই IP ব্যবহার করে (মোবাইল ক্যারিয়ার, অফিস), একজনের দোষে সবাই আটকে যায়। load balancer-এর পেছনে সবার IP একই দেখাতেও পারে।'
     more: |
-      লগইন-করা ব্যবহারকারীর জন্য user id, বাইরের client-এর জন্য API key ধরো। IP শুধু লগইনের আগের অজানা ট্র্যাফিকে। load balancer থাকলে `trusted_proxies` ঠিক না করলে আসল IP-ই পাবে না।
+      লগইন-করা ব্যবহারকারীর জন্য user id, বাইরের client-এর জন্য API key ধরুন। IP শুধু লগইনের আগের অজানা ট্র্যাফিকে। load balancer থাকলে `trusted_proxies` ঠিক না করলে আসল IP-ই পাবে না।
     ref: choose-the-key
 
 quiz:
@@ -310,7 +333,7 @@ quiz:
         why: 'সীমা key ধরে হলে ক্ষতিটা সেই একজনের মধ্যেই আটকে থাকে, বাকিরা স্বাভাবিক থাকে।'
       - text: 'সার্ভার আরও বাড়ানো'
         correct: false
-        why: 'লুপ আরও বেশি request ছুঁড়তে পারে। সীমা না থাকলে যত সার্ভারই দাও, একজনের ভুল সবই খেয়ে ফেলবে।'
+        why: 'লুপ আরও বেশি request ছুঁড়তে পারে। সীমা না থাকলে যত সার্ভারই দিন, একজনের ভুল সবই খেয়ে ফেলবে।'
       - text: 'পুরো API-তে সব ব্যবহারকারীর জন্য একটা সাধারণ সীমা: মোট মিনিটে ১০০০'
         correct: false
         why: 'এতে লুপই ১০০০ শেষ করে, আর সাধারণ ব্যবহারকারীরা ১০০০-এর অংশ পায় না। সীমা আলাদা key ধরে হতে হবে।'
@@ -339,6 +362,26 @@ quiz:
       - text: 'মোট দিনে ১০০ request, আর মিনিটে ২০'
         correct: false
         why: 'এখানে দিনের কোনো কথা নেই। দিন বা মাসের হিসাব quota, rate limiter-এ নয়।'
+    ref: symfony-rate-limiter
+  - q: 'নিচের listener rate limit-এর key হিসেবে কাঁচা X-Api-Key header ধরেছে। scripted client কীভাবে সীমা এড়াতে পারে?'
+    lang: php
+    code: |
+      $key = $request->headers->get('X-Api-Key') ?? $request->getClientIp();
+      $limit = $this->apiPerClientLimiter->create($key)->consume();
+    hint: 'প্রতিটা নতুন key-মান কী পায়?'
+    options:
+      - text: 'প্রতি request-এ আলাদা বানানো X-Api-Key পাঠিয়ে, ফলে প্রতিটা নতুন, ভরা বাক্সে পড়ে'
+        correct: true
+        why: 'header কখনো যাচাই হয় না, আর প্রতিটা আলাদা key-র নিজস্ব বাক্স আছে। ব্যবহারের আগে key যাচাই করুন।'
+      - text: 'refill-এর হারের চেয়ে ধীরে request পাঠিয়ে'
+        correct: false
+        why: 'এটা তো সীমা মেনে চলা, এড়ানো নয়।'
+      - text: 'header-এর মান খুব লম্বা করে, যাতে limiter উপচে পড়ে'
+        correct: false
+        why: 'key-র দৈর্ঘ্যে বাক্স গোনার নিয়ম বদলায় না।'
+      - text: 'পারে না, কারণ সীমা IP-র ওপরও খাটে'
+        correct: false
+        why: 'header না থাকলে তবেই IP নেওয়া হয়; যেকোনো header-মান পাঠালেই IP বাদ পড়ে।'
     ref: symfony-rate-limiter
   - q: 'client 429 পেয়ে `Retry-After: 3` দেখতে পেল। কী করা উচিত?'
     hint: 'সার্ভার নিজেই কিছু বলেছে কি?'

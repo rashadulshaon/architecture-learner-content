@@ -61,6 +61,9 @@ slides:
         items:
           - {term: 'Fitness function', meaning: 'আর্কিটেকচারের একটা গুণ (গতি, নির্ভরতার নিয়ম, নিরাপত্তা) মেপে পাশ বা ফেল বলা স্বয়ংক্রিয় পরীক্ষা।'}
           - {term: 'Performance budget', meaning: 'গতির সীমা, যেমন p95 ৩০০ms; পেরোলে build ফেল।'}
+          - {term: 'CI', meaning: 'একটা রোবট, যে প্রতিটা বদল merge হওয়ার আগে আপনার check আর test চালায়। লাল হলে merge আটকে যায়।'}
+          - {term: 'p95', meaning: '১০০টার মধ্যে ৯৫টা request এই সংখ্যার চেয়ে দ্রুত। এতে ধীর অভিজ্ঞতাও ধরা পড়ে, শুধু গড় নয়।'}
+          - {term: 'N+1', meaning: 'তালিকার জন্য একটা query, তারপর প্রতিটা সারির জন্য আরেকটা করে: ৫০টা পণ্যে ১-২টার বদলে ৫১টা query।'}
       - type: refs
         items:
           - {to: 'thinking/quality-attributes', label: 'মাপার মতো গুণগুলো কী কী'}
@@ -71,12 +74,12 @@ slides:
   - slug: write-fitness-functions
     title: 'Deptrac আর query budget দিয়ে পাহারা'
     kind: howto
-    tldr: 'deptrac.yaml-এ layer আর অনুমতি লেখো, PHPUnit-এ query সংখ্যার সীমা বসাও, তারপর দুটোই CI-তে চালাও — ভাঙলে merge বন্ধ।'
+    tldr: 'deptrac.yaml-এ layer (Doctrine library-ও) আর অনুমতি লিখুন, PHPUnit-এ query সংখ্যার সীমা বসান, তারপর দুটোই CI-তে চালান — ভাঙলে merge বন্ধ।'
     keywords: ['deptrac', 'PHPUnit', 'query count', 'CI pipeline', 'performance budget', 'architecture test']
     blocks:
       - type: text
         body: |
-          প্রথমে নির্ভরতার নিয়ম: তিন layer, আর কে কাকে চিনবে তার তালিকা। **Domain** কাউকে চেনে না, **Application** শুধু Domain চেনে, **Infrastructure** দুটোই চেনে।
+          প্রথমে নির্ভরতার নিয়ম: তিন layer, Doctrine library-র জন্য আরেকটা ঘর (সেটা `vendor/`-এ থাকে, নাম না দিলে Deptrac তাকে দেখতেই পায় না), আর কে কাকে চিনবে তার তালিকা। **Domain** কাউকে চেনে না, **Application** শুধু Domain চেনে, **Infrastructure** দুটো আর Doctrine-ও চেনে।
       - type: code
         lang: yaml
         file: 'deptrac.yaml'
@@ -94,13 +97,17 @@ slides:
               - name: Infrastructure
                 collectors:
                   - {type: directory, value: src/Infrastructure/.*}
+              - name: Doctrine
+                collectors:
+                  - {type: classNameRegex, value: '#^Doctrine\\.*#'}
             ruleset:
               Domain: ~
               Application: [Domain]
-              Infrastructure: [Domain, Application]
+              Infrastructure: [Domain, Application, Doctrine]
         marks:
-          - {line: 15, tip: '`~` মানে Domain-এর কোনো layer-কে চেনার অনুমতি নেই। এখানে Doctrine import করলেই deptrac ধরে ফেলে।'}
-          - {line: 17, tip: 'Infrastructure ভেতরের দুই layer-কে চেনে, কিন্তু উল্টোটা চলবে না। তীর শুধু ভেতরের দিকে।'}
+          - {line: 16, tip: 'Doctrine থাকে vendor/-এ, src/-র বাইরে। এই ঘর না থাকলে Domain-এ Doctrine import নীরবে পাশ হয়ে যেত।'}
+          - {line: 18, tip: '`~` মানে Domain কোনো layer-কে চিনবে না, Doctrine-কেও না। এখানে Doctrine import করলেই Deptrac build ফেল করায়।'}
+          - {line: 20, tip: 'Infrastructure ভেতরের layer আর Doctrine চিনতে পারে, কিন্তু উল্টোটা চলবে না। তীর শুধু ভেতরের দিকে।'}
       - type: text
         body: |
           এবার গতির সীমা। N+1 বা বাড়তি query ঢুকলে এই test সাথে সাথে লাল হয়।
@@ -131,24 +138,88 @@ slides:
           - {line: 13, tip: 'সীমা ১০। ৫০টা পণ্যে প্রতিটার জন্য আলাদা query হলে সংখ্যা ৫০ ছাড়ায়, আর test ফেল করে।'}
     aside:
       - type: commands
-        title: 'CI-তে যা চালাবে'
+        title: 'CI-তে যা চালাবেন'
         items:
-          - {cmd: 'composer require --dev qossmic/deptrac', desc: 'Deptrac বসাও'}
-          - {cmd: 'vendor/bin/deptrac analyse', desc: 'নির্ভরতার নিয়ম মেলাও, ভাঙলে exit code ০ নয়'}
-          - {cmd: 'php bin/phpunit --testsuite budget', desc: 'query budget test চালাও'}
+          - {cmd: 'composer require --dev deptrac/deptrac', desc: 'Deptrac বসান'}
+          - {cmd: 'vendor/bin/deptrac analyse', desc: 'নির্ভরতার নিয়ম মেলান, ভাঙলে exit code ০ নয়'}
+          - {cmd: 'php bin/phpunit --testsuite budget', desc: 'query budget test চালান'}
           - {cmd: 'k6 run --quiet load/products.js', desc: 'রাতে p95 threshold-সহ load test'}
       - type: tips
         items:
-          - 'নতুন নিয়ম বসানোর দিন অনেক ভাঙন বেরোবে। baseline ফাইলে পুরনোগুলো লিখে রেখে শুধু নতুন ভাঙন আটকাও, তারপর ধীরে পুরনোগুলো কমাও।'
-          - 'সময় মাপা test flaky হয়। CI-তে query সংখ্যার মতো স্থির জিনিস মাপো, আর সময় মাপো আলাদা load test-এ।'
+          - 'নতুন নিয়ম বসানোর দিন অনেক ভাঙন বেরোবে। Deptrac baseline ফাইলে পুরনোগুলো লিখে রেখে শুধু নতুন ভাঙন আটকান, তারপর ধীরে পুরনোগুলো কমান।'
+          - 'সময় মাপা test flaky হয়। CI-তে query সংখ্যার মতো স্থির জিনিস মাপুন, আর সময় মাপুন আলাদা load test-এ।'
     check:
       q: 'ProductListBudgetTest-এ সময়ের বদলে query সংখ্যা মাপা হলো কেন?'
       a: 'সময় মেশিনভেদে বদলায়, তাই test মাঝে মাঝে বিনা কারণে ফেল করে। query সংখ্যা স্থির, আর N+1-এর মতো আসল সমস্যা ধরতে তা-ই যথেষ্ট।'
 
+  - slug: catch-a-violation
+    title: 'নিয়ম ভাঙা ধরা পড়ল, আর তার সমাধান'
+    kind: pitfall
+    tldr: 'কেউ Domain class-এ Doctrine attribute বসালে Deptrac CI লাল করে; mapping Infrastructure-এ সরালে সমাধান। শুধু যে নিয়মের খরচ পোষায়, সেটাই পাহারা দিন।'
+    keywords: ['deptrac violation', 'doctrine mapping', 'xml mapping', 'domain layer', 'baseline', 'নিয়ম ভাঙা']
+    blocks:
+      - type: text
+        body: |
+          শুক্রবারের তাড়ায় এক ডেভেলপার Domain class-এ সরাসরি Doctrine attribute বসিয়ে দিল। পাহারা না থাকলে সেটা merge হয়ে যায়, ৯৬টার মধ্যে আরেকটা শর্টকাট হয়ে। পাহারা থাকলে একই বদল কয়েক মিনিটে CI-তে ফেল করে।
+      - type: code
+        lang: php
+        file: 'src/Domain/Invoice.php'
+        variant: bad
+        code: |
+          namespace App\Domain;
+
+          use Doctrine\ORM\Mapping as ORM;   // Domain এখন Doctrine চেনে
+
+          #[ORM\Entity]
+          final class Invoice
+          {
+              #[ORM\Id, ORM\Column]
+              private int $id;
+
+              #[ORM\Column]
+              private int $amountTaka;
+          }
+        marks:
+          - {line: 3, tip: 'এই একটা import-ই নিয়ম ভাঙে। Deptrac build ফেল করায় আর এই ফাইল ও লাইনের নাম বলে দেয়।'}
+      - type: text
+        body: |
+          সমাধান পাহারা বন্ধ করা নয়। `Invoice`-কে সাধারণ PHP class রাখুন, আর mapping লিখুন তার বাইরে, Infrastructure-এ।
+      - type: code
+        lang: xml
+        file: 'src/Infrastructure/Persistence/mapping/App.Domain.Invoice.orm.xml'
+        variant: good
+        code: |
+          <doctrine-mapping
+              xmlns="http://doctrine-project.org/schemas/orm/doctrine-mapping"
+              xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+              xsi:schemaLocation="http://doctrine-project.org/schemas/orm/doctrine-mapping
+                  https://www.doctrine-project.org/schemas/orm/doctrine-mapping.xsd">
+            <entity name="App\Domain\Invoice" table="invoices">
+              <id name="id" type="integer"/>
+              <field name="amountTaka" type="integer"/>
+            </entity>
+          </doctrine-mapping>
+        marks:
+          - {line: 6, tip: 'টেবিল আর কলামের mapping এখন Infrastructure-এ। Domain class-এ Doctrine-এর কোনো import নেই।'}
+    aside:
+      - type: tips
+        items:
+          - 'doctrine.orm.mappings-এ ফোল্ডারটা নথিভুক্ত করুন: type: xml, dir: src/Infrastructure/Persistence/mapping, prefix: App\Domain।'
+          - 'দুই-তিনটা নিয়ম দিয়ে শুরু করুন, যেগুলো মিটিংয়েও রক্ষা করতে পারবেন। প্রতিটা নিয়ম রক্ষণাবেক্ষণের বাড়তি কাজ, আর flaky নিয়ম দলকে লাল build অগ্রাহ্য করতে শেখায়।'
+      - type: when
+        use:
+          - 'layer-এর নিয়ম, performance budget, security check — যা বছরের পর বছর টিকে থাকা দরকার'
+        avoid:
+          - 'রুচির বিষয় (নাম রাখা, ফাঁকা জায়গা): সেটা code-style টুলের কাজ'
+          - 'যে নিয়মে এখনো সবার মত নেই: অকারণে build ফেল করবে'
+    check:
+      q: 'গল্পে শুক্রবারের বদলটা কোন নিয়ম ভাঙল, আর পাহারা বন্ধ না করে ডেভেলপার সেটা কীভাবে ঠিক করবে?'
+      a: 'ভেঙেছিল "Domain-এ Doctrine নয়" নিয়ম। সমাধান: Invoice সাধারণ class থাকবে, mapping যাবে Infrastructure-এর একটা XML ফাইলে।'
+
   - slug: last-responsible-moment
     title: 'Last responsible moment: কখন সিদ্ধান্ত?'
     kind: pitfall
-    tldr: 'কঠিন-বদলানো সিদ্ধান্ত ততদিন পিছিয়ে রাখো যতদিন পিছোলে ক্ষতি হয় না, কারণ তখন তথ্য সবচেয়ে বেশি; কিন্তু trigger ঠিক না করলে "পরে" কখনো আসে না।'
+    tldr: 'কঠিন-বদলানো সিদ্ধান্ত ততদিন পিছিয়ে রাখুন যতদিন পিছোলে ক্ষতি হয় না, কারণ তখন তথ্য সবচেয়ে বেশি; কিন্তু trigger ঠিক না করলে "পরে" কখনো আসে না।'
     keywords: ['last responsible moment', 'deferring decisions', 'premature decision', 'সিদ্ধান্ত পিছানো', 'trigger']
     blocks:
       - type: text
@@ -163,8 +234,8 @@ slides:
             icon: clock
             tip: 'কম তথ্যে অনুমানের ওপর সিদ্ধান্ত। পরে ভুল প্রমাণিত হলে দামি জিনিস ফেলতে হয়।'
             items:
-              - 'এখনো সমস্যাই নেই, Kafka বসানো'
-              - 'আন্দাজের ওপর ভর করা'
+              - 'এখনো সমস্যাই নেই, Kafka (ভারী message সার্ভার) বসানো'
+              - 'চালানো আর শেখার খরচ দিতে হয়, অথচ আন্দাজ ভুলও হতে পারে'
           - title: 'ঠিক সময়ে'
             tone: good
             icon: check
@@ -186,25 +257,29 @@ slides:
           framework:
             messenger:
               transports:
-                # আজ: চালু ডেটাবেসই queue। trigger: ১০০০ message/মিনিট বা lag > ১ মিনিট
+                # আজ: MESSENGER_TRANSPORT_DSN=doctrine://default (ডেটাবেসই queue)
+                # trigger: মিনিটে ১০০০ message (সেকেন্ডে প্রায় ১৭) বা lag ১ মিনিটের বেশি
+                # তখন শুধু env var বদলাবে: redis://redis:6379/messages
                 async: '%env(MESSENGER_TRANSPORT_DSN)%'
               routing:
                 'App\Message\SendInvoiceEmail': async
         marks:
-          - {line: 5, tip: 'DSN বদলালেই transport বদলায় (doctrine://default থেকে redis:// বা amqp://)। সিদ্ধান্তটা সস্তা, তাই পিছিয়ে রাখা নিরাপদ।'}
+          - {line: 4, tip: 'trigger সংখ্যায় লেখা। মিনিটে ১০০০ message মানে সেকেন্ডে প্রায় ১৭টা: ব্যস্ত দিন, সংকট নয়।'}
+          - {line: 7, tip: 'DSN বদলালেই transport বদলায় (doctrine://default থেকে redis:// বা amqp://), handler-এর কোড নয়। সিদ্ধান্তটা সস্তা, তাই পিছিয়ে রাখা নিরাপদ।'}
       - type: quote
-        body: '"পরে দেখব" বলার আগে লিখে রাখো: কোন সংখ্যা ছুঁলে দেখব।'
+        body: '"পরে দেখব" বলার আগে লিখে রাখুন: কোন সংখ্যা ছুঁলে দেখব।'
     aside:
       - type: pitfalls
         items:
           - 'trigger ছাড়া সিদ্ধান্ত পিছিয়ে রাখা মানে সমস্যা এড়িয়ে যাওয়া।'
-          - 'বদলানো সস্তা নয় এমন সিদ্ধান্ত (ডেটা মডেল, পাবলিক API) এতটা পিছিয়ো না যে আটকে যাও।'
+          - 'বদলানো সস্তা নয় এমন সিদ্ধান্ত (ডেটা মডেল, পাবলিক API) এতটা পিছিয়ে রাখবেন না যে আটকে যান।'
+          - 'অপেক্ষার দাম: ডেটাবেস-queue ডেটাবেসকেই বারবার জিজ্ঞেস করে, তাই trigger-এর কাছাকাছি চাপ বাড়ে। এ কারণেই trigger বিপদসীমার নিচে বসান।'
       - type: refs
         items:
           - {to: 'thinking/reversible-decisions', label: 'কোন সিদ্ধান্ত ফেরানো যায়'}
     check:
-      q: 'Messenger-এর transport আজ ডেটাবেস রেখে পরে বদলানো নিরাপদ কেন, আর "পরে"-র মুহূর্ত কীভাবে ঠিক করবে?'
-      a: 'DSN বদলালেই transport বদলায়, কোডে হাত লাগে না, তাই সিদ্ধান্তটা সস্তা। মুহূর্ত ঠিক করবে মাপা সংখ্যায় (যেমন message হার বা lag), অনুভূতিতে নয়।'
+      q: 'Messenger-এর transport আজ ডেটাবেস রেখে পরে বদলানো নিরাপদ কেন, আর "পরে"-র মুহূর্ত কীভাবে ঠিক করবেন?'
+      a: 'DSN বদলালেই transport বদলায়, কোডে হাত লাগে না, তাই সিদ্ধান্তটা সস্তা। মুহূর্ত ঠিক করবেন মাপা সংখ্যায় (যেমন message হার বা lag), অনুভূতিতে নয়।'
 
 flashcards:
   - q: 'Evolutionary architecture কী?'
@@ -227,6 +302,21 @@ flashcards:
     more: |
       deptrac.yaml-এ Domain, Application, Infrastructure-এর মতো layer আর অনুমতি লেখা হয়। `vendor/bin/deptrac analyse` কোড না চালিয়েই নির্ভরতা পড়ে নিয়ম মেলায়। PHPat বা PHPArkitect একই ধরনের বিকল্প।
     ref: write-fitness-functions
+  - q: 'Deptrac-এ Doctrine library-র জন্য আলাদা layer লাগে কেন?'
+    a: 'Doctrine থাকে vendor/-এ, src/-র বাইরে। layer হিসেবে নাম না দিলে Domain-এর ভেতরের Doctrine import Deptrac দেখতেই পায় না।'
+    more: |
+      `Doctrine\.*`-এর জন্য `classNameRegex` collector দিয়ে একটা layer যোগ করুন, আর Domain-কে খালি নিয়ম (`Domain: ~`) দিন। তখন Domain class-এ একটা Doctrine import-ই build ফেল করায়। mapping রাখুন class-এর বাইরে, যেমন Infrastructure-এর XML ফাইলে।
+    ref: write-fitness-functions
+  - q: 'Domain class-এ Doctrine attribute বসানোয় Deptrac ফেল করল। সমাধান কী?'
+    a: 'Domain class সাধারণ রাখুন, আর mapping সরিয়ে নিন, যেমন Infrastructure-এর XML mapping ফাইলে।'
+    more: |
+      পাহারা বন্ধ করবেন না। নিয়মটা আছে Domain-কে Doctrine-মুক্ত রাখতেই। আজ ঠিক করা যাচ্ছে না এমন পুরনো ভাঙন baseline ফাইলে যায়; নতুনগুলো আটকানো হয়।
+    ref: catch-a-violation
+  - q: 'Fitness function-এর খরচ কী, আর কোন নিয়ম এভাবে পাহারা দেওয়া উচিত নয়?'
+    a: 'রক্ষণাবেক্ষণের কাজ, আর flaky হলে দল লাল build অগ্রাহ্য করতে শেখে। রক্ষা করার মতো নিয়ম পাহারা দিন; রুচির বিষয় style টুলে ছাড়ুন।'
+    more: |
+      যে নিয়ম হারালে বড় ক্ষতি, যেমন layer-এর সীমা, গতির বাজেট, security, সেই দুই-তিনটা দিয়ে শুরু করুন। প্রতিটা বাড়তি check এমন কোড, যা কাউকে দেখে রাখতে হয়।
+    ref: catch-a-violation
   - q: 'Performance budget কী?'
     a: 'গতির একটা সীমা (যেমন p95 ৩০০ms বা ১০টা query) যা পেরোলে CI ফেল করে।'
     more: |
@@ -235,12 +325,12 @@ flashcards:
   - q: 'Last responsible moment কী?'
     a: 'সেই শেষ সময়, যার পরে সিদ্ধান্ত না নিলে ক্ষতি শুরু হয়। এর আগে পর্যন্ত সিদ্ধান্ত পিছানো যায়।'
     more: |
-      যত দেরিতে সিদ্ধান্ত, তত বেশি তথ্য হাতে। তাই কঠিন-বদলানো সিদ্ধান্ত মুহূর্তের ঠিক আগে নেওয়া ভালো। তবে "পরে" মানে অনির্দিষ্ট নয়: কোন মাপা সংখ্যা ছুঁলে সিদ্ধান্ত নেবে, তা আগেই লিখে রাখো।
+      যত দেরিতে সিদ্ধান্ত, তত বেশি তথ্য হাতে। তাই কঠিন-বদলানো সিদ্ধান্ত মুহূর্তের ঠিক আগে নেওয়া ভালো। তবে "পরে" মানে অনির্দিষ্ট নয়: কোন মাপা সংখ্যা ছুঁলে সিদ্ধান্ত নেবেন, তা আগেই লিখে রাখুন।
     ref: last-responsible-moment
   - q: 'সিদ্ধান্ত পিছানোর সময় কী লিখে রাখা জরুরি?'
     a: 'একটা trigger: কোন মাপা সংখ্যা বা ঘটনা ছুঁলে সিদ্ধান্ত নেওয়া হবে।'
     more: |
-      যেমন "মিনিটে ১০০০ message ছাড়ালে বা queue lag এক মিনিট পেরোলে Redis-এ যাব"। trigger না থাকলে পিছানো আসলে এড়িয়ে যাওয়া হয়, আর সমস্যা আগুনের মতো এসে পড়ে।
+      যেমন "মিনিটে ১০০০ message (সেকেন্ডে প্রায় ১৭) ছাড়ালে বা queue lag এক মিনিট পেরোলে Redis-এ যাব"। trigger না থাকলে পিছানো আসলে এড়িয়ে যাওয়া হয়, আর সমস্যা আগুনের মতো এসে পড়ে।
     ref: last-responsible-moment
 
 quiz:
@@ -266,7 +356,7 @@ quiz:
       - text: 'তালিকা API-তে সর্বোচ্চ ১০টা query, PHPUnit-এ ধরা'
         correct: true
         why: 'স্থির মাপ, প্রতিটা PR-এ চলে, N+1 সাথে সাথে ধরে।'
-      - text: 'নিয়মিত নির্ভরতার নিয়ম: Domain কোনো layer চেনে না, Deptrac-এ'
+      - text: 'নির্ভরতার নিয়ম: Domain কোনো layer চেনে না, Deptrac-এ'
         correct: true
         why: 'নির্ভরতার নিয়ম স্বয়ংক্রিয়ভাবে মাপা যায়, তাই ভালো fitness function।'
       - text: '"কোড পরিষ্কার রাখা হবে" — টিমের অঙ্গীকার'
@@ -298,6 +388,19 @@ quiz:
         correct: false
         why: 'ruleset-ই আর্কিটেকচারের নিয়ম। ভুল লিখলে ভুল জিনিসই পাহারা পায়।'
     ref: write-fitness-functions
+  - q: 'আপনার Deptrac config-এ শুধু Domain, Application, Infrastructure layer আছে। কেউ Domain class-এ `use Doctrine\ORM\Mapping` যোগ করল। কী হবে?'
+    hint: 'Doctrine-এর কোড কোথায় থাকে, আর config-এ কার নাম দেওয়া আছে?'
+    options:
+      - text: 'কিছুই না: Doctrine src/-তে নেই আর layer হিসেবেও নামানো নেই, তাই Deptrac দেখে না'
+        correct: true
+        why: 'Deptrac শুধু আপনার দেওয়া layer-ই বিচার করে। Doctrine layer যোগ করে Domain-কে খালি নিয়ম দিলে একই import build ফেল করায়।'
+      - text: 'build ফেল করবে, কারণ Domain: ~ সব import নিষিদ্ধ করে'
+        correct: false
+        why: '`Domain: ~` অন্য layer-এর ওপর নির্ভরতা নিষিদ্ধ করে। layer নয় এমন library নিয়মের চোখে অদৃশ্য।'
+      - text: 'class-এ attribute আছে বলে Deptrac ফেল করবে'
+        correct: false
+        why: 'Deptrac class-গুলোর মাঝের নির্ভরতা পড়ে, attribute আলাদা করে নয়। বিচার করতে তার একটা layer লাগে।'
+    ref: catch-a-violation
   - q: 'পণ্যের তালিকা আগে ৮টা query-তে চলত, এখন ৫৪টা। CI-তে ধরার সবচেয়ে ভালো উপায় কী?'
     hint: 'যা স্থির, তাই মাপো।'
     options:

@@ -92,7 +92,7 @@ slides:
     blocks:
       - type: text
         body: |
-          Think of a building guard who says "only your own flat" before anyone goes in. In Doctrine that guard is the **SQL filter**. It appends `AND tenant_id = ?` to every DQL query on its own, so developers don't have to remember. Entities that belong to a tenant implement a `TenantAware` interface.
+          Think of a building guard who says "only your own flat" before anyone goes in. In Doctrine that guard is the **SQL filter**. It appends `AND tenant_id = ?` to every DQL query on its own, so developers don't have to remember. The story's `exportAll()`, with no WHERE written, now runs as `... WHERE e.tenant_id = '7' ORDER BY e.name`, so company A's file holds only company A. Entities that belong to a tenant implement a `TenantAware` interface; the next slide registers the filter and stamps new rows.
       - type: code
         lang: php
         file: 'src/Doctrine/TenantFilter.php'
@@ -152,11 +152,74 @@ slides:
       - type: pitfalls
         items:
           - 'The filter works only on ORM/DQL queries. Raw DBAL SQL and native queries don''t get it, so they need the condition written by hand.'
-          - 'Add a prePersist listener that sets the tenant whenever a new row is written, or rows will be saved with no tenant.'
           - 'Don''t disable this filter in the app''s main code; turn it off only deliberately, for admin or cross-tenant work.'
+          - 'The price: every query now filters on tenant_id, so put it first in your indexes, such as (tenant_id, created_at), or large tables get slow.'
     check:
       q: 'Why is the tenant id taken from the logged-in user instead of a `?tenant=7` request parameter?'
       a: 'The parameter is in the client''s hands; they could write someone else''s tenant and see their data. The logged-in user''s tenant is information the server has verified.'
+
+  - slug: tenant-wiring
+    title: 'Registering the filter and stamping new rows'
+    kind: howto
+    tldr: 'Register the filter in doctrine.yaml, and stamp the tenant on every new row in a prePersist listener. The filter guards reads; this guards writes.'
+    keywords: ['doctrine filters config', 'prePersist', 'AsDoctrineListener', 'TenantAware', 'tenant stamp', 'enable filter']
+    blocks:
+      - type: text
+        body: |
+          A filter that isn't registered does nothing, and calling `enable('tenant')` on it throws an error. And the filter only trims what you read. A new row saved with no tenant would be invisible to everyone, because `tenant_id = 7` never matches NULL. So two more pieces are needed.
+      - type: code
+        lang: yaml
+        file: 'config/packages/doctrine.yaml'
+        code: |
+          doctrine:
+              orm:
+                  filters:
+                      tenant:
+                          class: App\Doctrine\TenantFilter
+                          enabled: false       # the request listener turns it on
+        marks:
+          - {line: 4, tip: 'This name, tenant, is the one you pass to getFilters()->enable(''tenant'').'}
+          - {line: 6, tip: 'Off by default: the request listener enables it once the user is known. Console commands and workers must enable it themselves.'}
+      - type: code
+        lang: php
+        file: 'src/Doctrine/TenantStampListener.php'
+        variant: good
+        code: |
+          interface TenantAware
+          {
+              public function getTenant(): ?Tenant;
+              public function setTenant(Tenant $tenant): void;
+          }
+
+          #[AsDoctrineListener(event: Events::prePersist)]
+          final class TenantStampListener
+          {
+              public function __construct(private readonly Security $security) {}
+
+              public function prePersist(PrePersistEventArgs $args): void
+              {
+                  $entity = $args->getObject();
+                  $user = $this->security->getUser();
+
+                  if ($entity instanceof TenantAware && $user instanceof User
+                      && null === $entity->getTenant()) {
+                      $entity->setTenant($user->getTenant());   // the user's, never the client's
+                  }
+              }
+          }
+        marks:
+          - {line: 7, tip: 'Runs just before any new entity is inserted.'}
+          - {line: 20, tip: 'The tenant is copied from the verified user, so a client can''t save a row into another company. A worker has no user, so there you set the tenant yourself.'}
+      - type: quote
+        body: 'The filter trims what you read. Stamping the tenant guards what you write.'
+    aside:
+      - type: tips
+        items:
+          - 'Add a database NOT NULL on tenant_id, so a row that slips through with no tenant fails loudly instead of vanishing.'
+          - 'When not to use this: if one customer''s data must never share a database with others (a bank, a regulator''s rule), use a database per tenant instead.'
+    check:
+      q: 'A new Employee is saved with no tenant set. Why does it vanish from every company''s lists?'
+      a: 'The filter adds `tenant_id = 7`, and a NULL tenant matches no number. The prePersist listener stamps the user''s tenant on every new row so this never happens.'
 
   - slug: noisy-neighbour
     title: 'Keeping one tenant from using up everyone''s water'
@@ -166,7 +229,7 @@ slides:
     blocks:
       - type: text
         body: |
-          In row-level tenancy all tenants share one database and one set of servers. If one customer sends a million requests an hour, the other 299 slow down. So each tenant needs its own water meter: a **per-tenant rate limit**. In Symfony's RateLimiter, use the tenant's id as the key and every customer gets a separate bucket.
+          In row-level tenancy all tenants share one database and one set of servers. If one customer sends a million requests an hour (about 280 knocks on the door every second, all day), the other 299 slow down. So each tenant needs its own water meter: a **per-tenant rate limit**. In Symfony's RateLimiter, use the tenant's id as the key and every customer gets a separate bucket.
       - type: code
         lang: yaml
         file: 'config/packages/rate_limiter.yaml'
@@ -179,7 +242,7 @@ slides:
                       interval: '1 minute'
         marks:
           - {line: 3, tip: 'The name is `tenant_api`, so Symfony autowires `RateLimiterFactory $tenantApiLimiter`.'}
-          - {line: 5, tip: 'Each tenant gets 600 requests a minute. You can raise this limit for bigger plans.'}
+          - {line: 5, tip: 'Each tenant gets 600 requests a minute, 10 a second: plenty for a busy HR team, far below a runaway script. You can raise it for bigger plans.'}
       - type: code
         lang: php
         file: 'src/EventListener/TenantRateLimitListener.php'
@@ -213,10 +276,15 @@ slides:
           - {line: 17, tip: 'With the tenant as the key, each tenant is counted separately. Keyed by user or IP, all employees of a big company would wrongly share one count.'}
           - {line: 21, tip: 'It returns 429 Too Many Requests with a Retry-After time, so the client knows how long to wait before trying again.'}
     aside:
+      - type: commands
+        title: 'Cap the heavy work'
+        items:
+          - {cmd: 'SET LOCAL statement_timeout = ''5s'';', desc: 'PostgreSQL: cancel a report query that runs longer than 5 seconds'}
+          - {cmd: 'php bin/console messenger:consume reports', desc: 'A worker only for heavy reports, so they never block the emails'}
       - type: tips
         items:
-          - 'Limit heavy background work per tenant too: a separate Messenger transport, or a concurrency limit per tenant.'
-          - 'Set a `statement_timeout` on heavy reports in the database, so one tenant''s query can''t hold the database up for everyone.'
+          - 'Route heavy report messages to their own transport (`reports`), so one tenant''s flood of reports queues behind itself, not in front of everyone''s email.'
+          - 'The limiter counts in a cache. With more than one app server, point it at a shared store such as Redis, or each server counts alone and the real limit is multiplied.'
       - type: refs
         items:
           - {to: 'api/rate-limiting', label: 'Kinds of rate limits and their algorithms'}
@@ -242,7 +310,7 @@ slides:
             tip: 'When you run SQL directly instead of DQL, the Doctrine filter doesn''t know about it. Complex report queries make this mistake most often.'
           - cells: ['Messenger worker, cron', 'No request, so the filter is off', 'Put tenantId in the message, enable the filter in the handler']
             tip: 'Background jobs have no logged-in user; without enabling the filter, they touch every row regardless of tenant.'
-          - cells: ['Cache key', '`report:2024` is the same for all tenants', 'Put the tenant in the key: `t7:report:2024`']
+          - cells: ['Cache key', '`report.2024` is the same for all tenants', 'Put the tenant in the key: `t7.report.2024`']
             tip: 'A cache key without a tenant means showing company A''s report to company B.'
           - cells: ['Unique index', 'Email must be unique across all tenants', 'unique (tenant_id, email)']
             tip: 'Two companies can easily have an employee with the same email. A unique index without tenant means one of them can''t register.'
@@ -267,12 +335,40 @@ slides:
           }
         marks:
           - {line: 8, tip: 'A worker runs all day and takes messages from many tenants; set the right tenant in every handler.'}
+      - type: code
+        lang: php
+        file: 'src/Report/SalaryReport.php'
+        variant: good
+        code: |
+          // raw SQL: the filter can't see it, so write the condition yourself
+          $rows = $this->connection->fetchAllAssociative(
+              'SELECT name, salary FROM employee WHERE tenant_id = :t ORDER BY name',
+              ['t' => $tenantId],
+          );
+
+          // cache key: the tenant is part of the key (no ":", it is reserved)
+          $report = $this->cache->get(
+              sprintf('t%s.report.%d', $tenantId, $year),
+              fn () => $this->build($tenantId, $year),
+          );
+
+          // unique index: unique inside a tenant, not across all of them
+          #[ORM\UniqueConstraint(columns: ['tenant_id', 'email'])]
+        marks:
+          - {line: 3, tip: 'The :t placeholder is bound, never spliced into the string, so there is no SQL injection.'}
+          - {line: 9, tip: 'Cache keys carrying the tenant mean company A''s cached report can never be served to company B.'}
+          - {line: 14, tip: 'On the Employee entity (or in a migration): the same email may exist once per tenant.'}
       - type: quote
         body: 'The filter is a barrier, not the last line of defense. In raw SQL, workers, caches and unique indexes, carry the tenant yourself.'
     aside:
+      - type: commands
+        title: 'PostgreSQL row-level security'
+        items:
+          - {cmd: 'ALTER TABLE employee ENABLE ROW LEVEL SECURITY;', desc: 'From now on the table needs a policy before rows are visible'}
+          - {cmd: 'CREATE POLICY tenant_only ON employee USING (tenant_id = current_setting(''app.tenant_id'')::int);', desc: 'The database itself hides other tenants'' rows, even when raw SQL forgets the WHERE'}
       - type: tips
         items:
-          - 'For extra safety use PostgreSQL row-level security (RLS): the database itself blocks other tenants'' rows, even when the app makes a mistake.'
+          - 'The price of RLS: the app must run `SET app.tenant_id = ...` on every connection it takes from the pool, and a mistake there blocks everything. Test it first.'
           - 'Write a test for cross-tenant leaks: create two tenants, and asking for the other''s data with one tenant''s token must give 403/404.'
     check:
       q: 'Why isn''t the Doctrine tenant filter enabled automatically in a Messenger worker, and what should you do?'
@@ -304,6 +400,11 @@ flashcards:
     more: |
       What the client sends is a claim, not proof. Change `?tenant=7` to `8` and someone else's data would appear. The server itself knows which tenant the user belongs to.
     ref: doctrine-tenant-filter
+  - q: 'Why must new rows get their tenant stamped, and where?'
+    a: 'The filter only trims reads. A prePersist listener copies the logged-in user''s tenant onto each new row; a row with no tenant would vanish.'
+    more: |
+      `tenant_id = 7` never matches NULL, so an unstamped row is invisible to every company. Take the tenant from the verified user, never from the request, and add NOT NULL in the database as a last guard.
+    ref: tenant-wiring
   - q: 'What is a noisy neighbour?'
     a: 'One tenant using so many resources (CPU, database, requests) that the other tenants slow down.'
     more: |
@@ -387,6 +488,19 @@ quiz:
         correct: false
         why: 'This is an ORM/DQL query, so the filter adds its condition automatically when it is enabled.'
     ref: tenant-leak-paths
+  - q: 'The filter is enabled, but the `Employee` entity is saved without a tenant. What happens next?'
+    hint: 'What does `tenant_id = 7` do with a NULL?'
+    options:
+      - text: 'The row matches no tenant''s filter, so nobody can see it'
+        correct: true
+        why: 'NULL is never equal to 7. Stamp the tenant in a prePersist listener and make the column NOT NULL.'
+      - text: 'The row is visible to every tenant'
+        correct: false
+        why: 'That would be a leak, but the filter compares tenant_id to a number, and NULL matches none.'
+      - text: 'Doctrine sets the tenant by itself'
+        correct: false
+        why: 'The filter only affects reads. Nothing writes the tenant unless you do it.'
+    ref: tenant-wiring
   - q: 'Two companies each have an employee with the email `a@x.com`, but a unique index on `user.email` stops the second one from registering. What is the fix?'
     hint: 'Unique within what boundary?'
     options:

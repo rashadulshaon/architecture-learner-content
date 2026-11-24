@@ -7,15 +7,15 @@ slides:
     blocks:
       - type: text
         body: |
-          Rahim's admin panel has 1 million orders, 20 per page. He wrote `LIMIT 20 OFFSET :page * 20`, and the first few pages were instant. But when the auditor opened page 5000, near the end, the query took several seconds. The reason: with an OFFSET of 100,000, the database first counts and throws away 100,000 rows, and only then hands over the 20.
+          Rahim's admin panel has 1 million orders, 20 per page. He wrote `LIMIT 20 OFFSET :page * 20`, and the first few pages were instant. But when the auditor opened page 5000, the query took about 3 seconds. The reason: with an OFFSET of 100,000 (5,000 pages of 20), the database first counts and throws away 100,000 rows, and only then hands over the 20.
       - type: visual
         kind: bars
         caption: 'Example: how OFFSET query time grows with the page number (table of 1 million rows)'
         items:
           - {label: 'Page 1', value: 4, display: '4ms', tone: good, tip: 'The first page has almost nothing to skip. That is why everything feels fast in testing.'}
-          - {label: 'Page 100', value: 35, display: '35ms', tone: default, tip: 'It skips about 2,000 rows and then takes 20.'}
-          - {label: 'Page 1000', value: 340, display: '340ms', tone: warn, tip: 'It reads and discards about 20,000 rows. The time grows in a straight line with the page number.'}
-          - {label: 'Page 5000', value: 1700, display: '1700ms', tone: bad, tip: 'It reads and discards about 100,000 rows just to keep 20.'}
+          - {label: 'Page 100', value: 60, display: '60ms', tone: default, tip: 'It skips about 2,000 rows and then takes 20.'}
+          - {label: 'Page 1000', value: 600, display: '600ms', tone: warn, tip: 'It reads and discards about 20,000 rows. The time grows in a straight line with the page number.'}
+          - {label: 'Page 5000', value: 3000, display: '3000ms', tone: bad, tip: 'It reads and discards about 100,000 rows just to keep 20.'}
       - type: quote
         body: 'OFFSET N means: the database reads N rows, throws them away, then gives you yours. The deeper the page, the higher the cost.'
     aside:
@@ -162,6 +162,7 @@ slides:
         items:
           - 'If you sort by something else (say price), put that column in the cursor too, and build an index on that column plus id.'
           - 'Always enforce an upper bound on `limit` (say 100) on the server. Even if a client asks for a million, don''t give it.'
+          - 'Doctrine''s datetime columns hold whole seconds, so DATE_ATOM is enough. If you store microseconds, encode them too (`Y-m-d\TH:i:s.uP`), or rows are lost.'
       - type: refs
         items:
           - {to: 'data/indexing', label: 'Composite indexes: column order'}
@@ -265,17 +266,17 @@ slides:
           Say three orders came in together at 10:00:00. The page boundary falls right in the middle of them. The cursor now says `created_at < 10:00:00`, and the other two orders with the same time will never satisfy that condition. Rows vanish silently, with no error.
       - type: visual
         kind: table
-        caption: 'Which rows get lost when the cursor uses only created_at'
-        headers: ['id', 'created_at', 'What happens']
+        caption: 'The same page boundary, with and without id as a tie-breaker'
+        headers: ['id', 'created_at', 'Only created_at', 'With (created_at, id)']
         rows:
-          - cells: ['105', '10:00:00', 'Last row of page 1, the cursor sits here']
-            tip: 'This row''s created_at becomes the cursor: "give me the rows before 10:00:00".'
-          - cells: ['104', '10:00:00', 'Lost']
-            tip: 'The condition is created_at < 10:00:00. Row 104 has an equal created_at, not a smaller one, so it is skipped.'
-          - cells: ['103', '10:00:00', 'Lost']
-            tip: 'Skipped for the same reason. Nobody notices, because no error appears.'
-          - cells: ['102', '09:59:59', 'First row of page 2']
-            tip: 'This row satisfies the condition, so it comes through. That is why page 2 looks perfectly normal.'
+          - cells: ['105', '10:00:00', 'Last of page 1, cursor here', 'Last of page 1, cursor here']
+            tip: 'The cursor holds this row''s created_at, and with the fix its id too: (10:00:00, 105).'
+          - cells: ['104', '10:00:00', 'Lost', 'Page 2, first row']
+            tip: 'created_at < 10:00:00 is false for an equal time, so it is skipped. Compared as the pair, (10:00:00, 104) < (10:00:00, 105) is true.'
+          - cells: ['103', '10:00:00', 'Lost', 'Page 2, second row']
+            tip: 'Skipped for the same reason, and nobody notices because no error appears. The pair comparison keeps it.'
+          - cells: ['102', '09:59:59', 'Page 2, first row', 'Page 2, third row']
+            tip: 'With only created_at, page 2 looks perfectly normal: it simply starts two rows too late.'
       - type: code
         lang: sql
         variant: bad

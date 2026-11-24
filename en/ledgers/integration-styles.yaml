@@ -124,6 +124,10 @@ slides:
           - {line: 7, tip: 'The message goes on the queue and the call returns straight away. Even with the warehouse down, the order succeeds.'}
           - {line: 10, tip: 'The handler can run in a separate process or service. The same message can occasionally arrive twice, so keep this idempotent as well.'}
     aside:
+      - type: terms
+        items:
+          - {term: 'Idempotent', meaning: 'Safe to run twice: the second run changes nothing, like pressing a lift button again.'}
+          - {term: 'Timeout', meaning: 'How long we wait for a reply before giving up.'}
       - type: pitfalls
         items:
           - 'In messaging, a message can arrive "twice". If the handler isn''t idempotent, the work is done twice.'
@@ -135,6 +139,57 @@ slides:
     check:
       q: 'The warehouse service is down for 10 minutes. What happens to new orders under RPC and under messaging?'
       a: 'Under RPC, orders hang or fail. Under messaging, the order succeeds, the message waits, and the warehouse catches up when it is back.'
+
+  - slug: messenger-routing
+    title: 'Making "leave it and move on" real: routing'
+    kind: howto
+    tldr: 'With no routing line, Messenger runs the handler on the spot, so a dead warehouse still fails the order. One line of config sends the message to a queue instead.'
+    keywords: ['messenger routing', 'async transport', 'failure transport', 'retry strategy', 'messenger:consume']
+    blocks:
+      - type: text
+        body: |
+          Calling `dispatch()` doesn't make anything asynchronous by itself. With no routing rule, Messenger runs the handler right there in the same request, so a warehouse that is down still fails our order, exactly like RPC. A routing rule says "this message goes on the `async` queue", and a separate worker process picks it up. Retries and a failure transport (a shelf for messages that keep failing) live in the same file.
+      - type: code
+        lang: yaml
+        file: 'config/packages/messenger.yaml'
+        variant: good
+        code: |
+          framework:
+              messenger:
+                  transports:
+                      async:
+                          dsn: '%env(MESSENGER_TRANSPORT_DSN)%'
+                          retry_strategy:
+                              max_retries: 3
+                              delay: 1000        # 1s, then 2s, then 4s
+                              multiplier: 2
+                      failed: 'doctrine://default?queue_name=failed'
+                  failure_transport: failed
+                  routing:
+                      App\Message\OrderPlaced: async
+        marks:
+          - {line: 6, tip: 'If the warehouse is down, the worker retries after 1s, 2s and 4s. Nobody in the checkout request waits for this.'}
+          - {line: 11, tip: 'Without this line the handler runs inside the web request, and the warehouse''s outage becomes ours.'}
+      - type: points
+        title: 'What it costs'
+        style: cross
+        items:
+          - 'The order is saved first, the message sent after. If the app crashes in between, the order exists and nobody is told. The outbox pattern closes that gap.'
+          - 'A message can arrive twice, so the handler must be idempotent.'
+          - 'The warehouse catches up a little later. If the user must see the result on the same screen, don''t use messaging.'
+    aside:
+      - type: commands
+        title: 'Messenger commands'
+        items:
+          - {cmd: 'php bin/console messenger:consume async -vv', desc: 'start the worker that handles the queue'}
+          - {cmd: 'php bin/console messenger:failed:show', desc: 'list messages parked on the failure shelf'}
+          - {cmd: 'php bin/console messenger:failed:retry', desc: 'send the parked messages through again'}
+      - type: refs
+        items:
+          - {to: 'workflows/outbox-inbox', label: 'Never lose the message: the outbox'}
+    check:
+      q: 'With no routing line for `OrderPlaced`, where does its handler run, and what happens if the warehouse is down?'
+      a: 'It runs inside our own request, so the failure reaches the user, just like RPC. With a route to `async`, the message waits in the queue and a worker handles it later.'
 
   - slug: choosing-a-style
     title: 'Which one, when: three questions'
@@ -148,7 +203,7 @@ slides:
         steps:
           - {title: '1. Need the answer now?', body: 'If yes, RPC; if not, messaging or files', tip: 'If a user is sitting at the screen waiting for the answer, use RPC. Otherwise it can happen later.'}
           - {title: '2. Other side always up?', body: 'If not, messaging; trust RPC less', tip: 'Our work shouldn''t stop when the other side is down or slow.'}
-          - {title: '3. Big, regular data?', body: 'If yes, a file (batch); otherwise a message', tip: 'With 100,000 rows a day a file is cheap; sending them one by one is expensive.'}
+          - {title: '3. Big, regular data?', body: 'If yes, a file (batch); otherwise a message', tip: '100,000 calls at 50ms each, one after another, take about 83 minutes. One file with the same rows takes seconds.'}
           - {title: '4. Touching their table?', body: 'Never; use an API or an event', tip: 'A shared DB is only for a read-only replica, never for writes, and even then in a limited scope.'}
       - type: visual
         kind: compare
@@ -161,7 +216,7 @@ slides:
             items:
               - 'Checking a balance, validating a card'
               - 'A user is waiting for the answer'
-              - 'Needs a timeout and retries without fail'
+              - 'Always needs a timeout and retries'
           - title: 'Messaging'
             tone: good
             icon: queue
@@ -230,6 +285,17 @@ flashcards:
     more: |
       If a table with a hundred columns is the contract, change is nearly impossible. If one specific message or API response is the contract, you can change anything inside freely.
     ref: four-styles
+
+  - q: 'Why does calling `dispatch()` alone not make Messenger asynchronous?'
+    a: 'With no routing rule for the message class, Messenger runs the handler at once, in the same request. A route to an async transport puts it on a queue.'
+    more: |
+      Routing lives in `messenger.yaml` under `routing:`. After that, a worker started with `messenger:consume` picks messages up. Until then the "async" code is really RPC in disguise: a warehouse outage still fails the order.
+    ref: messenger-routing
+  - q: 'What can go wrong between saving an order and dispatching its message?'
+    a: 'The app can crash in between: the order is saved but the message is never sent, so the warehouse never hears of it. The outbox pattern fixes this.'
+    more: |
+      Saving and sending are two separate steps, and nothing makes them succeed or fail together. The outbox pattern writes the message into the same database transaction as the order and sends it afterwards.
+    ref: messenger-routing
 
 quiz:
   - q: 'The Reporting app runs SQL directly on Checkout''s `orders` table. The Checkout team renames the `total` column. What happens?'
@@ -321,3 +387,19 @@ quiz:
         correct: false
         why: 'They have no message broker, and 500,000 messages is extra trouble.'
     ref: choosing-a-style
+  - q: 'Rahim dispatches `OrderPlaced` with Messenger, but `messenger.yaml` has no routing for it. The warehouse service is down. What happens?'
+    hint: 'Where does a message with no route get handled?'
+    options:
+      - text: 'The message waits on a queue and the order succeeds'
+        correct: false
+        why: 'No queue was chosen. A queue exists only where a route sends the message to an async transport.'
+      - text: 'Messenger retries it in the background three times'
+        correct: false
+        why: 'Retries belong to a transport. Here nothing is on a transport, so nothing is retried.'
+      - text: 'The handler runs inside the request, fails, and the order fails with it'
+        correct: true
+        why: 'With no route, Messenger handles the message synchronously. It is RPC in disguise, and the warehouse''s outage becomes ours.'
+      - text: 'The message is silently dropped and the order succeeds'
+        correct: false
+        why: 'A message with no route is not dropped. It is handled right away, inside the request.'
+    ref: messenger-routing

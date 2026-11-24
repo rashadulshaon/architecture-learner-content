@@ -15,13 +15,15 @@ slides:
           - {title: '1. Two roles', body: 'ROLE_EMPLOYEE, ROLE_MANAGER', tip: 'A simple, clean start. For a small app this is enough.'}
           - {title: '2. By department', body: 'ROLE_MANAGER_SALES, ROLE_MANAGER_HR...', tip: 'A separate role for every department. Add a department and you add a role.'}
           - {title: '3. By limit', body: 'ROLE_MANAGER_SALES_UPTO_50K', tip: 'The money limit has crept into the role too. Now it is department × limit, and the count multiplies.'}
-          - {title: '4. 40 roles', body: 'Nobody can remember them all', tip: 'When a new hire joins, working out which roles to assign becomes a small research project.'}
+          - {title: '4. 40 roles', body: 'Nobody can remember them all', tip: 'For example 8 departments times 5 variants each is already 40. When a new hire joins, working out which roles to assign becomes a small research project.'}
+          - {title: '5. The way out', body: 'Three roles, and one voter that checks the facts', tip: 'Department and limit are facts about the expense, so one rule checks them against the expense. No new role per department.'}
     aside:
       - type: problem
         body: 'A role answers "who are you?". But permission really depends on "which thing, in what state, for how much". Cram that into roles and they explode.'
       - type: terms
         items:
           - {term: 'Role explosion', meaning: 'The number of roles blowing up because conditions multiply.'}
+          - {term: 'RBAC', meaning: 'Role-based access control: permission decided by the user''s role, their title, alone.'}
     check:
       q: 'Why is "a manager approves only their own department''s expenses" a problem when written as one role per department?'
       a: 'Departments and limits multiply the number of roles, and every new department means changing code and data. The department isn''t a role; it is a fact about the thing, so check it against the thing.'
@@ -58,6 +60,7 @@ slides:
         avoid: ['A policy engine: one Symfony monolith with a few rules, where voters are enough']
       - type: terms
         items:
+          - {term: 'ABAC / ReBAC', meaning: 'Attribute-based: facts about the user, the thing and the time. Relationship-based: how the user is connected to the thing.'}
           - {term: 'OPA / Cedar', meaning: 'Policy engines that take rules written outside your code and return the decision.'}
           - {term: 'Zanzibar / OpenFGA', meaning: 'Google''s ReBAC system and its open-source counterpart.'}
     check:
@@ -72,7 +75,7 @@ slides:
     blocks:
       - type: text
         body: |
-          Instead of 40 roles, keep two and move the rules into one voter. A manager's powers sit above an employee's, which you get by writing `role_hierarchy: {ROLE_MANAGER: ROLE_EMPLOYEE}` in `security.yaml`. The voter checks department, amount and "not their own expense".
+          Instead of 40 roles, keep three (employee, manager, director) and move the rules into one voter. Each role includes the one below it: `role_hierarchy: {ROLE_MANAGER: ROLE_EMPLOYEE, ROLE_DIRECTOR: ROLE_MANAGER}` in `security.yaml`. The voter checks department, amount and "not their own expense". A manager's limit is 50,000 taka; a director has none.
       - type: code
         lang: php
         file: 'src/Security/Voter/ExpenseVoter.php'
@@ -97,16 +100,19 @@ slides:
                       return false;
                   }
 
+                  $limit = $this->security->isGranted('ROLE_DIRECTOR') ? PHP_INT_MAX : 50_000;
+
                   return $subject->getDepartment() === $user->getDepartment()  // own department
-                      && $subject->getAmountTaka() <= 50_000                     // under the limit
+                      && $subject->getAmountTaka() <= $limit                     // under the limit
                       && $subject->getRequester() !== $user                      // not their own
                       && $subject->isPending();
               }
           }
         marks:
           - {line: 16, tip: 'No login or no role means "no" right here. When in doubt, always false.'}
-          - {line: 20, tip: 'The department lives in the Expense, not in a role. A new department needs no code change.'}
-          - {line: 22, tip: 'Separation of duties: the person who made the request can''t approve it themselves.'}
+          - {line: 20, tip: 'ROLE_DIRECTOR sits above ROLE_MANAGER, so a director passes the check above and has no limit. A 70,000 taka expense: manager no, director yes.'}
+          - {line: 22, tip: 'The department lives in the Expense, not in a role. A new department needs no code change.'}
+          - {line: 24, tip: 'Separation of duties: the person who made the request can''t approve it themselves.'}
       - type: code
         lang: php
         file: 'src/Controller/ExpenseController.php'
@@ -128,9 +134,12 @@ slides:
         items:
           - {cmd: 'php bin/console debug:container --tag=security.voter', desc: 'Every registered voter'}
           - {cmd: 'php bin/console debug:config security role_hierarchy', desc: 'How the role hierarchy is laid out'}
+      - type: terms
+        items:
+          - {term: 'Voter', meaning: 'A small class Symfony asks: "may this user do this to that thing?" It answers yes or no.'}
       - type: tips
         items:
-          - 'Unit-test the voter: manager in the right department gives yes; another department gives no; their own expense gives no; over 50,000 gives no.'
+          - 'Unit-test the voter: right-department manager yes; other department no; own expense no; 70,000 taka manager no, director yes.'
     check:
       q: 'Why does the manager''s "own department" condition belong in the voter and not in a role?'
       a: 'Department is a fact about the user and the thing, not a title. In a voter, a new department needs no code change and adds no roles.'
@@ -206,7 +215,7 @@ slides:
   - slug: authz-pitfalls
     title: 'Four slippery spots in authorization'
     kind: pitfall
-    tldr: 'Scattered ifs, defaulting to "yes", stale roles frozen into a token, and checking only once: all four break the rules.'
+    tldr: 'Scattered ifs, defaulting to "yes", stale roles frozen into a token, and guarding only some actions: each one breaks the rules in a different way.'
     keywords: ['authorization mistakes', 'scattered checks', 'default deny', 'stale roles', 'voter strategy', 'audit']
     blocks:
       - type: code
@@ -224,24 +233,27 @@ slides:
               return $this->json([]);
           }
         marks:
-          - {line: 4, tip: 'A strict array comparison and a hardcoded email are both brittle. The rule breaks the moment a new kind of manager appears.'}
+          - {line: 4, tip: 'A strict array comparison and a hardcoded email are both brittle. A director has roles [DIRECTOR, MANAGER, EMPLOYEE], so this check wrongly refuses the director.'}
           - {line: 5, tip: 'If the condition matches it approves; otherwise it silently returns an empty JSON. Without permission it should return 403.'}
       - type: visual
         kind: table
-        caption: 'Four slippery spots and the right way'
-        headers: ['Mistake', 'The right way']
+        caption: 'Four slippery spots: what breaks, and the right way'
+        headers: ['Mistake', 'What breaks', 'The right way']
         rows:
-          - cells: ['ifs and role names scattered everywhere', 'The rule in one voter, called with #[IsGranted]']
+          - cells: ['ifs and role names scattered everywhere', 'The rule changes in 39 of 40 places; one hole stays open', 'The rule in one voter, called with #[IsGranted]']
             tip: 'To change the rule you have to hunt through forty places, and missing one leaves a hole. With one voter, you change one place.'
-          - cells: ['Returning "yes" when in doubt', 'The default is always false (deny by default)']
-            tip: 'For an attribute it doesn''t recognize or a state it doesn''t know, the voter returns `false`, and also when in doubt.'
-          - cells: ['Packing roles into the token at login', 'Current permissions from the database on every request']
-            tip: 'If an employee is promoted or dismissed, the roles in an old token are no longer true. With expiring tokens, keep the lifetime short.'
-          - cells: ['Checking only the view action', 'Every method, and export/download too']
-            tip: 'Putting a voter on the view action and forgetting the delete action is a very familiar mistake.'
+          - cells: ['Returning "yes" when in doubt', 'A new EXPORT action ships and everyone can export', 'The default is always false (deny by default)']
+            tip: 'For an attribute it doesn''t recognize or a state it doesn''t know, the voter returns `false`. The next slide shows it in code.'
+          - cells: ['Packing roles into the token at login', 'Demoted at 10:00, still approving at 10:20', 'Read the current roles from the database on each request']
+            tip: 'The token was signed at 09:30 and still says "manager" until it expires. The price of the fix is one user read per request, which Symfony''s user provider already does.'
+          - cells: ['Guarding only the view action', 'An employee sends DELETE and it goes through', 'Guard every action, export and download too']
+            tip: 'Putting a voter on the view action and forgetting the delete action is a very familiar mistake. The next slide shows it.'
       - type: quote
         body: 'Write the permission rule in one place, keep the default at "no", and call it on every action.'
     aside:
+      - type: story
+        title: 'The stale manager'
+        body: 'Sumi is demoted at 10:00. The token she logged in with at 09:30 lives for one hour and still carries ROLE_MANAGER. At 10:20 she approves a 40,000 taka expense, because the API trusts the token. Loading her roles from the database on each request would have refused her at 10:00.'
       - type: tips
         items:
           - 'Symfony''s `access_decision_manager` strategy defaults to `affirmative`: one voter saying yes is enough. If you want any objecting voter to block access, use `unanimous`.'
@@ -252,6 +264,88 @@ slides:
     check:
       q: 'An employee was promoted, but their old access token still carries the previous role. Which design avoids the problem?'
       a: 'Load the user''s current roles from the database on every request (for example with an opaque token), or keep the token lifetime very short so a stale role doesn''t last long.'
+
+  - slug: deny-by-default
+    title: 'Deny by default, guard every action'
+    kind: pitfall
+    tldr: 'A voter that ends in "return true" lets every new action through. End it in false, and put a guard on every route, export and delete included.'
+    keywords: ['deny by default', 'voter fallthrough', 'unguarded route', 'IsGranted', 'allow_if_all_abstain', 'missing authorization']
+    blocks:
+      - type: text
+        body: |
+          A month after launch, someone adds an `EXPENSE_EXPORT` action to the controller and forgets to teach the voter about it. The voter's last line is `return true`, so the new action is allowed for everybody, and any employee can download the whole company's expenses. The fix is a voter that ends in `false`, and a guard on every action.
+      - type: code
+        lang: php
+        file: 'src/Security/Voter/ExpenseVoter.php'
+        variant: bad
+        code: |
+          protected function supports(string $attribute, mixed $subject): bool
+          {
+              return $subject instanceof Expense;      // any attribute at all
+          }
+
+          protected function voteOnAttribute(
+              string $attribute, mixed $subject, TokenInterface $token, ?Vote $vote = null,
+          ): bool {
+              if (self::APPROVE === $attribute) {
+                  return $this->canApprove($subject, $token->getUser());
+              }
+
+              return true;                             // EXPORT? DELETE? "yes"
+          }
+        marks:
+          - {line: 3, tip: 'supports() accepts every attribute, so this voter now answers for actions it was never written for.'}
+          - {line: 13, tip: 'Anything that is not APPROVE falls through to yes. The hole opens the day a new action appears.'}
+      - type: code
+        lang: php
+        file: 'src/Security/Voter/ExpenseVoter.php'
+        variant: good
+        code: |
+          protected function supports(string $attribute, mixed $subject): bool
+          {
+              return \in_array($attribute, [self::APPROVE, self::EXPORT], true)
+                  && $subject instanceof Expense;
+          }
+
+          protected function voteOnAttribute(
+              string $attribute, mixed $subject, TokenInterface $token, ?Vote $vote = null,
+          ): bool {
+              $user = $token->getUser();
+              if (!$user instanceof User) {
+                  return false;
+              }
+
+              return match ($attribute) {
+                  self::APPROVE => $this->canApprove($subject, $user),
+                  self::EXPORT => $this->security->isGranted('ROLE_FINANCE'),
+                  default => false,                    // anything unknown: no
+              };
+          }
+        marks:
+          - {line: 3, tip: 'Only known attributes are claimed. If no voter claims one, Symfony denies it, because allow_if_all_abstain is false by default.'}
+          - {line: 17, tip: 'The last word is no. A new action stays closed until someone writes its rule on purpose.'}
+      - type: visual
+        kind: compare
+        caption: 'The second half of the fix: a guard on every route, not only the view'
+        columns:
+          - title: 'Guard on view only'
+            tone: bad
+            icon: cross
+            tip: 'The developer protected the page everyone looks at and forgot the others.'
+            items: ['GET /expenses/7: the voter runs', 'DELETE /expenses/7: no guard, any employee deletes', 'GET /expenses/export.csv: no guard, everyone downloads']
+          - title: 'Guard on every action'
+            tone: good
+            icon: check
+            tip: 'Each route names its own permission, so a forgotten one is easy to spot in review.'
+            items: ['#[IsGranted] on show, approve, delete and export', 'A test calls every route as a plain employee and expects 403']
+    aside:
+      - type: tips
+        items:
+          - 'List every route with `php bin/console debug:router` and check that each one has `#[IsGranted]` or an `access_control` line.'
+          - 'Write one test per sensitive action: a plain employee gets 403. It is the cheapest way to catch a forgotten guard.'
+    check:
+      q: 'Someone adds an EXPORT action but forgets the voter. Who can export if the voter ends in `return true`, and who if it ends in `default => false`?'
+      a: 'With `return true`, everyone can. With `default => false`, nobody can until a rule for EXPORT is written on purpose.'
 
 flashcards:
   - q: 'What is RBAC, and where does it run out?'
@@ -288,6 +382,11 @@ flashcards:
     a: 'For an unrecognized attribute or when in doubt, a voter always returns false. A permission must be earned by matching a rule on purpose.'
     more: |
       End your `match` or `if` chain with `default => false`. If the default is "yes", adding a new attribute later gives everyone permission by mistake.
+    ref: deny-by-default
+  - q: 'What goes wrong if roles are packed into the token at login?'
+    a: 'After a demotion or dismissal the old token still lists the old role, so the person keeps those powers until the token expires.'
+    more: |
+      Sumi is demoted at 10:00, but her 09:30 token still says manager for another hour. Read the user's current roles from the database on each request, or keep tokens short. The price is one user read per request.
     ref: authz-pitfalls
   - q: 'What is separation of duties?'
     a: 'The person who requests an action can''t approve it themselves. For example, an employee can''t pass their own expense.'
@@ -337,7 +436,20 @@ quiz:
       - text: 'No problem, since the controller uses `#[IsGranted]`'
         correct: false
         why: '`#[IsGranted]` just calls the voter. Whatever the voter says is the decision.'
-    ref: authz-pitfalls
+    ref: deny-by-default
+  - q: 'The shop adds a `/api/expenses/export.csv` route and nobody writes a rule for it. Which setup keeps it closed?'
+    hint: 'What should a voter say about an action nobody has thought about yet?'
+    options:
+      - text: 'A voter that claims only known attributes and ends in `default => false`, plus `#[IsGranted]` on the new action'
+        correct: true
+        why: 'The unknown action is refused until a rule is written on purpose, and the guard makes the route''s permission visible in review.'
+      - text: 'A voter whose last line is `return true`, so nothing ever breaks'
+        correct: false
+        why: 'Nothing breaks for the attacker either: every new action is open to everyone from day one.'
+      - text: 'Guarding only `GET /expenses/{id}`, since export is just a read'
+        correct: false
+        why: 'The export route is a separate action. An unguarded route lets any employee download every expense.'
+    ref: deny-by-default
   - q: 'In a project, a member can see every task, and only the lead can delete tasks. Which model is simplest?'
     hint: 'What is the permission coming from, a relationship to what?'
     options:

@@ -58,7 +58,7 @@ slides:
         title: 'Rules for labels'
         style: cross
         items:
-          - 'Never label by user_id, order_id or a full URL (/orders/5512): every distinct value is a new time series and the count explodes.'
+          - 'Never label by user_id, order_id or a full URL (/orders/5512): every distinct value starts a new time series (its own line on the graph). 100,000 users × 20 routes is 2 million lines.'
           - 'Labels should come from a short, bounded list: method, route name, status.'
           - 'No personal data or tokens in labels.'
       - type: quote
@@ -123,9 +123,14 @@ slides:
           # Duration: p99
           histogram_quantile(0.99,
             sum by (le) (rate(shop_http_request_duration_seconds_bucket[5m])))
+
+          # Saturation (USE): messages waiting in the async queue right now
+          max(shop_queue_depth{queue="async"})
         marks:
           - {line: 2, tip: 'rate() turns a counter into "how many per second"; [5m] means the trend over the last 5 minutes.'}
           - {line: 5, tip: 'A ratio, not a count: 10 failures in 100 requests is dangerous, in a million it is not.'}
+          - {line: 9, tip: 'Turns the bucket counts into one p99 number. le means "less than or equal": the upper edge of each bucket.'}
+          - {line: 13, tip: 'A gauge, set from Messenger''s queue (the next slide shows how). A number that keeps climbing means work is arriving faster than it is handled.'}
       - type: quote
         body: 'Watch RED on services and USE on machines; saturation shows up first.'
     aside:
@@ -135,6 +140,7 @@ slides:
           - 'Queue depth (saturation) is often the first hint of trouble: the CPU is calm, but work is piling up.'
       - type: terms
         items:
+          - {term: 'PromQL', meaning: 'The query language of Prometheus, the database that stores metrics. Each query asks for a number or a graph.'}
           - {term: 'Saturation', meaning: 'Whether more work is arriving than the machine can handle and is queuing up. A pile-up means delays are coming.'}
       - type: refs
         items:
@@ -151,7 +157,7 @@ slides:
     blocks:
       - type: text
         body: |
-          The `promphp/prometheus_client_php` package lets you create counters and histograms. In PHP-FPM every request is a separate process, so you need Redis or APCu storage to keep the metrics between requests. Prometheus visits the `/metrics` page every 15 seconds and collects the numbers.
+          The `promphp/prometheus_client_php` package creates counters and histograms. Prometheus, a database for metrics, visits your `/metrics` page every 15 seconds and stores the numbers. A PHP-FPM request is a short-lived process, so the numbers must live outside it. In `config/services.yaml` point the registry at Redis: `Prometheus\Storage\Redis: {arguments: [{host: '%env(REDIS_HOST)%'}]}` and `Prometheus\CollectorRegistry: {arguments: ['@Prometheus\Storage\Redis']}`.
       - type: code
         lang: php
         file: 'src/Metrics/RequestMetricsListener.php'
@@ -198,20 +204,28 @@ slides:
         variant: good
         code: |
           #[Route('/metrics', methods: ['GET'])]
-          public function metrics(CollectorRegistry $registry): Response
-          {
+          public function metrics(
+              CollectorRegistry $registry,
+              #[Autowire(service: 'messenger.transport.async')] MessageCountAwareInterface $async,
+          ): Response {
+              // gauge: how many jobs are waiting right now, read at every scrape
+              $registry
+                  ->getOrRegisterGauge('shop', 'queue_depth', 'Messages waiting', ['queue'])
+                  ->set($async->getMessageCount(), ['async']);
+
               $text = (new RenderTextFormat())->render($registry->getMetricFamilySamples());
 
               return new Response($text, 200, ['Content-Type' => RenderTextFormat::MIME_TYPE]);
           }
         marks:
           - {line: 1, tip: 'Keep this page open only on the internal network (firewall or an nginx allow rule), never on the internet.'}
+          - {line: 7, tip: 'A gauge is set, not incremented. Reading the queue at every scrape (every 15 seconds) keeps the number fresh without a separate job.'}
     aside:
       - type: tips
         items:
-          - 'Measure business metrics too: orders_placed_total, payments_failed_total. Technical metrics can look fine while orders are at zero.'
-          - 'A gauge for the queue: set the number of messages waiting in Messenger every minute.'
-          - 'Back the CollectorRegistry service with Redis storage (Prometheus\Storage\Redis), or every request starts from zero.'
+          - 'Measure business metrics too: orders_placed_total, payments_failed_total (one inc() in the order handler). Technical metrics can look fine while orders are at zero.'
+          - 'Redis storage gives one shared set of numbers but costs a network call per write. APCu is faster, but each server then keeps (and is scraped for) its own numbers.'
+          - 'Without shared storage, each short-lived request starts from zero and every scrape shows almost nothing.'
       - type: refs
         items:
           - {to: 'observability/logging-tracing', label: 'Logs and traces'}
@@ -307,13 +321,14 @@ slides:
         file: 'PromQL: burn-rate alert (99.9% SLO over 30 days)'
         variant: good
         code: |
+          # SLI: checkout requests that did not fail with a 5xx
           # Over the last hour, is failure eating the budget 14.4x faster than allowed?
           (
             sum(rate(shop_http_requests_total{route="checkout",status=~"5.."}[1h]))
             / sum(rate(shop_http_requests_total{route="checkout"}[1h]))
           ) > (14.4 * 0.001)
         marks:
-          - {line: 5, tip: '0.001 = 1 - 0.999, the allowed failure rate. At 14.4 times that rate, one hour burns about 2% of the 30-day budget.'}
+          - {line: 6, tip: '0.001 = 1 - 0.999, the allowed failure rate. At 14.4 times that rate one hour burns 2% of the budget, and all 30 days of it are gone in about 2 days.'}
       - type: quote
         body: 'Budget left: take risks. Budget gone: stabilize. Numbers decide, not moods.'
     aside:
@@ -323,6 +338,7 @@ slides:
         items:
           - 'Look at who ate the budget: one big outage, or small daily failures? The cures differ.'
           - 'Two tiers of burn-rate alert: fast burn (14.4x, 1 hour) pages someone, slow burn (6x, 6 hours) files a ticket.'
+          - 'Needs enough traffic: at 100 requests a day one failure is 1%, so the ratio jumps around and an SLO means little.'
       - type: refs
         items:
           - {to: 'observability/health-alerts', label: 'How to design alerts'}
@@ -351,6 +367,11 @@ flashcards:
     more: |
       Every distinct combination of label values is its own time series. A route (a few dozen) is fine; a user_id (millions) is not. Following one particular user is a job for logs or traces, not metrics.
     ref: three-metric-types
+  - q: 'Why can''t a PHP-FPM app keep Prometheus metrics in plain memory?'
+    a: 'Each request is a short-lived process, so in-memory counters start from zero every time. Store them in Redis or APCu.'
+    more: |
+      Redis gives one shared set of numbers for all servers, at the price of a network call per write. APCu is faster, but each server then holds only its own numbers. Prometheus scrapes every server either way.
+    ref: instrument-symfony
   - q: 'What are RED and USE?'
     a: 'RED for services: Rate, Errors, Duration. USE for machines: Utilization, Saturation, Errors.'
     more: |
@@ -371,6 +392,11 @@ flashcards:
     more: |
       The math: 30 days = 43,200 minutes. 0.1% = 43.2 minutes. At 99.99% it is only about 4 minutes. Each extra 9 costs many times more, so giving every service the same high SLO is wasteful.
     ref: sli-slo
+  - q: 'What does a burn rate of 14.4 mean for a 99.9% SLO?'
+    a: 'Failures are arriving 14.4 times faster than the SLO allows. At that speed the 30-day budget is gone in about 2 days.'
+    more: |
+      One hour at 14.4x burns 2% of the 30-day budget (14.4 / 720 hours). That is fast enough to page someone. A slower burn, say 6x over 6 hours, only needs a ticket. Two tiers keep pages for real emergencies.
+    ref: error-budget
   - q: 'How does an error budget help you make decisions?'
     a: 'While budget remains, ship features fast; when it runs low, pause features and work on stability. The rule is written in advance.'
     more: |
@@ -461,6 +487,32 @@ quiz:
       - text: 'Shut the whole service down until the month ends'
         correct: false
         why: 'Shutting down causes even more failure. The goal is to reduce risk, not to stop the service.'
+    ref: error-budget
+  - q: 'Rina''s metrics code works on her laptop, but in production under PHP-FPM every scrape shows tiny, resetting counts. What is the likely cause?'
+    hint: 'How long does one PHP-FPM request live?'
+    options:
+      - text: 'The registry uses in-memory storage, which dies with each request'
+        correct: true
+        why: 'Each request is a fresh process, so its counters start from zero. Redis or APCu storage keeps them between requests.'
+      - text: 'Prometheus scrapes too often'
+        correct: false
+        why: 'The scrape interval changes how fresh the graph is, not whether the values survive between requests.'
+      - text: 'Counters should have been gauges'
+        correct: false
+        why: 'The type is not the problem. A gauge in memory would be lost the same way.'
+    ref: instrument-symfony
+  - q: 'The 99.9% checkout SLO is burning at 14.4 times the allowed rate. If nothing changes, roughly how long until the 30-day budget is gone?'
+    hint: 'Divide the window by the burn rate.'
+    options:
+      - text: 'About 2 days'
+        correct: true
+        why: '30 days / 14.4 is about 2 days (50 hours). That is why this burn rate pages someone.'
+      - text: 'About 30 days'
+        correct: false
+        why: '30 days is how long it would last at exactly the allowed rate (1x).'
+      - text: 'About 14 hours'
+        correct: false
+        why: 'It mixes up the burn rate with hours. The window divided by the rate gives about 50 hours.'
     ref: error-budget
   - q: 'Which of these make good SLIs?'
     hint: 'Does this number capture the customer''s experience?'

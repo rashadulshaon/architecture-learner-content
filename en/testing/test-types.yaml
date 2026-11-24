@@ -12,7 +12,7 @@ slides:
           A doctor never runs just one test on a patient. A blood test finds one kind of illness, an X-ray another, and a treadmill stress test shows whether the heart can take the strain. Passing one doesn't mean you pass the rest. Software is the same: each kind of test catches its own kind of bug and misses the others.
       - type: text
         body: |
-          Our shipping code reads the `charge_paisa` field from the courier's API. One day the courier quietly renames it to `charge`. Our unit tests still get the old response from a mock, so everything is green, yet in production the delivery charge comes out as zero.
+          Our shipping code reads the `charge_paisa` field from the courier's API. One day the courier quietly renames it to `charge`. Our unit tests still get the old response from a **mock** (a stand-in that returns a canned answer instead of calling the real API), so everything is green, yet in production the delivery charge comes out as zero.
       - type: visual
         kind: table
         caption: 'Five kinds of tests: what each catches and what it misses'
@@ -23,11 +23,11 @@ slides:
           - cells: ['Contract', 'Field or type changes in an outside API', 'Slowness or heavy traffic']
             tip: 'Checks that what we expect matches what the other side actually sends.'
           - cells: ['Integration', 'Query, config and migration mistakes', 'Pressure from a crowd']
-            tip: 'Runs against the real database or queue, so it catches mistakes at the seams.'
+            tip: 'Runs against the real database or queue, so it catches mistakes at the seams, the places where two parts meet.'
           - cells: ['Load', 'Slowness, breaking under traffic', 'Calculation mistakes']
             tip: 'Applies a crowd and sees which part runs out of breath first.'
           - cells: ['Chaos', 'Whether behaviour is right during failures', 'Mistakes in normal operation']
-            tip: 'Deliberately breaks a dependency to see if the fallback and breaker really work.'
+            tip: 'Deliberately breaks a dependency to see if the fallback (plan B) and the breaker (a switch that stops calling a sick service) really work.'
       - type: quote
         body: 'Each kind of test catches its own kind of bug. One green doesn''t mean all green.'
     aside:
@@ -82,7 +82,7 @@ slides:
 
                   $validator = new Validator();
                   $schema = json_decode(file_get_contents(__DIR__.'/courier-rates.schema.json'));
-                  $validator->validate($data = json_decode($body), $schema);
+                  $validator->validate(json_decode($body), $schema);
 
                   self::assertTrue($validator->isValid(), json_encode($validator->getErrors()));
               }
@@ -125,6 +125,62 @@ slides:
       q: 'Why is the mock response in the unit test taken from the contract''s example file instead of JSON you wrote yourself?'
       a: 'A mock you write yourself is imagination, and nobody knows whether it matches reality. If the contract example is checked against the real response every night, the mock stays tied to reality.'
 
+  - slug: contract-failure-loop
+    title: 'The contract file, and what a rename looks like'
+    kind: howto
+    tldr: 'Mark the fields you read as required in the schema. When the courier renames one, the nightly run fails and names it, instead of orders shipping at 0. Cost: you hear a day late.'
+    keywords: ['JSON schema', 'required field', 'contract failure', 'nightly test', 'schema example']
+    blocks:
+      - type: text
+        body: |
+          The contract is a short **JSON Schema** file: a description of what a JSON response must look like. It marks `charge_paisa` as **required** and a whole number. That one word is what stops the story's `?? 0` from hiding the rename, because a missing field is now a failure, not a zero. The example file beside it, `{"charge_paisa": 12000, "currency": "BDT"}`, is what the unit test uses (12,000 paisa is 120 taka).
+      - type: code
+        lang: json
+        file: 'tests/Contract/courier-rates.schema.json'
+        variant: good
+        code: |
+          {
+            "$schema": "http://json-schema.org/draft-04/schema#",
+            "type": "object",
+            "required": ["charge_paisa", "currency"],
+            "properties": {
+              "charge_paisa": {"type": "integer", "minimum": 0},
+              "currency": {"type": "string", "enum": ["BDT"]}
+            }
+          }
+        marks:
+          - {line: 4, tip: 'Without this line a missing field passes validation silently, and the code''s fallback turns it into a zero charge.'}
+          - {line: 5, tip: 'List only the fields we actually read. Extra fields the courier adds later are allowed, so harmless additions don''t fail the run.'}
+      - type: code
+        lang: text
+        file: 'nightly run, the morning after the rename'
+        variant: bad
+        code: |
+          1) CourierContractTest::testSandboxResponseMatchesOurSchema
+          [{"property":"charge_paisa","message":"The property charge_paisa is required"}]
+        marks:
+          - {line: 2, tip: 'The failure names the exact field. We learn the same morning, not after seven hours of zero charges.'}
+      - type: points
+        title: 'When the nightly run goes red'
+        style: number
+        items:
+          - 'Read the field name in the message: the courier changed `charge_paisa`.'
+          - 'Change the schema and the example file to the new name, `charge`.'
+          - 'The unit test now fails, because `CourierRateProvider` still reads the old name.'
+          - 'Fix the provider until the unit test and the nightly run are both green.'
+    aside:
+      - type: when
+        use:
+          - 'You depend on an outside API you don''t control, and a wrong field would cost money.'
+        avoid:
+          - 'As your only safety net: it fires up to a day late, and a sandbox can differ from production. Keep a production alert on charges of 0 too.'
+      - type: pitfalls
+        items:
+          - 'Don''t put every field in `required`: list only what the code reads, or the courier adding a field breaks your build for nothing.'
+    check:
+      q: 'Why does marking `charge_paisa` as required matter after the courier renames it?'
+      a: 'Without it, a missing field passes validation and the code''s `?? 0` quietly makes the charge zero. With it, the nightly run fails and names the field.'
+
   - slug: integration-real-deps
     title: 'Integration tests: a real database, not a mock'
     kind: howto
@@ -133,7 +189,7 @@ slides:
     blocks:
       - type: text
         body: |
-          To make tests fast, many teams use SQLite or an in-memory database. But production runs PostgreSQL, and the differences sit exactly where the bugs hide. The test below checks a PostgreSQL-specific rule that would never fail on SQLite.
+          To make tests fast, many teams use SQLite or an in-memory database. But production runs PostgreSQL, and the differences sit exactly where the bugs hide. The test below checks a rule that lives in PostgreSQL's own index: the same email in a different letter case must be refused. Whether that index is right, only a real PostgreSQL run can show.
       - type: visual
         kind: table
         caption: 'Mistakes only a real database catches'
@@ -169,6 +225,7 @@ slides:
         file: 'tests/Integration/UserEmailUniquenessTest.php'
         variant: good
         code: |
+          // relies on: CREATE UNIQUE INDEX uniq_user_email ON "user" (LOWER(email)) -- from a migration
           final class UserEmailUniquenessTest extends KernelTestCase
           {
               public function testEmailUniquenessIgnoresCase(): void
@@ -185,13 +242,14 @@ slides:
               }
           }
         marks:
-          - {line: 11, tip: 'The test expects one specific exception. If it doesn''t come, the unique index wasn''t set up properly.'}
+          - {line: 12, tip: 'The test expects one specific exception. If it doesn''t come, the unique index wasn''t set up properly.'}
     aside:
       - type: tips
         items:
           - 'In .env.test, set DATABASE_URL to postgresql://app:test_only@127.0.0.1:5433/app_test?serverVersion=16. It is for tests only, not a real password.'
           - 'Run the same compose.test.yaml in CI, so your machine and CI use the same database.'
           - 'The same goes for RabbitMQ or Redis: if you rely on a dependency''s behaviour, keep the real one in your tests.'
+          - 'The price: slower than a unit test, and it needs Docker. For pure calculations keep the unit test; use integration tests for seams like queries, indexes, locks and migrations.'
       - type: refs
         items:
           - {to: 'data/zero-downtime-migrations', label: 'Rules for safe migrations'}
@@ -207,7 +265,7 @@ slides:
     blocks:
       - type: text
         body: |
-          Think of the hospital treadmill: the heart is fine at rest, but what happens when you run? A load test creates an artificial crowd (**virtual users**) and shows where slowness or failures begin. A k6 script is plain JavaScript, so it is easy to keep in the repository.
+          Think of the hospital treadmill: the heart is fine at rest, but what happens when you run? A load test creates an artificial crowd (**virtual users**) and shows where slowness or failures begin. 50 virtual users who each pause a second between clicks send about 50 requests a second, like 50 people each tapping refresh once a second. A k6 script is plain JavaScript, so it is easy to keep in the repository.
       - type: code
         lang: js
         file: 'load/products.js'
@@ -235,8 +293,8 @@ slides:
           }
         marks:
           - {line: 5, tip: 'stages raise the crowd step by step, not all at once. That shows at which number the slowness starts.'}
-          - {line: 11, tip: 'When a threshold is crossed, k6 exits with a non-zero code, so the test fails in CI. Derive the numbers from your SLO.'}
-          - {line: 19, tip: 'Without sleep, each virtual user fires requests at machine speed, which no real user does.'}
+          - {line: 11, tip: 'When a threshold is crossed, k6 exits with a non-zero code, so the test fails in CI. Derive the numbers from your SLO, the speed promise you made to users.'}
+          - {line: 19, tip: 'Without sleep, a virtual user fires requests at machine speed. With a 20ms response that is about 50 a second per user, so 50 users become about 2,500 a second instead of about 50.'}
       - type: visual
         kind: table
         caption: 'Four kinds of crowd tests'
@@ -251,7 +309,7 @@ slides:
           - cells: ['Soak', 'Runs for several hours', 'Memory leaks, connection leaks']
             tip: 'Slow problems that a 10-minute test will never show.'
       - type: quote
-        body: 'Run load tests on staging that looks like production: real data volume, real server size.'
+        body: 'Run load tests on a staging copy that looks like production: real data volume, real server size.'
     aside:
       - type: commands
         title: 'Running k6'
@@ -262,13 +320,14 @@ slides:
         items:
           - 'Test against an empty database and everything looks fast. Keep production-sized data on staging, or the results lie.'
           - 'The slowness of the first minute (cold cache) blends into the results. Add a warm-up stage or look at it separately.'
+          - 'Never aim a load test at a third party''s API, or at production without warning: to them it looks like an attack.'
       - type: refs
         items:
           - {to: 'scaling/load-latency', label: 'How load and latency relate'}
           - {to: 'observability/metrics-slos', label: 'Deriving thresholds from an SLO'}
     check:
       q: 'The k6 script has no `sleep(1)`. Why does that make the results misleading?'
-      a: 'Each virtual user fires requests without pause, which isn''t how real users behave. The system breaks with few users, and the "how many users can it handle" number comes out wrong.'
+      a: 'Each virtual user fires requests without pause, which isn''t how real users behave: about 50 a second each instead of about 1. The system breaks with few users, and the "how many users can it handle" number comes out wrong.'
 
   - slug: chaos-failure-injection
     title: 'Chaos tests: break things on purpose to see if the fallback works'
@@ -278,7 +337,7 @@ slides:
     blocks:
       - type: text
         body: |
-          Another hospital-style check: what does a bus do when a tyre bursts? A **chaos test** deliberately breaks one dependency and checks that the system behaves as expected. Start small: first inject failures in code tests, then on staging over a real network.
+          Another hospital-style check: what does a bus do when a tyre bursts? A **chaos test** deliberately breaks one dependency and checks that the system behaves as expected. Start small: first inject failures in code tests, then on staging (a rehearsal copy of the site) over a real network. The code test fails until the provider handles the failure, and the second code block shows that handling.
       - type: visual
         kind: steps
         caption: 'The five steps of a chaos experiment'
@@ -310,24 +369,43 @@ slides:
           - {line: 5, tip: 'With `error`, MockResponse throws a TransportException when the response is read, just like a real timeout or a dropped connection.'}
           - {line: 11, tip: 'The question the test asks: on failure, does the app crash, or does it gracefully return null?'}
       - type: code
-        lang: bash
-        file: 'staging: Toxiproxy'
+        lang: php
+        file: 'src/Shipping/CourierRateProvider.php'
         variant: good
         code: |
-          # put a proxy in front of the courier so you can slow it down or cut it off at will
-          toxiproxy-cli create --listen 0.0.0.0:8474 --upstream api.courier.example:443 courier
+          public function chargeFor(string $district, int $grams): ?int
+          {
+              try {
+                  $data = $this->client->request('GET', '/v1/rates', [
+                      'query' => ['district' => $district, 'weight' => $grams],
+                      'timeout' => 2,
+                  ])->toArray();   // throws on 4xx/5xx, on timeouts and on bad JSON
+              } catch (ExceptionInterface $e) {
+                  $this->logger->warning('Courier rate lookup failed', ['error' => $e->getMessage()]);
 
-          # add a 3 second delay to every response
-          toxiproxy-cli toxic add -t latency -a latency=3000 courier
+                  return null;   // no price, but no crash either
+              }
 
-          # check whether the app's breaker opened and whether checkout still works
-          # remove the toxic when the experiment is over
-          toxiproxy-cli toxic remove -n latency_downstream courier
+              return $data['charge_paisa'];
+          }
+
+          public function chargeOrDefault(string $district, int $grams): int
+          {
+              return $this->chargeFor($district, $grams) ?? self::DEFAULT_CHARGE_PAISA;   // 8000
+          }
         marks:
-          - {line: 5, tip: 'If every timeout is set to 2 seconds, this 3 second delay should make every call time out. That is how you see whether the breaker opens.'}
+          - {line: 8, tip: 'ExceptionInterface (Symfony Contracts) is the parent of server errors, transport errors and bad JSON. Without this catch, the test above fails with a ServerException and checkout would show an error page.'}
+          - {line: 18, tip: 'The hypothesis from step 2 in code: checkout carries on with a default charge (80 taka) when the courier is down.'}
     aside:
+      - type: commands
+        title: 'Toxiproxy on staging'
+        items:
+          - {cmd: 'toxiproxy-cli create --listen 0.0.0.0:18080 --upstream courier-sandbox:8080 courier', desc: 'Put a proxy in front of the courier; point the app''s courier URL at port 18080'}
+          - {cmd: 'toxiproxy-cli toxic add -t latency -a latency=3000 courier', desc: 'Add 3 seconds to every response. With a 2 second timeout every call should time out and the breaker should open'}
+          - {cmd: 'toxiproxy-cli toxic remove -n latency_downstream courier', desc: 'Remove the toxic when the experiment is over'}
       - type: pitfalls
         items:
+          - 'A default is a business decision: a flat 80 taka may undercharge a far district. Log and alert whenever the fallback is used.'
           - 'Don''t do chaos in production on day one. Start with unit tests and staging, then a small scope during low traffic.'
           - 'Never run chaos without a stop switch: decide in advance what you would have to see to halt it immediately.'
       - type: refs
@@ -374,6 +452,16 @@ flashcards:
     more: |
       `['http_code' => 503]` gives a "server is sick" failure, and `error` gives a network failure. Pass several MockResponses to MockHttpClient in an array and it returns one per request, in order.
     ref: chaos-failure-injection
+  - q: 'Why mark the fields you read as `required` in a contract schema?'
+    a: 'So a renamed or missing field fails the nightly run and names itself, instead of the code quietly using a fallback like `?? 0`.'
+    more: |
+      Without `required`, a missing field still counts as valid. List only the fields the code really reads, so harmless extra fields from the other side don't fail the run. The cost: you hear about a change up to a day late, so keep a production alert too.
+    ref: contract-failure-loop
+  - q: 'What must code that calls an outside API do so it survives a 503 or a timeout?'
+    a: 'Catch HttpClient''s `ExceptionInterface`, log it and return null, so the caller can use a default instead of crashing.'
+    more: |
+      `ExceptionInterface` covers 5xx answers, timeouts and bad JSON alike. Catching only `TransportExceptionInterface` handles timeouts but lets a 503 through. A default such as a flat delivery charge is a business choice, so log and alert when it is used.
+    ref: chaos-failure-injection
 
 quiz:
   - q: 'Rashed''s app calls an outside exchange-rate API. The API silently renames `rate` to `exchange_rate`. All of Rashed''s unit tests are green. Which test would have caught it?'
@@ -413,7 +501,7 @@ quiz:
     options:
       - text: 'The result is misleading: non-stop requests put far more pressure on the system than real behaviour, so the "100 users" figure isn''t realistic'
         correct: true
-        why: 'Real users read a page, think, then click. Without sleep, 100 virtual users may push as hard as 1,000 real ones.'
+        why: 'Real users read a page, think, then click. With a 20ms response, a virtual user without sleep sends about 50 requests a second instead of about 1, so 100 of them push like thousands of real users.'
       - text: 'The result is accurate, because more pressure means safer'
         correct: false
         why: 'A wrong number gives a wrong estimate of capacity, and you may add or cut servers for no reason.'
@@ -450,6 +538,45 @@ quiz:
       - text: 'The code is only for 503, and the timeout is irrelevant to the test'
         correct: false
         why: 'The second mock simulates the timeout, and the two go through different exception paths.'
+    ref: chaos-failure-injection
+  - q: 'The nightly contract run fails with "The property charge_paisa is required", and the courier now sends `charge`. What is the right next move?'
+    hint: 'The contract should describe the API as it is now, and the code should follow the contract.'
+    options:
+      - text: 'Remove `required` from the schema so the run goes green again'
+        correct: false
+        why: 'Then a missing field passes silently again, and the `?? 0` fallback brings back zero charges.'
+      - text: 'Change the schema and example to `charge`, watch the unit test fail, then fix the provider to read `charge`'
+        correct: true
+        why: 'The contract now matches the real API, the failing unit test points at the code to change, and both go green together.'
+      - text: 'Change only the provider and leave the schema alone'
+        correct: false
+        why: 'The schema still describes the old API, so the nightly run keeps failing, and the mock built from the old example hides the change.'
+    ref: contract-failure-loop
+  - q: 'The courier returns a 503 and checkout shows an error page. What is wrong, and what is the fix?'
+    lang: php
+    code: |
+      public function chargeFor(string $district, int $grams): ?int
+      {
+          $data = $this->client->request('GET', '/v1/rates', [
+              'query' => ['district' => $district, 'weight' => $grams],
+          ])->toArray();
+
+          return $data['charge_paisa'];
+      }
+    hint: 'What does toArray() do with a 5xx answer?'
+    options:
+      - text: 'toArray() throws on a 503 and nothing catches it; wrap the call in try/catch for ExceptionInterface, log, return null'
+        correct: true
+        why: 'ExceptionInterface covers 5xx answers, timeouts and bad JSON, so one catch keeps checkout alive.'
+      - text: 'Nothing is wrong: HttpClient retries a 503 by itself until it works'
+        correct: false
+        why: 'Plain HttpClient does not retry; only RetryableHttpClient does, and even then it gives up eventually.'
+      - text: 'Catch only TransportExceptionInterface, which covers all failures'
+        correct: false
+        why: 'It covers timeouts and dropped connections, but a 503 arrives as a ServerException and would still escape.'
+      - text: 'Add `?? 0` after `$data[''charge_paisa'']`'
+        correct: false
+        why: 'The exception is thrown earlier, at toArray(), so this line is never reached. And a silent zero is the original bug.'
     ref: chaos-failure-injection
   - q: 'A team is about to run its first chaos test. Which steps are right?'
     hint: 'Balance risk against the chance to learn.'

@@ -129,6 +129,7 @@ slides:
       - type: tips
         items:
           - 'Publish only after the main transaction has committed. That is why this lives in a Messenger handler.'
+          - 'The hub is one more service to run. Symfony publishes to it with a secret (`MERCURE_JWT_SECRET`) and a URL (`MERCURE_URL`); the Flex recipe sets both up.'
           - 'If the SPA runs on a different domain, set the cookie''s domain and `SameSite` right, or the hub won''t receive the cookie.'
       - type: refs
         items:
@@ -145,7 +146,7 @@ slides:
     blocks:
       - type: text
         body: |
-          When the page opens, a plain GET first brings in the order's current state, and then `EventSource` listens for new changes only. You need both, because a change that happened before the connection was made never shows up in the live stream. And when the component goes away, you must close the connection yourself.
+          When the page opens, a plain GET brings in the order's current state, and `EventSource` then listens for new changes. But the stream only carries changes made after it opens, and a change between the first load and the moment it opens is gone. The same holds after a dropped connection, unless the hub keeps history and is set up to replay it. So every time the stream opens, fetch the current state again. And when the component goes away, close the connection yourself.
       - type: code
         lang: vue
         file: 'src/components/OrderLiveStatus.vue'
@@ -155,9 +156,14 @@ slides:
           import { ref, onMounted, onBeforeUnmount } from 'vue'
 
           const props = defineProps<{ orderId: number; initialStatus: string }>()
-          const status = ref(props.initialStatus)   // the current state fetched from the server first
+          const status = ref(props.initialStatus)   // the state from the first page load
           const live = ref(false)
           let source: EventSource | null = null
+
+          async function refresh() {   // the current truth, by a plain GET
+            const res = await fetch(`/orders/${props.orderId}/status`)
+            status.value = (await res.json()).status
+          }
 
           onMounted(async () => {
             const res = await fetch(`/orders/${props.orderId}/live`, { credentials: 'include' })
@@ -167,7 +173,7 @@ slides:
             url.searchParams.append('topic', topic)
 
             source = new EventSource(url, { withCredentials: true })
-            source.onopen = () => (live.value = true)
+            source.onopen = () => { live.value = true; refresh() }   // catch up on every open
             source.onerror = () => (live.value = false)   // the browser reconnects by itself
             source.onmessage = (e) => (status.value = JSON.parse(e.data).status)
           })
@@ -179,18 +185,20 @@ slides:
             <p>Status: {{ status }} <small v-if="!live">(reconnecting…)</small></p>
           </template>
         marks:
-          - {line: 5, tip: 'Even if messages are lost before or during the live connection, the user sees the current state, not a stale one.'}
-          - {line: 16, tip: 'Without `withCredentials` the browser doesn''t send the cookie, and the private topic isn''t authorized.'}
-          - {line: 18, tip: 'If the connection drops, the browser reconnects itself and sends Last-Event-ID; the hub replays missed updates.'}
-          - {line: 22, tip: 'Without close(), the connection stays open after the page changes and they keep piling up.'}
+          - {line: 9, tip: 'A plain GET returns the true state right now, whatever messages were missed before or between connections.'}
+          - {line: 21, tip: 'Without `withCredentials` the browser doesn''t send the cookie, and the private topic isn''t authorized.'}
+          - {line: 22, tip: 'Every open, first or after a reconnect, re-reads the current state. That closes the gap the stream cannot cover.'}
+          - {line: 23, tip: 'If the connection drops, the browser reconnects itself and sends Last-Event-ID; the hub replays missed updates only if it keeps history.'}
+          - {line: 27, tip: 'Without close(), the connection stays open after the page changes and they keep piling up.'}
     aside:
       - type: pitfalls
         items:
           - 'Forget `close()` on unmount and every visit to the page leaves one more connection behind.'
-          - 'Don''t rely on EventSource alone; to cover lost messages, fetch the current state first.'
+          - 'Don''t rely on EventSource alone: it cannot bring back what happened before it opened. Re-fetch the state on every open.'
       - type: tips
         items:
           - 'To listen to several topics, add the `topic` parameter more than once; you still need only one connection.'
+          - 'A refresh answer can arrive after a newer message. For fields that can move backwards, send a version number and ignore older ones.'
     check:
       q: 'What happens if you don''t call `source.close()` when the component unmounts?'
       a: 'The connection stays open after the user leaves the page, and each visit adds another. Both the browser''s limit and the server''s memory get eaten away.'
@@ -213,15 +221,15 @@ slides:
         edges:
           - {from: app, to: hub, label: 'The app publishes once, with a topic'}
           - {from: hub, to: web, label: 'The hub sends the message to every subscribed browser'}
-          - {from: web, to: presence, label: 'Each browser sends a heartbeat every 30s; the key''s TTL is 60s', dashed: true}
+          - {from: web, to: presence, label: 'Each browser pings every 30s; the app renews a Redis key with a 60s TTL', dashed: true}
           - {from: app, to: push, label: 'If the user is offline, it sends through a push provider', dashed: true, tone: warn}
       - type: points
         title: 'Three calculations'
         style: number
         items:
-          - '**Scaling**: every connection uses a socket and memory. Give the holding of connections to the hub, not to PHP-FPM.'
+          - '**Scaling**: every connection holds a socket and memory. PHP-FPM with 50 workers is full at 50 connections; a hub holds tens of thousands.'
           - '**Presence**: who is online, via heartbeats. When the TTL runs out the key disappears, and the server assumes the user is gone.'
-          - '**Push notification**: if the user is out of the app there is no connection, so go through the OS with FCM or Web Push.'
+          - '**Push notification**: with the app closed there is no connection, so go through the OS (FCM, Web Push). The user must allow it; delivery isn''t guaranteed.'
       - type: quote
         body: 'Holding connections and doing the work are separate duties. Keep them on separate servers.'
     aside:
@@ -264,9 +272,9 @@ flashcards:
       Holding the connections is the hub's job, so PHP-FPM doesn't have to carry many open connections. For personal data, `private: true` makes the hub check that the subscriber's JWT grants access to the topic.
     ref: mercure-publish
   - q: 'What are the three precautions when using EventSource in Vue?'
-    a: 'Fetch the current state first, pass `withCredentials: true` for private topics, and call `close()` on unmount.'
+    a: 'Re-fetch the current state each time the stream opens, pass `withCredentials: true` for private topics, and call `close()` on unmount.'
     more: |
-      Messages can be lost before or during the live connection, so first fetch the true state with a plain GET. Without `close()`, every visit to the page leaves one more connection behind.
+      Changes made before the stream opens, or while it was down, never arrive on it, so a plain GET on every open brings the true state. Without `close()`, every visit to the page leaves one more connection behind.
     ref: vue-eventsource
   - q: 'How do you measure presence (who is online) reliably?'
     a: 'The client sends a regular heartbeat and the server keeps a Redis key with a TTL. When the TTL runs out the key vanishes, and the user counts as offline.'
@@ -326,9 +334,9 @@ quiz:
       - text: 'For a private topic, `withCredentials: true` is missing, so the browser won''t send the cookie'
         correct: true
         why: 'To send the cookie to a hub on another origin you need `withCredentials`, or authorization fails.'
-      - text: 'The current state isn''t fetched first, so the user misses changes made before connecting'
+      - text: 'The current state isn''t fetched when the stream opens, so the user misses changes made before connecting'
         correct: true
-        why: 'A live stream brings only new changes. First fetch the true state with a plain GET.'
+        why: 'A live stream brings only changes made after it opens. Fetch the true state with a plain GET on every open.'
       - text: 'You can''t use `JSON.parse`'
         correct: false
         why: 'e.data is a string, so JSON.parse is exactly right.'

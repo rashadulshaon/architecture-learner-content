@@ -81,7 +81,7 @@ slides:
   - slug: stateless-symfony
     title: 'Symfony-কে স্টেটলেস করার দুই কাজ'
     kind: howto
-    tldr: 'session-কে Redis-এ পাঠাও এক লাইনের কনফিগে, আর আপলোড ফাইল Flysystem দিয়ে object storage-এ রাখো, লোকাল ডিস্কে নয়।'
+    tldr: 'session-কে Redis-এ পাঠান এক লাইনের কনফিগে, আর আপলোড ফাইল লোকাল ডিস্কে নয়, Flysystem storage দিয়ে লিখুন। storage-এর কনফিগ পরের স্লাইডে।'
     keywords: ['framework.session handler_id', 'Redis', 'Flysystem', 'S3 upload', 'FilesystemOperator', 'আপলোড']
     blocks:
       - type: code
@@ -116,12 +116,12 @@ slides:
                   $this->uploadsStorage->writeStream($key, $stream);
                   fclose($stream);
 
-                  return $key; // ডেটাবেসে শুধু এই key রাখো
+                  return $key; // ডেটাবেসে শুধু এই key রাখুন
               }
           }
         marks:
-          - {line: 3, tip: '`FilesystemOperator $uploadsStorage` নামের storage-টাই autowire হয়। আসল storage (S3 বা লোকাল) কনফিগে ঠিক হয়।'}
-          - {line: 15, tip: 'ডেটাবেসে ফাইল নয়, শুধু ফাইলের key রাখো। URL পরে বানানো যায়।'}
+          - {line: 3, tip: '`FilesystemOperator $uploadsStorage` নামের storage-টাই autowire হয়। আসল storage (S3 বা লোকাল) কনফিগে ঠিক হয় (পরের স্লাইড)।'}
+          - {line: 15, tip: 'ডেটাবেসে ফাইল নয়, শুধু ফাইলের key রাখুন। URL পরে বানানো যায়।'}
     aside:
       - type: commands
         items:
@@ -129,7 +129,7 @@ slides:
           - {cmd: 'composer require symfony/uid', desc: 'Uuid::v7() ব্যবহারের জন্য'}
       - type: tips
         items:
-          - 'লোকাল ডেভেলপমেন্টে একই code-এ লোকাল adapter বসাও; production-এ S3 adapter। শুধু কনফিগ বদলাবে।'
+          - 'লোকাল ডেভেলপমেন্টে একই code-এ লোকাল adapter বসান; production-এ S3 adapter। শুধু কনফিগ বদলাবে।'
           - 'অস্থায়ী কাজের ফাইল (zip বানানো) লোকাল ডিস্কে চলতে পারে, যদি সেই request-এই শেষ হয়।'
       - type: refs
         items:
@@ -138,42 +138,105 @@ slides:
       q: 'আপলোড করা ছবির জন্য ডেটাবেসে ফাইল না রেখে শুধু key রাখা হলো কেন?'
       a: 'ফাইল থাকে object storage-এ যা সব সার্ভার দেখে, আর ডেটাবেসে ছোট key থাকে। তাতে ডেটাবেস হালকা থাকে, আর storage বদলালেও কোড ঠিক থাকে।'
 
+  - slug: flysystem-config
+    title: 'স্টোরেজের নামকে S3 (আর dev-এ ডিস্ক) বানান'
+    kind: howto
+    tldr: 'Flysystem কনফিগে একটা নামের পেছনে কী থাকবে ঠিক হয়: production-এ S3, dev-এ লোকাল ফোল্ডার। আপলোডের কোড বদলায় না।'
+    keywords: ['flysystem.yaml', 'S3Client', 'uploads.storage', 'autowire', 'local adapter', 'ফাইল স্টোরেজ কনফিগ']
+    blocks:
+      - type: text
+        body: |
+          আগের স্লাইডে `$uploadsStorage` ছিল শুধু একটা নাম। এই ফাইল ঠিক করে সেই নামের পেছনে কী আছে। এটা না থাকলে আপলোড চলে যায় সার্ভার A-র ডিস্কে, আর সার্ভার B-তে request গেলে ছবির জন্য 404 আসে। এর দাম: প্রতিটা ফাইল পড়া-লেখা এখন network call, তাই লোকাল ডিস্কের চেয়ে ধীর, আর S3-তে প্রতি গিগাবাইট ও প্রতি request-এ টাকা লাগে।
+      - type: code
+        lang: yaml
+        file: 'config/packages/flysystem.yaml'
+        variant: good
+        code: |
+          when@prod:
+              flysystem:
+                  storages:
+                      uploads.storage:
+                          adapter: 'aws'
+                          options:
+                              client: 'Aws\S3\S3Client'
+                              bucket: '%env(UPLOADS_BUCKET)%'
+
+          when@dev:
+              flysystem:
+                  storages:
+                      uploads.storage:
+                          adapter: 'local'
+                          options:
+                              directory: '%kernel.project_dir%/var/uploads'
+        marks:
+          - {line: 4, tip: 'storage-এর নাম `uploads.storage` autowire হয়ে `FilesystemOperator $uploadsStorage` আর্গুমেন্ট হয়ে যায়।'}
+          - {line: 6, tip: 'S3 adapter। সব সার্ভার একই bucket-এ লেখে ও পড়ে।'}
+          - {line: 14, tip: 'dev-এ একই নাম একটা ফোল্ডারে যায়, তাই কাজ করতে S3 অ্যাকাউন্ট লাগে না।'}
+      - type: code
+        lang: yaml
+        file: 'config/services.yaml'
+        variant: good
+        code: |
+          services:
+              Aws\S3\S3Client:
+                  arguments:
+                      - version: 'latest'
+                        region: '%env(AWS_REGION)%'
+                        # এখানে key নেই: AWS-এ সার্ভারের IAM role-ই তা জোগায়
+        marks:
+          - {line: 2, tip: 'Flysystem-এর `client:` অপশন এই service id-কেই খোঁজে। Symfony এটা একবার বানিয়ে ভাগ করে ব্যবহার করে।'}
+    aside:
+      - type: when
+        use:
+          - 'ব্যবহারকারীর আপলোড বা ডাউনলোড, যা সার্ভার মরলেও টিকে থাকতে হবে।'
+        avoid:
+          - 'যে অস্থায়ী ফাইল একটা request-এর মধ্যেই শেষ হয়। লোকাল ডিস্ক সেখানে দ্রুত।'
+      - type: tips
+        items:
+          - 'test-এ লোকাল adapter দিয়ে `when@test:` ব্লক যোগ করুন, যাতে test কখনো S3 ছোঁয় না।'
+    check:
+      q: 'flysystem.yaml না থাকলে, অথচ কোড `$uploadsStorage`-এ লিখলে কী ভাঙে?'
+      a: 'Symfony storage-টা autowire-ই করতে পারে না। তার বদলে লোকাল ফোল্ডার দিলে প্রতিটা সার্ভার নিজের ফাইল রাখে, আর অন্য সার্ভারে 404 আসে।'
+
   - slug: serverless-what
-    title: 'সার্ভারলেস: ট্যাক্সির মতো, যতটা চড়ো ততটা ভাড়া'
+    title: 'সার্ভারলেস: ট্যাক্সির মতো, যতটা চড়েন ততটা ভাড়া'
     kind: concept
-    tldr: 'Serverless-এ সার্ভার চালানোর ঝামেলা প্ল্যাটফর্মের, তুমি ব্যবহারের হিসাবে দাম দাও; বদলে cold start ও সীমাবদ্ধতা মানতে হয়।'
+    tldr: 'Serverless-এ সার্ভার চালানোর ঝামেলা প্ল্যাটফর্মের, আপনি ব্যবহারের হিসাবে দাম দেন; বদলে cold start ও সীমাবদ্ধতা মানতে হয়।'
     keywords: ['serverless', 'cold start', 'AWS Lambda', 'Bref', 'FaaS', 'pay per use', 'সার্ভারলেস']
     blocks:
       - type: metaphor
         icon: truck
         title: 'নিজের গাড়ি আর রাইড-শেয়ার'
         body: |
-          নিজের গাড়ি থাকলে চলুক বা না চলুক ড্রাইভার, তেল আর গ্যারেজের খরচ আছে। রাইড-শেয়ারে শুধু যতটুকু চড়ো ততটুকু ভাড়া, কিন্তু ডাকার পর গাড়ি আসতে সময় লাগে। Serverless-এ কোড চলে request এলে, আর না এলে খরচ প্রায় শূন্য। গাড়ি আসার সেই অপেক্ষাই cold start।
+          নিজের গাড়ি থাকলে চলুক বা না চলুক ড্রাইভার, তেল আর গ্যারেজের খরচ আছে। রাইড-শেয়ারে শুধু যতটুকু চড়েন ততটুকু ভাড়া, কিন্তু ডাকার পর গাড়ি আসতে সময় লাগে। Serverless-এ কোড চলে request এলে, আর না এলে খরচ প্রায় শূন্য। গাড়ি আসার সেই অপেক্ষাই cold start।
       - type: visual
         kind: sequence
         caption: 'দীর্ঘ বিরতির পর প্রথম request: cold start'
         actors:
           - {id: user, label: 'ব্যবহারকারী', icon: user, tip: 'যে request পাঠায়। প্রথম request-এ অপেক্ষা বেশি, পরেরগুলোয় কম।'}
           - {id: platform, label: 'প্ল্যাটফর্ম', icon: cloud, tip: 'Lambda বা Cloud Run-এর মতো সেবা, যে কোড চালানোর জায়গা বানায় আর বন্ধ করে।'}
-          - {id: fn, label: 'তোমার কোড', icon: code, tip: 'container-এ চলা তোমার ফাংশন বা Symfony অ্যাপ।'}
+          - {id: fn, label: 'আপনার কোড', icon: code, tip: 'container-এ চলা আপনার ফাংশন বা Symfony অ্যাপ।'}
         messages:
           - {from: user, to: platform, label: 'request আসে'}
           - {at: platform, note: 'চালু instance নেই', tone: warn}
-          - {from: platform, to: fn, label: 'নতুন instance চালু করো (cold start)', tone: warn, tip: 'কোড নামানো, runtime ও framework চালু করা: এই সময়টাই দেরি।'}
-          - {from: platform, to: fn, label: 'এবার request দাও'}
+          - {from: platform, to: fn, label: 'নতুন instance চালু করে (cold start)', tone: warn, tip: 'কোড নামানো, runtime ও framework চালু করা: এই সময়টাই দেরি।'}
+          - {from: platform, to: fn, label: 'এবার request পাঠিয়ে দেয়'}
           - {from: fn, to: user, label: 'উত্তর, একটু দেরিতে', dashed: true}
           - {from: user, to: fn, label: 'পরের request: instance চালু, দ্রুত', tone: good}
       - type: points
         title: 'মনে রাখার তিনটা সত্য'
         items:
-          - 'তোমার কোড অবশ্যই stateless, কারণ instance যেকোনো সময় বন্ধ বা নতুন বানানো হয়।'
+          - 'আপনার কোড অবশ্যই stateless, কারণ instance যেকোনো সময় বন্ধ বা নতুন বানানো হয়।'
           - 'প্রতিটা call-এর সময়সীমা আছে (যেমন Lambda-য় সর্বোচ্চ ১৫ মিনিট)।'
           - 'অনেক instance একসাথে চললে ডেটাবেসের connection সংখ্যাও একসাথে বাড়ে।'
+      - type: text
+        body: |
+          শেষ তথ্যটাই আগে কামড়ায়। একসাথে ১,০০০ দর্শক মানে প্রায় ১,০০০ instance, প্রত্যেকে নিজের ডেটাবেস connection খোলে। ছোট MySQL সার্ভার ডিফল্টে প্রায় ১৫০টা নেয়, বাকিরা ফেরত যায়। সমাধান connection pooler বা proxy (RDS Proxy, PgBouncer): instance-গুলো তার সঙ্গে কথা বলে, আর সে ধরুন ৫০টা আসল connection সবাইকে ধার দেয়। দাম হলো আরেকটা অংশ চালানো।
     aside:
       - type: tips
         items:
           - 'PHP/Symfony অ্যাপ AWS Lambda-য় Bref দিয়ে চালানো যায়। Cloud Run-এর মতো সেবায় container-ই চলে।'
-          - 'cold start কমাতে framework-এর cache আগেই গরম করে deploy করো, আর অকারণ বড় library বাদ দাও।'
+          - 'cold start কমাতে framework-এর cache আগেই গরম করে deploy করুন, আর অকারণ বড় library বাদ দিন।'
     check:
       q: 'Serverless-এ cold start মানে কী, আর কখন এটা বেশি ঝামেলা করে?'
       a: 'বিরতির পর প্রথম request-এ নতুন instance চালু করার অপেক্ষা। যেখানে প্রতিটা response খুব দ্রুত পেতেই হবে আর traffic কম-বেশি হয়, সেখানে এটা বেশি কষ্ট দেয়।'
@@ -206,15 +269,18 @@ slides:
               - 'ঘণ্টাব্যাপী চলা কাজ (সময়সীমা পেরোয়)'
               - 'WebSocket বা দীর্ঘ সংযোগ'
               - 'কঠোর latency, যেখানে cold start সহ্য হয় না'
+      - type: text
+        body: |
+          হিসাবে দেখুন: রাতে একবার চলা ২০ মিনিটের কাজ ৩০ দিনের মাসে প্রায় ১০ ঘণ্টা চলে, ৭২০ ঘণ্টার মধ্যে। আপনি ১০ ঘণ্টার দাম দেন, ৭২০-র নয়। সারাক্ষণ ব্যস্ত API চলে পুরো ৭২০ ঘণ্টা, তাই সাশ্রয় আর থাকে না, আর পুরো মাস ধরে প্রতি-ব্যবহারের বাড়তি দাম দিতে হয়।
       - type: points
         title: 'সিদ্ধান্তের আগে তিনটা প্রশ্ন'
         style: number
         items:
           - 'Traffic কি অনিয়মিত, না সারাক্ষণ স্থির? স্থির হলে সার্ভার সস্তা।'
           - 'কাজ কি সময়সীমার মধ্যে শেষ হয়, আর cold start-এর দেরি কি সহ্য হয়?'
-          - 'তোমার টিম কি প্ল্যাটফর্মের সীমা, log আর debug-এর নতুন পদ্ধতি শিখতে রাজি?'
+          - 'আপনার টিম কি প্ল্যাটফর্মের সীমা, log আর debug-এর নতুন পদ্ধতি শিখতে রাজি?'
       - type: quote
-        body: 'Serverless যন্ত্রপাতির ঝামেলা কমায়, কিন্তু সীমাবদ্ধতা বাড়ায়। বদলটা বুঝে নাও।'
+        body: 'Serverless যন্ত্রপাতির ঝামেলা কমায়, কিন্তু সীমাবদ্ধতা বাড়ায়। বদলটা বুঝে নিন।'
     aside:
       - type: when
         use:
@@ -251,6 +317,16 @@ flashcards:
     more: |
       লোকাল ডিস্কের ফাইল অন্য সার্ভার দেখতে পায় না, আর সার্ভার মরলে হারায়। Symfony-তে Flysystem একটা interface দেয়, যেখানে লোকাল আর S3 adapter বদলানো যায় শুধু কনফিগে।
     ref: stateless-symfony
+  - q: 'Flysystem-এ `$uploadsStorage` কীভাবে S3-র সঙ্গে জোড়া লাগে?'
+    a: 'flysystem.yaml-এর `uploads.storage` নামের storage-টা `FilesystemOperator $uploadsStorage` নামে autowire হয়। S3 না লোকাল, তা adapter ঠিক করে।'
+    more: |
+      একই নামে production-এ `adapter: aws` আর dev-এ `adapter: local` দিন, আপলোডের কোড বদলাতে হবে না। S3 client একটা service, কনফিগ তাকে নাম ধরে ডাকে। S3-র পড়া-লেখা network call, তাই লোকাল ডিস্কের চেয়ে ধীর।
+    ref: flysystem-config
+  - q: 'Serverless-এর পেছনে ডেটাবেস থাকলে একসাথে ১,০০০ ব্যবহারকারী কী ঘটায়?'
+    a: 'প্রায় ১,০০০ instance চালু হয়, প্রত্যেকে নিজের connection খোলে, আর ডেটাবেস সীমায় ঠেকে। সামনে pooler বা proxy বসালে সারে।'
+    more: |
+      ছোট MySQL সার্ভার ডিফল্টে প্রায় ১৫০ connection নেয়। RDS Proxy বা PgBouncer কয়েকটা আসল connection রেখে instance-দের ধার দেয়। এটা আরেকটা অংশ, যা চালাতে ও নজরে রাখতে হয়।
+    ref: serverless-what
   - q: 'Symfony-তে session Redis-এ পাঠাতে কী লাগে?'
     a: '`framework.session.handler_id`-তে Redis-এর DSN দিলেই চলে, যেমন `%env(REDIS_URL)%`।'
     more: |
@@ -259,7 +335,7 @@ flashcards:
   - q: 'Serverless কী?'
     a: 'যে মডেলে সার্ভার চালানোর ঝামেলা প্ল্যাটফর্মের, কোড চলে request এলে, আর দাম ব্যবহারের হিসাবে।'
     more: |
-      সার্ভার আছেই, শুধু তুমি সেটা চালাও না। request না এলে instance বন্ধ থাকে, আর এলে নতুন চালু হয়। কোড অবশ্যই stateless হতে হয়, কারণ instance যেকোনো সময় বন্ধ বা নতুন বানানো হয়।
+      সার্ভার আছেই, শুধু আপনি সেটা চালান না। request না এলে instance বন্ধ থাকে, আর এলে নতুন চালু হয়। কোড অবশ্যই stateless হতে হয়, কারণ instance যেকোনো সময় বন্ধ বা নতুন বানানো হয়।
     ref: serverless-what
   - q: 'Cold start কী?'
     a: 'বিরতির পর প্রথম request-এ নতুন instance চালু করার অপেক্ষা, যার ফলে সেই request ধীর হয়।'
@@ -277,7 +353,7 @@ quiz:
     options:
       - text: 'ব্যবহারকারীর আপলোড করা প্রোফাইল ছবি'
         correct: true
-        why: 'অন্য সার্ভারে request গেলে ছবি পাওয়া যাবে না। এটা object storage-এ রাখো।'
+        why: 'অন্য সার্ভারে request গেলে ছবি পাওয়া যাবে না। এটা object storage-এ রাখুন।'
       - text: 'PHP session ফাইল'
         correct: true
         why: 'অন্য সার্ভারে গেলে session চেনা যায় না, ব্যবহারকারী লগআউট হয়ে যায়।'
@@ -358,3 +434,16 @@ quiz:
         correct: false
         why: 'ডেটাবেস বরং আরও জরুরি, কারণ state সেখানেই যায়।'
     ref: state-goes-outside
+  - q: 'নাদিয়া Flysystem বসিয়েছে, কিন্তু production-এ `uploads.storage` রেখেছে `var/`-র নিচের একটা ফোল্ডারে। দুই সার্ভারে কী হবে?'
+    hint: 'প্রতিটা সার্ভার কোন ডিস্কে লিখছে?'
+    options:
+      - text: 'প্রতিটা সার্ভার নিজের ফাইল রাখে, তাই সার্ভার A-র ছবি সার্ভার B-তে 404'
+        correct: true
+        why: 'লোকাল adapter ওই সার্ভারের ডিস্কেই লেখে। production-এ S3 adapter লাগবে, যাতে সব সার্ভার একই bucket দেখে।'
+      - text: 'Flysystem ফাইল নিজে নিজে সব সার্ভারে কপি করে দেয়'
+        correct: false
+        why: 'Flysystem শুধু কনফিগ করা adapter-এর সঙ্গে কথা বলে, সার্ভারের মধ্যে ফাইল ছড়ায় না।'
+      - text: 'কিছু হবে না, কারণ ডেটাবেসে তো শুধু key থাকে'
+        correct: false
+        why: 'key শুধু নাম। ফাইলের বাইটগুলো তবু একটা ডিস্কেই থাকে, অন্য সার্ভার সেটা খুঁজে পায় না।'
+    ref: flysystem-config

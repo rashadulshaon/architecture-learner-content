@@ -84,6 +84,7 @@ slides:
           - {term: 'C (consistency)', meaning: 'Every read sees the latest write, as if there were just one copy of the data. Not the same as the C in ACID (obeying the rules).'}
           - {term: 'A (availability)', meaning: 'Every live node answers every request, instead of an error or waiting forever.'}
           - {term: 'P (partition)', meaning: 'Messages between nodes getting lost or delayed.'}
+          - {term: 'GC pause', meaning: 'A program freezing for a moment while it cleans up its memory. To the others it looks dead.'}
       - type: remember
         body: 'With no partition, you have both C and A. When a partition comes, one must go.'
     check:
@@ -122,6 +123,11 @@ slides:
           - cells: ['PostgreSQL + reading from an async replica', 'A on reads', 'L on reads']
             tip: 'Fast reads, but replication lag means you may see stale data.'
     aside:
+      - type: terms
+        items:
+          - {term: 'Quorum', meaning: 'A majority of the copies, like 2 of 3. A write counts once a majority has it.'}
+          - {term: 'AZ', meaning: 'Availability zone: a separate data center in the same city, with its own power and network.'}
+          - {term: 'Sync replica', meaning: 'A copy that must confirm every write before the commit returns. Async copies catch up later.'}
       - type: remember
         body: 'PACELC = If Partition then A or C; Else Latency or Consistency.'
       - type: refs
@@ -164,7 +170,8 @@ slides:
               #[MapRequestPayload] WithdrawRequest $req,
           ): JsonResponse {
               try {
-                  $this->ledger->withdraw($id, $req->amountCents);   // on the primary, with a majority
+                  // on the primary, with a majority; the key makes a retry safe
+                  $this->ledger->withdraw($id, $req->amountCents, $req->idempotencyKey);
               } catch (ConnectionException) {
                   // CP: if we can't be sure, we don't hand out money
                   return $this->json(['error' => 'try_later'], 503, ['Retry-After' => '5']);
@@ -173,8 +180,8 @@ slides:
               return $this->json(['ok' => true]);
           }
         marks:
-          - {line: 7, tip: 'A money write always goes to the primary, never to some stale copy.'}
-          - {line: 10, tip: 'If it can''t be sure, it returns 503 with Retry-After. The user is told to try later, and no wrong figure is produced.'}
+          - {line: 8, tip: 'A money write always goes to the primary, never to some stale copy. The idempotency key means a retry after a lost reply can''t pay out twice.'}
+          - {line: 11, tip: 'If it can''t be sure, it returns 503 with Retry-After. The user is told to try later, and no wrong figure is produced.'}
       - type: code
         lang: php
         file: 'src/Controller/LikesController.php (AP)'
@@ -191,7 +198,7 @@ slides:
               return $this->json(['likes' => $count])->setPublic()->setMaxAge(30);
           }
         marks:
-          - {line: 5, tip: 'A number up to 30 seconds old, on purpose. In return you always answer fast, even when the database is split.'}
+          - {line: 5, tip: 'A number up to 30 seconds old, on purpose. In return the nearby replica keeps answering even when the link to the primary is cut.'}
           - {line: 9, tip: 'Browsers and the CDN can keep it for 30 seconds too, so the database is barely touched.'}
     aside:
       - type: when
@@ -201,6 +208,14 @@ slides:
         avoid:
           - 'AP for balances or seats'
           - 'CP for feeds and likes'
+      - type: pitfalls
+        items:
+          - 'CP costs availability: during a split users see errors. Show a clear message, and make the retry safe with an idempotency key.'
+      - type: terms
+        items:
+          - {term: '503', meaning: 'The HTTP status for "service unavailable right now, try again".'}
+          - {term: 'Retry-After', meaning: 'A response header telling the client how many seconds to wait before trying again.'}
+          - {term: 'Idempotency key', meaning: 'A unique id sent with a request, so a repeat of it is recognised and not done twice.'}
       - type: refs
         items:
           - {to: 'resilience/graceful-degradation', label: 'What to show when a dependency breaks'}
@@ -258,11 +273,16 @@ slides:
                   $qty[$line->sku] = max($qty[$line->sku] ?? 0, $line->qty);
               }
 
-              return Cart::fromQuantities($qty);        // nothing is lost
+              // a tombstone: a sku removed on either side stays removed
+              foreach ([...$left->removedSkus(), ...$right->removedSkus()] as $sku) {
+                  unset($qty[$sku]);
+              }
+
+              return Cart::fromQuantities($qty);        // nothing is lost by accident
           }
         marks:
           - {line: 5, tip: 'For the same sku on both sides, keep the larger quantity. The rule changes from feature to feature.'}
-          - {line: 8, tip: 'With this rule, deleted items can come back (they did in Dynamo''s cart too). To delete, you need to keep a separate "deleted" marker.'}
+          - {line: 10, tip: 'Without these tombstones a deleted item comes back, as it did in Dynamo''s cart. The price: remove beats add, so a re-added item needs a new line id.'}
       - type: quote
         body: 'AP means "we''ll reconcile later". With no reconciliation rule, it isn''t AP, it''s silently losing data.'
     aside:
@@ -270,6 +290,11 @@ slides:
         items:
           - 'Server clocks aren''t exact either; use a clock for LWW and even a small skew loses changes.'
           - 'After picking AP, if you bolt on outside actions like refunds or emails, those can happen twice too, so keep them idempotent.'
+      - type: terms
+        items:
+          - {term: 'LWW', meaning: 'Last write wins: when two copies disagree, keep the one with the newest timestamp.'}
+          - {term: 'CRDT', meaning: 'A data type built so that copies changed separately always merge to the same result.'}
+          - {term: 'Tombstone', meaning: 'A marker that says "this was deleted", so a merge doesn''t bring the item back.'}
       - type: refs
         items:
           - {to: 'time/clocks-lie', label: 'Why you can''t order events by clock'}
@@ -309,10 +334,20 @@ flashcards:
     more: |
       In the same app, withdrawing a balance is CP (503 with Retry-After if unsure), and a like count is AP (a 30-second stale cache). The one question: "Which is more harmful, a wrong answer or no answer?"
     ref: choose-per-feature
+  - q: 'Why does a CP withdraw endpoint need an idempotency key?'
+    a: 'On a connection error you can''t tell if the withdrawal happened. The client retries, and without a key the money could be paid out twice.'
+    more: |
+      The 503 with Retry-After tells the client to try again, which is exactly when a double payout can sneak in. The key lets the ledger recognise the repeat and return the first result instead of paying again.
+    ref: choose-per-feature
   - q: 'Why is "last write wins" (LWW) dangerous in AP?'
     a: 'When both sides change something at once, one change is lost silently, and the side with the clock further ahead wins. Clocks aren''t exact.'
     more: |
       The fix is a per-feature merge rule (for a cart, combine the items from both sides) or a data structure like a CRDT, where changes merge naturally. AP means "we'll reconcile later", so the rule has to be settled in advance.
+    ref: ap-conflicts
+  - q: 'What is a tombstone in a merge rule, and why use one?'
+    a: 'A marker that an item was deleted. Without it, merging a side that still has the item brings the deleted item back.'
+    more: |
+      A merge that only takes the larger quantity per product can only add. The tombstone lets a delete survive the merge. The price: remove beats add, so a re-added product needs a new line id.
     ref: ap-conflicts
 
 quiz:
@@ -373,6 +408,22 @@ quiz:
       - text: 'Nothing is wrong, having a cache is always good'
         correct: false
         why: 'A cache is great for an AP feature like a like count, not for money decisions.'
+    ref: choose-per-feature
+  - q: 'A withdrawal call returns 503 after a connection error. The app retries, and later the account shows two payouts. What was missing?'
+    hint: 'When the connection broke, did the first withdrawal happen or not?'
+    options:
+      - text: 'An idempotency key, so the ledger recognises the retry and returns the first result'
+        correct: true
+        why: 'A lost reply doesn''t mean the write failed. With the key, a repeat is recognised and not applied again.'
+      - text: 'A longer Retry-After value'
+        correct: false
+        why: 'Waiting longer doesn''t tell the ledger the retry is the same request. A late retry can still double-pay.'
+      - text: 'Reading the balance from a replica before retrying'
+        correct: false
+        why: 'A replica may not have the first withdrawal yet, so it can say "not paid" when it was.'
+      - text: 'Never retry, and show an error'
+        correct: false
+        why: 'Users would be stuck guessing whether the money moved. A safe retry is the better answer.'
     ref: choose-per-feature
   - q: 'The network is completely healthy, with no partition. Yet the database insists every write needs agreement from three regions, and writes have become slow. Which part of PACELC is this?'
     hint: 'What choice does the "Else" part talk about?'

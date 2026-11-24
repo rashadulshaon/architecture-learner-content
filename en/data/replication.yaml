@@ -15,7 +15,7 @@ slides:
         caption: 'One leader, two followers: writes in one place, reads spread out'
         nodes:
           - {id: app, label: 'Symfony app', icon: api, col: 0, row: 1, tip: 'Both write and read requests come from here.'}
-          - {id: leader, label: 'leader', sub: 'primary, takes writes', icon: db, tone: accent, col: 2, row: 0, tip: 'The only node that accepts writes. It records every change in the WAL and sends it to the followers.'}
+          - {id: leader, label: 'leader', sub: 'primary, takes writes', icon: db, tone: accent, col: 2, row: 0, tip: 'The only node that accepts writes. It records every change in its WAL (write-ahead log, a diary of all changes) and sends it to the followers.'}
           - {id: f1, label: 'follower 1', sub: 'read only', icon: db, col: 4, row: 0, tip: 'A copy of the leader. It serves read requests but takes no writes.'}
           - {id: f2, label: 'follower 2', sub: 'read only', icon: db, col: 4, row: 2, tip: 'Another copy. If the leader dies, this one can also become the new leader.'}
         edges:
@@ -32,7 +32,7 @@ slides:
           - 'Backups and reports: heavy queries run on a follower, which spares the leader.'
     aside:
       - type: problem
-        body: 'Replication does not increase write capacity: writes still go to a single leader. When the write load grows, you need sharding.'
+        body: 'Replication does not increase write capacity: writes still go to a single leader. When the write load grows, you need sharding. A follower is also not a backup: a wrong `DELETE` on the leader is copied to every follower within moments.'
       - type: refs
         items:
           - {to: 'data/sharding', label: 'Splitting the write load'}
@@ -63,14 +63,14 @@ slides:
             items:
               - 'The leader commits as soon as it has written to its own disk'
               - 'Writes are fast and a slow follower does not hold them up'
-              - 'If the leader crashes, the last few commits may be lost'
+              - 'If the leader crashes, the commits of the last moments (a fraction of a second to a few seconds) may be lost'
           - title: 'Sync'
             tone: warn
             icon: lock
             tip: 'Worth considering for data like money. Safer, but every write is slower.'
             items:
               - 'The leader waits for at least one follower to confirm'
-              - 'Every write gains one network round trip'
+              - 'Every write gains one network round trip: about 1 ms in the same data centre, 50 ms or more to another region'
               - 'If all the sync followers die, writes may stop too'
       - type: code
         lang: ini
@@ -131,6 +131,7 @@ slides:
           - {term: 'Read-your-own-writes', meaning: 'The guarantee that you always see your own writes in later reads.'}
       - type: refs
         items:
+          - {to: doctrine-primary-replica, label: 'The fix, in Doctrine'}
           - {to: 'data/consistency-models', label: 'Who sees what, and when'}
     check:
       q: 'The write succeeded, yet reading straight after shows no new data. Did the database make a mistake?'
@@ -184,7 +185,7 @@ slides:
               }
           }
         marks:
-          - {line: 14, tip: 'For about 5 seconds after a write, this user reads from the primary, giving the replica time to get past its lag.'}
+          - {line: 15, tip: 'For about 5 seconds after a write, this user reads from the primary, giving the replica time to get past its lag.'}
       - type: text
         body: |
           After a write, add just one line to the controller: `$request->getSession()->set('primary_until', time() + 5);`. Then that user's reads for the next 5 seconds come from the primary, and by then the replica has usually caught up.
@@ -192,6 +193,8 @@ slides:
       - type: tips
         items:
           - 'Not every read belongs on a replica: money figures, the first page after login and "my" data are safer on the primary.'
+          - 'The 5 seconds is a guess that must beat your real lag. Measure the lag; if it spikes above 5 seconds, widen the window. It costs you some read offloading for those users.'
+          - 'Once a request writes or opens a transaction, the `replicas` wrapper (DBAL''s PrimaryReadReplicaConnection) keeps that request on the primary, so a read after your own write is safe within one request.'
           - 'For something more elaborate, note the leader''s WAL position (LSN) at write time and check whether the follower has reached it, though that takes extra work.'
       - type: refs
         items:
@@ -271,6 +274,16 @@ flashcards:
     more: |
       Two leaders means two different truths, which are very hard and sometimes impossible to merge later. So in a failover you first stop the old one and only then promote the new leader. Patroni or a managed service does this properly.
     ref: failover-split-brain
+  - q: 'Is a follower a backup?'
+    a: 'No. Every change reaches the followers, including a wrong DELETE or DROP. A backup keeps older states you can go back to.'
+    more: |
+      Replication protects you from a dead machine, not from a human mistake or a bad deploy, because the mistake is copied within moments. You still need real backups, with point-in-time recovery if the data matters.
+    ref: one-copy-is-risky
+  - q: 'How do you stop a user seeing stale data on the request right after a write?'
+    a: 'Remember the write (for example in the session) and send that user''s reads to the primary for a few seconds, longer than the usual lag.'
+    more: |
+      Doctrine switches to the primary only inside the request that wrote. A small listener that calls ensureConnectedToPrimary() while `primary_until` is in the future carries the guarantee into the next requests. The price is a little less read offloading; the window must be longer than your real lag.
+    ref: doctrine-primary-replica
 
 quiz:
   - q: 'The code below reads right after a write. With a replica in place, what problem can occur, and when?'
@@ -362,3 +375,19 @@ quiz:
         correct: false
         why: 'The problem is in the writes: two leaders accept two different sets of changes.'
     ref: failover-split-brain
+  - q: 'After a write, Rahim''s redirected page often misses his new comment. Which fix actually removes this on the next request?'
+    hint: 'Doctrine only sticks to the primary inside the request that wrote.'
+    options:
+      - text: 'Remember the write in the session and read from the primary for a few seconds'
+        correct: true
+        why: 'It carries the primary connection into the next request, long enough for the replica to catch up. The price is slightly less read offloading.'
+      - text: 'Call flush() a second time before redirecting'
+        correct: false
+        why: 'flush() writes to the primary only; it does nothing to speed up the replica.'
+      - text: 'Add more replicas'
+        correct: false
+        why: 'More followers means more copies lagging; it does not fix reading a copy that is behind.'
+      - text: 'Switch the database to sync replication for every table'
+        correct: false
+        why: 'It would cut the lag, but it slows every write for a problem you can solve for one user at no such cost.'
+    ref: doctrine-primary-replica

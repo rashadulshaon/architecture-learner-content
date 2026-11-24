@@ -12,7 +12,7 @@ slides:
           Every night the shopkeeper photocopies the credit ledger (the book where he writes down who owes what) and keeps the copy in the shop's own drawer. One day the shop catches fire. The original ledger burns, and so does the photocopy, because both were in the same place. And he has no idea where he will trade tomorrow. If your database and backup sit in one region, you are in exactly the same position.
       - type: visual
         kind: flow
-        caption: 'Everything in one region: no way back after a disaster'
+        caption: 'Everything in one region: no way back after a disaster, unless a copy lives elsewhere'
         nodes:
           - {id: users, label: 'Users', icon: users, col: 0, row: 1, tip: 'All they know is that the site won''t open. They have no need to know why.'}
           - {id: appa, label: 'Region A', sub: 'app + database', icon: server, tone: bad, col: 2, row: 0, tip: 'A data centre in Dhaka, or one cloud region. Everything runs here.'}
@@ -23,8 +23,9 @@ slides:
           - {from: appa, to: backup, label: 'Every night the backup goes to storage in the same region', tone: warn}
           - {from: users, to: appa, label: 'Region A is down: the app and the backup are both unreachable, and there is no response for 6 hours', tone: bad, dashed: true}
           - {from: users, to: regionb, label: 'No way back: nothing is set up in Region B', tone: muted, dashed: true}
+          - {from: backup, to: regionb, label: 'The fix: also copy the backup to Region B every night, so a way back exists', tone: good}
       - type: quote
-        body: 'If the place a backup depends on goes, the backup goes with it.'
+        body: 'If the place a backup depends on goes, the backup goes with it. Keep a copy in another region and another account.'
     aside:
       - type: story
         title: 'A fire in the data centre'
@@ -75,6 +76,8 @@ slides:
         items:
           - {term: 'RPO', meaning: 'The most data, measured in time, that the business will accept losing.'}
           - {term: 'RTO', meaning: 'The longest the business will tolerate between a disaster and being back up.'}
+          - {term: 'Replication', meaning: 'A second copy of the database that is kept up to date continuously, so it is only seconds behind.'}
+          - {term: 'Failover', meaning: 'Switching users from the broken system to the standby one.'}
       - type: refs
         items:
           - {to: 'recovery/backups-restore', label: 'Backups and restore'}
@@ -85,7 +88,7 @@ slides:
   - slug: multi-region-patterns
     title: 'Two branches: active-passive vs active-active'
     kind: compare
-    tldr: 'Active-passive: the second region stands ready, and traffic moves there in a disaster. Active-active: both regions serve traffic, but reconciling data written in two places is the truly hard part.'
+    tldr: 'Active-passive: the second region stands ready, and traffic moves there in a disaster. Active-active: both regions serve traffic, but reconciling data written in two places is the truly hard part. Cheaper options come next.'
     keywords: ['active-passive', 'active-active', 'multi-region', 'replication lag', 'failover', 'conflict']
     blocks:
       - type: text
@@ -129,6 +132,11 @@ slides:
       - type: when
         use: ['Active-passive: most businesses, where an RTO of minutes to hours is tolerable', 'Active-active: a global user base, or when you want an RTO near zero']
         avoid: ['Active-active: a small team on a limited budget, when active-passive is enough']
+      - type: terms
+        items:
+          - {term: 'Replication lag', meaning: 'How far the copy trails the main database. That much data is lost if the main one dies right now.'}
+          - {term: 'DNS TTL', meaning: 'How many seconds the world may remember a site''s address. A long TTL slows the move to another region.'}
+          - {term: 'Conflict', meaning: 'Two regions saved different values for the same thing, and one must win.'}
       - type: refs
         items:
           - {to: 'data/replication', label: 'Replication and lag'}
@@ -136,6 +144,71 @@ slides:
     check:
       q: 'In active-active, what happens when the same user''s address is changed two different ways in two regions at once, and why is that not a problem in active-passive?'
       a: 'The two regions write two different values and create a conflict, which needs a rule to reconcile. In active-passive, writes happen in only one region, so there is no conflict at all.'
+
+  - slug: cheaper-dr-options
+    title: 'The cheaper rungs: backup-and-restore and pilot light'
+    kind: compare
+    tldr: 'Between nothing and a standby region sit two cheaper options: backup-and-restore (copies only, rebuilt after a disaster) and pilot light (only the database kept running). Pick the cheapest rung that meets your RPO and RTO.'
+    keywords: ['backup and restore', 'pilot light', 'warm standby', 'DR strategies', 'cost', 'RTO']
+    blocks:
+      - type: text
+        body: |
+          Back to the shop. **Backup and restore**: a photocopy of the ledger sits in a locker in Chattogram. After a fire you rent a new shop, copy the ledger over and restock the shelves, which takes a day. **Pilot light**: a small room in Chattogram where one assistant copies Dhaka's ledger all day. The shelves are empty and the lights are off, but the ledger is current, so reopening takes an hour or two.
+      - type: visual
+        kind: table
+        caption: 'The four options, from cheapest to dearest'
+        headers: ['', 'Runs in Region B', 'RPO', 'RTO', 'Cost']
+        rows:
+          - cells: ['Backup and restore', 'Nothing: copies in storage', 'Hours (age of the backup)', 'Hours to a day', 'Lowest']
+            tip: 'You pay only for storage and the transfer between regions. Everything else is built after the disaster.'
+          - cells: ['Pilot light', 'Database replica only, app switched off', 'Seconds to minutes (lag)', '30 minutes to 2 hours', 'Low']
+            tip: 'The data is always current. The wait is for starting the app servers.'
+          - cells: ['Warm standby', 'A small full copy, already running', 'Seconds to minutes (lag)', 'Minutes', 'Medium']
+            tip: 'This is the active-passive pattern of the last slide. The app is already up, so recovery is a traffic move plus a scale-up.'
+          - cells: ['Active-active', 'A full copy, serving users', 'Near zero', 'Near zero', 'Highest']
+            tip: 'Both regions serve users all the time, and conflicts must be reconciled.'
+      - type: visual
+        kind: bars
+        caption: 'Rough extra monthly cost, as a share of Region A''s bill (an illustration; your numbers will differ)'
+        items:
+          - {label: 'Backup and restore', value: 2, display: '~2%', tone: good, tip: 'Storage for the copies, plus the transfer between regions.'}
+          - {label: 'Pilot light', value: 12, display: '~10-15%', tone: good, tip: 'A database replica running all the time, plus its network traffic.'}
+          - {label: 'Warm standby', value: 40, display: '~40%', tone: warn, tip: 'Everything running, at a fraction of full size.'}
+          - {label: 'Active-active', value: 100, display: '~100% or more', tone: bad, tip: 'A second full-size copy, plus the engineering work of resolving conflicts.'}
+      - type: code
+        lang: bash
+        file: 'runbooks/pilot-light-failover.sh'
+        variant: good
+        code: |
+          # Pilot light: only the database replica runs in Region B. Start the rest.
+          # 1. The replica becomes the primary
+          psql -h replica.region-b -c "SELECT pg_promote();"
+
+          # 2. Scale the app up from 0 to full size
+          kubectl --context region-b scale deployment/app --replicas=6
+          kubectl --context region-b scale deployment/worker --replicas=2
+
+          # 3. Wait until it is ready (a few minutes), then move the traffic
+          kubectl --context region-b rollout status deployment/app --timeout=600s
+        marks:
+          - {line: 6, tip: 'This is what the pilot light pays for in RTO: starting servers takes minutes. A warm standby skips this step because the app already runs.'}
+      - type: quote
+        body: 'Buy only the recovery speed the business needs: the cheapest rung that meets RPO and RTO.'
+    aside:
+      - type: when
+        use: ['Backup and restore: reports, internal tools, anything that can be down for a day', 'Pilot light: orders and carts, where an hour or two down is tolerable']
+        avoid: ['Backup and restore on a big database: 200 GB at 50 GB an hour is 4 hours of restore before the app starts', 'Pilot light when you need minutes, not hours: starting servers takes time']
+      - type: tips
+        items:
+          - 'Switched-off parts rot. Deploy every release to Region B too, even with the app at zero copies, and test the scale-up in a game day.'
+          - 'Copies sent to Region B should live in a separate account too, or one mistake deletes both.'
+      - type: terms
+        items:
+          - {term: 'Pilot light', meaning: 'Like the small flame on a gas stove: only the essential part (the data) stays on, and the rest is lit when needed.'}
+          - {term: 'Warm standby', meaning: 'A smaller but complete copy of the system, already running and ready to be scaled up.'}
+    check:
+      q: 'A 200 GB database is restored from backup at 50 GB an hour. How long does the restore alone take, and what does that say about backup-and-restore for a 2-hour RTO?'
+      a: '4 hours, before the app even starts. It misses a 2-hour RTO, so you need a replica already running in the other region (pilot light or better).'
 
   - slug: game-day-drill
     title: 'Game day: break things on purpose to test'
@@ -171,13 +244,13 @@ slides:
           # 3. Confirm: if false, it is no longer a replica and can take writes
           psql -h replica.region-b -c "SELECT pg_is_in_recovery();"
 
-          # 4. Point the app at the new primary, then warm up workers and cache
-          symfony console secrets:set DATABASE_URL --env=prod
-          php bin/console messenger:stop-workers
+          # 4. Region B's app already points at replica.region-b, so no config changes.
+          # Restart it so it opens fresh connections and the workers start clean
+          kubectl --context region-b rollout restart deployment/app deployment/worker
         marks:
           - {line: 2, tip: 'In a real failure, when the primary dies this lag is the limit on lost data. Measure it first during the drill and check it is within the RPO target.'}
           - {line: 6, tip: 'pg_promote() is available from PostgreSQL 12. The replica opens up for writes. Never bring the old primary back up, or you get a split brain.'}
-          - {line: 12, tip: 'The app''s DATABASE_URL has to be moved to the new host. Measure how long this step takes in the drill and write it into the runbook.'}
+          - {line: 13, tip: 'Region B''s app was configured with the replica''s address from the start, so there is no URL to change in the middle of a disaster. Time this step in the drill and write it into the runbook.'}
       - type: quote
         body: 'A recovery that has never been run is a recovery you can''t assume will work.'
     aside:
@@ -236,6 +309,7 @@ slides:
         items:
           - 'If the backup sits in one account and is deleted by mistake or by a hack, everything is lost. Keep backups in a separate account and make them immutable (undeletable).'
           - 'If the DR knowledge lives in one person''s head, everything stops when they go on leave. Write it in the runbook.'
+          - 'The price of a tested plan: a drill takes a few people a day or two each quarter, and secrets in two regions are two places to protect. Still far cheaper than learning it on disaster day.'
       - type: remember
         body: 'Backup somewhere else, restore tested, secrets alongside, DNS fast, runbook fresh.'
       - type: refs
@@ -266,6 +340,16 @@ flashcards:
     more: |
       Active-passive is simple and cheap, but failover takes minutes or hours. Active-active gives a near-zero RTO, but brings data conflicts and much more complexity and cost. For most businesses active-passive is enough.
     ref: multi-region-patterns
+  - q: 'What is the pilot light DR option?'
+    a: 'Only the database replica runs in the second region, and the app is switched off. In a disaster you start the app there. Cheaper than warm standby, slower to recover.'
+    more: |
+      Like a gas stove's small flame: the data stays current, the rest starts on demand. RPO is the replication lag, and RTO is the time to promote the replica and start the app, often 30 minutes to 2 hours. Deploy each release to Region B as well, or the switched-off part rots.
+    ref: cheaper-dr-options
+  - q: 'What is backup-and-restore as a DR option, and what is its catch?'
+    a: 'Copies of the data sit in another region, and everything is rebuilt after a disaster. Cheapest, but RPO and RTO are hours: restoring a big database alone takes hours.'
+    more: |
+      A 200 GB database restored at 50 GB an hour takes 4 hours before the app even starts. Fine for reports and internal tools that can be down for a day. Not fine when the business needs the site back in an hour or two.
+    ref: cheaper-dr-options
   - q: 'How do you measure the real RPO in active-passive?'
     a: 'By the replication lag: how far the replica trails the main database. That much data is lost in a disaster.'
     more: |
@@ -368,3 +452,20 @@ quiz:
         correct: false
         why: 'The gap is in the system, not in a person. Punishment makes people hide problems in the next drill.'
     ref: game-day-drill
+  - q: 'Nadia''s invoicing app has a 200 GB database. The business accepts losing about 15 minutes of data and being down about 3 hours, and the budget is tight. Which option fits?'
+    hint: 'How long does restoring 200 GB take, and what does the RPO need?'
+    options:
+      - text: 'Pilot light: a database replica running in the other region, the app started in a disaster'
+        correct: true
+        why: 'Replication keeps the data minutes behind, and starting the app fits within 3 hours. It costs a fraction of a standby region.'
+      - text: 'Backup and restore with a nightly backup'
+        correct: false
+        why: 'A nightly backup can lose a day of data, and restoring 200 GB at 50 GB an hour takes 4 hours alone. It misses both targets.'
+      - text: 'Active-active, because it is the safest'
+        correct: false
+        why: 'It would meet the targets, but at the highest cost and complexity. A rung that is cheaper meets them too.'
+      - text: 'A second copy of the backup in the same region'
+        correct: false
+        why: 'If the region goes down, both copies go. Only a different region protects against a regional disaster.'
+    ref: cheaper-dr-options
+

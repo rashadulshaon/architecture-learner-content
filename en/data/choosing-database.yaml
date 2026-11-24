@@ -57,20 +57,20 @@ slides:
           A hospital does not keep all its information in one kind of notebook. Admissions and bills go in a ruled register, each patient's papers go in their own file, and a chart at the bedside gets the temperature written in every hour. One question decides the kind of notebook: **how will this information be looked up later?** The six database families split along exactly the same line.
       - type: visual
         kind: table
-        caption: 'The six families: which hospital notebook each one is, and what it does best'
-        headers: ['Kind', 'In the hospital', 'Best at', 'Examples']
+        caption: 'The six families: what the data looks like, what each is best at, and what you give up'
+        headers: ['Kind (hospital notebook)', 'Data looks like', 'Best at', 'You give up', 'Examples']
         rows:
-          - cells: ['Relational', 'Admissions and billing register', 'Linked data, joins, transactions', 'PostgreSQL, MySQL']
-            tip: 'Tables, rows and columns, linked by IDs. Even questions nobody planned for can be asked in SQL, which makes this the most versatile family.'
-          - cells: ['Document', 'Each patient''s own file', 'Data that is always read together', 'MongoDB, Firestore']
-            tip: 'One JSON document holds everything about one thing. Documents can differ in shape, but joins between documents are weak.'
-          - cells: ['Key-value', 'Hand over a token, get a report', 'Very fast reads and writes by key', 'Redis, Memcached']
+          - cells: ['Relational (billing register)', 'Rows in linked tables', 'Joins, transactions, any new question', 'Easy spreading of writes over many servers', 'PostgreSQL, MySQL']
+            tip: 'Tables, rows and columns, linked by IDs. Even questions nobody planned for can be asked in SQL, which makes this the most versatile family. The price: one main server takes all the writes, so growth past it needs real work.'
+          - cells: ['Document (patient file)', 'One JSON per thing', 'Data read and written as one whole', 'Joins across documents: you build them in code', 'MongoDB, Firestore']
+            tip: 'One JSON document holds everything about one thing. Documents can differ in shape, but joins and multi-document transactions are weak.'
+          - cells: ['Key-value (token counter)', 'A key and one opaque value', 'Very fast get and set by key', 'Searching or filtering by what is inside', 'Redis, Memcached']
             tip: 'You get the value only if you know the key. You cannot say "give me all the red reports". Ideal for caches, sessions and counters.'
-          - cells: ['Wide-column', 'Nationwide vaccination ledger', 'Huge write load, known queries', 'Cassandra, ScyllaDB']
+          - cells: ['Wide-column (national ledger)', 'Rows grouped by a partition key', 'Huge write load, known queries', 'Joins and questions you did not plan', 'Cassandra, ScyllaDB']
             tip: 'Data is spread across many servers by partition key. Writes are very fast, but you decide the queries first and shape the tables around them. There are no joins.'
-          - cells: ['Graph', 'Who came into contact with whom', 'Walking along relationships', 'Neo4j']
+          - cells: ['Graph (contact tracing)', 'Nodes joined by edges', 'Walking many steps of relationships', 'Cheap totals and reports over everything', 'Neo4j']
             tip: 'Built from nodes and edges. A "friend of a friend of a friend" question becomes a deep join in SQL; here it is the natural operation.'
-          - cells: ['Time-series', 'Temperature chart by the bed', 'Measurements arriving over time', 'TimescaleDB, InfluxDB']
+          - cells: ['Time-series (bedside chart)', 'A timestamp plus a measurement', 'Questions over time windows', 'Editing old rows; general-purpose use', 'TimescaleDB, InfluxDB']
             tip: 'Each row is a timestamp plus a measurement. Data is only appended, never edited, and queries ask about time windows, like "the average over the last hour".'
     aside:
       - type: remember
@@ -243,6 +243,57 @@ slides:
       q: 'If you add a separate search engine, where does the truth about orders live, and what is the search index?'
       a: 'The truth stays in PostgreSQL. The search index is a copy (derived data): if it breaks, delete it and rebuild it from the main database.'
 
+  - slug: one-order-six-shapes
+    title: 'The same order in six shapes'
+    kind: concept
+    tldr: 'One order looks different in each database family; the shape decides which questions are one line and which are impossible.'
+    keywords: ['data model', 'data shape', 'document vs relational', 'key-value', 'wide-column', 'graph', 'time-series']
+    blocks:
+      - type: text
+        body: |
+          Take one order, number 1001: Nadia bought 2 of product P55 for 1250 taka. Each family writes it down in its own shape, and the shape decides which questions are easy and which are painful. Read the "easy" and "gives up" lines under each shape.
+      - type: code
+        lang: text
+        file: 'order 1001 in each family'
+        code: |
+          RELATIONAL: rows in linked tables
+            orders       id=1001  customer_id=7  total=1250
+            order_items  order_id=1001  product_id=55  qty=2
+            easy: sales per district (join + GROUP BY)
+            gives up: easy write scaling over many servers
+          DOCUMENT: one JSON for the whole order
+            orders/1001 = {"customer": "Nadia", "items": [{"sku": "P55", "qty": 2}], "total": 1250}
+            easy: show the whole order in one read
+            gives up: join with today's product prices
+          KEY-VALUE: one key, one opaque value
+            order:1001 = <bytes>
+            easy: GET order:1001
+            gives up: "all orders of customer 7"
+          WIDE-COLUMN: rows grouped by partition key
+            orders_by_customer  PARTITION KEY (customer_id)  SORTED BY created_at
+              (7, 2025-01-05, 1001, 1250)
+            easy: customer 7's latest orders
+            gives up: "orders by district" (needs a second table, a copy)
+          GRAPH: nodes and edges
+            (Nadia)-[:PLACED]->(Order 1001)-[:CONTAINS]->(Product P55)
+            easy: "who bought what people like Nadia bought"
+            gives up: a cheap sum of all totals
+          TIME-SERIES: a timestamp and a measurement
+            cpu_load  time=10:00:01  server=web1  value=0.42
+            easy: average of web1 over the last hour
+            gives up: editing a row from last week
+        marks:
+          - {line: 3, tip: 'The customer and the items live in separate tables; the database joins them when you ask. That joining is what makes any later question possible.'}
+          - {line: 7, tip: 'Everything about the order sits in one place, so one read returns it all. But "today''s price of P55" lives elsewhere, and you must fetch and combine it in your code.'}
+          - {line: 14, tip: 'The only way in is the key. If you did not plan a key for "orders of customer 7", the only option is scanning everything.'}
+    aside:
+      - type: remember
+        body: 'Look at the shape first: every family is easy at the questions its shape was built for, and painful at the rest.'
+    check:
+      q: 'Your app must answer "all orders placed in Dhaka this month". Which of the six shapes above makes that a one-line question?'
+      a: 'The relational one: one join and a GROUP BY. Key-value cannot search inside values at all, and wide-column would need a second copy of the data keyed by district.'
+
+
 flashcards:
   - q: 'What is an access pattern?'
     a: 'The list of how the app will write and look up data: by which key or condition, how often, and with what guarantees.'
@@ -269,6 +320,11 @@ flashcards:
     more: |
       Data is split across servers by a partition key, so writes can scale almost without limit. But you can mostly look things up only by that key. It suits huge workloads with known queries, like chat messages, event logs and sensor data; for an ordinary business app it is extra weight.
     ref: six-kinds-of-databases
+  - q: 'You store orders in Cassandra keyed by customer_id. Can you list all orders of one district?'
+    a: 'Not directly. You can only look up by the key the table was built for, so you would keep a second table (a copy) keyed by district.'
+    more: |
+      This is the price of wide-column: queries are decided first and each gets its own copy of the data, and every write must update every copy. In relational the same question is one join and a GROUP BY, which is why it is the safer default when the questions are not yet known.
+    ref: one-order-six-shapes
   - q: 'What are the three traits of time-series data?'
     a: 'Each row is a timestamp and a measurement; data is only appended, never edited; and queries ask about time windows.'
     more: |
@@ -414,3 +470,16 @@ quiz:
         correct: false
         why: 'It will last a while, but one server has a write ceiling. With one known query, paying the price of a distributed database is worth it here.'
     ref: six-kinds-of-databases
+  - q: 'Nadia''s team stores each order as one JSON document. Finance now asks: "total sales per district, with each product''s current price". What is hard here?'
+    hint: 'Which part of the data lives in a different document?'
+    options:
+      - text: 'Reading one whole order, because the JSON is too big'
+        correct: false
+        why: 'Reading one whole order is exactly what a document is best at: one read returns everything.'
+      - text: 'Combining orders with the current product prices, because joins across documents are not built in'
+        correct: true
+        why: 'The price lives in the product documents. The team has to fetch and match them in code, which a relational join does in one statement.'
+      - text: 'Saving a new order, because documents cannot be added'
+        correct: false
+        why: 'Adding a document is trivial and fast; writes are not the weakness here.'
+    ref: one-order-six-shapes

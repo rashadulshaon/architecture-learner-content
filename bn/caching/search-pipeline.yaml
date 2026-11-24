@@ -62,7 +62,7 @@ slides:
   - slug: index-pipeline
     title: 'ডেটাবেস আসল, index তার কপি — মাঝে একটা pipeline'
     kind: concept
-    tldr: 'আগে ডেটাবেসে লেখো, তারপর শুধু আইডি-সহ একটা বার্তা queue-তে দাও; worker ডেটাবেস থেকে তাজা অবস্থা পড়ে index বদলায়।'
+    tldr: 'আগে ডেটাবেসে লিখুন, তারপর শুধু আইডি-সহ একটা বার্তা queue-তে দিন; worker ডেটাবেস থেকে তাজা অবস্থা পড়ে index বদলায়।'
     keywords: ['source of truth', 'indexing pipeline', 'queue', 'worker', 'derived data', 'আসল সত্য', 'কপি']
     blocks:
       - type: metaphor
@@ -166,23 +166,26 @@ slides:
                           retry_strategy:
                               max_retries: 5
                               delay: 2000      # প্রথম retry ২ সেকেন্ড পরে
-                              multiplier: 3    # তারপর ৬, ১৮, ৫৪, ১৬২ সেকেন্ড
+                              multiplier: 3    # তারপর ৬, ১৮, ৫৪, ১৬২ সেকেন্ড (মোট প্রায় ৪ মিনিট)
                       failed: 'doctrine://default?queue_name=failed'
                   routing:
                       App\Message\IndexProduct: search_index
         marks:
           - {line: 6, tip: 'আলাদা queue। RabbitMQ বা Redis ব্যবহার করলে শুধু এই dsn বদলাবে, বাকি কোড একই থাকবে।'}
-          - {line: 8, tip: 'পাঁচবার চেষ্টা করেও না পারলে বার্তা failed transport-এ জমা হয় — হারায় না, পরে হাতে আবার চালানো যায়।'}
+          - {line: 8, tip: 'পাঁচবার চেষ্টা করেও (মোট প্রায় ৪ মিনিট) না পারলে বার্তা failed transport-এ জমা হয় — হারায় না, পরে হাতে আবার চালানো যায়।'}
+      - type: points
+        title: 'একটা ফাঁক এখনো খোলা: flush আর dispatch-এর মাঝে crash'
+        items:
+          - '`flush()` আর `dispatch()`-এর মাঝখানে প্রসেস মরলে পণ্য save হয়ে যায় কিন্তু কোনো বার্তাই থাকে না, তাই index-এ ওঠার আর কোনো উপায় থাকে না।'
+          - 'সস্তা সমাধান: রাতে একটা job গত ২৪ ঘণ্টায় বদলানো সবকিছুর জন্য আবার IndexProduct পাঠায় (নিরাপদ, handler idempotent)। দাম: হারানো বার্তা ফিরতে একদিন পর্যন্ত লাগে, আর সত্যিকারের মুছে ফেলা সারি ধরা পড়ে না।'
+          - 'পাকা সমাধান: outbox। পণ্যের সাথে একই transaction-এ বার্তাও save হয়, relay সেটা পাঠায়। দাম: একটা বাড়তি টেবিল আর একটা relay প্রসেস।'
     aside:
       - type: commands
         title: 'Messenger কমান্ড'
         items:
-          - {cmd: 'php bin/console messenger:consume search_index', desc: 'search-এর worker চালু করো'}
+          - {cmd: 'php bin/console messenger:consume search_index', desc: 'search-এর worker চালু করুন'}
           - {cmd: 'php bin/console messenger:stats', desc: 'কোন queue-তে কয়টা বার্তা জমে আছে'}
-          - {cmd: 'php bin/console messenger:failed:retry', desc: 'ব্যর্থ বার্তাগুলো আবার চালাও'}
-      - type: pitfalls
-        items:
-          - 'flush আর dispatch-এর মাঝখানে প্রসেস মরলে বার্তাটা হারায়। পাকা সমাধান হলো ডেটা আর বার্তা একই transaction-এ লেখা — outbox প্যাটার্ন।'
+          - {cmd: 'php bin/console messenger:failed:retry', desc: 'ব্যর্থ বার্তাগুলো আবার চালান'}
       - type: refs
         items:
           - {to: 'workflows/outbox-inbox', label: 'Outbox: ডেটা আর বার্তা একসাথে'}
@@ -199,7 +202,7 @@ slides:
     blocks:
       - type: text
         body: |
-          সহকারীর কাজটা এমন হতে হবে, যেন একই চিরকুট দশবার এলেও খাতা ঠিক থাকে। এই গুণের নাম **idempotent** — একবার করা আর বারবার করার ফল একই। কৌশলটা সহজ: পণ্যের আইডিকেই document-এর আইডি বানাও আর `PUT` দিয়ে পুরো document বদলে দাও। তাহলে দ্বিতীয়বার লিখলে নতুন কিছু তৈরি হয় না, আগেরটাই আবার বসে।
+          সহকারীর কাজটা এমন হতে হবে, যেন একই চিরকুট দশবার এলেও খাতা ঠিক থাকে। এই গুণের নাম **idempotent** — একবার করা আর বারবার করার ফল একই। কৌশলটা সহজ: পণ্যের আইডিকেই document-এর আইডি বানান আর `PUT` দিয়ে পুরো document বদলে দিন। তাহলে দ্বিতীয়বার লিখলে নতুন কিছু তৈরি হয় না, আগেরটাই আবার বসে।
       - type: code
         lang: php
         file: 'src/MessageHandler/IndexProductHandler.php'
@@ -229,21 +232,16 @@ slides:
                   }
 
                   $this->searchClient->request('PUT', $url, [
-                      'json' => [
-                          'name' => $product->getName(),
-                          'brand' => $product->getBrand(),
-                          'price' => $product->getPrice(),
-                          'updated_at' => $product->getUpdatedAt()->format(\DATE_ATOM),
-                      ],
+                      'json' => $product->toSearchDocument(),
                   ])->getContent();
               }
           }
         marks:
           - {line: 13, tip: 'বার্তায় যা-ই থাকুক, সত্যটা সবসময় ডেটাবেস থেকে নতুন করে পড়া হয়।'}
-          - {line: 15, tip: 'পণ্য মুছে গেছে বা লুকানো? তাহলে index থেকেও সরাও। মোছার জন্য আলাদা বার্তার দরকার পড়ে না।'}
+          - {line: 15, tip: 'পণ্য মুছে গেছে বা লুকানো? তাহলে index থেকেও সরান। মোছার জন্য আলাদা বার্তার দরকার পড়ে না।'}
           - {line: 17, tip: '404 মানে আগে থেকেই নেই — সেটাও সফল। অন্য কিছু হলে exception, যাতে Messenger আবার চেষ্টা করে।'}
-          - {line: 24, tip: 'আইডি-সহ PUT পুরো document বদলে দেয়। দশবার চালালেও index-এ document একটাই থাকে।'}
-          - {line: 31, tip: 'getContent() 4xx/5xx বা সংযোগ ব্যর্থ হলে exception ছোড়ে — এই এক লাইনেই retry চালু হয়ে যায়।'}
+          - {line: 24, tip: 'আইডি-সহ PUT পুরো document বদলে দেয়। দশবার চালালেও index-এ document একটাই থাকে। toSearchDocument() reindex-এও ব্যবহার হয়, তাই দুই জায়গার document সবসময় মেলে।'}
+          - {line: 26, tip: 'getContent() 4xx/5xx বা সংযোগ ব্যর্থ হলে exception ছোড়ে — এই এক লাইনেই retry চালু হয়ে যায়।'}
       - type: visual
         kind: table
         caption: 'চার পরিস্থিতিতে handler কী করে'
@@ -259,7 +257,7 @@ slides:
             tip: 'retry_strategy অনুযায়ী ২, ৬, ১৮… সেকেন্ড পরে চেষ্টা হয়; শেষে failed transport-এ জমা পড়ে।'
     aside:
       - type: remember
-        body: 'আইডি এক, PUT দিয়ে পুরোটা বদল, সত্য পড়ো ডেটাবেস থেকে — এই তিনে handler idempotent।'
+        body: 'আইডি এক, PUT দিয়ে পুরোটা বদল, সত্য পড়ুন ডেটাবেস থেকে — এই তিনে handler idempotent।'
       - type: pitfalls
         items:
           - 'আইডি ছাড়া `POST /products/_doc` দিলে প্রতিবার নতুন document তৈরি হয় — একই পণ্য search-এ দুইবার দেখাবে।'
@@ -274,7 +272,7 @@ slides:
   - slug: eventual-consistency
     title: 'কয়েক সেকেন্ডের ফাঁক: eventual consistency'
     kind: concept
-    tldr: 'ডেটাবেসে লেখা আর search-এ দেখা যাওয়ার মাঝে এক-দুই সেকেন্ডের ফাঁক থাকবেই; লেখার ঠিক পরের পাতা আর সব সিদ্ধান্ত ডেটাবেস থেকে নাও।'
+    tldr: 'ডেটাবেসে লেখা আর search-এ দেখা যাওয়ার মাঝে এক-দুই সেকেন্ডের ফাঁক থাকবেই; লেখার ঠিক পরের পাতা আর সব সিদ্ধান্ত ডেটাবেস থেকে নিন।'
     keywords: ['eventual consistency', 'lag', 'refresh interval', 'read your writes', 'পিছিয়ে থাকা', 'ফাঁক']
     blocks:
       - type: text
@@ -300,12 +298,12 @@ slides:
         title: 'ফাঁকটা নিয়ে বাঁচার চার নিয়ম'
         style: check
         items:
-          - 'লেখার ঠিক পরের পাতা ডেটাবেস থেকে দেখাও — যেমন "আমার পণ্য" তালিকা বা edit পাতা।'
+          - 'লেখার ঠিক পরের পাতা ডেটাবেস থেকে দেখান — যেমন "আমার পণ্য" তালিকা বা edit পাতা।'
           - 'টাকা, স্টক আর অনুমতির সিদ্ধান্ত সবসময় ডেটাবেস দেখে; search শুধু খুঁজে দেওয়ার জন্য।'
-          - 'ব্যবহারকারীকে জানাও: "search-এ দেখাতে কয়েক সেকেন্ড লাগতে পারে"।'
-          - 'ফাঁক মাপো: queue-তে কয়টা বার্তা জমে আছে, আর সবচেয়ে পুরনোটার বয়স কত।'
+          - 'ব্যবহারকারীকে জানান: "search-এ দেখাতে কয়েক সেকেন্ড লাগতে পারে"।'
+          - 'ফাঁক মাপুন: queue-তে কয়টা বার্তা জমে আছে, আর সবচেয়ে পুরনোটার বয়স কত।'
       - type: quote
-        body: 'কপি সবসময় একটু পিছিয়ে থাকে। ডিজাইন করো এটা মেনে নিয়ে, অস্বীকার করে নয়।'
+        body: 'কপি সবসময় একটু পিছিয়ে থাকে। ডিজাইন করুন এটা মেনে নিয়ে, অস্বীকার করে নয়।'
     aside:
       - type: terms
         items:
@@ -313,8 +311,8 @@ slides:
           - {term: 'Refresh interval', meaning: 'Elasticsearch কতক্ষণ পরপর নতুন লেখা খোঁজার উপযোগী করে; সাধারণত ১ সেকেন্ড।'}
       - type: pitfalls
         items:
-          - 'প্রতিটা লেখায় `?refresh=true` দিলে ফাঁক কমে, কিন্তু index করা অনেক ধীর হয়ে যায়। test ছাড়া এটা ব্যবহার কোরো না।'
-          - 'ফাঁক ঢাকতে controller-এ `sleep(2)` বসিয়ো না; চাপের দিনে ফাঁক ২ সেকেন্ডের বেশি হবে, আর সব request অকারণে ধীর হবে।'
+          - 'প্রতিটা লেখায় `?refresh=true` দিলে ফাঁক কমে, কিন্তু index করা অনেক ধীর হয়ে যায়। test ছাড়া এটা ব্যবহার করবেন না।'
+          - 'ফাঁক ঢাকতে controller-এ `sleep(2)` বসাবেন না; চাপের দিনে ফাঁক ২ সেকেন্ডের বেশি হবে, আর সব request অকারণে ধীর হবে।'
       - type: refs
         items:
           - {to: 'data/consistency-models', label: 'Consistency model: কে কখন কী দেখে'}
@@ -325,7 +323,7 @@ slides:
   - slug: reindex-with-alias
     title: 'পুরো index নতুন করে বানানো — ডাউনটাইম ছাড়া'
     kind: howto
-    tldr: 'নতুন index বানিয়ে ডেটাবেস থেকে ব্যাচে ভরো, তারপর alias এক ধাপে ঘুরিয়ে দাও; অ্যাপ সবসময় alias-এর নাম জানে, আসল index-এর নয়।'
+    tldr: 'নতুন index বানিয়ে ডেটাবেস থেকে ব্যাচে ভরুন, তারপর alias এক ধাপে ঘুরিয়ে দিন; অ্যাপ সবসময় alias-এর নাম জানে, আসল index-এর নয়।'
     keywords: ['reindex', 'alias', 'bulk API', 'zero downtime', 'mapping change', 'নতুন করে index', 'backfill']
     blocks:
       - type: text
@@ -335,12 +333,12 @@ slides:
         kind: steps
         caption: 'products alias-কে v1 থেকে v2-তে নেওয়া'
         steps:
-          - {title: '১. নতুন index বানাও', body: 'নতুন mapping দিয়ে products_v2। অ্যাপ এখনো alias ধরে v1 পড়ছে।', tip: 'পুরনো index-এ হাত দেওয়া হয় না, তাই এই পুরো সময় search স্বাভাবিকভাবে চলে।'}
-          - {title: '২. worker থামাও', body: 'search_index-এর worker বন্ধ; নতুন বার্তা queue-তে জমতে থাকুক।', tip: 'এতে ভরার সময় কোনো লেখা হারায় না বা পুরনো অবস্থা নতুনের ওপর চাপে না। দাম: এই কয়েক মিনিট search একটু পুরনো থাকে।'}
-          - {title: '৩. ডেটাবেস থেকে ভরো', body: 'সব পণ্য ৫০০টা করে _bulk দিয়ে v2-তে তোলো।', tip: 'একটা একটা করে পাঠালে ঘণ্টা লাগে; bulk-এ এক request-এ শত শত document যায়।'}
-          - {title: '৪. যাচাই করো', body: 'ডেটাবেস আর v2-র সংখ্যা মেলাও; চেনা কয়েকটা খোঁজ চালিয়ে দেখো।', tip: 'alias ঘোরানোর আগে এটাই শেষ সুযোগ। ভুল ধরা পড়লে v2 মুছে আবার শুরু করো — খদ্দের কিছুই টের পায়নি।'}
-          - {title: '৫. alias ঘোরাও', body: 'এক atomic ধাপে products → v2।', tone: accent, tip: 'পরের search request থেকেই নতুন index ব্যবহার হয়। মাঝে এমন কোনো মুহূর্ত নেই, যখন alias খালি।'}
-          - {title: '৬. worker চালু করো', body: 'জমে থাকা বার্তা এখন v2-তে যায়। v1 কয়েক দিন পরে মুছো।', tip: 'worker ডেটাবেস থেকে তাজা অবস্থা পড়ে, তাই জমা বার্তা চালালেই v2 হালনাগাদ। v1 থাকা পর্যন্ত rollback মানে শুধু alias ফেরানো।'}
+          - {title: '১. নতুন index বানান', body: 'নতুন mapping দিয়ে products_v2। অ্যাপ এখনো alias ধরে v1 পড়ছে।', tip: 'পুরনো index-এ হাত দেওয়া হয় না, তাই এই পুরো সময় search স্বাভাবিকভাবে চলে।'}
+          - {title: '২. worker থামান', body: 'search_index-এর worker বন্ধ; নতুন বার্তা queue-তে জমতে থাকুক।', tip: 'এতে ভরার সময় কোনো লেখা হারায় না বা পুরনো অবস্থা নতুনের ওপর চাপে না। দাম: এই কয়েক মিনিট search একটু পুরনো থাকে।'}
+          - {title: '৩. ডেটাবেস থেকে ভরুন', body: 'সব পণ্য ৫০০টা করে _bulk দিয়ে v2-তে তুলুন।', tip: 'একটা একটা করে পাঠালে ২০ লাখ পণ্যে ২০ লাখ request; ৫০০টা করে bulk-এ মাত্র ৪,০০০টা।'}
+          - {title: '৪. যাচাই করুন', body: 'ডেটাবেস আর v2-র সংখ্যা মেলান; চেনা কয়েকটা খোঁজ চালিয়ে দেখুন।', tip: 'alias ঘোরানোর আগে এটাই শেষ সুযোগ। ভুল ধরা পড়লে v2 মুছে আবার শুরু করুন — খদ্দের কিছুই টের পায়নি।'}
+          - {title: '৫. alias ঘোরান', body: 'এক atomic ধাপে products → v2।', tone: accent, tip: 'পরের search request থেকেই নতুন index ব্যবহার হয়। মাঝে এমন কোনো মুহূর্ত নেই, যখন alias খালি।'}
+          - {title: '৬. worker চালু করুন', body: 'জমে থাকা বার্তা এখন v2-তে যায়। v1 কয়েক দিন পরে মুছুন।', tip: 'worker ডেটাবেস থেকে তাজা অবস্থা পড়ে, তাই জমা বার্তা চালালেই v2 হালনাগাদ। v1 থাকা পর্যন্ত rollback মানে শুধু alias ফেরানো।'}
       - type: code
         lang: php
         file: 'src/Search/ProductReindexer.php'
@@ -385,7 +383,7 @@ slides:
         marks:
           - {line: 14, tip: 'toIterable() একটা একটা করে সারি আনে; ১০ লাখ পণ্যও একসাথে মেমোরিতে ওঠে না।'}
           - {line: 15, tip: 'bulk-এর প্রতিটা document দুই লাইন: প্রথমে কী করতে হবে (index, আইডি-সহ), তারপর document নিজে।'}
-          - {line: 20, tip: 'প্রতি ব্যাচের পরে Doctrine-এর মেমোরি খালি করো, নইলে লম্বা কাজে মেমোরি ফুরিয়ে যাবে।'}
+          - {line: 20, tip: 'প্রতি ব্যাচের পরে Doctrine-এর মেমোরি খালি করুন, নইলে লম্বা কাজে মেমোরি ফুরিয়ে যাবে।'}
           - {line: 34, tip: 'bulk request নিজে 200 দেয়, এমনকি কিছু document ব্যর্থ হলেও। তাই উত্তরের errors ঘরটা দেখতেই হবে।'}
       - type: code
         lang: http
@@ -411,8 +409,7 @@ slides:
           - 'শুধু নতুন একটা field যোগ হয়েছে — সেটা চলতি mapping-এ যোগ করে পণ্যগুলো আবার index করলেই চলে।'
       - type: tips
         items:
-          - 'ভরতে ঘণ্টা লাগলে worker না থামিয়ে handler-কে দুই index-এই লেখাও, সাথে external version ব্যবহার করো।'
-          - 'রাতে একটা job চালাও, যা গত ২৪ ঘণ্টায় বদলানো সব পণ্যের জন্য আবার IndexProduct পাঠায়। হারানো বার্তার ক্ষত নিজে থেকেই সারে।'
+          - 'ভরতে ঘণ্টা লাগলে worker না থামিয়ে handler-কে দুই index-এই লেখান, সাথে external version ব্যবহার করুন।'
       - type: refs
         items:
           - {to: 'recovery/bulk-reprocessing', label: 'নিরাপদে bulk reprocessing'}
@@ -434,7 +431,7 @@ flashcards:
   - q: 'Index করার বার্তায় পুরো ডেটা না পাঠিয়ে শুধু আইডি পাঠানো হয় কেন?'
     a: 'worker তখন ডেটাবেস থেকে সর্বশেষ অবস্থা পড়ে; ফলে বার্তা দুইবার বা উল্টো ক্রমে এলেও index-এ পুরনো তথ্য ওঠে না।'
     more: |
-      বার্তায় দাম লেখা থাকলে দুইটা দাম বদলের বার্তা উল্টো ক্রমে পৌঁছালে index-এ পুরনো দামটাই থেকে যেত। শুধু আইডি থাকলে বার্তার মানে দাঁড়ায় "এই পণ্যটা আবার দেখো" — সেটা যখনই চালাও, ফল সঠিক। বার্তাও ছোট থাকে।
+      বার্তায় দাম লেখা থাকলে দুইটা দাম বদলের বার্তা উল্টো ক্রমে পৌঁছালে index-এ পুরনো দামটাই থেকে যেত। শুধু আইডি থাকলে বার্তার মানে দাঁড়ায় "এই পণ্যটা আবার দেখো" — সেটা যখনই চালান, ফল সঠিক। বার্তাও ছোট থাকে।
     ref: index-pipeline
   - q: 'Index handler-কে idempotent বানানোর সহজ উপায় কী?'
     a: 'পণ্যের আইডিকেই document-এর আইডি বানিয়ে PUT দিয়ে পুরো document বদলে দেওয়া।'
@@ -444,7 +441,12 @@ flashcards:
   - q: 'Elasticsearch বন্ধ থাকলে indexing pipeline-এ বার্তার কী হয়?'
     a: 'handler exception ছোড়ে, Messenger বিরতি বাড়িয়ে আবার চেষ্টা করে; সব চেষ্টা ব্যর্থ হলে বার্তা failed transport-এ জমা থাকে।'
     more: |
-      ডেটাবেসের লেখা ঠিকই সফল হয়, খদ্দেরও কিছু টের পায় না। শুধু search কিছুক্ষণ পুরনো থাকে। Elasticsearch ফিরে এলে retry-তেই index হালনাগাদ হয়ে যায়; failed transport-এ জমা বার্তা `messenger:failed:retry` দিয়ে আবার চালানো যায়।
+      ডেটাবেসের লেখা ঠিকই সফল হয়, খদ্দেরও কিছু টের পায় না। শুধু search কিছুক্ষণ পুরনো থাকে। দেখানো retry-সেটিংয়ে retry চলে প্রায় ৪ মিনিট। তার চেয়ে লম্বা বন্ধে বার্তা failed transport-এ জমা হয়, আর Elasticsearch ফিরলে `messenger:failed:retry` দিয়ে আবার চালানো যায়।
+    ref: dispatch-index-message
+  - q: 'flush() আর dispatch()-এর মাঝখানে কী ভুল হতে পারে, আর তা কীভাবে ঠেকানো যায়?'
+    a: 'মাঝখানে প্রসেস মরতে পারে: পণ্য save হয়, কিন্তু কোনো বার্তা থাকে না। রাতের re-send job বা outbox প্যাটার্ন দিয়ে এটা ঢাকা যায়।'
+    more: |
+      রাতের job গত ২৪ ঘণ্টায় বদলানো সব পণ্যের জন্য আবার IndexProduct পাঠায়। handler idempotent বলে এটা নিরাপদ, তবে হারানো বার্তা ফিরতে একদিন পর্যন্ত লাগতে পারে। Outbox বার্তাটা পণ্যের সাথে একই transaction-এ লেখে, তাই হারানোর সুযোগই নেই; দাম একটা বাড়তি টেবিল আর একটা relay।
     ref: dispatch-index-message
   - q: 'Search-এর প্রসঙ্গে eventual consistency মানে কী?'
     a: 'ডেটাবেসে লেখার পর index এক-দুই সেকেন্ড পিছিয়ে থাকে, তারপর নিজে থেকেই মিলে যায়।'
@@ -479,7 +481,7 @@ quiz:
       ])->getContent();
 
       return $this->json(['id' => $product->getId()], 201);
-    hint: 'Elasticsearch ধীর হলে কী হবে, আর একেবারে বন্ধ থাকলে কী হবে — দুটো আলাদা করে ভাবো।'
+    hint: 'Elasticsearch ধীর হলে কী হবে, আর একেবারে বন্ধ থাকলে কী হবে — দুটো আলাদা করে ভাবুন।'
     options:
       - text: 'Elasticsearch-এর request ব্যর্থ হলে পণ্য ডেটাবেসে থাকে কিন্তু index-এ ওঠে না, আর কেউ পরে চেষ্টা করে না'
         correct: true
@@ -558,19 +560,35 @@ quiz:
         correct: false
         why: 'restart-এ জমা থাকা term বদলায় না; analyzer শুধু index করার সময় চলে।'
     ref: reindex-with-alias
-  - q: 'Indexing pipeline চালু আছে। Elasticsearch ১০ মিনিট বন্ধ থাকল, তারপর ফিরে এল। এই সময়ে খদ্দেরদের পণ্য save করার কী হয়েছে?'
+  - q: 'Indexing pipeline চালু আছে। Elasticsearch ২ মিনিট বন্ধ থাকল, তারপর ফিরে এল। এই সময়ে খদ্দেরদের পণ্য save করার কী হয়েছে?'
     hint: 'লেখার কোড কি Elasticsearch-এর সাথে কথা বলে?'
     options:
       - text: 'save স্বাভাবিকভাবে সফল হয়েছে; বার্তাগুলো retry-তে অপেক্ষা করেছে, পরে index হালনাগাদ হয়েছে'
         correct: true
-        why: 'লেখার দিক শুধু ডেটাবেস আর queue ছোঁয়। search কিছুক্ষণ পুরনো ছিল, কিন্তু কোনো ডেটা হারায়নি।'
+        why: 'লেখার দিক শুধু ডেটাবেস আর queue ছোঁয়। retry চলে (প্রথম ব্যর্থতার ২, ৮, ২৬, ৮০ আর ২৪২ সেকেন্ড পরে), যা ২ মিনিটের বন্ধ পেরিয়ে যায়; তাই কোনো ডেটা হারায়নি।'
       - text: 'সব save 500 error দিয়েছে'
         correct: false
         why: 'সেটা হতো controller সরাসরি Elasticsearch-এ লিখলে। pipeline-এ লেখার পথ search-এর ওপর নির্ভর করে না।'
-      - text: 'ওই ১০ মিনিটের পণ্যগুলো আর কখনো search-এ আসবে না'
+      - text: 'ওই ২ মিনিটের পণ্যগুলো আর কখনো search-এ আসবে না'
         correct: false
         why: 'বার্তা হারায়নি। retry শেষ হয়ে গেলেও সেগুলো failed transport-এ থাকে, সেখান থেকে আবার চালানো যায়।'
       - text: 'ডেটাবেসের transaction rollback হয়ে গেছে'
         correct: false
         why: 'ডেটাবেসের commit আগেই শেষ; worker-এর ব্যর্থতা সেটাকে আর ছুঁতে পারে না।'
+    ref: dispatch-index-message
+  - q: 'Deploy-এর সময় flush()-এর ঠিক পরে, dispatch()-এর আগে PHP প্রসেস মারা গেল। save হওয়া ৩০টা পণ্য search-এ নেই, আর queue-তে কোনো বার্তাও নেই। এখন আর ভবিষ্যতের জন্য কী ঢাকা দেয়?'
+    hint: 'যে বার্তা কখনো পাঠানোই হয়নি, Messenger কি তা আবার চেষ্টা করতে পারে?'
+    options:
+      - text: 'রাতে একটা job, যা গত ২৪ ঘণ্টায় বদলানো পণ্যের জন্য আবার IndexProduct পাঠায়'
+        correct: true
+        why: 'যাদের বার্তা হারিয়েছে, job তাদের খুঁজে আবার queue-তে দেয়। handler idempotent বলে বারবার চালানো নিরাপদ।'
+      - text: 'max_retries বাড়ানো'
+        correct: false
+        why: 'retry শুধু আছে এমন বার্তা আবার চালায়। এখানে বার্তা কখনো পাঠানোই হয়নি।'
+      - text: 'flush()-এর আগে বার্তা dispatch করা'
+        correct: false
+        why: 'তাহলে worker commit-এর আগে ডেটাবেস পড়ে পুরনো অবস্থা index করতে পারে। প্রসেস মরলেও এতে লাভ হয় না।'
+      - text: 'handler-কে idempotent বানানো'
+        correct: false
+        why: 'সেটা আগে থেকেই আছে। idempotent হলে বারবার চালানো নিরাপদ; যে বার্তা পাঠানোই হয়নি তা তৈরি হয় না।'
     ref: dispatch-index-message

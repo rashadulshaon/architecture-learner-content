@@ -2,7 +2,7 @@ slides:
   - slug: float-trap
     title: 'Looks right, is wrong: money in a float'
     kind: story
-    tldr: 'A float cannot store most decimals exactly; tiny errors pile up until the books stop adding up. Never keep money in a float.'
+    tldr: 'A float cannot store most decimals exactly; tiny errors flip comparisons and lose paisa until the books stop adding up. Never keep money in a float.'
     keywords: ['float', 'floating point', 'precision', '0.1 + 0.2', 'money rounding', 'wrong sum']
     blocks:
       - type: text
@@ -21,13 +21,23 @@ slides:
         marks:
           - {line: 3, tip: 'The sum is not equal to 0.30. A comparison like `if ($paid == $due)` can therefore make the wrong decision now and then.'}
           - {line: 5, tip: 'This is the number actually stored. echo rounds it for display, which is why the error goes unnoticed.'}
+      - type: code
+        lang: php
+        file: 'Adding whole paisa (the right way)'
+        variant: good
+        code: |
+          $total = 10 + 20;               // 10 paisa + 20 paisa, whole numbers
+
+          var_dump($total === 30);        // bool(true), every time
+        marks:
+          - {line: 3, tip: 'Whole numbers add exactly. Nothing is rounded, so nothing can disagree.'}
       - type: visual
         kind: steps
         caption: 'How a tiny error grows into a real discrepancy'
         steps:
           - {title: '1. Add floats', body: '0.10 + 0.20 gives 0.30000000000000004', tip: 'In binary both 0.1 and 0.2 are approximations, so their sum is an approximation too.'}
           - {title: '2. Comparison breaks', body: 'Checking with `==` against 0.30 gives false', tip: 'Even the question "does the payment equal the amount due?" can get the wrong answer.'}
-          - {title: '3. Millions of payments', body: 'A little error piles up with each one', tip: 'One error is a tiny fraction of a paisa, but with hundreds of thousands of transactions a day it adds up.'}
+          - {title: '3. Paisa go missing', body: 'Small errors cut or flip whole paisa', tip: 'Ten 10-paisa coins added one by one give 0.9999999999999999, not 1. And `(int)(0.57 * 100)` gives 56, not 57: a paisa has vanished.'}
           - {title: '4. Books don''t match', body: 'At day end the bank and the ledger disagree', tip: 'No exception, no log line, the totals just differ. This is the hardest kind of bug to track down.'}
       - type: quote
         body: 'Money is never a float. Never.'
@@ -79,6 +89,7 @@ slides:
       - type: tips
         items:
           - 'Don''t hardcode the number of decimal places; take the list from a library (for example `brick/money` or `moneyphp/money`).'
+          - 'A whole minor unit can''t hold a price like 0.4 paisa per SMS. Keep a finer unit, such as millionths of a taka, and round to paisa once on the final bill.'
     check:
       q: 'You store both 500 yen and 500 taka as `500` in the database. What gets lost?'
       a: 'The currency. A bare `500` doesn''t say yen or taka. And 500 taka is really 50000 paisa, so you also need to know the number of decimal places.'
@@ -154,7 +165,7 @@ slides:
               }
           }
         marks:
-          - {line: 7, tip: 'The column is BIGINT because even 10 million taka is over a billion paisa, too big for a 32-bit INT.'}
+          - {line: 7, tip: 'The column is BIGINT because a 32-bit INT stops at about 2.1 billion paisa, which is only 21 million taka. A busy wallet or company ledger can pass that.'}
           - {line: 15, tip: 'Callers only ever see a Money; the two-column detail stays inside the entity.'}
     aside:
       - type: tips
@@ -175,7 +186,7 @@ slides:
     blocks:
       - type: text
         body: |
-          Three brothers are splitting 100 taka after a wedding. 100 ÷ 3 = 33.333..., so giving each 33.33 totals 99.99 and 1 paisa belongs to nobody. Rounding share by share loses or invents paisa like this. The fix: first give everyone their floor share, then hand out the **remainder** one paisa at a time.
+          Three brothers are splitting 100 taka after a wedding. 100 ÷ 3 = 33.333..., so giving each 33.33 totals 99.99 and 1 paisa belongs to nobody. Rounding share by share loses paisa like this, or invents them: split six ways, rounding gives 1667 each, 10002 in all. The fix: first give everyone their floor share, then hand out the **remainder** one paisa at a time.
       - type: code
         lang: php
         file: 'The wrong split'
@@ -224,6 +235,7 @@ slides:
         items:
           - 'When a percentage (fee, VAT) produces a fraction, choose the rounding rule once (usually half-up) and keep it in one place.'
           - 'Don''t round step by step; do all the multiplying and dividing first, then round once at the end.'
+          - 'This `allocate` refuses negative amounts. To split a refund, allocate the positive amount and negate each share.'
       - type: pitfalls
         items:
           - 'If an API sends amounts as a JSON number (12.5), JavaScript turns it into a float. Send an integer minor unit and a currency instead.'
@@ -273,28 +285,34 @@ flashcards:
       For example `{"amount": 125050, "currency": "BDT"}`. The client works only with the integer and divides it to show 1250.50 at display time.
     ref: remainder-never-lost
 
+  - q: 'When is a plain integer minor unit not enough?'
+    a: 'When a price has fractions of a minor unit, like 0.4 paisa per SMS. Keep a finer unit (millionths of a taka) or a decimal type, and round once at the end.'
+    more: |
+      A telecom bills millions of SMS at 0.4 paisa each. Rounding every single SMS to a whole paisa would be wrong by a large margin, so the rate is kept in a finer unit and only the final bill is rounded to paisa.
+    ref: poisa-and-currency
+
 quiz:
   - q: 'What is wrong with this code?'
     lang: php
     code: |
-      $price = 19.99;
+      $price = 8.20;
       $qty = 3;
       $total = $price * $qty;
-      if ($total == 59.97) {
+      if ($total == 24.60) {
           $order->markPaid();
       }
-    hint: 'Will multiplying floats give exactly 59.97?'
+    hint: 'Will multiplying floats give exactly 24.60?'
     options:
-      - text: 'The float product may not equal 59.97, so `==` can wrongly return false'
+      - text: 'The float product may not equal 24.60, so `==` can wrongly return false'
         correct: true
-        why: 'Approximate numbers are not guaranteed to be exactly equal. In integer paisa (1999 × 3 = 5997) this problem does not exist.'
+        why: 'Approximate numbers are not guaranteed to be exactly equal. Here 8.20 × 3 is really 24.599999999999998. In integer paisa (820 × 3 = 2460) this problem does not exist.'
       - text: '`$qty` should be a float, not an int'
         correct: false
         why: 'The opposite. The integer is fine; the problem is that the price is a float.'
       - text: '`markPaid()` is outside a transaction'
         correct: false
         why: 'Transactions are a separate topic; the problem in this code is the float comparison.'
-      - text: 'Nothing is wrong, 59.97 will match just fine'
+      - text: 'Nothing is wrong, 24.60 will match just fine'
         correct: false
         why: 'You can''t rely on it. Code like this fails now and then, and when it does there is no error at all.'
     ref: float-trap

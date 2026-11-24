@@ -77,7 +77,7 @@ slides:
   - slug: refund-service
     title: 'Refund রেকর্ড বানানো: সীমা, lock আর idempotency'
     kind: howto
-    tldr: 'Payment-কে PESSIMISTIC_WRITE দিয়ে lock করে বাকি ফেরতযোগ্য টাকা গুনে নতুন Refund persist করো; একই idempotency key এলে আগেরটাই ফেরত দাও।'
+    tldr: 'Payment-কে PESSIMISTIC_WRITE দিয়ে lock করে বাকি ফেরতযোগ্য টাকা গুনে নতুন Refund persist করুন; একই idempotency key এলে আগেরটাই ফেরত দিন।'
     keywords: ['Refund entity', 'Doctrine', 'PESSIMISTIC_WRITE', 'over-refund', 'idempotency', 'ফেরতের সীমা']
     blocks:
       - type: code
@@ -119,15 +119,20 @@ slides:
               });
           }
         marks:
-          - {line: 4, tip: 'payment সারি lock। একই payment-এ আরেকটা refund এই transaction শেষ হওয়ার অপেক্ষা করবে।'}
+          - {line: 3, tip: 'payment সারি lock। একই payment-এ আরেকটা refund এই transaction শেষ হওয়ার অপেক্ষা করবে।'}
           - {line: 6, tip: 'client retry করলে একই key-র আগের Refund-ই ফেরত যায়; দ্বিতীয়বার টাকা যায় না।'}
-          - {line: 10, tip: 'বাকি = আসল − আগের সব ফেরতের যোগফল। lock-এর ভেতরে হিসাব, তাই এই সংখ্যা এই মুহূর্তে সত্য।'}
-          - {line: 16, tip: 'gateway কল transaction-এর বাইরে, outbox দিয়ে। কলের অজানা ফল সামলানো আলাদা বিষয়।'}
+          - {line: 9, tip: 'বাকি = আসল − আগের সব ফেরতের যোগফল। lock-এর ভেতরে হিসাব, তাই এই সংখ্যা এই মুহূর্তে সত্য।'}
+          - {line: 15, tip: 'gateway কল transaction-এর বাইরে, outbox দিয়ে। কলের অজানা ফল সামলানো আলাদা বিষয়।'}
     aside:
       - type: tips
         items:
-          - 'টাকা সবসময় পূর্ণসংখ্যা (পয়সা/মাইনর ইউনিট), কখনো float নয়। Refund-এর অঙ্ক সবসময় ধনাত্মক রাখো; "ফেরত" হওয়াটা ধরনেই (Refund) বলা আছে।'
-          - '`(payment_id, idem_key)`-তে unique constraint রাখো, যাতে lock ফসকালেও ডেটাবেস duplicate ঠেকায়।'
+          - 'টাকা সবসময় পূর্ণসংখ্যা (পয়সা/মাইনর ইউনিট), কখনো float নয়। Refund-এর অঙ্ক সবসময় ধনাত্মক রাখুন; "ফেরত" হওয়াটা ধরনেই (Refund) বলা আছে।'
+          - '`(payment_id, idem_key)`-তে unique constraint রাখুন, যাতে lock ফসকালেও ডেটাবেস duplicate ঠেকায়।'
+      - type: terms
+        items:
+          - {term: 'Row lock', meaning: 'একটা transaction payment-এর lock ধরে থাকলে বাকিরা লাইনে দাঁড়ায়, যেমন ফোনবুথে একজন ঢুকলে বাকিরা বাইরে অপেক্ষা করে।'}
+          - {term: 'Idempotency key', meaning: 'অনুরোধের সাথে পাঠানো অনন্য একটা চিহ্ন, যাতে সার্ভার retry আর নতুন অনুরোধ আলাদা করতে পারে।'}
+          - {term: 'Outbox', meaning: 'যে টেবিলে একই transaction-এ "gateway-কে ডাকতে হবে" লেখা হয়; একটা worker পরে সেটা পাঠায়।'}
       - type: refs
         items:
           - {to: 'payments/idempotency-keys', label: 'Idempotency key'}
@@ -170,20 +175,20 @@ slides:
         body: 'আটকানো টাকা ছাড়ালে void। নেওয়া টাকা ফেরালে refund।'
       - type: tips
         items:
-          - 'Authorization সাধারণত কয়েক দিনেই মেয়াদোত্তীর্ণ হয়। দেরির চালানে নতুন authorization লাগতে পারে — gateway-র নিয়ম দেখো।'
+          - 'Authorization সাধারণত কয়েক দিনেই মেয়াদোত্তীর্ণ হয়। দেরির চালানে নতুন authorization লাগতে পারে — gateway-র নিয়ম দেখুন।'
     check:
       q: 'রিনা তৃতীয় জিনিসটা বাতিল করলে বাকি ৪০০ টাকার জন্য কী রেকর্ড হবে: refund নাকি void? কেন?'
       a: 'Void। ওই ৪০০ টাকা কখনো নেওয়াই হয়নি, শুধু আটকানো ছিল। refund তখনই হয় যখন টাকা আদায় হয়ে গেছে।'
 
   - slug: hardcoded-fee
-    title: 'Fee কোডে গেঁথে দিও না: নিয়ম থেকে হিসাব'
+    title: 'Fee কোডে গেঁথে দেবেন না: নিয়ম থেকে হিসাব'
     kind: pitfall
-    tldr: 'Refund fee কোডে `if`-এ গেঁথে দিলে নিয়ম বদলাতে deploy লাগে আর float-এ ভুল হয়; নিয়ম আলাদা রেখে পূর্ণসংখ্যায় হিসাব করো, আর fee-ও আলাদা রেকর্ড করো।'
+    tldr: 'Refund fee কোডে গেঁথে দিলে নিয়ম বদলাতে deploy লাগে আর float-এ হিসাব নড়ে; নিয়ম এমন টেবিলে রাখুন যা কর্মীরা বদলাতে পারেন, পূর্ণসংখ্যায় হিসাব করুন, আর fee আলাদা রেকর্ড করুন।'
     keywords: ['refund fee', 'rule-driven', 'ExpressionLanguage', 'basis points', 'restocking fee', 'নিয়মভিত্তিক ফি']
     blocks:
       - type: text
         body: |
-          "৭ দিন পরে ফেরত দিলে ১০% কাটা যাবে" — এমন নিয়ম বছরে কয়েকবার বদলায়। কোডে `if ($days > 7) $fee = $amount * 0.1;` লিখলে প্রতিবার deploy লাগে, আর float-এর কারণে পয়সার হিসাবে গরমিল হয়। নিয়মগুলো কনফিগে রাখো, আর হিসাব করো পূর্ণসংখ্যায় (বেসিস পয়েন্ট, ১০% = ১০০০)।
+          "৭ দিন পরে ফেরত দিলে ১০% কাটা যাবে" — এমন নিয়ম বছরে কয়েকবার বদলায়। কোডে `if ($days > 7) $fee = $amount * 0.1;` লিখলে প্রতিবার কোড বদলাতে আর deploy করতে হয়, আর float-এর কারণে পয়সার হিসাবে গরমিল হয়। নিয়মগুলো বরং ডেটাবেসের একটা টেবিলে রাখুন, আর হিসাব করুন পূর্ণসংখ্যায় (বেসিস পয়েন্ট, ১০% = ১০০০)। শুধু `services.yaml`-এ রাখলে অর্ধেক কাজ হয়: ফাইলটা কোডের সাথেই deploy হয়, তাই সেখানে বদলালেও deploy লাগে।
       - type: code
         lang: php
         file: 'src/Refund/RefundFeePolicy.php'
@@ -192,51 +197,63 @@ slides:
           final readonly class RefundFeePolicy
           {
               public function __construct(
-                  #[Autowire('%refund.fee_rules%')] private array $rules,
+                  private RefundFeeRuleRepository $rules,   // refund_fee_rule টেবিল পড়ে
                   private ExpressionLanguage $expr,
               ) {}
 
               /** @param array<string, mixed> $facts যেমন ['days' => 9, 'reason' => 'changed_mind'] */
-              public function feeFor(int $amount, array $facts): int
+              public function feeFor(int $amount, array $facts): Fee
               {
-                  foreach ($this->rules as $rule) {
-                      if ($this->expr->evaluate($rule['when'], $facts)) {
-                          return intdiv($amount * $rule['bp'], 10_000);   // পূর্ণসংখ্যায়
+                  foreach ($this->rules->activeInOrder() as $rule) {
+                      if ($this->expr->evaluate($rule->when, $facts)) {
+                          return new Fee(intdiv($amount * $rule->bp, 10_000), $rule->name);
                       }
                   }
 
-                  return 0;
+                  return new Fee(0, 'no-fee');
               }
           }
         marks:
-          - {line: 4, tip: 'নিয়মের তালিকা কনফিগ থেকে আসে, কোড থেকে নয়। নিয়ম বদলাতে শুধু কনফিগ বদলাও।'}
+          - {line: 4, tip: 'নিয়ম আসে টেবিল থেকে, কোড বা কনফিগ ফাইল থেকে নয়। নিয়ম বদলানো মানে একটা সারি বদলানো।'}
           - {line: 12, tip: 'when হলো একটা expression string, যেমন "days > 7"। facts-এর ওপর চালিয়ে মেলে কি না দেখা হয়।'}
-          - {line: 13, tip: 'basis point: ১০০০ মানে ১০%। পূর্ণসংখ্যার ভাগ, তাই কোনো float-এর গোলমাল নেই।'}
+          - {line: 13, tip: 'basis point: ১০০০ মানে ১০%। পূর্ণসংখ্যার ভাগ, তাই float-এর গোলমাল নেই। নিয়মের নামও fee-র সাথে যায়।'}
       - type: code
-        lang: yaml
-        file: 'config/services.yaml'
+        lang: sql
+        file: 'refund_fee_rule (Doctrine migration দিয়ে তৈরি)'
         variant: good
         code: |
-          parameters:
-              refund.fee_rules:                     # প্রথম মিললেই সেটা প্রযোজ্য
-                  - {when: 'reason == "defective"', bp: 0}
-                  - {when: 'days > 7',              bp: 1000}
-                  - {when: 'reason == "changed_mind"', bp: 500}
+          CREATE TABLE refund_fee_rule (
+              id        SERIAL PRIMARY KEY,
+              position  INT NOT NULL,           -- প্রথম মিললেই সেটা প্রযোজ্য
+              name      VARCHAR(40) NOT NULL,   -- fee রেকর্ডে রাখা হয়
+              when_expr VARCHAR(200) NOT NULL,
+              bp        INT NOT NULL CHECK (bp BETWEEN 0 AND 10000),
+              active    BOOLEAN NOT NULL DEFAULT TRUE
+          );
+
+          INSERT INTO refund_fee_rule (position, name, when_expr, bp) VALUES
+              (1, 'defective',    'reason == "defective"',     0),
+              (2, 'late-return',  'days > 7',               1000),
+              (3, 'changed-mind', 'reason == "changed_mind"', 500);
         marks:
-          - {line: 3, tip: 'ত্রুটিপূর্ণ জিনিসে কোনো ফি নেই। এই নিয়ম সবার আগে বলে ওপরেরটা নিচের নিয়মকে হারায়।'}
+          - {line: 3, tip: 'নিয়মগুলো এই ক্রমে মেলানো হয়। ত্রুটিপূর্ণ জিনিস সবার আগে, তাই ৭ দিন পরেও তার কোনো ফি নেই।'}
+          - {line: 11, tip: 'দেরির ফি ১০% থেকে ১৫% করতে এই একটা সারি update করলেই হয়। কোড নয়, deploy নয়।'}
       - type: quote
         body: 'Fee কখনো মূল অঙ্ক বদলায় না। Refund রেকর্ড পুরো অঙ্ক বলে, আর fee একটা আলাদা, জোড়া রেকর্ড।'
     aside:
       - type: tips
         items:
-          - 'ব্যবহারকারীকে আগে দেখাও: "ফেরত ১০০০, ফি ১০০, আপনি পাবেন ৯০০"।'
-          - 'কোন নিয়ম কখন প্রযোজ্য ছিল, তা fee রেকর্ডে নিয়মের নামসহ লিখে রাখো, পরে বিরোধে কাজে লাগবে।'
+          - 'দাম: বদলানো যায় এমন নিয়ম মানে চলমান logic। শুধু বিশ্বস্ত কর্মীদের বদলাতে দিন, সংরক্ষণের সময় প্রতিটা expression যাচাই করুন, আর কে কী বদলাল তার লগ রাখুন।'
+          - 'কখন নয়: নিয়ম বছরে একবার বদলালে review-করা কনফিগ ফাইলই সহজ ও নিরাপদ, তবে সেখানে বদলালে deploy লাগে।'
+          - 'ব্যবহারকারীকে আগে দেখান: "ফেরত ১০০০, ফি ১০০, আপনি পাবেন ৯০০"।'
+          - 'কোন নিয়ম কখন প্রযোজ্য ছিল, তা fee রেকর্ডে নিয়মের নামসহ লিখে রাখুন, পরে বিরোধে কাজে লাগবে।'
       - type: refs
         items:
           - {to: 'config/rules-engines', label: 'Rules engine আর ExpressionLanguage'}
     check:
-      q: 'Fee-র নিয়ম কনফিগে রাখলে আর পূর্ণসংখ্যায় (bp) হিসাব করলে কী কী সুবিধা?'
-      a: 'নিয়ম বদলাতে deploy লাগে না, আর float-এর গোলমাল থাকে না। সাথে fee আলাদা রেকর্ড হওয়ায় কোন নিয়মে কত কাটা হলো তা ইতিহাসে থেকে যায়।'
+      q: '`services.yaml`-এ নিয়ম রাখলেও deploy লাগে কেন, আর deploy ছাড়া বদলাতে হলে নিয়ম কোথায় থাকবে?'
+      a: '`services.yaml` কোডের সাথেই deploy হয়, তাই বদলালেই deploy লাগে। কর্মীরা বদলাতে পারেন এমন ডেটাবেস টেবিলে থাকলে নিয়ম বদলানো মানে একটা সারি update।'
+
 
 flashcards:
   - q: 'Refund-এ আসল payment-এর অঙ্ক বদলানো কেন ভুল?'
@@ -267,17 +284,17 @@ flashcards:
   - q: 'Refund অনুরোধ retry হলে একই refund দুইবার হওয়া কীভাবে আটকানো হয়?'
     a: 'Idempotency key দিয়ে। একই (payment, key) আবার এলে আগের Refund রেকর্ডটাই ফেরত দেওয়া হয়, নতুন কিছু বানানো হয় না।'
     more: |
-      `(payment_id, idem_key)`-তে unique constraint রাখলে lock ফসকালেও ডেটাবেস duplicate ঠেকায়। gateway কলেও একই key পাঠাও, যাতে gateway-র দিকেও দ্বিতীয়বার ফেরত না হয়।
+      `(payment_id, idem_key)`-তে unique constraint রাখলে lock ফসকালেও ডেটাবেস duplicate ঠেকায়। gateway কলেও একই key পাঠান, যাতে gateway-র দিকেও দ্বিতীয়বার ফেরত না হয়।
     ref: refund-service
   - q: 'Authorize, capture আর void কী?'
     a: 'Authorize: কার্ডে টাকা আটকানো। Capture: আটকানো টাকা আসলে নেওয়া। Void: আটকানো টাকা না নিয়েই ছেড়ে দেওয়া।'
     more: |
       অনলাইন কেনায় মাল রওনা দেওয়ার আগে authorize, রওনা দিলে capture। আংশিক চালানে প্রতি চালানে ঠিক সেই অংশের capture হয়, আর যে অংশ আর যাবে না তার void হয়। সব capture আর void মিলে authorization-এর বেশি হতে পারে না।
     ref: partial-capture-shipment
-  - q: 'Refund fee-র নিয়ম কোডে `if` দিয়ে না লিখে কনফিগে রাখা হয় কেন?'
-    a: 'নিয়ম প্রায়ই বদলায়; কনফিগে রাখলে deploy ছাড়া বদলানো যায়। হিসাব পূর্ণসংখ্যায় (basis point) করলে float-এর ভুলও থাকে না।'
+  - q: 'Refund fee-র নিয়ম কোডে `if` দিয়ে না লিখে টেবিলে রাখা হয় কেন?'
+    a: 'নিয়ম প্রায়ই বদলায়; কর্মীরা বদলাতে পারেন এমন টেবিলে রাখলে deploy ছাড়াই বদলানো যায়। পূর্ণসংখ্যায় (basis point) হিসাবে float-এর ভুলও থাকে না।'
     more: |
-      Symfony ExpressionLanguage দিয়ে `days > 7` ধরনের শর্ত কনফিগে লেখা যায়, আর প্রথম মিলে যাওয়া নিয়ম প্রযোজ্য হয়। Fee-ও একটা আলাদা রেকর্ড, যাতে মূল অঙ্ক অক্ষত থাকে।
+      Symfony ExpressionLanguage দিয়ে `days > 7` ধরনের শর্ত একটা সারিতে রাখা যায়, আর প্রথম মিলে যাওয়া নিয়ম প্রযোজ্য হয়। `services.yaml` যথেষ্ট নয়: ওটা কোডের সাথে deploy হয়। দাম হলো একটা edit screen, প্রতিটা expression যাচাই আর পরিবর্তনের লগ। Fee-ও একটা আলাদা রেকর্ড, যাতে মূল অঙ্ক অক্ষত থাকে।
     ref: hardcoded-fee
 
 quiz:
@@ -305,7 +322,7 @@ quiz:
         why: 'এটা আসল অঙ্ক; আগের ফেরতগুলো এখানে গোনা হয়নি।'
       - text: '৯০০'
         correct: false
-        why: 'শুধু প্রথম ফেরত বাদ দিয়েছ; দ্বিতীয়টাও আছে।'
+        why: 'শুধু প্রথম ফেরত বাদ দিয়েছেন; দ্বিতীয়টাও আছে।'
       - text: '৭০০'
         correct: true
         why: '১২০০ − ৩০০ − ২০০ = ৭০০।'
@@ -356,9 +373,9 @@ quiz:
   - q: 'কোন কোন ব্যবস্থা fee-র নিয়মকে নিরাপদ ও বদলযোগ্য রাখে?'
     hint: 'নিয়ম বদলালে কোড আর হিসাব কতটা নাড়াতে হবে?'
     options:
-      - text: 'নিয়মের তালিকা কনফিগে রাখা, যেমন `days > 7` শর্ত আর bp মান'
+      - text: 'নিয়মের তালিকা কর্মীদের বদলাতে পারা টেবিলে রাখা, যেমন `days > 7` শর্ত আর bp মান'
         correct: true
-        why: 'deploy ছাড়া নিয়ম বদলানো যায়।'
+        why: 'নিয়ম বদলানো মানে একটা সারি update, deploy লাগে না।'
       - text: 'হিসাব পূর্ণসংখ্যায়: `intdiv($amount * $bp, 10_000)`'
         correct: true
         why: 'float-এর গোলমাল থাকে না, প্রতিবার একই ফল পাওয়া যায়।'
@@ -368,4 +385,7 @@ quiz:
       - text: '`$fee = $amount * 0.1` কোডে লিখে রাখা'
         correct: false
         why: 'float-এ পয়সার গরমিল হয়, আর নিয়ম বদলাতে কোড বদলাতে হয়।'
+      - text: 'নিয়মগুলো `services.yaml`-এ লেখা, তাহলে বদলাতে deploy লাগবে না'
+        correct: false
+        why: 'ফাইলটা কোডের সাথে deploy হয়, তাই বদলালেই deploy লাগে। শুধু টেবিল বা তার মতো store runtime-এ বদলায়।'
     ref: hardcoded-fee

@@ -18,7 +18,7 @@ slides:
           - {label: 'Disk > 60%', value: 64, display: '64 times', tone: warn, tip: 'It grows slowly. A ticket in the morning would do; it is no reason to wake anyone at night.'}
           - {label: 'A single 500 error', value: 41, display: '41 times', tone: warn, tip: 'One or two failed requests are normal, so alerting on each one is pointless.'}
           - {label: 'Worker restart', value: 23, display: '23 times', tone: warn, tip: 'It heals itself and no customer notices.'}
-          - {label: 'Checkout errors > 5%', value: 1, display: '1 time', tone: bad, tip: 'The only real alert: customers can''t buy. But in a crowd of 200 others, everyone took this one for "just another".'}
+          - {label: 'Checkout errors > 5%', value: 1, display: '1 time', tone: bad, tip: 'The only real alert: customers can''t buy. But among 240 others, everyone took this one for "just another".'}
       - type: quote
         body: 'An alert that wakes you with nothing to do isn''t an alert, it''s noise pollution.'
     aside:
@@ -55,6 +55,16 @@ slides:
             tip: 'Shallow means light on the inside; deep also touches outside dependencies.'
           - cells: ['The mistake', 'Checking the database', 'Checking an outside third-party API']
             tip: 'Get this wrong and the disaster grows; see the example on the right.'
+      - type: visual
+        kind: steps
+        caption: 'The restart storm of a liveness probe that checks the database, and the way out'
+        steps:
+          - {title: '1. The DB gets slow', body: 'Queries take 3 seconds; the probe''s own query waits behind them', tip: 'Only slowness, not a crash. The database is still working.'}
+          - {title: '2. Liveness fails', body: 'On every server the probe times out 3 times in a row', tip: 'The probe blames the app for something that is not the app''s fault.'}
+          - {title: '3. All restart at once', body: 'The platform kills all 10 servers together', tip: 'For a while nobody is left to serve customers.'}
+          - {title: '4. The stampede', body: 'Fresh servers open connections and warm caches all at once', tip: 'The slow database now gets its heaviest load, from every server together.'}
+          - {title: '5. Worse, and again', body: 'The probe fails again and it is back to step 2', tip: 'A loop that only ends when somebody turns the probe off.'}
+          - {title: '6. The way out', body: 'Liveness answers only for itself; a failing readiness just holds traffic back', tip: 'No process dies, nothing stampedes, and traffic returns as soon as the database does.'}
       - type: quote
         body: 'Liveness speaks only for itself. When the database is down, restarting every server helps nobody.'
     aside:
@@ -63,6 +73,8 @@ slides:
         body: 'One team''s liveness probe touched the database. One day the database got slow, the probe timed out, and the platform restarted every server at once. The fresh servers then all hammered the database together and made it worse.'
       - type: terms
         items:
+          - {term: 'Probe', meaning: 'A small check the platform runs every few seconds against your app: it calls a URL and sees whether it answers well.'}
+          - {term: 'Load balancer', meaning: 'The traffic cop in front of your servers. It decides which server gets each request.'}
           - {term: 'Startup probe', meaning: 'For slow-starting apps: it holds the other probes off until the app has started.'}
           - {term: 'Shallow / Deep check', meaning: 'Shallow: it only answers for itself. Deep: it also touches dependencies like the DB and cache.'}
       - type: when
@@ -94,7 +106,7 @@ slides:
           #[Route('/health/ready', methods: ['GET'])]
           public function ready(): JsonResponse
           {
-              $checks = [
+              $checks = [   // only what the app cannot work without
                   'database' => fn () => $this->db->executeQuery('SELECT 1'),
                   'cache' => fn () => $this->cache->getItem('health_probe'),
               ];
@@ -147,6 +159,7 @@ slides:
           - 'Mark the health pages PUBLIC_ACCESS in the firewall (access_control), so probes need no login. But don''t put internal details in the response.'
           - 'During a deploy, no traffic goes to new code until it is ready. That is the foundation of zero-downtime deploys.'
           - 'Graceful shutdown: when stopping, fail readiness first, then let in-flight requests finish.'
+          - 'If the shared database is down, every server fails readiness and users get errors. That is honest: no restart would fix it.'
       - type: refs
         items:
           - {to: 'resilience/zero-downtime-deploys', label: 'Zero-downtime deploys'}
@@ -176,7 +189,7 @@ slides:
           - cells: ['Error budget burning slowly over 6 hours', 'Happening slowly', 'Ticket: in working hours']
             tip: 'Not urgent right now, but it grows if ignored; a ticket is enough.'
           - cells: ['Disk at 70%, growing 2% a week', 'Not yet', 'Ticket or dashboard']
-            tip: 'Cause-based. A predictive alert ("full in 4 days at this rate") is better.'
+            tip: 'Cause-based, and 15 weeks from full (30% left at 2% a week). A predictive alert, "full in 4 days at this rate", would page only when it matters.'
           - cells: ['One worker restarted', 'No', 'Dashboard/log only']
             tip: 'It heals itself; no human action is needed.'
       - type: points
@@ -189,6 +202,12 @@ slides:
       - type: quote
         body: 'Page on symptoms, open tickets for causes, and attach a runbook to every page.'
     aside:
+      - type: terms
+        items:
+          - {term: 'Page', meaning: 'To wake a person with a phone alert, whatever the hour.'}
+          - {term: 'SLO', meaning: 'A promise about service quality, such as "99.9% of checkouts succeed".'}
+          - {term: 'Error budget', meaning: 'How much failure the SLO allows. Burning it fast means the promise is at risk.'}
+          - {term: 'Runbook', meaning: 'A one-page guide for the person woken: what the alert means and what to do.'}
       - type: tips
         items:
           - 'Review alerts once a month: how often each fired, and how often someone did something. Delete or demote to a ticket any alert nobody acted on.'
@@ -226,6 +245,7 @@ slides:
             expr: |
               sum(rate(shop_http_requests_total{route="checkout",status=~"5.."}[5m]))
                 / sum(rate(shop_http_requests_total{route="checkout"}[5m])) > 0.05
+                and sum(rate(shop_http_requests_total{route="checkout"}[5m])) > 0.2
             for: 5m
             labels:
               severity: page
@@ -234,10 +254,11 @@ slides:
               summary: 'More than 5% of checkout requests have failed for 5 minutes'
               runbook_url: 'https://wiki.shop.example/runbooks/checkout-errors'
         marks:
-          - {line: 4, tip: 'A ratio, so it works the same whether total traffic is high or low.'}
-          - {line: 5, tip: 'No alert unless it lasts 5 minutes; momentary spikes are ignored.'}
-          - {line: 8, tip: 'Who gets the alert is in the labels. An alert with no owner is handled by nobody.'}
-          - {line: 11, tip: 'The runbook link lives inside the alert, so a sleepy brain at 2 a.m. doesn''t have to hunt for it.'}
+          - {line: 4, tip: 'A ratio, so a busy hour and a quiet hour are judged by the same yardstick.'}
+          - {line: 5, tip: 'A floor of 12 requests a minute. At 3 a.m. with 4 requests, one failure is already 25%, and nobody should be woken for that.'}
+          - {line: 6, tip: 'No alert unless it lasts 5 minutes; momentary spikes are ignored.'}
+          - {line: 9, tip: 'Who gets the alert is in the labels. An alert with no owner is handled by nobody.'}
+          - {line: 12, tip: 'The runbook link lives inside the alert, so a sleepy brain at 2 a.m. doesn''t have to hunt for it.'}
       - type: visual
         kind: steps
         caption: 'The shape of a runbook (one page, readable at 2 a.m.)'
@@ -251,7 +272,7 @@ slides:
       - type: pitfalls
         items:
           - 'A runbook gets written and never updated. After every incident, fix any wrong or incomplete step.'
-          - 'Twenty-five alerts for one incident: group and inhibit them so only one arrives.'
+          - 'Twenty-five alerts for one incident: in Alertmanager, `group_by: [alertname, team]` bundles them into one page.'
           - 'Nobody knows whose job it is; write the owning team on every alert.'
       - type: remember
         body: 'Symptom, wait (for), owner, runbook: without all four it''s not an alert.'
@@ -302,6 +323,11 @@ flashcards:
     a: 'A one-page guide for when an alert fires: what it means, what to look at first, likely causes, how to stop it, who to call.'
     more: |
       A sleepy brain at 2 a.m. can't think from scratch. A runbook puts past experience to work. Update it after every incident. If the alert rule's `runbook_url` annotation links to it, it's one click away.
+    ref: alert-rule-runbook
+  - q: 'Why add a minimum-traffic condition to an error-ratio alert?'
+    a: 'With very little traffic one failed request is already a big percentage. A floor such as 12 requests a minute stops pages at 3 a.m. over a single error.'
+    more: |
+      Example: 4 checkouts in 5 minutes and 1 fails is 25%, above the 5% line, though nothing is really wrong. The rule says "ratio above 5% and more than 0.2 requests a second".
     ref: alert-rule-runbook
   - q: 'Why put `for` in an alert rule?'
     a: 'So the alert fires only when the condition holds continuously for that long, not on a momentary spike.'
@@ -416,4 +442,20 @@ quiz:
       - text: 'labels.severity'
         correct: false
         why: 'That is the level of urgency; it doesn''t say what to do.'
+    ref: alert-rule-runbook
+  - q: 'At 3 a.m. checkout gets 4 requests in 5 minutes and 1 fails. The rule "error ratio above 5% for 5 minutes" pages. What is the best fix?'
+    hint: 'One failure out of four is 25%. What is missing from the rule?'
+    options:
+      - text: 'Add a minimum-traffic condition, such as more than 12 requests a minute'
+        correct: true
+        why: 'With almost no traffic a single error looks huge. The floor skips these moments and still pages when real traffic fails.'
+      - text: 'Raise the threshold to 50%'
+        correct: false
+        why: 'A real outage at 30% errors in the busy hour would then go unnoticed.'
+      - text: 'Remove `for: 5m` so it reacts faster'
+        correct: false
+        why: 'That makes it noisier, not quieter.'
+      - text: 'Turn the alert off at night'
+        correct: false
+        why: 'Customers also buy at night, and then a real failure would wake nobody.'
     ref: alert-rule-runbook

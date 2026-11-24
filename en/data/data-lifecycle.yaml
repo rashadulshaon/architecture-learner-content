@@ -1,6 +1,6 @@
 slides:
   - slug: delete-me-twelve-copies
-    title: '"Delete my data" and the dozen copies'
+    title: '"Delete my data" and the hidden copies'
     kind: story
     tldr: 'A user''s data isn''t only in the users table: copies live in logs, backups, search, analytics and caches. Skip lifecycle planning and deletion becomes nearly impossible.'
     keywords: ['data lifecycle', 'right to be forgotten', 'erasure', 'data copies', 'GDPR', 'delete user data']
@@ -12,7 +12,7 @@ slides:
           Bills, letters and deeds pile up in a home year after year. The land deed must be kept for life, electricity bills for a few years, and the market shopping list can go straight in the bin. If nobody decides how long each kind stays, everything sits in one heap, and on the day you need something you can't find it.
       - type: text
         body: |
-          A user who signed up five years ago writes, "Delete all my information." Rahim runs `DELETE FROM users` and thinks he's done. But that person's email and phone number are scattered across a dozen other places.
+          A user who signed up five years ago writes, "Delete all my information." Rahim runs `DELETE FROM users` and thinks he's done. But that person's email and phone number are scattered across other places: the logs, the search index, the analytics warehouse, the backups, and in a real system more.
       - type: visual
         kind: flow
         caption: 'How many places one user''s data spreads to'
@@ -94,7 +94,7 @@ slides:
     blocks:
       - type: text
         body: |
-          Old papers get thrown out on a schedule, with one big clear-out a year. A database needs a **purge job** that runs at 3am and removes rows whose retention period has passed. On a big table, don't delete millions of rows at once, because of locks and replica lag. Delete in small batches, just like a [[data/zero-downtime-migrations|backfill]]. Some data may be needed years later; archive that first.
+          Old papers get thrown out on a schedule, with one big clear-out a year. A database needs a **purge job** that runs at 3:30am and removes rows whose retention period has passed. On a big table, don't delete millions of rows at once, because of locks and replica lag. Delete in small batches, just like a [[data/zero-downtime-migrations|backfill]]. Some data may be needed years later; archive that first.
       - type: code
         lang: php
         file: 'src/Retention/PurgeLoginEventsHandler.php'
@@ -106,8 +106,8 @@ slides:
               public function getSchedule(): Schedule
               {
                   return (new Schedule())->add(
-                  RecurringMessage::cron('30 3 * * *', new PurgeLoginEvents()),
-              );
+                      RecurringMessage::cron('30 3 * * *', new PurgeLoginEvents()),
+                  );
               }
           }
 
@@ -167,7 +167,7 @@ slides:
     blocks:
       - type: text
         body: |
-          Deleting the row breaks foreign keys and loses the order accounts. So you usually **anonymise**: replace the name, email and phone with meaningless values, but keep the order rows and the money amounts. Then publish a `UserErased` event so that search, analytics and cache clean up their own copies. Keep a separate list of who was erased, because restoring from a backup would bring the erased user back.
+          Deleting the row breaks foreign keys and loses the order accounts. So you usually **anonymise**: replace the name, email and phone with meaningless values, but keep the order rows and the money amounts. Then publish a `UserErased` event so that search, analytics and cache clean up their own copies. Keep a separate list of who was erased, stored **outside** the database you back up and restore: a restore would bring the erased user back, and it would roll back an in-database list too.
       - type: code
         lang: php
         file: 'src/Privacy/ErasureService.php'
@@ -180,11 +180,13 @@ slides:
               $this->em->wrapInTransaction(function () use ($user): void {
                   $user->anonymize();            // personal data becomes meaningless values
                   $this->sessions->revokeAll($user);
-                  $this->db->insert('erasure_log', [   // list to re-apply after a restore
-                      'user_id' => $user->getId(),
-                      'erased_at' => (new \DateTimeImmutable())->format('c'),
-                  ]);
               });
+
+              // a separate database: restoring the main one cannot roll this list back
+              $this->erasureDb->insert('erasure_log', [
+                  'user_id' => $id,
+                  'erased_at' => (new \DateTimeImmutable())->format('c'),
+              ]);
 
               // after the commit, tell everyone: search, analytics, cache
               $this->bus->dispatch(new UserErased($id));
@@ -196,8 +198,8 @@ slides:
           //   $this->passwordHash = '!';  $this->erasedAt = new \DateTimeImmutable();
         marks:
           - {line: 6, tip: 'The row stays (foreign keys intact), but nobody can recognise it as a person any more.'}
-          - {line: 8, tip: 'With `erasure_log`, you can anonymise everyone again after a backup restore.'}
-          - {line: 15, tip: 'Dispatch the event after the transaction ends, otherwise an event for a failed transaction might go out.'}
+          - {line: 11, tip: 'The list lives in a separate database, so a restore of the main one cannot roll it back. With it, you can anonymise everyone again after the restore.'}
+          - {line: 17, tip: 'Dispatch the event after the transaction ends, otherwise an event for a failed transaction might go out.'}
       - type: visual
         kind: compare
         caption: 'The person''s data vs the legal record'
@@ -227,14 +229,14 @@ slides:
           - 'If a `UserErased` event is lost, copies survive; look at the outbox pattern to guarantee delivery.'
       - type: tips
         items:
-          - 'Rows can''t be removed from inside a backup; a backup simply expires after its retention period. After a restore, re-run the anonymisation from `erasure_log`.'
+          - 'Rows can''t be removed from inside a backup; a backup simply expires after its retention period. After a restore, re-run the anonymisation from `erasure_log`, which must live outside the restored database.'
       - type: refs
         items:
           - {to: 'workflows/outbox-inbox', label: 'Sending events reliably'}
           - {to: 'recovery/backups-restore', label: 'Backup and restore'}
     check:
       q: 'After a user asks to be deleted, a backup restore brings their data back. What should you have kept to prevent it?'
-      a: 'An `erasure_log` of erased users. After the restore, run the anonymisation again from that list, and the data doesn''t come back.'
+      a: 'An `erasure_log` of erased users, stored outside the restored database. After the restore, run the anonymisation again from that list, and the data doesn''t come back.'
 
 flashcards:
   - q: 'What does data lifecycle mean?'
@@ -267,6 +269,11 @@ flashcards:
     more: |
       Skip verification and a failed archive write still results in deleted data, leaving nothing at all. Keep archives in cheap object storage, in year-month folders, so you can find them later.
     ref: purge-and-archive
+  - q: 'Why must the list of erased users be kept outside the database you back up?'
+    a: 'A restore rolls the whole database back, so a list inside it would lose the newest erasures along with the data they should re-delete.'
+    more: |
+      Say the backup is from last night and the crash is today. Anyone erased this morning is back after the restore, and an `erasure_log` table in the same database is back to last night's state too, so it no longer lists them. A list kept in a separate small database or an append-only file survives the restore, and you re-anonymise everyone on it.
+    ref: erasure-and-copies
   - q: 'What happens to a user''s order rows when they say "delete my data"?'
     a: 'Usually the rows stay, but the name, email, phone and address are anonymised.'
     more: |
@@ -346,9 +353,9 @@ quiz:
   - q: 'Rahim''s team deleted a user. A week later the database crashed and was restored from last night''s backup. What can happen, and what should have been kept to prevent it?'
     hint: 'A backup is a snapshot from before the deletion.'
     options:
-      - text: 'The deleted user comes back; with an `erasure_log`, you can anonymise them again after the restore'
+      - text: 'The deleted user comes back; with an `erasure_log` kept outside that database, you can anonymise them again'
         correct: true
-        why: 'A backup is an old snapshot, so keeping a separate list of deletions is the rule.'
+        why: 'A backup is an old snapshot, and a list kept inside the same database would be rolled back with it. Keep the list of deletions elsewhere.'
       - text: 'Nothing; a backup automatically leaves out deleted data'
         correct: false
         why: 'A backup doesn''t remember events; whatever was there comes back.'

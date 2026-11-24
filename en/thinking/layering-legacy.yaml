@@ -7,7 +7,7 @@ slides:
     blocks:
       - type: text
         body: |
-          In Rahim's app, the whole order job lives in one controller: reading the JSON, running SQL, calculating the discount and sending the email. Six months later the rule changes: "10% off above 5000 taka, but 15% on a first order". The same rule is needed in another API and an admin page too. But the rule is trapped inside the controller, so copying it is the only way.
+          In Rahim's app, the whole order job lives in one controller: reading the JSON, running SQL, calculating the discount and sending the email. The rule is "10% off above 5000 taka", and the same rule is needed in another API and an admin page. It is trapped inside the controller, so Rahim copies it into each. Six months later first orders get 15% off. He updates two copies and forgets the third, so a first order of 6000 taka is charged 5,100 while the admin page shows 5,400.
       - type: code
         lang: php
         file: 'src/Controller/OrderController.php'
@@ -117,39 +117,82 @@ slides:
           - {line: 17, tip: 'The controller just calls one service and shapes the reply. That is its whole job.'}
       - type: code
         lang: php
-        file: 'src/Order/PlaceOrder.php'
+        file: 'src/Order/DiscountPolicy.php + PlaceOrder.php'
         variant: good
         code: |
-          final readonly class PlaceOrder
+          // src/Order/DiscountPolicy.php: the rule, written once
+          final readonly class DiscountPolicy
           {
-              public function __construct(
-                  private ProductRepository $products,   // interface
-                  private OrderRepository $orders,       // interface
-                  private MessageBusInterface $bus,
-              ) {
-              }
-
-              public function __invoke(string $userId, string $productId, int $qty): Order
+              public function apply(int $subtotalPaisa, bool $firstOrder): int
               {
-                  $product = $this->products->get($productId);
+                  $percent = match (true) {
+                      $firstOrder => 15,
+                      $subtotalPaisa > 500_000 => 10,   // above 5,000 taka
+                      default => 0,
+                  };
 
-                  // the discount rule lives inside Order, in one place
-                  $order = Order::place($userId, $product, $qty);
-
-                  $this->orders->save($order);
-                  $this->bus->dispatch(new OrderPlaced((string) $order->getId()));
-
-                  return $order;
+                  return $subtotalPaisa - intdiv($subtotalPaisa * $percent, 100);
               }
           }
+
+          // src/Order/PlaceOrder.php: it injects the two repository interfaces,
+          // DiscountPolicy and the message bus through its constructor
+          public function __invoke(string $userId, string $productId, int $qty): Order
+          {
+              $product = $this->products->get($productId);
+              $first = !$this->orders->hasAnyFor($userId);
+              $total = $this->discounts->apply($product->priceFor($qty), $first);
+
+              $order = Order::place($userId, $product, $qty, $total);
+              $this->orders->save($order);
+              $this->bus->dispatch(new OrderPlaced((string) $order->getId()));
+
+              return $order;
+          }
+
+          // The other API and the admin page make the same one-line call:
+          // $total = $this->discounts->apply($subtotal, $first);
         marks:
-          - {line: 4, tip: 'The service knows interfaces, not Doctrine. The Doctrine implementation lives in the layer below.'}
-          - {line: 18, tip: 'No email sending here. A separate handler picks up the OrderPlaced event and sends it, so there''s no HTTP or mailer in this class.'}
+          - {line: 7, tip: 'First orders get 15%, whatever the amount. The new rule lives here and nowhere else.'}
+          - {line: 8, tip: 'Above 5,000 taka (500,000 paisa) the discount is 10%. Everything else gets none.'}
+          - {line: 20, tip: 'products and orders are interfaces. The Doctrine versions live in the layer below, and this class never sees them.'}
+          - {line: 22, tip: 'The service asks DiscountPolicy for the total, so it holds no discount rule of its own. Callers 2 and 3 do the same.'}
+          - {line: 26, tip: 'No email here. A separate handler listening for OrderPlaced sends it, so this class has no HTTP and no mailer.'}
+      - type: visual
+        kind: compare
+        caption: 'One 6,000-taka first order, before and after the rule moved'
+        columns:
+          - title: 'Before: three copies'
+            tone: bad
+            icon: cross
+            tip: 'Each place calculated the discount on its own, so each had to be updated by hand.'
+            items:
+              - 'Checkout updated to 15%: charges 5,100 taka'
+              - 'Admin page missed the change: shows 5,400'
+              - 'The same order shows two different prices'
+          - title: 'After: DiscountPolicy'
+            tone: good
+            icon: check
+            tip: 'One class holds the rule, and every place asks it.'
+            items:
+              - 'The rule lives in one class, with its own test'
+              - 'Checkout, the other API and the admin page all call apply()'
+              - 'The next change touches one file, and all three agree'
     aside:
       - type: tips
         items:
           - 'Name services by the job they do (`PlaceOrder`, `CancelOrder`), not vague names like `OrderManager`.'
           - 'One job per service makes tests easier to write.'
+      - type: terms
+        items:
+          - {term: 'DTO', meaning: 'Data Transfer Object: a plain object that only carries data, here the checked fields of the request.'}
+          - {term: 'Event', meaning: 'A message saying something has already happened, like OrderPlaced. Anyone interested listens and does its own job.'}
+      - type: when
+        use:
+          - 'A rule needed in two or more places, or one that changes often.'
+        avoid:
+          - 'A one-off check used in a single place: a private method is enough.'
+          - 'The price: one more class to find and to keep tidy.'
       - type: refs
         items:
           - {to: 'messaging/background-jobs', label: 'Putting work for later on a queue'}
@@ -168,6 +211,29 @@ slides:
         title: 'A new bridge beside the old one'
         body: |
           You can't close a busy bridge for repairs. So a new bridge is built alongside, and traffic is moved over one lane at a time. Once the new lane works, the old lane is torn down. Moving off legacy is the same: a router goes in front, and traffic shifts path by path.
+      - type: visual
+        kind: compare
+        caption: 'The same rewrite, two ways: what the calendar looks like'
+        columns:
+          - title: 'Rewrite it all at once'
+            tone: bad
+            icon: cross
+            tip: 'How a big-bang rewrite typically ends. The numbers are an illustration, not a statistic.'
+            items:
+              - 'Plan: 6 months. Reality: 14, because the old app kept getting fixes'
+              - 'Nothing reaches users in all that time'
+              - 'Launch day: hidden rules, like no cash on delivery above 20,000 taka, are missing'
+              - 'Orders go wrong, so the team rolls back: 14 months, nothing shipped'
+          - title: 'Strangler fig'
+            tone: good
+            icon: check
+            tip: 'Small, reversible steps, each one already in front of real users.'
+            items:
+              - 'Week 1: a router goes in front. Nothing changes for users'
+              - 'Week 2: /orders moves to the new app with one nginx line'
+              - 'A bug appears: remove the line and the old path is back in seconds'
+              - 'Every week ships something real, and you can stop at any point'
+              - 'The price: two apps to run for months, and shared data to handle with care'
       - type: visual
         kind: flow
         caption: 'The router sits in front and sends /orders to the new app'
@@ -214,6 +280,68 @@ slides:
       q: 'Why is the strangler fig lower-risk than rewriting the whole app?'
       a: 'Only one small path moves at a time, and if there''s trouble you go back with one line in the router. The whole system never changes in one day, and users notice nothing.'
 
+  - slug: shared-database-session
+    title: 'Two apps, one database, one login'
+    kind: pitfall
+    tldr: 'While both apps run they share the database and the login cookie. Change shared data by adding before removing, and let the new app ask the old one who is logged in.'
+    keywords: ['shared database', 'expand and contract', 'session', 'strangler fig', 'migration', 'cookie']
+    blocks:
+      - type: text
+        body: |
+          While both apps run, they share two things. **The database**: both read and write the same tables, so renaming a column for the new app breaks the old one at once. **The login**: the browser holds one session cookie, but each app keeps its own sessions, so a user logged in on the old app looks like a stranger to the new one.
+      - type: code
+        lang: sql
+        file: 'db/migration.sql'
+        variant: bad
+        code: |
+          -- The new app wants integer paisa, so rename the column
+          ALTER TABLE orders RENAME COLUMN total TO total_paisa;
+
+          -- The old app, still running, now fails on every order page:
+          -- SELECT total FROM orders  ->  ERROR: unknown column 'total'
+        marks:
+          - {line: 2, tip: 'The old app still asks for `total`, so every page that shows an order breaks the moment this runs.'}
+      - type: code
+        lang: sql
+        file: 'db/migration.sql'
+        variant: good
+        code: |
+          -- 1. Expand: add the new column. The old app ignores it.
+          ALTER TABLE orders ADD COLUMN total_paisa BIGINT NULL;
+
+          -- 2. Backfill the existing rows.
+          UPDATE orders SET total_paisa = ROUND(total * 100) WHERE total_paisa IS NULL;
+
+          -- 3. The new app writes both columns until the old app is gone.
+
+          -- 4. Contract: only after the old app is deleted.
+          ALTER TABLE orders DROP COLUMN total;
+        marks:
+          - {line: 2, tip: 'Adding a nullable column breaks nobody, because the old app never selects it.'}
+          - {line: 5, tip: 'Old rows get their paisa value, so the new app can read every order.'}
+          - {line: 10, tip: 'The drop is the one step you can''t take back. It waits until no old code reads `total`.'}
+      - type: visual
+        kind: steps
+        caption: 'Sharing the login while both apps run'
+        steps:
+          - {title: '1. One address', body: 'The router serves both apps on one domain, so the browser sends the same cookie to both.', tip: 'Cookies belong to a domain, not to an app. One domain in front means no extra login for the user.'}
+          - {title: '2. Ask the old app', body: 'The new app sends the cookie to a private /internal/whoami on the old app and gets back the user id.', tip: 'The old app is still the one that knows its sessions. Asking it avoids copying session data between the two.'}
+          - {title: '3. Keep it private', body: 'That endpoint must be reachable only from inside your network, never from the internet.', tip: 'Anyone who can call it with a stolen cookie learns who it belongs to, so it must not face the internet.'}
+          - {title: '4. Move login last', body: 'When /login itself moves to the new app, delete the whoami call.', tip: 'Once the new app creates the sessions itself, it no longer needs to ask.'}
+      - type: quote
+        body: 'While both apps run, change shared data only by adding. Remove only after the old app is gone.'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Session cookie', meaning: 'A small token the browser sends with every request so the server knows which logged-in user it is.'}
+          - {term: 'Expand and contract', meaning: 'Changing a shared table in two safe phases: first add the new thing, and remove the old thing only much later.'}
+      - type: pitfalls
+        items:
+          - 'The whoami call is an extra network hop on every request. Cache the answer for a short time, or the old app becomes the bottleneck.'
+    check:
+      q: 'Why not just rename the `total` column while the old app is still running?'
+      a: 'The old app still selects `total`, so it breaks at once. Add the new column first, backfill it, switch the new app over, and drop the old column only after the old app is gone.'
+
   - slug: anti-corruption-layer
     title: 'Anti-corruption layer: keep the old system''s odd language out'
     kind: concept
@@ -235,6 +363,18 @@ slides:
           - {from: acl, to: legacy, label: 'The translator sends the request in the old language'}
           - {from: legacy, to: acl, label: 'The answer comes back in the old format', dashed: true}
           - {from: acl, to: modern, label: 'The translator returns a clean Customer object', tone: good, dashed: true}
+      - type: code
+        lang: php
+        file: 'src/Controller/ProfileController.php'
+        variant: bad
+        code: |
+          // Without a translator, the old language spreads through the new code
+          if ('A' === $row['st'] && (float) $row['bal'] > 0) {   // what is "A"? what unit is bal?
+              $newBalance = $row['bal'] * 1.05;                  // float arithmetic on money
+          }
+        marks:
+          - {line: 2, tip: 'Every place that reads the old row must know that "A" means active. Rename it once and you hunt through all of them.'}
+          - {line: 3, tip: 'The balance is still the string "1250.50", so this is float arithmetic on money.'}
       - type: code
         lang: php
         file: 'src/Customer/Infrastructure/LegacyCustomerGateway.php'
@@ -266,6 +406,13 @@ slides:
       - type: quote
         body: 'Don''t let the old system''s language into new code; translate it at the border.'
     aside:
+      - type: when
+        use:
+          - 'You will talk to the old system for months or years.'
+          - 'Its names or formats are odd, or likely to change.'
+        avoid:
+          - 'A throwaway one-time import: convert in the script and be done.'
+          - 'The price: one more class to write and keep in step with the old system.'
       - type: refs
         items:
           - {to: 'thinking/hexagonal', label: 'Ports and adapters'}
@@ -290,6 +437,11 @@ flashcards:
     more: |
       The same rule has to be copied, and the copies drift apart over time. Move the rule into a service and one change updates every place at once.
     ref: fat-controller
+  - q: 'A discount rule is needed in three places. How do you keep them in step?'
+    a: 'Write it once in its own class, such as `DiscountPolicy`, and have the checkout, the other API and the admin page all call it.'
+    more: |
+      With three copies, a change that updates two leaves the third showing an old price: 5,100 taka at checkout, 5,400 on the admin page for the same 6,000-taka first order. With one class, one edit updates every caller and the rule gets its own test.
+    ref: layered-symfony
   - q: 'Why is it wrong for a service to hold a `Request` object?'
     a: 'It ties the business rule to HTTP, so the rule can''t be used from a console command or a queue handler.'
     more: |
@@ -305,6 +457,16 @@ flashcards:
     more: |
       For the first path, choose one with low risk and few dependencies (a report, say). In the last step, don't forget to delete the old code, or both systems keep running forever.
     ref: strangler-fig
+  - q: 'What breaks if you rename a column while the old and new apps share a table?'
+    a: 'The old app still reads the old name and fails at once. Add the new column, backfill, switch the new app, and drop the old one only after the old app is gone.'
+    more: |
+      This is expand and contract. Adding a nullable column breaks nobody. The drop is the one step you cannot undo, so it comes last, when no old code reads the column.
+    ref: shared-database-session
+  - q: 'How does the new app know who is logged in during a strangler migration?'
+    a: 'The browser sends one cookie to both apps. The new app asks the old one, over a private endpoint, who that cookie belongs to. Login moves last.'
+    more: |
+      The router puts both apps on one domain, so no second login is needed. The private endpoint must never be reachable from the internet, and its answer can be cached briefly so the old app does not become the bottleneck.
+    ref: shared-database-session
   - q: 'What is an anti-corruption layer for?'
     a: 'It confines the old system''s odd names and formats to one translator class so the new code stays clean.'
     more: |
@@ -313,7 +475,7 @@ flashcards:
   - q: 'Why is rewriting a legacy system in one go risky?'
     a: 'Old code holds years of hidden rules that get lost in a rewrite, and the work takes far longer than estimated.'
     more: |
-      Throughout the rewrite the old system keeps changing, so the new one is always behind. Moving step by step means each step is checked with real users.
+      Throughout the rewrite the old system keeps changing, so the new one is always behind: a plan of 6 months easily becomes 14. Moving step by step means each step is checked with real users.
     ref: strangler-fig
 
 quiz:
@@ -392,6 +554,22 @@ quiz:
         correct: false
         why: 'Storing data is the repository''s job.'
     ref: layered-symfony
+  - q: 'The checkout now gives first orders 15% off, but the admin page still shows the old price. What is the real fix?'
+    hint: 'How many places should know the discount rule?'
+    options:
+      - text: 'Copy the new rule into the admin page as well'
+        correct: false
+        why: 'It fixes today, but you now have three copies that will drift apart again.'
+      - text: 'Move the rule into one class, such as `DiscountPolicy`, that the checkout, the other API and the admin page all call'
+        correct: true
+        why: 'One change updates every caller, and the rule gets a single test.'
+      - text: 'Add a comment above each copy: "keep in sync with checkout"'
+        correct: false
+        why: 'Comments don''t run. The next change will still miss one copy.'
+      - text: 'Hide the price on the admin page'
+        correct: false
+        why: 'That hides the symptom. The two places still disagree.'
+    ref: layered-symfony
   - q: 'In a strangler fig setup, what config change in the router moves one path from the old app to the new one?'
     hint: 'How does changing one rule in the router make the switch?'
     options:
@@ -408,3 +586,19 @@ quiz:
         correct: false
         why: 'Users stay on the same URL; the router switches the path behind the scenes.'
     ref: strangler-fig
+  - q: 'The new app and the old app share an `orders` table. The new app wants an integer `total_paisa` instead of `total`. What is the safe order of steps?'
+    hint: 'Which step can''t be undone, and when is it safe to take?'
+    options:
+      - text: 'Rename `total` to `total_paisa` in one migration'
+        correct: false
+        why: 'The old app still selects `total` and breaks at once.'
+      - text: 'Give the new app its own copy of the database and never sync them'
+        correct: false
+        why: 'Two databases mean two versions of every order, so orders placed on one are missing on the other.'
+      - text: 'Add `total_paisa`, backfill it, move the new app over, and drop `total` only after the old app is gone'
+        correct: true
+        why: 'Each step is safe for the old app, and the one step that can''t be undone comes last.'
+      - text: 'Drop `total` first, then add `total_paisa`'
+        correct: false
+        why: 'The old app breaks, and the data in `total` is lost before it was copied.'
+    ref: shared-database-session

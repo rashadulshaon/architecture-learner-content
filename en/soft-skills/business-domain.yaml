@@ -52,7 +52,7 @@ slides:
     blocks:
       - type: text
         body: |
-          "Customers must never lose money" is business talk. In engineering terms, it means correctness and audit. "Lots of customers at Eid" means scalability. This translation is the architect's job. Without it, a design stands on guesswork.
+          "Customers must never lose money" is business talk. In engineering terms, it means correctness and an audit trail you can check later. "Lots of customers at Eid" means scalability, coping when many arrive at once. This translation is the architect's job. Without it, a design stands on guesswork.
       - type: visual
         kind: table
         caption: 'From a business goal to a design decision'
@@ -78,7 +78,7 @@ slides:
           Will give up: admin reports will stay slow
           Won't give up: accuracy of money and orders
         marks:
-          - {line: 2, tip: 'Without numbers, "a lot" can''t be measured. If the numbers change, the design will too.'}
+          - {line: 2, tip: 'Numbers make "a lot" measurable: 500 orders a minute is about 8 every second, like 8 people reaching a tea-stall counter each second. p95 means 95 of every 100 customers finish checkout in under 1 second.'}
           - {line: 3, tip: 'Write the assumptions down; everyone then knows the design must change if they turn out wrong.'}
           - {line: 5, tip: 'Say what you''ll give up in advance, so nobody is surprised later.'}
       - type: quote
@@ -189,6 +189,10 @@ slides:
         title: 'Cutting corners on the seams'
         body: |
           In its rush to launch, one startup left the admin pages unfinished but wrote the payment tests in full. Two months later the admin pages were fixed, and nothing ever went wrong with payments. The corner was cut in the right place.
+      - type: pitfalls
+        items:
+          - 'Imagine a team skipping the duplicate-charge test to launch a week sooner. One slow-network day, 300 customers are charged twice; refunds and lost trust cost more than that week.'
+          - 'Calling everything "cuttable". If an admin page holds the refund button, it isn''t cosmetic: check what a page can do before you cut it.'
       - type: refs
         items:
           - {to: 'thinking/tech-debt', label: 'Tech debt: borrowing and repaying'}
@@ -204,7 +208,7 @@ slides:
     blocks:
       - type: text
         body: |
-          To open a pharmacy you need a licence from the drug regulator, and there are rules on where medicines may be stored. Draw the shop layout first and you'll have to tear it down and rebuild. In software too, knowing the rules first gets the design right the first time.
+          To open a pharmacy you need a licence from the drug regulator, and there are rules on where medicines may be stored. Draw the shop layout first and you'll have to tear it down and rebuild. Software is the same. Picture a small loan app that keeps customer records in a cloud region abroad. A year in, the regulator says financial data must stay inside the country. Now the database, the backups and the logs all have to move while live customers keep paying, and that can take months. One question in week one would have cost an afternoon.
       - type: visual
         kind: steps
         caption: 'From legal rules to design decisions: five questions'
@@ -228,6 +232,72 @@ slides:
     check:
       q: 'Why do you need to know the legal rules at the start of design?'
       a: 'Because if data location, retention and access aren''t settled early, changing them later takes months. With the rules assumed up front, the design is right the first time.'
+
+  - slug: regulation-worked-example
+    title: 'Worked example: the five questions for a small loan app'
+    kind: howto
+    tldr: 'Answer the five questions in writing before design. Each answer becomes something you can build or check: a region, a purge job, an access rule, an audit table.'
+    keywords: ['compliance', 'retention', 'audit log', 'data residency', 'decision record', 'purge job']
+    blocks:
+      - type: text
+        body: |
+          Back to the loan app. Before any design, fill in one page. The numbers and rules below are examples; your real ones come from a compliance person or a lawyer. Notice that every answer ends in something you can build or check.
+      - type: code
+        lang: text
+        file: 'docs/compliance/loan-app.txt'
+        variant: good
+        code: |
+          App: small loan app (name, phone, national ID photo, loan history)
+
+          1. What data?   Personal (name, phone, ID photo) and financial (loan history).
+          2. Where?       Database, backups and logs: a data centre inside Bangladesh.
+                          (assumed rule: financial data stays in the country)
+          3. How long?    Loan records: keep 7 years after the loan closes (assumed).
+                          Rejected applicant's ID photo: delete after 90 days.
+          4. Who sees?    Support: name and phone only. Collections: loan history.
+                          ID photos: 2 named admins. Every view is logged.
+          5. Proof?       audit_log table (append-only) + a monthly export for the auditor.
+
+          Without this page: the region is picked by habit, photos are kept forever,
+          and the auditor hears "we think so".
+        marks:
+          - {line: 4, tip: 'The region is now a design input, chosen on day one. Backups and logs count too: a copy abroad breaks the rule as much as the database does.'}
+          - {line: 7, tip: 'A rule with a number can become a job. The next block builds this line.'}
+          - {line: 9, tip: 'Access is by role, not by default. Logging every view is what makes question 5 answerable.'}
+      - type: code
+        lang: sql
+        file: 'jobs/purge-rejected-id-photos.sql'
+        variant: good
+        code: |
+          -- Nightly job (PostgreSQL), run by the Symfony Scheduler. Rule from question 3.
+          WITH purged AS (
+            DELETE FROM id_documents d
+            USING applications a
+            WHERE d.application_id = a.id
+              AND a.status = 'rejected'
+              AND a.decided_at < now() - interval '90 days'
+            RETURNING d.id
+          )
+          INSERT INTO audit_log (action, subject_id, at)
+          SELECT 'id_document_purged', id, now() FROM purged;
+        marks:
+          - {line: 7, tip: 'The 90 days from question 3, written once, in the one place that enforces it.'}
+          - {line: 10, tip: 'Delete and log are one statement, so a photo is never gone without a record. This row is the proof for question 5.'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'Copying the example numbers. The 7 years and 90 days here are made up; yours come from compliance.'
+          - 'Deleting from the live table but forgetting backups, logs and exports. The rule covers every copy.'
+      - type: when
+        use:
+          - 'The app holds personal, financial or health data'
+          - 'Before you pick a cloud region or a database'
+        avoid:
+          - 'A throw-away prototype with fake data (redo this page before real data arrives)'
+          - 'Deciding what the law says; that is for compliance or a lawyer'
+    check:
+      q: 'In the loan app, which answer tells you to build a nightly purge job, and what else must the job write?'
+      a: 'Question 3: rejected ID photos are deleted after 90 days. For each deletion the job also writes an audit_log row, which is the proof for the auditor.'
 
 flashcards:
   - q: 'What does it mean to turn a business goal into a design constraint?'
@@ -270,6 +340,16 @@ flashcards:
     more: |
       The five questions start from a list of your data. The answers decide where the database sits, how deletion works, how access is controlled and what the audit log holds. Write the answer to each one down.
     ref: regulation-as-input
+  - q: 'What can go wrong if you learn the legal rules only after launch?'
+    a: 'Data, backups and logs may have to move while live customers keep using the app, which can take months.'
+    more: |
+      Say a loan app keeps its data in a cloud region abroad, and a rule later says financial data must stay in the country. Now the database, backups, logs and analytics exports all have to move. One question in the first week avoids that bill.
+    ref: regulation-as-input
+  - q: 'How does a rule like "delete rejected ID photos after 90 days" become part of the system?'
+    a: 'As a scheduled job that deletes the data and writes an audit_log row for each deletion, so you can prove it ran.'
+    more: |
+      The 90 days is written once, in the job's query. Delete and log happen in one statement, so a photo is never gone without a record. The 90 days and 7 years in this example are made up; the real figures come from compliance.
+    ref: regulation-worked-example
 
 quiz:
   - q: 'Marketing says, "We want the offer two weeks before Eid." Rakib''s team wants two months to perfect the whole system. What is the best first step?'
@@ -352,6 +432,22 @@ quiz:
         correct: false
         why: 'Engineers own the design; they have to take the constraints on board together with a legal expert.'
     ref: regulation-as-input
+  - q: 'A rule says rejected applicants'' ID photos must be deleted after 90 days. What do you build?'
+    hint: 'A rule you can''t prove you followed is only half followed.'
+    options:
+      - text: 'A note in the team wiki asking admins to delete old photos when they remember'
+        correct: false
+        why: 'Manual steps get forgotten, and nothing proves they happened.'
+      - text: 'Hide the photos in the admin screen but keep them in the database'
+        correct: false
+        why: 'Hidden is not deleted. The data still exists, so the rule is broken, and a leak would still expose it.'
+      - text: 'A nightly job that deletes the photos and writes an audit_log row for each one'
+        correct: true
+        why: 'The rule is enforced automatically, and the audit rows are the proof for the auditor.'
+      - text: 'Nothing yet; wait until the auditor asks'
+        correct: false
+        why: 'By then photos older than 90 days exist, and you can''t show a history of following the rule.'
+    ref: regulation-worked-example
   - q: 'You took on debt to launch quickly. What is the best next step?'
     hint: 'The interest on hidden debt keeps growing.'
     options:

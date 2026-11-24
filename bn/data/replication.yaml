@@ -15,7 +15,7 @@ slides:
         caption: 'এক leader, দুই follower: লেখা এক জায়গায়, পড়া ছড়ানো'
         nodes:
           - {id: app, label: 'Symfony অ্যাপ', icon: api, col: 0, row: 1, tip: 'লেখা আর পড়া দুটোর অনুরোধই এখান থেকে যায়।'}
-          - {id: leader, label: 'leader', sub: 'primary, লেখা নেয়', icon: db, tone: accent, col: 2, row: 0, tip: 'একমাত্র যে নোড লেখা গ্রহণ করে। প্রতিটা বদল WAL-এ লিখে follower-দের পাঠায়।'}
+          - {id: leader, label: 'leader', sub: 'primary, লেখা নেয়', icon: db, tone: accent, col: 2, row: 0, tip: 'একমাত্র যে নোড লেখা গ্রহণ করে। প্রতিটা বদল নিজের WAL-এ (write-ahead log, সব বদলের রোজনামচা) লিখে follower-দের পাঠায়।'}
           - {id: f1, label: 'follower ১', sub: 'শুধু পড়া', icon: db, col: 4, row: 0, tip: 'leader-এর কপি। পড়ার অনুরোধ নেয়, লেখা নেয় না।'}
           - {id: f2, label: 'follower ২', sub: 'শুধু পড়া', icon: db, col: 4, row: 2, tip: 'আরেকটা কপি। leader মরলে এটাও নতুন leader হতে পারে।'}
         edges:
@@ -32,7 +32,7 @@ slides:
           - 'ব্যাকআপ আর রিপোর্ট: follower থেকে ভারী query চালালে leader বাঁচে।'
     aside:
       - type: problem
-        body: 'Replication লেখার ক্ষমতা বাড়ায় না: লেখা তবু একটা leader-এই যায়। লেখার চাপ বাড়লে লাগবে sharding।'
+        body: 'Replication লেখার ক্ষমতা বাড়ায় না: লেখা তবু একটা leader-এই যায়। লেখার চাপ বাড়লে লাগবে sharding। আবার follower ব্যাকআপও নয়: leader-এ ভুল `DELETE` চললে মুহূর্তের মধ্যে সেটা সব follower-এ কপি হয়ে যায়।'
       - type: refs
         items:
           - {to: 'data/sharding', label: 'লেখার চাপ ভাগ করা'}
@@ -63,14 +63,14 @@ slides:
             items:
               - 'leader নিজের ডিস্কে লিখেই commit করে'
               - 'লেখা দ্রুত, follower ধীর হলেও আটকায় না'
-              - 'leader ক্র্যাশ করলে শেষ কিছু commit হারাতে পারে'
+              - 'leader ক্র্যাশ করলে শেষ মুহূর্তের commit (এক সেকেন্ডের ভগ্নাংশ থেকে কয়েক সেকেন্ড) হারাতে পারে'
           - title: 'Sync'
             tone: warn
             icon: lock
             tip: 'টাকার মতো ডেটায় ভাবার বিষয়। বেশি নিরাপদ, কিন্তু প্রতিটা লেখা ধীর।'
             items:
               - 'leader অন্তত একটা follower-এর নিশ্চিতির অপেক্ষা করে'
-              - 'প্রতিটা লেখায় নেটওয়ার্কের একটা round trip যোগ'
+              - 'প্রতিটা লেখায় একটা round trip যোগ: একই data centre-এ প্রায় ১ms, অন্য অঞ্চলে ৫০ms বা তারও বেশি'
               - 'সব sync follower মরলে লেখাও থেমে যেতে পারে'
       - type: code
         lang: ini
@@ -82,7 +82,7 @@ slides:
         marks:
           - {line: 2, tip: 'ANY 1 (...): যেকোনো একটা follower নিশ্চিত করলেই হয়। একটা মরলেও লেখা থামে না। একে quorum-ধরন sync বলে।'}
       - type: quote
-        body: 'Async মানে leader মরলে শেষ লেখা হারানোর ঝুঁকি। Sync মানে প্রতিটা লেখার দেরি। দুটোর একটা তোমাকে বাছতে হবে।'
+        body: 'Async মানে leader মরলে শেষ লেখা হারানোর ঝুঁকি। Sync মানে প্রতিটা লেখার দেরি। দুটোর একটা আপনাকে বাছতে হবে।'
     aside:
       - type: when
         use:
@@ -120,7 +120,7 @@ slides:
           - {at: follower, note: 'lag ২ সেকেন্ড, #৯১ এখনো নেই', tone: warn, tip: 'leader থেকে এই follower পর্যন্ত বদল পৌঁছাতে সময় লাগছে। এটাই replication lag।'}
           - {from: follower, to: rahim, label: '#৯১ ছাড়া তালিকা', dashed: true, tone: bad, tip: 'রহিম ভাবছে মন্তব্য হারিয়ে গেছে।'}
       - type: quote
-        body: 'নিজের লেখা নিজেকে দেখাতে হবে। লেখার পরে প্রয়োজনীয় পড়া leader থেকে করো।'
+        body: 'নিজের লেখা নিজেকে দেখাতে হবে। লেখার পরে প্রয়োজনীয় পড়া leader থেকে করুন।'
     aside:
       - type: story
         title: 'ডবল পোস্ট'
@@ -131,6 +131,7 @@ slides:
           - {term: 'Read-your-own-writes', meaning: 'নিজের লেখা পরের পড়ায় সবসময় দেখতে পাওয়ার নিশ্চয়তা।'}
       - type: refs
         items:
+          - {to: doctrine-primary-replica, label: 'সমাধান, Doctrine-এ'}
           - {to: 'data/consistency-models', label: 'কে কখন কী দেখে'}
     check:
       q: 'লেখা সফল হয়েছে, তবু সাথে সাথে পড়লে নতুন ডেটা নেই। এখানে ডেটাবেস কি ভুল করেছে?'
@@ -184,14 +185,16 @@ slides:
               }
           }
         marks:
-          - {line: 14, tip: 'লেখার পর ৫ সেকেন্ডের মতো এই ব্যবহারকারী primary থেকে পড়ে, replica-র lag পেরিয়ে যাওয়ার সময় দিয়ে।'}
+          - {line: 15, tip: 'লেখার পর ৫ সেকেন্ডের মতো এই ব্যবহারকারী primary থেকে পড়ে, replica-র lag পেরিয়ে যাওয়ার সময় দিয়ে।'}
       - type: text
         body: |
-          লেখার পর controller-এ শুধু একটা লাইন যোগ করো: `$request->getSession()->set('primary_until', time() + 5);`। তাহলে ওই ব্যবহারকারীর পরের ৫ সেকেন্ডের পড়া primary থেকে হবে, আর ততক্ষণে replica সাধারণত ধরে ফেলে।
+          লেখার পর controller-এ শুধু একটা লাইন যোগ করুন: `$request->getSession()->set('primary_until', time() + 5);`। তাহলে ওই ব্যবহারকারীর পরের ৫ সেকেন্ডের পড়া primary থেকে হবে, আর ততক্ষণে replica সাধারণত ধরে ফেলে।
     aside:
       - type: tips
         items:
           - 'সব পড়া replica-তে নয়: টাকার হিসাব, লগইনের পর প্রথম পাতা আর "আমার" ডেটা primary-তে রাখাই নিরাপদ।'
+          - '৫ সেকেন্ড একটা আন্দাজ, যেটাকে আপনার আসল lag-এর চেয়ে বড় হতে হবে। lag মাপুন; ৫ সেকেন্ড ছাড়ালে জানালা বাড়ান। দাম: ওই ব্যবহারকারীদের জন্য replica-তে পড়া কিছুটা কমে।'
+          - 'একবার লেখা বা transaction শুরু হলে `replicas` wrapper (DBAL-এর PrimaryReadReplicaConnection) ওই request-এর বাকিটা primary-তেই রাখে, তাই একই request-এ নিজের লেখা পড়া নিরাপদ।'
           - 'বেশি জটিল হলে লেখার সময় leader-এর WAL position (LSN) টুকে রেখে follower সেই পর্যন্ত পৌঁছেছে কি না দেখা যায়, তবে এর জন্য আলাদা কাজ লাগে।'
       - type: refs
         items:
@@ -215,18 +218,18 @@ slides:
         kind: steps
         caption: 'নিরাপদ failover-এর ধাপ'
         steps:
-          - {title: '১. leader মরেছে কি?', body: 'কয়েকটা চেকে একমত হও, এক মুহূর্তের নেটওয়ার্ক-ঝামেলায় নয়।', tip: 'ভুল সংকেতে failover করলে এমন অবস্থা তৈরি হয় যেখানে পুরনো leader আসলে বেঁচে।'}
-          - {title: '২. পুরনোটাকে আটকাও', body: 'পুরনো leader-কে বন্ধ করো বা লেখা আটকাও (fencing)।', tone: accent, tip: 'এই ধাপটাই split brain ঠেকায়। পুরনো leader কোনোভাবেই আর লেখা নিতে পারবে না।'}
-          - {title: '৩. সবচেয়ে এগিয়ে থাকাকে তোলো', body: 'যে follower leader-এর সবচেয়ে কাছাকাছি, তাকে নতুন leader করো।', tip: 'কম পিছিয়ে থাকা follower তুললে হারানো লেখা কম হয়।'}
-          - {title: '৪. অ্যাপকে জানাও', body: 'অ্যাপ নতুন leader-এ লেখা পাঠাবে; পুরনোটা follower হয়ে ফেরে।', tip: 'পুরনো leader ফিরলে তার অতিরিক্ত লেখা বাদ দিয়ে নতুন leader থেকে আবার কপি নিতে হয়।'}
+          - {title: '১. leader মরেছে কি?', body: 'কয়েকটা চেকে একমত হন, এক মুহূর্তের নেটওয়ার্ক-ঝামেলায় নয়।', tip: 'ভুল সংকেতে failover করলে এমন অবস্থা তৈরি হয় যেখানে পুরনো leader আসলে বেঁচে।'}
+          - {title: '২. পুরনোটাকে আটকান', body: 'পুরনো leader-কে বন্ধ করুন বা লেখা আটকান (fencing)।', tone: accent, tip: 'এই ধাপটাই split brain ঠেকায়। পুরনো leader কোনোভাবেই আর লেখা নিতে পারবে না।'}
+          - {title: '৩. সবচেয়ে এগিয়ে থাকাকে তুলুন', body: 'যে follower leader-এর সবচেয়ে কাছাকাছি, তাকে নতুন leader করুন।', tip: 'কম পিছিয়ে থাকা follower তুললে হারানো লেখা কম হয়।'}
+          - {title: '৪. অ্যাপকে জানান', body: 'অ্যাপ নতুন leader-এ লেখা পাঠাবে; পুরনোটা follower হয়ে ফেরে।', tip: 'পুরনো leader ফিরলে তার অতিরিক্ত লেখা বাদ দিয়ে নতুন leader থেকে আবার কপি নিতে হয়।'}
       - type: quote
         body: 'Failover স্বয়ংক্রিয় না হলে ভরসা নেই, আর fencing ছাড়া স্বয়ংক্রিয় failover বিপজ্জনক।'
     aside:
       - type: pitfalls
         items:
-          - 'নিজে হাতে বানানো failover স্ক্রিপ্ট না লিখে Patroni বা ম্যানেজড ডেটাবেসের (RDS, Cloud SQL) নির্ভরযোগ্য ব্যবস্থা ব্যবহার করো।'
-          - 'Async-এ failover-এ শেষ কিছু লেখা হারাতে পারে। জানা থাকা চাই এটা তোমার ব্যবসার জন্য চলে কি না।'
-          - 'নিয়মিত failover অনুশীলন করো। পরীক্ষা না করা failover জরুরি সময়ে কাজ করে না।'
+          - 'নিজে হাতে বানানো failover স্ক্রিপ্ট না লিখে Patroni বা ম্যানেজড ডেটাবেসের (RDS, Cloud SQL) নির্ভরযোগ্য ব্যবস্থা ব্যবহার করুন।'
+          - 'Async-এ failover-এ শেষ কিছু লেখা হারাতে পারে। জানা থাকা চাই এটা আপনার ব্যবসার জন্য চলে কি না।'
+          - 'নিয়মিত failover অনুশীলন করুন। পরীক্ষা না করা failover জরুরি সময়ে কাজ করে না।'
       - type: refs
         items:
           - {to: 'scaling/coordination', label: 'কে leader, সেই ঐকমত্য'}
@@ -244,7 +247,7 @@ flashcards:
   - q: 'Replication কি লেখার ক্ষমতা বাড়ায়?'
     a: 'না। লেখা তবু একটা leader-এই যায়। replication বাড়ায় পড়ার ক্ষমতা আর বেঁচে থাকার সম্ভাবনা।'
     more: |
-      লেখার চাপ এক সার্ভারের সীমা ছাড়ালে ডেটা ভাগ করতে হয়, মানে sharding। তার আগে index, cache, ভালো query আর বড় সার্ভার ভাবো।
+      লেখার চাপ এক সার্ভারের সীমা ছাড়ালে ডেটা ভাগ করতে হয়, মানে sharding। তার আগে index, cache, ভালো query আর বড় সার্ভার ভাবুন।
     ref: one-copy-is-risky
   - q: 'Sync আর async replication-এর পার্থক্য কী?'
     a: 'Async-এ leader follower-এর অপেক্ষা না করে commit করে (দ্রুত, ক্র্যাশে ডেটা হারানোর ঝুঁকি)। Sync-এ অপেক্ষা করে (নিরাপদ, ধীর)।'
@@ -262,15 +265,25 @@ flashcards:
       সমাধান: লেখার পরে কিছুক্ষণ (বা সংশ্লিষ্ট পড়া) leader থেকে পড়া, অথবা follower কতদূর এগিয়েছে দেখে তবে পড়া। Doctrine-এ ensureConnectedToPrimary() দিয়ে এটা করা যায়।
     ref: doctrine-primary-replica
   - q: 'Doctrine-এ replica কীভাবে বসায়?'
-    a: 'doctrine.yaml-এ মূল url (primary) রেখে তার নিচে replicas: লিখো; DoctrineBundle PrimaryReadReplicaConnection ব্যবহার করবে।'
+    a: 'doctrine.yaml-এ মূল url (primary) রেখে তার নিচে replicas: লিখুন; DoctrineBundle PrimaryReadReplicaConnection ব্যবহার করবে।'
     more: |
       লেখা বা transaction শুরু হওয়ার পরে সেই request-এর বাকি সব query primary-তে যায়। অর্থাৎ এক request-এর ভেতরে নিজের লেখা ঠিকই দেখা যায়; সমস্যা পরের request-এ, তাই sticky ব্যবস্থা লাগে।
     ref: doctrine-primary-replica
   - q: 'Split brain কী, কীভাবে ঠেকায়?'
-    a: 'দুটো নোড একসাথে নিজেকে leader ভেবে লেখা নিলে split brain। ঠেকাতে পুরনো leader-কে fencing করে লেখা থেকে আটকাও।'
+    a: 'দুটো নোড একসাথে নিজেকে leader ভেবে লেখা নিলে split brain। ঠেকাতে পুরনো leader-কে fencing করে লেখা থেকে আটকান।'
     more: |
       দুই leader মানে দুই ভিন্ন সত্য, যা পরে জোড়া দেওয়া খুব কঠিন, কখনো অসম্ভব। তাই failover-এ আগে পুরনোটাকে আটকানো, তারপর নতুন leader তোলা। Patroni বা ম্যানেজড সেবা এই কাজ ঠিকভাবে করে।
     ref: failover-split-brain
+  - q: 'Follower কি ব্যাকআপ?'
+    a: 'না। প্রতিটা বদল follower-এ পৌঁছায়, ভুল DELETE বা DROP-ও। ব্যাকআপ রাখে আগের অবস্থা, যেখানে ফেরা যায়।'
+    more: |
+      Replication বাঁচায় মেশিন মরা থেকে, মানুষের ভুল বা খারাপ deploy থেকে নয়, কারণ ভুলটা মুহূর্তে কপি হয়ে যায়। তাই আলাদা ব্যাকআপ লাগবেই; ডেটা গুরুত্বপূর্ণ হলে point-in-time recovery-সহ।
+    ref: one-copy-is-risky
+  - q: 'লেখার ঠিক পরের request-এ ব্যবহারকারী বাসি ডেটা দেখা এড়াবেন কীভাবে?'
+    a: 'লেখাটা মনে রাখুন (যেমন session-এ), আর সেই ব্যবহারকারীর পড়া কয়েক সেকেন্ড primary-তে পাঠান, স্বাভাবিক lag-এর চেয়ে বেশি সময়।'
+    more: |
+      Doctrine primary-তে লেগে থাকে শুধু যে request-এ লেখা হয়েছে সেটার ভেতরে। `primary_until` ভবিষ্যতে থাকলে ensureConnectedToPrimary() ডাকা ছোট একটা listener গ্যারান্টিটা পরের request-এ বয়ে নেয়। দাম: replica-তে পড়া কিছুটা কমে; জানালা আপনার আসল lag-এর চেয়ে বড় হতে হবে।
+    ref: doctrine-primary-replica
 
 quiz:
   - q: 'নিচের কোডটা লেখার পরেই পড়ছে। replica থাকলে কী সমস্যা হতে পারে, আর কখন?'
@@ -362,3 +375,19 @@ quiz:
         correct: false
         why: 'সমস্যা লেখাতেই: দুই leader দুই রকম বদল গ্রহণ করে।'
     ref: failover-split-brain
+  - q: 'লেখার পর রিডাইরেক্ট হওয়া পাতায় রহিমের নতুন মন্তব্য প্রায়ই নেই। পরের request-এ এটা কোন সমাধানে সত্যিই মেটে?'
+    hint: 'Doctrine primary-তে লেগে থাকে শুধু যে request-এ লেখা হয়েছে তার ভেতরে।'
+    options:
+      - text: 'লেখাটা session-এ মনে রেখে কয়েক সেকেন্ড primary থেকে পড়া'
+        correct: true
+        why: 'এটা primary সংযোগকে পরের request-এ বয়ে নেয়, replica ধরে ফেলার মতো সময় দিয়ে। দাম: পড়া কিছুটা কম ছড়ায়।'
+      - text: 'redirect-এর আগে flush() আরেকবার ডাকা'
+        correct: false
+        why: 'flush() শুধু primary-তে লেখে; replica-কে দ্রুত করার কিছু করে না।'
+      - text: 'আরও replica যোগ করা'
+        correct: false
+        why: 'বেশি follower মানে পিছিয়ে থাকা আরও কপি; পিছিয়ে থাকা কপি থেকে পড়ার সমস্যা মেটে না।'
+      - text: 'সব টেবিলে sync replication চালু করা'
+        correct: false
+        why: 'lag কমবে, কিন্তু প্রতিটা লেখা ধীর হবে — অথচ এক ব্যবহারকারীর সমস্যা এই দাম ছাড়াই মেটানো যায়।'
+    ref: doctrine-primary-replica

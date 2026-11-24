@@ -9,16 +9,24 @@ slides:
         icon: book
         title: 'লাইব্রেরির ক্যাটালগ'
         body: |
-          লাইব্রেরিতে ২০ লাখ বই। "রবীন্দ্রনাথের গীতবিতান" খুঁজতে তুমি তাকের প্রথম বই থেকে শেষ বই পর্যন্ত একটা একটা করে দেখছ। ক্যাটালগ কার্ডের কাছে গেলে লেখকের নাম ধরে সাজানো কার্ডে সাথে সাথে পেতে "তাক ১৪, তৃতীয় সারি"। ডেটাবেসের index ঠিক এই ক্যাটালগ: সাজানো সূচি, যেখানে প্রতিটা এন্ট্রি বলে row কোথায় আছে।
+          লাইব্রেরিতে ২০ লাখ বই। "রবীন্দ্রনাথের গীতবিতান" খুঁজতে আপনি তাকের প্রথম বই থেকে শেষ বই পর্যন্ত একটা একটা করে দেখছেন। ক্যাটালগ কার্ডের কাছে গেলে লেখকের নাম ধরে সাজানো কার্ডে সাথে সাথে পান "তাক ১৪, তৃতীয় সারি"। ডেটাবেসের index ঠিক এই ক্যাটালগ: সাজানো সূচি, যেখানে প্রতিটা এন্ট্রি বলে row কোথায় আছে।
       - type: text
         body: |
-          রহিমের অ্যাপে `customer_order` টেবিলে ২০ লাখ row। "আমার অর্ডারগুলো" পাতা এক সপ্তাহ আগেও দ্রুত ছিল, এখন প্রতিবার প্রায় ০.৪ সেকেন্ড লাগে। আর কোড একটুও বদলায়নি; শুধু row বেড়েছে।
+          রহিমের অ্যাপে `customer_order` টেবিলে ২০ লাখ row। "আমার অর্ডারগুলো" পাতা এক সপ্তাহ আগেও দ্রুত ছিল, এখন প্রতিবার প্রায় ০.৪ সেকেন্ড লাগে। আর কোড একটুও বদলায়নি; শুধু row বেড়েছে। সমাধান এক লাইনের, নিচে দেখানো আছে। এই segment-এর বাকিটা সেটা ঠিকভাবে করা আর তার দাম নিয়ে।
       - type: visual
         kind: bars
         caption: 'customer_id = 42 খুঁজতে ২০ লাখ row-এর টেবিলে সময়'
         items:
           - {label: 'index ছাড়া', value: 412, display: '412ms', tone: bad, tip: 'ডেটাবেস ২০ লাখ row-এর সবগুলো পড়ে দেখেছে, তারপর ২০টা বেছেছে। একে বলে sequential scan।'}
           - {label: 'index সহ', value: 1, display: '0.12ms', tone: good, tip: 'সাজানো সূচি ধরে সরাসরি কাস্টমার ৪২-এর row-গুলোতে গেছে, বাকি ১৯ লাখের বেশি row ছোঁয়নি।'}
+      - type: code
+        lang: sql
+        file: 'এক লাইনের সমাধান'
+        variant: good
+        code: |
+          CREATE INDEX idx_order_customer ON customer_order (customer_id);
+          -- চালু PostgreSQL টেবিলে CONCURRENTLY যোগ করুন, যাতে লেখা আটকে না যায়
+          -- দাম: এখন থেকে প্রতিটা নতুন row এই index-এও ঢুকবে (শেষ slide দেখুন)
       - type: quote
         body: 'Index ছাড়া প্রতিটা খোঁজা পুরো টেবিল পড়ে। row বাড়লে সময়ও সমান হারে বাড়ে।'
     aside:
@@ -110,7 +118,7 @@ slides:
               private \DateTimeImmutable $createdAt;
           }
         marks:
-          - {line: 4, tip: 'index-এর নাম নিজে দাও, যাতে EXPLAIN-এ বা migration-এ চেনা যায়।'}
+          - {line: 4, tip: 'index-এর নাম নিজে দিন, যাতে EXPLAIN-এ বা migration-এ চেনা যায়।'}
           - {line: 5, tip: 'সমতার কলাম (customer_id) আগে, সাজানোর কলাম (created_at) পরে। এই ক্রমই "আমার অর্ডার, নতুন আগে" query-কে এক index-এই মেটায়।'}
       - type: visual
         kind: table
@@ -125,13 +133,15 @@ slides:
             tip: 'সমতা, তারপর range। দুই কলামই ব্যবহার হয়।'
           - cells: ['created_at > ''2026-01-01''', 'না, বাঁ কলাম বাদ']
             tip: 'প্রথম কলাম ছাড়া শুরুই করা যায় না। ফোনবুকে শুধু নাম দিয়ে খোঁজার মতো।'
+          - cells: ['index (created_at, customer_id) হলে customer_id = 42', 'না: ভুল কলাম আগে']
+            tip: 'একই দুই কলাম উল্টো ক্রমে বসালে অন্য ধরনের query-তে কাজ করে। ক্রম একটা সিদ্ধান্ত, খুঁটিনাটি নয়।'
       - type: quote
         body: 'কলামের ক্রম: সমতার শর্ত আগে, range বা ORDER BY-র কলাম পরে। আর বাঁ থেকে শুরু না হলে index অচল।'
     aside:
       - type: tips
         items:
           - 'আলাদা আলাদা দুটো single-column index সাধারণত একটা সঠিক composite index-এর সমান কাজ করে না।'
-          - 'প্রথমে query লেখো, তারপর index। "কলামটা তো ভাবে খোঁজা হতে পারে" ভেবে বানিও না।'
+          - 'প্রথমে query লিখুন, তারপর index। "কলামটা তো কখনো খোঁজা হতে পারে" ভেবে বানাবেন না।'
       - type: refs
         items:
           - {to: 'api/pagination', label: 'cursor pagination-এ এই index-ই লাগে'}
@@ -142,12 +152,12 @@ slides:
   - slug: read-explain
     title: 'EXPLAIN দিয়ে query plan পড়া'
     kind: howto
-    tldr: 'EXPLAIN (ANALYZE) বলে ডেটাবেস আসলে কীভাবে query চালাল; Seq Scan থেকে Index Scan হলে index কাজ করছে, আর covering index আসল row ছোঁয়াও এড়ায়।'
+    tldr: 'EXPLAIN (ANALYZE) বলে ডেটাবেস আসলে কীভাবে query চালাল; Seq Scan থেকে Index Scan হলে index কাজ করছে, আর covering index আসল row ছোঁয়া থেকেও বাঁচায়।'
     keywords: ['EXPLAIN', 'EXPLAIN ANALYZE', 'query plan', 'Index Only Scan', 'covering index', 'INCLUDE']
     blocks:
       - type: text
         body: |
-          Index বানিয়েছ বলেই ডেটাবেস সেটা ব্যবহার করছে, এমন নয়। নিশ্চিত হতে query-র আগে `EXPLAIN (ANALYZE, BUFFERS)` বসাও। এটা query সত্যিই চালায়, আর প্ল্যান ও আসল সময় দেখায়। প্রথমে এক নজরে দেখো কোন "Scan" শব্দ আছে।
+          Index বানিয়েছেন বলেই ডেটাবেস সেটা ব্যবহার করছে, এমন নয়। নিশ্চিত হতে query-র আগে `EXPLAIN (ANALYZE, BUFFERS)` বসান। এটা query সত্যিই চালায়, আর প্ল্যান ও আসল সময় দেখায়। প্রথমে এক নজরে দেখুন কোন "Scan" শব্দ আছে।
       - type: code
         lang: text
         file: 'EXPLAIN ANALYZE (index নেই)'
@@ -195,16 +205,17 @@ slides:
           - {cmd: 'EXPLAIN (ANALYZE, BUFFERS) SELECT ...', desc: 'সত্যিই চালিয়ে আসল সময় দেখায়'}
       - type: pitfalls
         items:
-          - 'EXPLAIN ANALYZE সত্যিই query চালায়। INSERT/UPDATE হলে BEGIN ... ROLLBACK-এর ভেতরে চালাও।'
-          - 'ছোট টেবিলে ডেটাবেস ইচ্ছে করেই Seq Scan বাছে, কারণ সেটা সস্তা। প্রোডাকশনের মতো ডেটাতে পরীক্ষা করো।'
+          - 'EXPLAIN ANALYZE সত্যিই query চালায়। INSERT/UPDATE হলে BEGIN ... ROLLBACK-এর ভেতরে চালান।'
+          - 'ছোট টেবিলে ডেটাবেস ইচ্ছে করেই Seq Scan বাছে, কারণ সেটা সস্তা। প্রোডাকশনের মতো ডেটাতে পরীক্ষা করুন।'
+          - 'Covering index (INCLUDE) index বড় করে আর প্রতিটা লেখা ভারী করে। এক-দুটো সবচেয়ে ঘন ঘন চলা query-র জন্যই রাখুন।'
     check:
-      q: 'EXPLAIN-এর ফলে "Seq Scan" আর "Rows Removed by Filter: 1999980" দেখলে কী বুঝবে?'
+      q: 'EXPLAIN-এর ফলে "Seq Scan" আর "Rows Removed by Filter: 1999980" দেখলে কী বুঝবেন?'
       a: 'ডেটাবেস পুরো টেবিল পড়ে প্রায় সব row ফেলে দিয়েছে। শর্তের কলামে ঠিক ক্রমের index নেই, বা ডেটাবেস সেটা ব্যবহার করছে না।'
 
   - slug: write-cost-of-indexes
     title: 'Index-এর দাম: লেখা ধীর হয়'
     kind: pitfall
-    tldr: 'প্রতিটা index পড়া দ্রুত করে কিন্তু প্রতিটা INSERT/UPDATE/DELETE-এ নিজেকেও হালনাগাদ করাতে হয়; তাই শুধু যেটা কাজে লাগে সেটা রাখো, আর partial index দিয়ে ছোট রাখো।'
+    tldr: 'প্রতিটা index পড়া দ্রুত করে কিন্তু প্রতিটা INSERT/UPDATE/DELETE-এ নিজেকেও হালনাগাদ করাতে হয়; তাই শুধু যেটা কাজে লাগে সেটা রাখুন, আর partial index দিয়ে ছোট রাখুন।'
     keywords: ['write amplification', 'partial index', 'unused index', 'too many indexes', 'index cost', 'WHERE index']
     blocks:
       - type: metaphor
@@ -221,7 +232,7 @@ slides:
             icon: check
             tip: 'প্রতিটা index কোনো না কোনো গুরুত্বপূর্ণ query-র জন্য আছে, আর লেখার বাড়তি খরচ সামান্য।'
             items:
-              - 'প্রতিটা INSERT-এ ২টা index হালনাগাদ'
+              - 'প্রতিটা INSERT: ১ টেবিল-লেখা + ২ index-লেখা = ৩টা লেখা'
               - 'ডিস্কে কম জায়গা'
               - 'প্রতিটা index একটা query-র কাজে আসে'
           - title: '১০টা "হয়তো লাগবে" index'
@@ -229,7 +240,7 @@ slides:
             icon: warning
             tip: 'বেশিরভাগ index কেউ কখনো পড়ে না, অথচ প্রতিটা লেখায় সবাই হালনাগাদ হয়।'
             items:
-              - 'প্রতিটা INSERT-এ ১০টা index হালনাগাদ'
+              - 'প্রতিটা INSERT: ১ টেবিল-লেখা + ১০ index-লেখা = ১১টা লেখা'
               - 'টেবিলের চেয়ে index বড় হয়ে যেতে পারে'
               - 'অব্যবহৃত index শুধু বোঝা'
       - type: code
@@ -249,7 +260,7 @@ slides:
         marks:
           - {line: 4, tip: 'Partial index: শুধু pending অর্ডারই index-এ ঢোকে। বাকি কোটি কোটি সম্পন্ন অর্ডার এই index-কে ভারী করে না। Doctrine-এ options দিয়ে where পাঠানো যায় (PostgreSQL)।'}
       - type: quote
-        body: 'প্রতিটা index পড়া দ্রুত করে, কিন্তু প্রতিটা লেখা ধীর করে। শুধু সেই index রাখো যা কোনো query-তে ব্যবহার হয়।'
+        body: 'প্রতিটা index পড়া দ্রুত করে, কিন্তু প্রতিটা লেখা ধীর করে। শুধু সেই index রাখুন যা কোনো query-তে ব্যবহার হয়।'
     aside:
       - type: commands
         title: 'অব্যবহৃত index খোঁজা (PostgreSQL)'
@@ -257,8 +268,9 @@ slides:
           - {cmd: 'SELECT relname, indexrelname, idx_scan FROM pg_stat_user_indexes WHERE idx_scan = 0;', desc: 'যেসব index কখনো ব্যবহার হয়নি'}
       - type: tips
         items:
-          - 'index ফেলার আগে ক্রমানুসারে দেখো, কয়েক সপ্তাহের পুরো ট্রাফিকে (মাস-শেষের রিপোর্টসহ) idx_scan শূন্যই ছিল কি না।'
-          - 'অনেক ঘন ঘন লেখা হয় এমন টেবিলে (log, event) index যতটা পারো কম রাখো।'
+          - 'Partial index কাজে লাগে শুধু তখন, যখন query-ও একই শর্ত লেখে (WHERE status = ''pending'')। শর্তটা বাদ দিলে ডেটাবেস এটা ব্যবহার করতে পারে না।'
+          - 'index ফেলার আগে ক্রমানুসারে দেখুন, কয়েক সপ্তাহের পুরো ট্রাফিকে (মাস-শেষের রিপোর্টসহ) idx_scan শূন্যই ছিল কি না।'
+          - 'অনেক ঘন ঘন লেখা হয় এমন টেবিলে (log, event) index যতটা পারেন কম রাখুন।'
     check:
       q: 'বেশি index থাকলে লেখা ধীর হয় কেন, আর partial index কীভাবে সাহায্য করে?'
       a: 'প্রতিটা লেখায় প্রতিটা index-কেও হালনাগাদ করতে হয়। Partial index শুধু শর্তে মেলে এমন row রাখে, তাই ছোট থাকে আর সব লেখায় তাকে ছুঁতে হয় না।'
@@ -287,22 +299,22 @@ flashcards:
   - q: 'EXPLAIN-এ Seq Scan দেখলে কী বুঝবে?'
     a: 'ডেটাবেস পুরো টেবিল পড়েছে। বড় টেবিলে এটা সাধারণত index না থাকার বা ব্যবহার না হওয়ার লক্ষণ।'
     more: |
-      Rows Removed by Filter-এ বড় সংখ্যা দেখলে বোঝা যায় কত row পড়ে ফেলে দেওয়া হয়েছে। ছোট টেবিলে Seq Scan ঠিক আছে, ওটা ডেটাবেসের ইচ্ছাকৃত সস্তা বাছাই। সবসময় প্রোডাকশনের মতো আকারের ডেটায় পরীক্ষা করো।
+      Rows Removed by Filter-এ বড় সংখ্যা দেখলে বোঝা যায় কত row পড়ে ফেলে দেওয়া হয়েছে। ছোট টেবিলে Seq Scan ঠিক আছে, ওটা ডেটাবেসের ইচ্ছাকৃত সস্তা বাছাই। সবসময় প্রোডাকশনের মতো আকারের ডেটায় পরীক্ষা করুন।
     ref: read-explain
   - q: 'Covering index কী?'
     a: 'যে index-এ query-র দরকারি সব কলামই আছে, তাই আসল টেবিলের row ছুঁতেই হয় না (Index Only Scan)।'
     more: |
-      PostgreSQL-এ INCLUDE (col) দিয়ে অতিরিক্ত কলাম leaf-এ রাখা যায়। এতে পড়া আরও দ্রুত হয়, কিন্তু index বড় হয়, আর লেখার খরচ বাড়ে। তাই শুধু খুব ঘন ঘন চলা query-র জন্য ব্যবহার করো।
+      PostgreSQL-এ INCLUDE (col) দিয়ে অতিরিক্ত কলাম leaf-এ রাখা যায়। এতে পড়া আরও দ্রুত হয়, কিন্তু index বড় হয়, আর লেখার খরচ বাড়ে। তাই শুধু খুব ঘন ঘন চলা query-র জন্য ব্যবহার করুন।
     ref: read-explain
   - q: 'Partial index কী, কখন কাজে লাগে?'
     a: 'WHERE শর্ত দিয়ে শুধু কিছু row-কে index করা (যেমন status = pending)। ছোট থাকে, আর বাকি row-র লেখা ধীর করে না।'
     more: |
-      যে টেবিলে বেশিরভাগ row "শেষ হয়ে গেছে" আর query শুধু চলমান row নিয়ে, সেখানে পুরো টেবিলের index অপচয়। Doctrine-এ #[ORM\Index(options: ['where' => '...'])] দিয়ে PostgreSQL-এ partial index বসানো যায়।
+      যে টেবিলে বেশিরভাগ row "শেষ হয়ে গেছে" আর query শুধু চলমান row নিয়ে, সেখানে পুরো টেবিলের index অপচয়। Doctrine-এ #[ORM\Index(options: ['where' => '...'])] দিয়ে PostgreSQL-এ partial index বসানো যায়। Query-কেও একই WHERE শর্ত লিখতে হয়, তবেই এটা কাজে লাগে।
     ref: write-cost-of-indexes
   - q: 'বেশি index থাকার দাম কী?'
     a: 'প্রতিটা INSERT, UPDATE ও DELETE-এ প্রতিটা index হালনাগাদ করতে হয়, তাই লেখা ধীর হয় আর ডিস্ক বাড়ে।'
     more: |
-      নতুন বই এলে প্রতিটা ক্যাটালগে কার্ড বসানোর মতো। যে index কোনো query-তে ব্যবহার হয় না, সে শুধু লেখার খরচ বাড়ায়। PostgreSQL-এর pg_stat_user_indexes দেখে idx_scan = 0 index খুঁজে বাদ দাও।
+      নতুন বই এলে প্রতিটা ক্যাটালগে কার্ড বসানোর মতো। যে index কোনো query-তে ব্যবহার হয় না, সে শুধু লেখার খরচ বাড়ায়। PostgreSQL-এর pg_stat_user_indexes দেখে idx_scan = 0 index খুঁজে বাদ দিন।
     ref: write-cost-of-indexes
 
 quiz:
@@ -323,7 +335,7 @@ quiz:
         why: 'ডেটাবেস সাধারণত একটাকে বেছে নেয়, বাকিগুলো সাজানো ক্রম দিতে পারে না। লেখার খরচ তিন গুণ।'
     ref: composite-index-order
   - q: 'index (customer_id, created_at) আছে। নিচের কোন query-গুলোতে এটা কাজে লাগবে?'
-    hint: 'প্রথম কলাম শর্তে আছে কি না দেখো।'
+    hint: 'প্রথম কলাম শর্তে আছে কি না দেখুন।'
     options:
       - text: 'WHERE customer_id = 7'
         correct: true
@@ -375,7 +387,7 @@ quiz:
         why: 'আলাদা ফাইলে থাকলেও প্রতিটা লেখায় তাকে হালনাগাদ করতেই হয়।'
       - text: 'ডেটাবেস নিজে বাকি index মুছে দেবে'
         correct: false
-        why: 'ডেটাবেস কখনো তোমার index নিজে মোছে না।'
+        why: 'ডেটাবেস কখনো আপনার index নিজে মোছে না।'
     ref: write-cost-of-indexes
   - q: 'বছরে ৫ কোটি অর্ডার, বেশিরভাগই "delivered"; query চলে শুধু "pending" অর্ডার নিয়ে, ঘন ঘন। কোন index সবচেয়ে মানানসই?'
     hint: 'যে row-তে query কখনো যায় না, তাকে index-এ রাখার দরকার কী?'

@@ -1,6 +1,6 @@
 slides:
   - slug: pessimistic-lock
-    title: 'Pessimistic lock: চাবি নিয়ে ঢোকো, বাকিরা লাইনে'
+    title: 'Pessimistic lock: চাবি নেয় একজন, বাকিরা লাইনে'
     kind: story
     tldr: 'SELECT … FOR UPDATE পড়ার সময়ই সারিটা আটকে দেয়; দ্বিতীয় request লাইনে দাঁড়িয়ে ঠিক ব্যালেন্সটাই পড়ে।'
     keywords: ['pessimistic lock', 'SELECT FOR UPDATE', 'row lock', 'লক', 'অপেক্ষা']
@@ -22,18 +22,21 @@ slides:
           - {from: db, to: p1, label: '১০০০ টাকা, lock পেলে', dashed: true, tone: good}
           - {from: p2, to: db, label: 'SELECT … FOR UPDATE', tip: 'সারি আটকানো, তাই এই query আটকে থাকে। কোনো error আসে না, শুধু অপেক্ষা।'}
           - {at: db, note: 'ফোন ২ লাইনে দাঁড়িয়ে', tone: warn}
-          - {from: p1, to: db, label: 'ব্যালেন্স ২০০ লেখো, COMMIT', tip: 'commit হতেই lock ছাড়া পড়ে।'}
+          - {from: p1, to: db, label: 'ব্যালেন্স ২০০ লেখে, COMMIT', tip: 'commit হতেই lock ছাড়া পড়ে।'}
           - {from: db, to: p2, label: '২০০ টাকা, lock পেলে', dashed: true, tone: good, tip: 'এখন ফোন ২ নতুন ব্যালেন্সই দেখে।'}
           - {from: p2, to: db, label: '২০০ < ৮০০, বাতিল', tone: good, tip: 'দ্বিতীয় পাঠানোটা ঠিকঠাক ব্যর্থ হলো। কোনো ভুল টাকা বেরোয়নি।'}
       - type: quote
-        body: 'Lock নাও, তারপর পড়ো। পড়ে তারপর lock নিলে অনেক দেরি।'
+        body: 'আগে lock নিন, তারপর পড়ুন। পড়ার পরে lock নিলে অনেক দেরি।'
     aside:
       - type: problem
-        body: 'check-then-act ফাঁক বুজাতে সবচেয়ে সোজা উপায়: যে সারিটা নিয়ে সিদ্ধান্ত নেবে, সিদ্ধান্তের আগেই সেটা আটকে নাও। ঘন ঘন সংঘর্ষ হলে এটাই ভালো।'
+        body: 'check-then-act ফাঁক বুজাতে সবচেয়ে সোজা উপায়: যে সারিটা নিয়ে সিদ্ধান্ত নেবেন, সিদ্ধান্তের আগেই সেটা আটকে নিন। ঘন ঘন সংঘর্ষ হলে এটাই ভালো।'
       - type: terms
         items:
           - {term: 'Row lock', meaning: 'একটা সারির ওপর তালা; অন্য transaction সেটা বদলাতে (বা FOR UPDATE পড়তে) পারে না।'}
           - {term: 'Pessimistic', meaning: 'আগেই ধরে নেওয়া যে সংঘর্ষ হবে, তাই আগে lock।'}
+      - type: when
+        use: ['একই সারিতে ঘন সংঘর্ষ: ওয়ালেট, স্টক, শেষ সিট', 'পড়া আর লেখার মাঝের কাজ ছোট']
+        avoid: ['পড়া আর লেখার মাঝে ব্যবহারকারী মিনিট ধরে ভাবে (ফর্ম)', 'lock-এর ভেতরে ধীর call ঢুকে যায়']
     check:
       q: 'ফোন ১-এর transaction commit না করা পর্যন্ত ফোন ২-এর `SELECT … FOR UPDATE` কী করে?'
       a: 'আটকে অপেক্ষা করে, error দেয় না। ফোন ১ commit করলে lock ছাড়া পড়ে, তখন ফোন ২ নতুন ব্যালেন্স পড়ে।'
@@ -41,12 +44,12 @@ slides:
   - slug: pessimistic-doctrine
     title: 'Doctrine-এ PESSIMISTIC_WRITE: নিয়ম আর সময়সীমা'
     kind: howto
-    tldr: 'খোলা transaction-এর ভেতরে find()-এ PESSIMISTIC_WRITE দাও, কাজ ছোট রাখো, আর অপেক্ষার সময়সীমা বেঁধে দাও।'
+    tldr: 'খোলা transaction-এর ভেতরে find()-এ PESSIMISTIC_WRITE দিন, কাজ ছোট রাখুন, আর অপেক্ষার সময়সীমা বেঁধে দিন।'
     keywords: ['PESSIMISTIC_WRITE', 'LockMode', 'wrapInTransaction', 'lock_timeout', 'SKIP LOCKED']
     blocks:
       - type: text
         body: |
-          Doctrine-এ `find()`-এর তৃতীয় আর্গুমেন্টে `LockMode::PESSIMISTIC_WRITE` দিলে SQL-এ `FOR UPDATE` যোগ হয়। এটা শুধু খোলা transaction-এর ভেতরে চলে, না হলে `TransactionRequiredException` আসে। তাই পুরো কাজটা `wrapInTransaction()`-এ মোড়ো। Lock ধরা থাকা সময়টা যত ছোট, লাইন তত ছোট।
+          Doctrine-এ `find()`-এর তৃতীয় আর্গুমেন্টে `LockMode::PESSIMISTIC_WRITE` দিলে SQL-এ `FOR UPDATE` যোগ হয়। এটা শুধু খোলা transaction-এর ভেতরে চলে, না হলে `TransactionRequiredException` আসে। তাই পুরো কাজটা `wrapInTransaction()`-এ মুড়ুন। Lock ধরা থাকা সময়টা যত ছোট, লাইন তত ছোট।
       - type: code
         lang: php
         file: 'src/Service/WalletService.php'
@@ -79,7 +82,7 @@ slides:
           -- অপেক্ষা সীমিত: ৩ সেকেন্ডে lock না পেলে error (PostgreSQL)
           SET LOCAL lock_timeout = '3s';
 
-          -- যে সারি কেউ আটকে রেখেছে সেটা এড়িয়ে পরেরটা নাও (job queue-র মতো কাজে)
+          -- যে সারি কেউ আটকে রেখেছে সেটা এড়িয়ে পরেরটা নিন (job queue-র মতো কাজে)
           SELECT id FROM job WHERE status = 'new'
           ORDER BY id LIMIT 1
           FOR UPDATE SKIP LOCKED;
@@ -90,7 +93,7 @@ slides:
       - type: pitfalls
         items:
           - 'Lock-এর ভেতরে HTTP call, SMS বা ধীর কাজ নয়। lock যতক্ষণ, লাইন ততক্ষণ।'
-          - 'যে সারিগুলোর ওপর সিদ্ধান্ত, শুধু সেগুলোই lock করো। পুরো table lock করলে সবাই লাইনে।'
+          - 'যে সারিগুলোর ওপর সিদ্ধান্ত, শুধু সেগুলোই lock করুন। পুরো table lock করলে সবাই লাইনে।'
       - type: terms
         items:
           - {term: 'LockMode', meaning: 'ORM 3-এ `Doctrine\DBAL\LockMode`। PESSIMISTIC_WRITE মানে FOR UPDATE, PESSIMISTIC_READ মানে শেয়ার্ড lock।'}
@@ -102,14 +105,14 @@ slides:
       a: 'TransactionRequiredException আসে, কারণ lock শুধু খোলা transaction-এর জন্য। transaction commit বা rollback হলেই lock ছাড়া পড়ে।'
 
   - slug: optimistic-lock
-    title: 'Optimistic lock: ধরে রাখো না, বেরোনোর সময় সিল মেলাও'
+    title: 'Optimistic lock: ধরে রাখবেন না, বেরোনোর সময় সিল মেলান'
     kind: concept
-    tldr: 'সারিতে version কলাম রাখো; UPDATE শুধু তখনই লাগে, যখন version এখনো আগের মতোই আছে; নইলে conflict ধরা পড়ে।'
+    tldr: 'সারিতে version কলাম রাখুন; UPDATE শুধু তখনই লাগে, যখন version এখনো আগের মতোই আছে; নইলে conflict ধরা পড়ে।'
     keywords: ['optimistic lock', 'version column', 'OptimisticLockException', 'ETag', 'If-Match', '409']
     blocks:
       - type: text
         body: |
-          দুজন অ্যাডমিন একই প্রোডাক্টের ফর্ম খুলল, একজন ফর্ম ভরতে ১০ মিনিট নিল। এই ১০ মিনিট ডেটাবেসে lock ধরে রাখা সম্ভব নয়, অন্যদিকে ফর্মটা অন্তত হারিয়ে ফেলতে দেওয়া যাবে না। এখানে optimistic lock: সবাই ঢোকে, কিন্তু বেরোনোর সময় ভল্টের সিল নম্বর মিলিয়ে দেখা হয়। নম্বর বদলে গেছে মানে মাঝখানে কেউ কাজ করেছে।
+          দুজন অ্যাডমিন একই প্রোডাক্টের ফর্ম খুলল, একজন ফর্ম ভরতে ১০ মিনিট নিল। এই ১০ মিনিট ডেটাবেসে lock ধরে রাখা সম্ভব নয়, অন্যদিকে ফর্মটা অন্তত হারিয়ে ফেলতে দেওয়া যাবে না। এখানে optimistic lock: সবাই ঢোকে, কিন্তু বেরোনোর সময় ভল্টের সিল নম্বর মিলিয়ে দেখা হয়। নম্বর বদলে গেছে মানে মাঝখানে কেউ কাজ করেছে। এটা কখন বেছে নেবেন, আর কখন pessimistic lock, তা পরের slide-এ।
       - type: visual
         kind: sequence
         caption: 'দুই অ্যাডমিন version ৩ নিয়ে ফর্ম খুলল, দ্বিতীয়জনের save ধরা পড়ে'
@@ -118,9 +121,9 @@ slides:
           - {id: b, label: 'অ্যাডমিন রফিক', icon: user, tip: 'একই প্রোডাক্টের দাম বদলাচ্ছে। ফর্ম সুমির সাথে একই সময়ে খুলেছিল।'}
           - {id: db, label: 'ডেটাবেস', icon: db, tip: 'প্রোডাক্ট সারিতে version কলাম রাখে।'}
         messages:
-          - {from: a, to: db, label: 'save, ধরে নাও version = ৩', tip: 'ফর্ম খোলার সময় পাওয়া version-টাই ফেরত পাঠানো হয়েছে।'}
+          - {from: a, to: db, label: 'save, প্রত্যাশিত version = ৩', tip: 'ফর্ম খোলার সময় পাওয়া version-টাই ফেরত পাঠানো হয়েছে।'}
           - {from: db, to: a, label: 'ঠিক আছে, এখন version ৪', dashed: true, tone: good, tip: 'UPDATE … SET version = 4 WHERE id = 7 AND version = 3 — একটা সারি বদলেছে।'}
-          - {from: b, to: db, label: 'save, ধরে নাও version = ৩', tip: 'রফিকের কাছে এখনো পুরনো ৩।'}
+          - {from: b, to: db, label: 'save, প্রত্যাশিত version = ৩', tip: 'রফিকের কাছে এখনো পুরনো ৩।'}
           - {at: db, note: 'WHERE version = ৩ কিছু পেল না', tone: bad, tip: '০টা সারি বদলেছে, Doctrine এটা দেখে OptimisticLockException ছোড়ে।'}
           - {from: db, to: b, label: '409 Conflict', dashed: true, tone: warn, tip: 'রফিক সুমির বদল নষ্ট করেনি। তাকে বলা হলো আবার লোড করে দেখে নিতে।'}
       - type: code
@@ -138,7 +141,7 @@ slides:
                   $p->rename($dto->name);
               });
           } catch (OptimisticLockException) {
-              return $this->json(['error' => 'অন্য কেউ আগে বদলেছে, আবার লোড করো'], 409);
+              return $this->json(['error' => 'অন্য কেউ আগে বদলেছে, আবার লোড করুন'], 409);
           }
         marks:
           - {line: 1, tip: 'Doctrine প্রতিটা UPDATE-এ নিজে version বাড়ায় আর WHERE-এ সেটা মেলায়। কোনো কোড লিখতে হয় না।'}
@@ -146,14 +149,56 @@ slides:
     aside:
       - type: tips
         items:
-          - 'JSON API-তে version body-তে পাঠাও বা ETag/If-Match হেডারে; মিল না হলে 412 বা 409।'
-          - 'Conflict হলে ক্লায়েন্টকে নতুন ডেটা দেখিয়ে আবার ঠিক করতে দাও। চুপচাপ জোর করে লেখা মানে আবার lost update।'
+          - 'JSON API-তে version body-তে পাঠান বা ETag/If-Match হেডারে; মিল না হলে 412 বা 409।'
+          - 'Conflict হলে ক্লায়েন্টকে নতুন ডেটা দেখিয়ে আবার ঠিক করতে দিন। চুপচাপ জোর করে লেখা মানে আবার lost update।'
       - type: when
         use: ['কম সংঘর্ষ, কিন্তু ব্যবহারকারী অনেকক্ষণ ধরে ফর্মে কাজ করে', 'অ্যাডমিন প্যানেলে একই রেকর্ড বদলানো']
         avoid: ['ওয়ালেট বা স্টকের মতো ঘন ঘন সংঘর্ষ হওয়া হিসাব, সেখানে retry জমে যায়']
     check:
       q: 'দ্বিতীয় অ্যাডমিনের save-এ ডেটাবেস কীভাবে বোঝে যে conflict হয়েছে?'
       a: 'UPDATE-এর WHERE-এ `version = ৩` থাকে, কিন্তু সারির version ততক্ষণে ৪। ০টা সারি বদলায়, আর Doctrine OptimisticLockException ছোড়ে।'
+
+  - slug: lock-choice
+    title: 'কোন lock? বেছে নেওয়ার একটাই নিয়ম'
+    kind: compare
+    tldr: 'কম সংঘর্ষ আর ধীর মানুষ হলে optimistic; ঘন সংঘর্ষ আর দ্রুত কোড হলে pessimistic। শুধু সংখ্যা বাড়ানো-কমানো হলে দুটোই লাগে না, একটা atomic UPDATE-ই যথেষ্ট।'
+    keywords: ['optimistic vs pessimistic', 'choosing a lock', 'collision rate', 'atomic update', 'কোন লক']
+    blocks:
+      - type: text
+        body: |
+          দুটো প্রশ্ন করুন। একই সারিতে দুই request সত্যিই কত ঘন ঘন একই মুহূর্তে হাত দেয়? আর পড়া থেকে লেখা পর্যন্ত সারিটা কতক্ষণ ধরে রাখতে হয়? একই প্রোডাক্ট একই দশ মিনিটে দুজন অ্যাডমিন এডিট করা বিরল, ৫০০ বার save-এ হয়তো একবার। কিন্তু ৫০টা টিকিটের পেছনে একশো ক্রেতা ছুটলে প্রায় প্রতিটা request সংঘর্ষ করে। সংঘর্ষ ঘন হলে optimistic lock বারবার ব্যর্থ হয়ে retry করে। আবার মিনিটের পর মিনিট খোলা ফর্মে pessimistic lock নিলে একজন ঘুমন্ত অ্যাডমিনের পেছনে সবাই লাইনে।
+      - type: visual
+        kind: table
+        caption: 'Optimistic না pessimistic: ঠিক হয় সংঘর্ষের হার আর কাজের দৈর্ঘ্য দেখে'
+        headers: ['', 'Optimistic', 'Pessimistic']
+        rows:
+          - cells: ['একই সারিতে সংঘর্ষ', 'বিরল (ধরুন ২০ বার save-এ ১-এর কম)', 'ঘন (ধরুন ৫ বারে ১ বা বেশি)']
+            tip: 'সংখ্যাগুলো আন্দাজের নিয়ম। আসল কথা: একটা “প্রায় কখনোই না”, আরেকটা “সারাক্ষণ”।'
+          - cells: ['পড়া থেকে লেখা পর্যন্ত সময়', 'লম্বা: মিনিটের পর মিনিট খোলা ফর্ম', 'ছোট: এক transaction-এ মিলিসেকেন্ড']
+            tip: 'মানুষ টাইপ করার সময় ডেটাবেসের lock ধরে রাখা যায় না, কিন্তু একটা ফাংশন চলার সময় যায়।'
+          - cells: ['কাজ চলার সময়', 'কিছু ধরা থাকে না; অন্যরা এগোয়', 'সারি আটকানো; অন্যরা লাইনে']
+            tip: 'এজন্যই ধীর কাজে optimistic মানায়: ফর্ম ভরা মানুষের জন্য কেউ অপেক্ষা করে না।'
+          - cells: ['সংঘর্ষে যে হারে', 'error পায়, রিলোড করে আবার কাজ করে', 'পালা আসা পর্যন্ত অপেক্ষা, তারপর নতুন ডেটা পড়ে']
+            tip: 'Optimistic-এ হেরে যাওয়ার কাজ ফেলা যায়। Pessimistic-এ সে শুধু অপেক্ষা করে।'
+          - cells: ['দাম', 'সংঘর্ষ ঘন হলে retry জমে', 'লাইন, deadlock-এর ঝুঁকি; বেশি সময় ধরলে ধীর']
+            tip: 'একটার ব্যথা ঠিক সেখানে, যেখানে অন্যটা স্বস্তিতে। যার দাম সইতে পারবেন, সেটা বেছে নিন।'
+          - cells: ['সাধারণ ব্যবহার', 'অ্যাডমিন এডিট ফর্ম, প্রোফাইল পেজ', 'ওয়ালেট ব্যালেন্স, স্টক, শেষ সিট']
+            tip: 'ভাবুন কারা সংঘর্ষ করছে: পালা করে কাজ করা কয়েকজন মানুষ, নাকি একটা সংখ্যার ওপর ঝাঁপিয়ে পড়া ভিড়।'
+      - type: quote
+        body: 'কম সংঘর্ষ আর ধীর মানুষ: optimistic। ঘন সংঘর্ষ আর দ্রুত কোড: pessimistic।'
+    aside:
+      - type: tips
+        items:
+          - 'শুধু সংখ্যা বাড়ানো-কমানো হলে (স্টক, কাউন্টার) দুটোই বাদ: একটা `UPDATE … SET stock = stock - 1 WHERE stock > 0` নিজেই atomic।'
+      - type: pitfalls
+        items:
+          - 'সংখ্যাগুলো আন্দাজের নিয়ম, আইন নয়। লগে OptimisticLockException গুনুন; ২০ বার save-এ ১-এর বেশি ঘটলে ওই স্ক্রিন pessimistic lock-এ নিন।'
+      - type: refs
+        items:
+          - {to: 'concurrency/atomic-operations', label: 'Lock ছাড়াই atomic update'}
+    check:
+      q: 'দোকানে ৫০টা টিকিট, প্রথম সেকেন্ডেই ২০০ জন Buy চাপল। কোন lock, আর কেন?'
+      a: 'Pessimistic (বা স্টকের ওপর একটা atomic UPDATE)। প্রায় প্রতিটা request সংঘর্ষ করে, তাই optimistic বারবার ব্যর্থ হয়ে retry করত। কাজ ছোট, তাই সারির জন্য লাইনে দাঁড়ানো সস্তা।'
 
   - slug: advisory-distributed
     title: 'Advisory lock ও Symfony Lock: সারি নেই, তবু তালা'
@@ -163,7 +208,7 @@ slides:
     blocks:
       - type: text
         body: |
-          সব সময় lock নেওয়ার মতো একটা সারি থাকে না: যেমন “মাসের ইনভয়েস export একবারই চলবে”। তখন নামে lock নাও। ডেটাবেসের ভেতরে হলে advisory lock (PostgreSQL-এ `pg_advisory_xact_lock`)। একাধিক সার্ভারে বা ডেটাবেসের বাইরে হলে Symfony Lock, যার পেছনে Redis বা ডেটাবেস থাকে। এই lock-এ **TTL** থাকে, মানে সময় পেরোলে নিজে ছেড়ে দেয়।
+          সব সময় lock নেওয়ার মতো একটা সারি থাকে না: যেমন “মাসের ইনভয়েস export একবারই চলবে”। তখন নামে lock নিন। ডেটাবেসের ভেতরে হলে advisory lock (PostgreSQL-এ `pg_advisory_xact_lock`)। একাধিক সার্ভারে বা ডেটাবেসের বাইরে হলে Symfony Lock, যার পেছনে Redis বা ডেটাবেস থাকে। এই lock-এ **TTL** থাকে, মানে সময় পেরোলে নিজে ছেড়ে দেয়।
       - type: code
         lang: php
         file: 'src/Service/InvoiceExporter.php'
@@ -187,8 +232,8 @@ slides:
           }
         marks:
           - {line: 3, tip: 'নাম দিয়ে lock। TTL ছাড়া process crash করলে lock চিরকাল আটকে থাকত, তাই TTL থাকে।'}
-          - {line: 5, tip: 'acquire() অপেক্ষা না করে সঙ্গে সঙ্গে false দেয়। অপেক্ষা চাইলে acquire(true) দাও।'}
-          - {line: 12, tip: 'দীর্ঘ কাজে মাঝে মাঝে refresh() করো, নইলে কাজ চলতে চলতেই TTL শেষ হয়ে গিয়ে আরেকজন ঢুকে পড়বে।'}
+          - {line: 5, tip: 'acquire() অপেক্ষা না করে সঙ্গে সঙ্গে false দেয়। অপেক্ষা চাইলে acquire(true) দিন।'}
+          - {line: 12, tip: 'দীর্ঘ কাজে মাঝে মাঝে refresh() করুন, নইলে কাজ চলতে চলতেই TTL শেষ হয়ে গিয়ে আরেকজন ঢুকে পড়বে।'}
       - type: code
         lang: sql
         file: 'PostgreSQL / MySQL'
@@ -198,28 +243,32 @@ slides:
 
           -- MySQL: নামের lock, সর্বোচ্চ ৫ সেকেন্ড অপেক্ষা
           SELECT GET_LOCK('invoice-export-2026-11', 5);
+
+          -- Backstop: export আগে নিজের সারি বসায়, তাই একই মাসের দ্বিতীয় export এখানে আটকায়
+          CREATE UNIQUE INDEX uniq_invoice_export_month ON invoice_export (month);
         marks:
           - {line: 2, tip: 'COMMIT বা ROLLBACK-এ নিজে ছাড়ে, তাই ভুলে ছাড়তে ভোলার ভয় নেই। কোনো সারি বা table না থাকলেও চলে।'}
+          - {line: 8, tip: 'শুদ্ধতা পাহারা দেয় এটাই। TTL-এর lock হারিয়ে দুটো export শুরু হলেও ডেটাবেস দ্বিতীয়টা ফিরিয়ে দেয়।'}
       - type: quote
         body: 'TTL-ওয়ালা lock শুধু দক্ষতার জন্য; টাকার শুদ্ধতা পাহারা দেয় ডেটাবেস constraint।'
     aside:
       - type: pitfalls
         items:
-          - 'GC pause বা ধীর কাজে TTL পেরিয়ে গেলে আরেকজন lock পায়, আগের জন তখনো ভাবে সে lock-এ আছে। দুজনেই চলে।'
+          - 'ধরুন TTL ১২০ সেকেন্ড, কাজ ১৫০ সেকেন্ড আটকে গেল (লম্বা GC pause, ধীর ডিস্ক)। ১২০-তে lock ফুরায়, দ্বিতীয় সার্ভার নেয়, আর এখন দুজনেই চলে।'
           - 'Redis-এ একটা নোড হারালে বা failover হলে lock হারাতে পারে। টাকা-পয়সার শুদ্ধতার জন্য শুধু এর ওপর ভরসা নয়।'
       - type: commands
         title: 'কনফিগ'
         items:
-          - {cmd: 'composer require symfony/lock', desc: 'Symfony Lock যোগ করো'}
-          - {cmd: 'LOCK_DSN=redis://localhost', desc: '.env-এ store ঠিক করো (framework.lock: ''%env(LOCK_DSN)%'')'}
+          - {cmd: 'composer require symfony/lock', desc: 'Symfony Lock যোগ করুন'}
+          - {cmd: 'LOCK_DSN=redis://localhost', desc: '.env-এ store ঠিক করুন (framework.lock: ''%env(LOCK_DSN)%'')'}
     check:
-      q: 'Symfony Lock-এর TTL ৬০ সেকেন্ড, কিন্তু কাজ ৯০ সেকেন্ড লাগল। কী ভুল হতে পারে, আর কীভাবে এড়াবে?'
-      a: 'TTL শেষে lock নিজে ছাড়া পড়ে, আরেকজন ঢুকে পড়ে, ফলে দুজন একসাথে চলে। কাজের মাঝে `refresh()` ডাকো, আর শুদ্ধতার জন্য ডেটাবেস constraint রাখো।'
+      q: 'Symfony Lock-এর TTL ৬০ সেকেন্ড, কিন্তু কাজ ৯০ সেকেন্ড লাগল। কী ভুল হতে পারে, আর কীভাবে এড়াবেন?'
+      a: 'TTL শেষে lock নিজে ছাড়া পড়ে, আরেকজন ঢুকে পড়ে, ফলে দুজন একসাথে চলে। কাজের মাঝে `refresh()` ডাকুন, আর শুদ্ধতার জন্য ডেটাবেস constraint রাখুন।'
 
   - slug: deadlock-ordering
     title: 'Deadlock: দুজনেই দুজনের অপেক্ষায়'
     kind: pitfall
-    tldr: 'দুই transaction উল্টো ক্রমে lock নিলে দুজনেই আটকে যায়; সব জায়গায় একই ক্রমে lock নাও, আর deadlock error হলে আবার চেষ্টা করো।'
+    tldr: 'দুই transaction উল্টো ক্রমে lock নিলে দুজনেই আটকে যায়; সব জায়গায় একই ক্রমে lock নিন, আর deadlock error হলে আবার চেষ্টা করুন।'
     keywords: ['deadlock', 'lock ordering', 'DeadlockException', 'retry', 'ডেডলক']
     blocks:
       - type: text
@@ -238,7 +287,7 @@ slides:
           - {from: t1, to: db, label: 'করিমের ওয়ালেট চাই', tip: 'করিমেরটা t2-র হাতে, তাই t1 অপেক্ষা করে।'}
           - {from: t2, to: db, label: 'রহিমের ওয়ালেট চাই', tip: 'রহিমেরটা t1-র হাতে, তাই t2-ও অপেক্ষা করে।'}
           - {at: db, note: 'চক্র: দুজনেই দুজনের অপেক্ষায়', tone: bad, tip: 'এটাই deadlock। কেউ না ছাড়লে চিরকাল আটকে থাকত।'}
-          - {from: db, to: t2, label: 'Deadlock! তুমি বাতিল', dashed: true, tone: warn, tip: 'ডেটাবেস একটা transaction ROLLBACK করে। অন্যটা এগিয়ে যায়।'}
+          - {from: db, to: t2, label: 'Deadlock! আপনি বাতিল', dashed: true, tone: warn, tip: 'ডেটাবেস একটা transaction ROLLBACK করে। অন্যটা এগিয়ে যায়।'}
       - type: code
         lang: php
         file: 'src/Service/TransferService.php'
@@ -259,14 +308,38 @@ slides:
           });
         marks:
           - {line: 3, tip: 'দুই দিকের transfer-ই এখন ছোট id আগে lock করে, তাই কেউ উল্টো ক্রমে অপেক্ষা করে না। চক্রই তৈরি হতে পারে না।'}
-          - {line: 7, tip: 'এই কোড সবার জন্য একই রাখো। একটা জায়গায় ক্রম ভুল হলেও deadlock ফিরে আসে।'}
+          - {line: 7, tip: 'এই কোড সবার জন্য একই রাখুন। একটা জায়গায় ক্রম ভুল হলেও deadlock ফিরে আসে।'}
+      - type: code
+        lang: php
+        file: 'src/Service/TransferRetry.php'
+        variant: good
+        code: |
+          public function transferWithRetry(int $from, int $to, int $amount): void
+          {
+              for ($attempt = 1; $attempt <= 3; $attempt++) {
+                  try {
+                      $this->transfers->transfer($from, $to, $amount);   // ওপরের কোড
+                      return;
+                  } catch (DeadlockException $e) {
+                      if ($attempt === 3) {
+                          throw $e;                       // ছেড়ে দিন, caller দেখুক
+                      }
+                      $this->registry->resetManager();    // পুরনো EntityManager বন্ধ
+                      usleep(random_int(20, 120) * 1000); // এলোমেলো অপেক্ষা, ২০-১২০ ms
+                  }
+              }
+          }
+        marks:
+          - {line: 7, tip: 'শুধু deadlock-ই retry হয়। অন্য error, যেমন ব্যালেন্স কম, আসল ব্যর্থতা, তাই সেটা ওপরে চলে যায়।'}
+          - {line: 11, tip: 'exception-এর পরে wrapInTransaction() EntityManager বন্ধ করে দেয়। resetManager() নতুন একটা দেয়।'}
+          - {line: 12, tip: 'এলোমেলো অপেক্ষা, যাতে সংঘর্ষ করা দুই transfer একসাথে আবার শুরু করে আবার না আটকায়।'}
     aside:
       - type: pitfalls
         items:
-          - 'ডেটাবেস deadlock-এর পর একটাকে বাতিল করে DeadlockException দেয়। ওই transaction আবার চেষ্টা করতে হবে, পুরোটা শুরু থেকে নতুন EntityManager-এ বা Messenger retry দিয়ে।'
-          - 'Retry-তেও সীমা রাখো (যেমন ৩ বার) আর অল্প জিটার দাও, নইলে দুজন একসাথে আবার আটকায়।'
+          - 'deadlock-এর পর ডেটাবেস একটাকে বাতিল করে DeadlockException দেয়। পুরো transaction শুরু থেকে আবার চালান, ওপরের মতো, বা Messenger retry-তে।'
+          - 'Retry-তে সীমা রাখুন (এখানে ৩ বার) আর এলোমেলো অপেক্ষা দিন, নইলে দুজন একসাথে আবার শুরু করে আবার আটকায়।'
       - type: remember
-        body: 'একাধিক lock লাগলে সবসময় একই ক্রমে নাও: ছোট id আগে।'
+        body: 'একাধিক lock লাগলে সবসময় একই ক্রমে নিন: ছোট id আগে।'
       - type: refs
         items:
           - {to: 'concurrency/atomic-operations', label: 'Lock ছাড়াই atomic update'}
@@ -281,14 +354,14 @@ flashcards:
       lock নেওয়া transaction commit বা rollback করলে lock ছাড়া পড়ে, তখন পরের জন নতুন মান পড়ে। এটা ওয়ালেট বা স্টকের মতো ঘন ঘন সংঘর্ষের জায়গায় ভালো, কারণ সঠিক হিসাব নিশ্চিত হয়। দাম: অপেক্ষা আর deadlock-এর ঝুঁকি।
     ref: pessimistic-lock
   - q: 'Doctrine-এ pessimistic lock নিতে কী করতে হয়?'
-    a: 'wrapInTransaction()-এর ভেতরে find($class, $id, LockMode::PESSIMISTIC_WRITE) ডাকো। transaction ছাড়া TransactionRequiredException আসে।'
+    a: 'wrapInTransaction()-এর ভেতরে find($class, $id, LockMode::PESSIMISTIC_WRITE) ডাকুন। transaction ছাড়া TransactionRequiredException আসে।'
     more: |
-      ORM 3-এ LockMode আসে Doctrine\DBAL\LockMode থেকে। PESSIMISTIC_WRITE মানে FOR UPDATE। lock পাওয়ার পরেই ব্যালেন্স বা স্টক পড়ো আর সিদ্ধান্ত নাও, এর আগে নয়।
+      ORM 3-এ LockMode আসে Doctrine\DBAL\LockMode থেকে। PESSIMISTIC_WRITE মানে FOR UPDATE। lock পাওয়ার পরেই ব্যালেন্স বা স্টক পড়ুন আর সিদ্ধান্ত নিন, এর আগে নয়।
     ref: pessimistic-doctrine
   - q: 'Lock ধরে রাখার সময় ছোট রাখতে হয় কেন?'
     a: 'যতক্ষণ lock, ততক্ষণ অন্য request লাইনে। লম্বা কাজ (HTTP call, SMS) ভেতরে থাকলে লাইন বড় হয়ে পুরো সাইট ধীর হয়ে যায়।'
     more: |
-      lock-এর ভেতরে শুধু দরকারি পড়া আর লেখা রাখো। বাইরের সার্ভিসে call commit-এর পরে। সাথে lock_timeout (যেমন ৩ সেকেন্ড) দাও, যাতে একটা আটকে-যাওয়া transaction সবাইকে চিরকাল না আটকায়।
+      lock-এর ভেতরে শুধু দরকারি পড়া আর লেখা রাখুন। বাইরের সার্ভিসে call commit-এর পরে। সাথে lock_timeout (যেমন ৩ সেকেন্ড) দিন, যাতে একটা আটকে-যাওয়া transaction সবাইকে চিরকাল না আটকায়।
     ref: pessimistic-doctrine
   - q: 'SELECT … FOR UPDATE SKIP LOCKED কী করে?'
     a: 'আটকে-থাকা সারি ডিঙিয়ে পরের খালি সারি নেয়, অপেক্ষা করে না। একাধিক worker আলাদা আলাদা কাজ তুলতে এটা কাজে লাগে।'
@@ -300,16 +373,16 @@ flashcards:
     more: |
       lock ধরে রাখা হয় না, তাই ফর্মে দীর্ঘ সময় কাজ করা ব্যবহারকারীর জন্য এটা মানানসই। Doctrine-এ `#[ORM\Version]` দিলে ORM নিজে version বাড়ায় আর মেলায়। conflict হলে OptimisticLockException আসে।
     ref: optimistic-lock
-  - q: 'OptimisticLockException পেলে কী করবে?'
-    a: 'ব্যবহারকারীকে নতুন ডেটা দেখিয়ে আবার সিদ্ধান্ত নিতে দাও (409 বা 412)। চুপচাপ জোর করে লিখলে আবার lost update হয়।'
+  - q: 'OptimisticLockException পেলে কী করবেন?'
+    a: 'ব্যবহারকারীকে নতুন ডেটা দেখিয়ে আবার সিদ্ধান্ত নিতে দিন (409 বা 412)। চুপচাপ জোর করে লিখলে আবার lost update হয়।'
     more: |
-      API-তে version ডেটার সাথে ফেরত পাঠাও (body বা ETag/If-Match)। Conflict হলে ক্লায়েন্টে “অন্য কেউ আগে বদলেছে” দেখিয়ে সর্বশেষ ডেটা লোড করো। ব্যাকগ্রাউন্ড কাজে স্বয়ংক্রিয়ভাবে নতুন ডেটা পড়ে আবার চেষ্টা করা যায়।
+      API-তে version ডেটার সাথে ফেরত পাঠান (body বা ETag/If-Match)। Conflict হলে ক্লায়েন্টে “অন্য কেউ আগে বদলেছে” দেখিয়ে সর্বশেষ ডেটা লোড করুন। ব্যাকগ্রাউন্ড কাজে স্বয়ংক্রিয়ভাবে নতুন ডেটা পড়ে আবার চেষ্টা করা যায়।
     ref: optimistic-lock
   - q: 'Pessimistic আর optimistic lock কখন কোনটা?'
-    a: 'ঘন ঘন সংঘর্ষে (ওয়ালেট, স্টক) pessimistic; কম সংঘর্ষ আর লম্বা ব্যবহারকারী-কাজে (ফর্ম এডিট) optimistic।'
+    a: 'সংঘর্ষ ঘন আর কাজ দ্রুত হলে pessimistic (ওয়ালেট, স্টক)। সংঘর্ষ বিরল আর মানুষ ধীরে কাজ করলে optimistic (ফর্ম এডিট)।'
     more: |
-      Optimistic-এ সংঘর্ষ বেশি হলে ব্যর্থ আর retry জমতে থাকে। Pessimistic-এ সংঘর্ষ কম হলেও প্রতি request lock-এর খরচ দেয়। তাই সংঘর্ষের হার আর কাজের দৈর্ঘ্য দেখে বেছে নাও।
-    ref: optimistic-lock
+      মোটামুটি নিয়ম: ২০ বার save-এ ১-এর কম সংঘর্ষ হলে optimistic, ৫ বারে ১ বা বেশি হলে pessimistic। ঘন সংঘর্ষে optimistic ব্যর্থতা আর retry জমায়। লম্বা ফর্মে pessimistic একজন ধীর মানুষের পেছনে সবাইকে লাইনে দাঁড় করায়। শুধু সংখ্যা বাড়ানো-কমানো হলে একটা atomic UPDATE-ই দুটোর কোনোটা ছাড়াই চলে।
+    ref: lock-choice
   - q: 'Advisory lock বা Symfony Lock কখন লাগে?'
     a: 'যখন lock নেওয়ার মতো কোনো সারি নেই, যেমন “এই cron বা export একবারই চলবে”। নামের ওপর lock নেওয়া হয়।'
     more: |
@@ -318,12 +391,22 @@ flashcards:
   - q: 'Distributed lock-এ TTL কেন থাকে, আর কী ঝুঁকি?'
     a: 'প্রসেস crash করলে lock যেন চিরকাল না আটকে থাকে। ঝুঁকি: কাজ TTL-এর বেশি লাগলে lock ছেড়ে যায়, আর দুজন একসাথে চলে।'
     more: |
-      সমাধান: দীর্ঘ কাজে `refresh()` ডাকো। আর টাকার মতো ক্ষতিকর জায়গায় শুধু lock-এ ভরসা কোরো না, ডেটাবেস constraint বা version check-ও রাখো।
+      সমাধান: দীর্ঘ কাজে `refresh()` ডাকুন। আর টাকার মতো ক্ষতিকর জায়গায় শুধু lock-এ ভরসা করবেন না, ডেটাবেস constraint বা version check-ও রাখুন।
     ref: advisory-distributed
-  - q: 'Deadlock কী, আর কীভাবে ঠেকাবে?'
+  - q: 'টাকা বা ডুপ্লিকেটের ঝুঁকিতে TTL lock-এর পেছনে কী থাকে?'
+    a: 'ডেটাবেস constraint, যেমন unique index। lock হারিয়ে দুটো কাজ চললেও ডেটাবেস দ্বিতীয় লেখাটা ফিরিয়ে দেয়।'
+    more: |
+      TTL lock শুধু দক্ষতার জন্য: বেশিরভাগ ডুপ্লিকেট কাজ শুরুই হতে দেয় না। আসল নিশ্চয়তা আসে ডেটাবেস যা মানতে বাধ্য করে তা থেকে, যেমন export-এর (month)-এ unique index, বা version check।
+    ref: advisory-distributed
+  - q: 'Deadlock কী, আর কীভাবে ঠেকাবেন?'
     a: 'দুই transaction উল্টো ক্রমে lock নিয়ে একে অপরের অপেক্ষায় আটকে যাওয়া। সব জায়গায় একই ক্রমে (ছোট id আগে) lock নিলে ঠেকে।'
     more: |
       ডেটাবেস deadlock টের পেলে একটাকে rollback করে DeadlockException দেয়। তখন পুরো transaction আবার চেষ্টা করতে হয়, অল্প জিটার দিয়ে আর সীমিত বারে। মূল প্রতিকার তবু একই lock-ক্রম।
+    ref: deadlock-ordering
+  - q: 'Doctrine-এ deadlock-এর পরে নিরাপদে retry কীভাবে করবেন?'
+    a: 'DeadlockException ধরুন, বন্ধ হয়ে যাওয়া EntityManager reset করুন, ২০-১২০ ms এলোমেলো অপেক্ষা করুন, আর পুরো transaction আবার চালান, সর্বোচ্চ ৩ বার।'
+    more: |
+      ডেটাবেস transaction আগেই rollback করেছে, আর wrapInTransaction() বেরোনোর সময় EntityManager বন্ধ করে দেয়, তাই retry-তে নতুন একটা লাগে (`ManagerRegistry::resetManager()`)। এলোমেলো অপেক্ষা সংঘর্ষ করা দুই transaction-কে একসাথে আবার শুরু করে আবার আটকানো থেকে বাঁচায়।
     ref: deadlock-ordering
 
 quiz:
@@ -397,6 +480,22 @@ quiz:
         correct: true
         why: 'WHERE version = ৩ এখন কোনো সারি পায় না; রফিককে আবার লোড করতে বলা হয়।'
     ref: optimistic-lock
+  - q: 'দোকানে ৫০টা টিকিট, প্রথম সেকেন্ডে ২০০ জন Buy চাপল। কোন পদ্ধতিগুলো মানানসই?'
+    hint: 'বেশিরভাগ request কি সংঘর্ষ করে, আর পড়া ও লেখার মাঝের কাজ কত লম্বা?'
+    options:
+      - text: 'টিকিট স্টকের সারিতে pessimistic lock'
+        correct: true
+        why: 'প্রায় প্রতিটা request সংঘর্ষ করে আর কাজ ছোট, তাই সারির জন্য লাইনে দাঁড়ানো সস্তা, আর গণনাও ঠিক থাকে।'
+      - text: 'version কলামসহ optimistic lock'
+        correct: false
+        why: '২০০ জনের প্রায় সবাই সংঘর্ষ করে ব্যর্থ হবে, retry করবে, আবার সংঘর্ষ করবে। অনেক বৃথা কাজ।'
+      - text: 'একটাই UPDATE … SET stock = stock - 1 WHERE stock > 0'
+        correct: true
+        why: 'এটা নিজেই atomic: ডেটাবেস এক ধাপে দেখে আর কমায়, তাই আলাদা lock-এর কোড লাগে না।'
+      - text: 'কোনো lock নয়: স্টক পড়ুন, দেখুন, তারপর save'
+        correct: false
+        why: 'এটাই check-then-act ফাঁক। অনেক ক্রেতা একসাথে “১টা আছে” পড়ে সবাই টিকিট পেয়ে যায়।'
+    ref: lock-choice
   - q: 'কোনগুলো Symfony Lock বা advisory lock ব্যবহারের যুক্তিসঙ্গত জায়গা?'
     hint: 'যেখানে lock নেওয়ার মতো আলাদা কোনো সারি নেই।'
     options:

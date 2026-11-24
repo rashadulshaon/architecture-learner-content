@@ -38,6 +38,15 @@ slides:
         marks:
           - {line: 5, tip: 'This is the trip for the list: `SELECT … FROM orders ORDER BY created_at DESC LIMIT 50`.'}
           - {line: 11, tip: 'One `SELECT … FROM customers WHERE id = ?` per iteration. With 50 different customers, that is 50 extra queries.'}
+      - type: code
+        lang: php
+        file: 'src/Controller/OrderController.php'
+        variant: good
+        code: |
+          // 1 query: the orders and their customers together. The loop stays as it was.
+          $latest = $orders->findLatestWithCustomer(50);
+        marks:
+          - {line: 2, tip: 'One JOIN fetches each order with its customer, so `getCustomer()->getName()` in the loop finds the data already there. The repository method is on slide 3.'}
       - type: visual
         kind: bars
         caption: 'The same code: how many queries run as the page gets more orders'
@@ -45,7 +54,7 @@ slides:
           - {label: '10 orders', value: 11, display: '11 queries', tip: 'It looks like this on your local machine, so nobody notices.'}
           - {label: '50 orders', value: 51, display: '51 queries', tone: warn, tip: '1 for the list of orders, 50 for the customers.'}
           - {label: '500 orders', value: 501, display: '501 queries', tone: bad, tip: 'Even at 1 ms per round trip, half a second goes on the road alone.'}
-          - {label: 'Written properly', value: 1, display: '1 query', tone: good, tip: 'No matter how many orders, it stays one query. The next slides show how.'}
+          - {label: 'Written properly', value: 1, display: '1 query', tone: good, tip: 'No matter how many orders, it stays one query. The code just above shows the fix; slide 3 builds it.'}
     aside:
       - type: story
         title: 'Fast in the demo, slow in production'
@@ -227,7 +236,7 @@ slides:
     blocks:
       - type: text
         body: |
-          Now each order has to show its items too. Items are a **collection** (to-many). Join them and 50 orders × an average of 4 items gives 200 rows, each repeating the order and customer columns. A better way is **batch loading**: fetch the orders first, then fetch all their items in one query with `IN (…)`. In shopping-list terms: two shops, two trips, not 51.
+          Now each order has to show its items too. Items are a **collection** (to-many). Join them and 50 orders × an average of 4 items gives 200 rows, each repeating the order and customer columns. A better way is **batch loading**: fetch the orders first, then fetch all their items in one query with `IN (…)` (SQL for "any of these ids"). In shopping-list terms: two shops, two trips, not 51.
       - type: code
         lang: php
         file: 'src/Repository/OrderRepository.php'
@@ -295,7 +304,7 @@ slides:
       - type: tips
         items:
           - 'If you only need the number of items, don''t load the collection. Count it in the same query with `COUNT(i.id)` and `GROUP BY`.'
-          - 'Doctrine can also batch for you: mark the collection with `setFetchMode()` and `FETCH_EAGER` on the query and it loads the collection with an `IN (…)` query.'
+          - 'Keep the `IN` list short: it comes from one page of 50 ids. For thousands of ids, cut them into chunks of a few hundred and run one query per chunk.'
       - type: terms
         items:
           - {term: 'Cartesian product', meaning: 'Joining two collections together multiplies the rows: 4 items × 3 payments = 12 rows per order.'}

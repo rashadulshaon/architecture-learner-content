@@ -34,6 +34,80 @@ slides:
       q: 'The code ran fine, so why did 300 customers get a wrong refund?'
       a: 'Because "cancelled" had two meanings and nobody separated them. The code did what the developer understood, not what the business needed.'
 
+  - slug: words-in-code
+    title: 'Turn the business sentence into a method name'
+    kind: howto
+    tldr: 'Give each business sentence its own method, named in the business''s words, with the rule inside. A refund after a customer cancellation then looks wrong at a glance.'
+    keywords: ['ubiquitous language', 'refactoring', 'rename', 'domain method', 'cancelByCustomer', 'status enum']
+    blocks:
+      - type: text
+        body: |
+          Back to Rahim's order. The business has two sentences: "when the customer cancels, they get store credit" and "when we cancel, they get a refund". Store credit is money kept in the customer's account for the next purchase; a refund sends the money back. The fix is one method per sentence, named in those exact words.
+      - type: code
+        lang: php
+        file: 'src/Sales/CancelOrderHandler.php'
+        variant: bad
+        code: |
+          // Before: both cancellations are the same number, so both get a refund
+          $order->setStatus(3);
+          $payments->refund($order);
+          // The business has two rules here; nothing in these lines tells them apart.
+        marks:
+          - {line: 2, tip: 'Is 3 "cancelled by the customer" or "cancelled by us"? Only whoever wrote it knows, and a month later even they may not.'}
+          - {line: 3, tip: 'Always refunding is right for one cancellation and wrong for the other. This is how about 300 customers got money they should not have.'}
+      - type: code
+        lang: php
+        file: 'src/Sales/Order.php'
+        variant: good
+        code: |
+          final class Order
+          {
+              public function cancelByCustomer(): void
+              {
+                  $this->cancel(OrderStatus::CancelledByCustomer);
+              }
+
+              public function cancelByUs(): void
+              {
+                  $this->cancel(OrderStatus::CancelledByUs);
+              }
+
+              private function cancel(OrderStatus $to): void
+              {
+                  if ($this->status !== OrderStatus::Placed) {
+                      throw new OrderCannotBeCancelled($this->id);
+                  }
+                  $this->status = $to;
+              }
+          }
+
+          // In the handlers, each business sentence is now a readable pair of lines:
+          $order->cancelByCustomer();
+          $customer->addCredit($order->total());   // store credit, no refund
+
+          $order->cancelByUs();
+          $payments->refund($order);               // we cancelled: the money goes back
+        marks:
+          - {line: 3, tip: 'The business sentence "the customer cancels" is now a method. Whoever reads the code reads the same words the business says.'}
+          - {line: 15, tip: 'One shared guard: an order that is already cancelled or shipped can''t be cancelled again.'}
+          - {line: 24, tip: 'Store credit is added; there is no refund call here. A refund on this path would stand out in review.'}
+      - type: quote
+        body: 'Name the method the way the business says the sentence.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Inventing the words yourself. Take them from the business person, or you have created a third language.'
+          - 'Renaming the whole codebase in one go. Add the new method, move callers one at a time, then delete `setStatus()`.'
+      - type: when
+        use:
+          - 'Rules the business talks about out loud: cancel, refund, approve, expire.'
+        avoid:
+          - 'Plain CRUD screens with no business rules, where `setName()` is perfectly fine.'
+          - 'The price: time with a domain expert up front, and renaming old code.'
+    check:
+      q: 'Where, in the new code, can a reviewer see that a customer-cancelled order must not be refunded?'
+      a: 'In the handler: `cancelByCustomer()` is followed by `addCredit()`, never `refund()`. The method name carries the business rule, so a wrong refund looks wrong at a glance.'
+
   - slug: bounded-contexts
     title: 'Bounded context: one word, one meaning, one boundary'
     kind: concept
@@ -44,7 +118,7 @@ slides:
         icon: shop
         title: 'Three kinds of "order" in a biryani restaurant'
         body: |
-          At the cash counter, an "order" is a bill with prices and payment. In the kitchen, the same "order" is a list of what to cook in which pot. To the delivery boy, an "order" is a packet with an address. All three are right, because each holds one meaning inside their own job. The trouble starts when you squeeze all three meanings onto one table.
+          At the cash counter, an "order" is a bill with prices and payment. In the kitchen, the same "order" is a list of what to cook in which pot. To the delivery boy, an "order" is a packet with an address. All three are right, because each holds one meaning inside their own job. The trouble starts when all three share one table: the kitchen renames a pot column, and the cash counter's bill stops working.
       - type: visual
         kind: table
         caption: 'The same word "order", three meanings in three contexts'
@@ -58,6 +132,35 @@ slides:
             tip: 'The reasons for change differ, so in separate contexts a change in one doesn''t break another.'
           - cells: ['In Symfony', 'src/Sales/', 'src/Kitchen/', 'src/Delivery/']
             tip: 'An easy start: each context gets its own folder and namespace, with its own Order class. They talk only through ids or events.'
+      - type: code
+        lang: php
+        file: 'src/Sales/OrderPlaced.php + src/Kitchen/StartCooking.php'
+        variant: good
+        code: |
+          // Sales publishes only what others need: ids and dish names, no prices
+          final readonly class OrderPlaced
+          {
+              public function __construct(public string $orderId, public array $dishes)
+              {
+              }
+          }
+
+          // Kitchen builds its own, much smaller Order from that message
+          #[AsMessageHandler]
+          final class StartCooking
+          {
+              public function __construct(private KitchenOrders $kitchen)
+              {
+              }
+
+              public function __invoke(OrderPlaced $event): void
+              {
+                  $this->kitchen->add(Order::fromDishes($event->orderId, $event->dishes));
+              }
+          }
+        marks:
+          - {line: 1, tip: 'The message crosses the boundary carrying an id and dish names only. Prices and coupons stay inside Sales.'}
+          - {line: 19, tip: 'Kitchen turns the message into its own Order, with only what it needs to cook. It never reads the Sales tables.'}
       - type: quote
         body: 'One word, one meaning, inside one context. Change the context and the meaning may change.'
     aside:
@@ -67,6 +170,12 @@ slides:
         items:
           - 'Sit with the business people, write down their own words, and use exactly those words as class and method names.'
           - 'Contexts talk through ids or events, never by reaching into each other''s database tables.'
+      - type: when
+        use:
+          - 'The same word means different things to different teams or jobs.'
+        avoid:
+          - 'A small app with one team and one meaning per word: a single model is simpler.'
+          - 'The price: some data lives in two places, and you write hand-off code between contexts.'
       - type: refs
         items:
           - {to: 'messaging/events-vs-commands', label: 'Talking between contexts with events'}
@@ -99,9 +208,14 @@ slides:
               ) {
               }
 
+              public static function paisa(int $paisa): self
+              {
+                  return new self($paisa, 'BDT');
+              }
+
               public static function taka(int $taka): self
               {
-                  return new self($taka * 100, 'BDT');
+                  return self::paisa($taka * 100);
               }
 
               public function plus(self $other): self
@@ -122,7 +236,7 @@ slides:
         marks:
           - {line: 4, tip: 'A private constructor: you can''t push in just any value. You have to create one through a named static method.'}
           - {line: 6, tip: 'Money is stored in paisa (an integer). With floats, 0.1 + 0.2 is not exactly 0.3, which is terrifying in money maths.'}
-          - {line: 23, tip: 'plus() doesn''t change itself; it returns a new Money. That is immutability: once created, the value never changes.'}
+          - {line: 28, tip: 'plus() doesn''t change itself; it returns a new Money. That is immutability: once created, the value never changes.'}
       - type: code
         lang: php
         file: 'src/Sales/Customer.php'
@@ -145,7 +259,7 @@ slides:
           }
         marks:
           - {line: 6, tip: 'The id is fixed once and never changes. The Customer stays the same even if the name or phone changes.'}
-          - {line: 9, tip: 'Money is stored right in the customer table, in columns like credit_amount. It needs no table or id of its own.'}
+          - {line: 9, tip: 'Money is stored right in the customer table, in the columns credit_paisa and credit_currency. It needs no table or id of its own.'}
     aside:
       - type: tips
         items:
@@ -157,6 +271,63 @@ slides:
     check:
       q: 'Two Customers have the same name, phone, everything. Are they the same entity? And what about Money(500) and Money(500)?'
       a: 'Customer: no, if the ids differ they are different entities. Money: yes, equal values mean the same value object.'
+
+  - slug: money-as-primitive
+    title: 'What goes wrong with float money and raw strings'
+    kind: pitfall
+    tldr: 'A float or a raw string accepts anything, so mistakes slip in silently. A Money or Email object refuses wrong values at the door.'
+    keywords: ['primitive obsession', 'float money', 'rounding error', 'Money', 'Email', 'value object']
+    blocks:
+      - type: text
+        body: |
+          A **float** is how a computer stores a number like 19.99: very close, but rarely exact. Convert 19.99 taka to paisa with `19.99 * 100` and you get 1998.9999999999998, and `(int)` cuts it to 1998. One paisa vanishes on every sale of that item. Over 100,000 sales that is Tk 1,000, and no error appears anywhere.
+      - type: code
+        lang: php
+        file: 'src/Sales/Checkout.php'
+        variant: bad
+        code: |
+          // A price of 19.99 taka, converted to paisa for the database
+          $paisa = (int) (19.99 * 100);             // 1998, not 1999: a paisa is lost
+
+          // Taka and dollars are both "just numbers", so PHP adds them happily
+          $total = $creditInTaka + $feeInDollars;   // 500 + 5 = 505 of what?
+
+          // An email is "just a string", so a broken one gets in
+          $customer->setEmail('rahim@');
+        marks:
+          - {line: 2, tip: 'The float 19.99 is stored as a close-but-not-exact value, so times 100 lands just under 1999 and (int) throws the rest away.'}
+          - {line: 5, tip: 'Nothing says one number is taka and the other dollars. The sum is meaningless, and PHP raises no error.'}
+          - {line: 8, tip: 'A plain string accepts anything. The broken address is saved, and the first welcome email fails later, far from here.'}
+      - type: code
+        lang: php
+        file: 'src/Sales/Checkout.php'
+        variant: good
+        code: |
+          $price = Money::paisa(1999);            // integer from the start: exact
+          $total = $price->plus(Money::taka(5));  // 2499 paisa, exact
+
+          $total->plus($feeInDollars);            // DomainException: $feeInDollars is USD
+
+          Email::fromString('rahim@');            // InvalidArgumentException: can't exist
+        marks:
+          - {line: 1, tip: 'The price enters as whole paisa, so there is no float and no conversion to get wrong.'}
+          - {line: 4, tip: 'Adding different currencies is refused inside Money::plus(), exactly where the rule belongs.'}
+          - {line: 6, tip: 'An Email value object checks the format in its constructor, so an invalid one can''t exist in the first place.'}
+      - type: quote
+        body: 'Never store money in a float. Store whole paisa, inside a Money.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Percentages still need a rounding rule: 5% of 1,999 paisa is 99.95 paisa. Decide how to round, and test it.'
+          - 'Several currencies, taxes and exchange rates: use a library such as moneyphp/money instead of growing your own.'
+      - type: when
+        use:
+          - 'Any amount you add, compare or store: prices, balances, fees.'
+        avoid:
+          - 'A number nobody does arithmetic on, like a likes counter: a plain int is enough.'
+    check:
+      q: '`(int) (19.99 * 100)` returns 1998. Why does it, and what is the fix?'
+      a: 'The float 19.99 is not stored exactly, so times 100 lands just under 1999 and `(int)` cuts it. Keep integer paisa from the start, inside a Money object.'
 
   - slug: aggregate-boundary
     title: 'Aggregate: the boundary that guards the rules'
@@ -172,13 +343,13 @@ slides:
         file: 'src/Controller/OrderController.php'
         variant: bad
         code: |
-          // The inner collection is changed directly, with no rules at all
-          $order->getLines()->add(new OrderLine($order, $productId, 50, $price));
+          // The order already has 20 lines. The inner collection is changed directly, with no rules
+          $order->getLines()->add(new OrderLine($order, $productId, 1, $price));
 
           // And the status can be changed from any code
           $order->setStatus(OrderStatus::Confirmed);
         marks:
-          - {line: 2, tip: 'Nobody respected the 20-item limit here. If another controller or command does the same, the rule will be broken for sure.'}
+          - {line: 2, tip: 'The order already had 20 lines and this made 21: nobody checked the limit. If another controller or command does the same, the rule will be broken for sure.'}
           - {line: 5, tip: 'Even an empty order could be confirmed. Nobody is guarding the rule.'}
       - type: code
         lang: php
@@ -216,6 +387,9 @@ slides:
                   $this->status = OrderStatus::Confirmed;
               }
           }
+
+          // The controller, after the fix: the 21st line is refused
+          $order->addLine($productId, 1, $price);   // throws TooManyLines
         marks:
           - {line: 13, tip: 'The only way to add an item. The rules live inside this method, so everyone has to obey them.'}
           - {line: 21, tip: 'Instead of holding a Product directly, it keeps only a ProductId; there is no need to reach inside another aggregate.'}
@@ -252,6 +426,11 @@ flashcards:
     more: |
       Writing `cancelByCustomer()` instead of `setStatus(3)` lets a business person read the code and spot a mistake. Misunderstandings shrink and newcomers learn faster. Take the words from the business people; don't invent them yourself.
     ref: two-languages
+  - q: 'How do you turn "when the customer cancels, give store credit" into code?'
+    a: 'Give that sentence its own method in the business''s words, such as `cancelByCustomer()`, and put the rule inside it instead of a status number.'
+    more: |
+      `cancelByCustomer()` and `cancelByUs()` replace `setStatus(3)`. Each one is followed by its own step, credit or refund, so a wrong refund looks wrong at a glance. Do it gradually: add the new method, move callers one by one, then delete the setter.
+    ref: words-in-code
   - q: 'What is a bounded context?'
     a: 'A boundary inside which every word has exactly one meaning and there is exactly one model.'
     more: |
@@ -261,6 +440,11 @@ flashcards:
     a: 'Through ids, APIs or events, never by reaching into each other''s database tables or inner classes.'
     more: |
       A boundary works only if it can't be breached from outside. When Sales publishes an "order placed" event, Kitchen listens and builds its own cooking list in its own language. More in [[messaging/events-vs-commands|events and commands]].
+    ref: bounded-contexts
+  - q: 'What does splitting into bounded contexts cost, and when is it not worth it?'
+    a: 'Some data lives in two places and you write hand-off code between contexts. With one team and one meaning per word, a single model is simpler.'
+    more: |
+      Sales and Kitchen both know an order id and the dish names, and an event carries them across. That is a small price when the meanings really differ. In a small app where every word means one thing, it is just extra code.
     ref: bounded-contexts
   - q: 'What is the main difference between an entity and a value object?'
     a: 'An entity has an identity (id) and stays the same when its data changes. A value object has no identity: equal values mean they are the same.'
@@ -272,6 +456,11 @@ flashcards:
     more: |
       Integers in paisa keep addition and subtraction exact. A Money value object also carries the currency, and throws an exception if you try to add different currencies.
     ref: entity-and-value-object
+  - q: 'What goes wrong with `(int) (19.99 * 100)` in PHP?'
+    a: 'It gives 1998, not 1999. The float 19.99 is not exact, so a paisa disappears. Keep money as integer paisa from the start.'
+    more: |
+      One lost paisa per sale looks harmless, but over 100,000 sales it is Tk 1,000, and no error is ever raised. A Money object built from whole paisa never does this conversion.
+    ref: money-as-primitive
   - q: 'What are an aggregate and an aggregate root?'
     a: 'An aggregate is a cluster of classes that change together and obey the rules together. The root is the cluster''s only door.'
     more: |
@@ -300,6 +489,22 @@ quiz:
         correct: false
         why: 'A meaningless name moves you even further from the business language.'
     ref: two-languages
+  - q: 'The business says: "customer cancels, store credit; we cancel, refund." Which design makes the wrong-refund mistake hardest to repeat?'
+    hint: 'Which version lets a reader see the rule from the method name alone?'
+    options:
+      - text: 'One `cancel(bool $byCustomer)` method'
+        correct: false
+        why: 'Better than numbers, but `cancel(true)` at the call site still says nothing, and both rules end up tangled in one method.'
+      - text: '`cancelByCustomer()` and `cancelByUs()` as two methods, each followed by its own step (credit or refund)'
+        correct: true
+        why: 'Each business sentence is a method name, so a refund after `cancelByCustomer()` looks wrong at a glance.'
+      - text: 'One `cancel(int $type)` where 1 means customer and 2 means us'
+        correct: false
+        why: 'Numbers again: every caller must remember what 1 and 2 mean, which was the original problem.'
+      - text: 'Keep `setStatus(3)` and describe the numbers on a wiki page'
+        correct: false
+        why: 'The wiki and the code drift apart, and nobody opens the wiki at the moment they write the line.'
+    ref: words-in-code
   - q: 'In an e-commerce system both the Sales and Support teams use the word "Customer", but their needs differ. What is the best decision?'
     hint: 'What happens when one class keeps changing for two teams'' needs?'
     options:
@@ -332,6 +537,22 @@ quiz:
         correct: false
         why: 'The order stays the same even if its items change. It has an identity (id), so it is an entity.'
     ref: entity-and-value-object
+  - q: 'A developer writes `$paisa = (int) ($price * 100);` with `$price = 19.99`. What is true?'
+    hint: 'What does (int) do to the decimals of a float: round or cut?'
+    options:
+      - text: 'It is always 1999, because PHP rounds when casting a float to int'
+        correct: false
+        why: 'PHP truncates when casting a float to an int; it does not round.'
+      - text: 'It can give 1998, because 19.99 * 100 is 1998.9999999999998 and (int) cuts off the decimals'
+        correct: true
+        why: 'The float is not exact, so the product lands just under 1999 and the cast drops the rest.'
+      - text: 'It only goes wrong for amounts above a million taka'
+        correct: false
+        why: 'Size does not matter. The tiny representation gap shows up at small amounts too.'
+      - text: 'Keeping the price as integer paisa (1999) from the start avoids the conversion altogether'
+        correct: true
+        why: 'With whole paisa there is no float and no multiplication, so nothing can be lost.'
+    ref: money-as-primitive
   - q: 'Where does the aggregate''s rule get broken in the code below?'
     lang: php
     code: |

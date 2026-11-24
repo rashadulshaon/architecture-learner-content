@@ -25,7 +25,7 @@ slides:
           - {from: loyal, to: checkout, label: 'If Loyalty fails, the order itself gets stuck.', tone: bad, dashed: true}
       - type: text
         body: |
-          Now the business wants "tell analytics when an order is placed, too." The checkout file has to be opened again and tested again. The work grows, and so does the risk each time.
+          Now the business wants "tell analytics when an order is placed, too." The checkout file has to be opened again and tested again. The work grows, and so does the risk each time. Add up the customer's wait too: Inventory 50 ms, the email service 800 ms, Loyalty on a bad day 3 seconds. That is nearly 4 seconds at the spinner for an order that was saved long ago.
     aside:
       - type: problem
         body: 'If whoever finishes the job calls everyone else itself, everyone is tied to it: adding something new is hard, and one service''s slowness is everyone''s slowness.'
@@ -58,6 +58,9 @@ slides:
           - {from: event, to: loyal, label: 'Loyalty hears it and adds the points.'}
       - type: quote
         body: 'An event is a fact about the past ("an order was placed"), not an instruction ("send an email").'
+      - type: text
+        body: |
+          Now count the customer's wait. Before: 50 ms + 800 ms + 3 s, about 4 seconds. After: only the saving of the order, about 50 ms. The three jobs run behind the scenes, in a worker (a separate program that picks jobs up and does them), and a failed one is retried without anyone watching the spinner.
     aside:
       - type: terms
         items:
@@ -74,7 +77,7 @@ slides:
   - slug: cqrs-split
     title: 'CQRS: the issue register and the catalogue'
     kind: concept
-    tldr: 'CQRS means splitting writing (commands) and reading (queries) into separate models, so the read side can be arranged its own way and made fast.'
+    tldr: 'CQRS splits writing (rules) from reading (speed) into separate models. A list page that needed 21 queries becomes one flat query.'
     keywords: ['CQRS', 'command query responsibility segregation', 'read model', 'write model', 'denormalized', 'query side']
     blocks:
       - type: metaphor
@@ -84,7 +87,7 @@ slides:
           A library lends and takes back books in the issue register, where the rules are strict: does the member have a card, has the last book come back? But readers go to the catalogue cards to find a book, sorted by subject and quick to search. The two jobs differ, so the layouts differ. That is CQRS: the **command** (write) side enforces the rules, and the **query** (read) side shows things fast.
       - type: visual
         kind: compare
-        caption: 'What happens with one model for everything, and what happens when you split'
+        caption: 'Writing guards the rules; reading only has to be fast'
         columns:
           - title: 'Command: the write side'
             tone: warn
@@ -92,7 +95,7 @@ slides:
             tip: 'Rules and invariants matter here. Correctness comes before speed.'
             items:
               - 'Place, cancel, confirm orders'
-              - 'Enforce the rules (Aggregate)'
+              - 'Enforce the rules in the Order object'
               - 'Returns only success or failure'
           - title: 'Query: the read side'
             tone: good
@@ -104,7 +107,27 @@ slides:
               - 'Changes no data'
       - type: code
         lang: php
+        file: 'src/Sales/Query/SlowOrderList.php'
+        variant: bad
+        code: |
+          // One model for both jobs: the list page builds 20 full Order objects
+          $orders = $this->orders->findBy(
+              ['customerId' => $customerId],
+              ['placedAt' => 'DESC'],
+              20,
+          );
+
+          return array_map(fn (Order $o) => [
+              'id' => (string) $o->id(),
+              'total' => $o->total(), // adds up the lines: one extra query per order
+              'status' => $o->status()->value,
+          ], $orders);
+        marks:
+          - {line: 9, tip: 'The order lines are lazy-loaded to compute the total. 1 query for the orders + 20 for their lines = 21 queries to show 20 rows.'}
+      - type: code
+        lang: php
         file: 'src/Sales/Query/OrderSummaryQuery.php'
+        variant: good
         code: |
           final readonly class OrderSummaryQuery
           {
@@ -126,7 +149,10 @@ slides:
           }
         marks:
           - {line: 3, tip: 'Not a Doctrine ORM entity, but the DBAL Connection directly. Reading needs no rule-laden objects, so there is no hassle of building them.'}
-          - {line: 12, tip: 'order_summary is a pre-built flat read model, with every column the page needs and no joins.'}
+          - {line: 12, tip: 'order_summary is a pre-built flat read model, with every column the page needs and no joins. One query for 20 rows, instead of 21.'}
+      - type: text
+        body: |
+          The price: a small handler listening to `OrderPlaced` must keep `order_summary` in step, and for a moment after an order the list may not show it yet. For a small app, one plain query is enough; add the split when a page measurably hurts.
     aside:
       - type: remember
         body: 'CQRS is a split: the write model is for rules, the read model is for speed.'
@@ -146,7 +172,7 @@ slides:
     blocks:
       - type: text
         body: |
-          First, the two buses. The event bus is fine with no listeners at all (`allow_no_handlers`), because when you make an announcement you don't need to know who is listening. Handlers for these events can even run asynchronously in a worker.
+          First, the two buses and the async transport (the queue the events wait in). The event bus is fine with no listeners at all (`allow_no_handlers`), because when you make an announcement you don't need to know who is listening. Routing `OrderPlaced` to `async` means its handlers run in a worker you start with `php bin/console messenger:consume async`. Without a running worker, events just sit in the table.
       - type: code
         lang: yaml
         file: 'config/packages/messenger.yaml'
@@ -160,17 +186,24 @@ slides:
                   default_middleware:
                     enabled: true
                     allow_no_handlers: true
+              transports:
+                async:
+                  dsn: '%env(MESSENGER_TRANSPORT_DSN)%' # .env: doctrine://default?auto_setup=0
+                  retry_strategy: {max_retries: 3, delay: 1000, multiplier: 2}
+                failed: 'doctrine://default?queue_name=failed'
+              failure_transport: failed
               routing:
                 'App\Sales\Event\OrderPlaced': async
         marks:
           - {line: 9, tip: 'An event bus with no listeners is not an error. Once the announcement is made, the announcer''s job is done.'}
-          - {line: 11, tip: 'Routed to the async transport, the handlers run in a worker, and the announcer answers the user right away.'}
+          - {line: 11, tip: 'The async transport: a queue stored in your database here. Retries 3 times, waiting 1 s, 2 s, 4 s.'}
+          - {line: 14, tip: 'Events that fail all their retries land here, so they are not silently lost. Inspect them with messenger:failed:show.'}
+          - {line: 17, tip: 'OrderPlaced goes to the async transport, so the announcer answers the user right away.'}
       - type: code
         lang: php
         file: 'src/Sales + src/Inventory'
         variant: good
         code: |
-          // Something that happened: a past-tense name, just facts
           final readonly class OrderPlaced
           {
               public function __construct(public string $orderId)
@@ -178,7 +211,6 @@ slides:
               }
           }
 
-          // Sales: does its own job, then announces
           #[AsMessageHandler(bus: 'command.bus')]
           final readonly class PlaceOrderHandler
           {
@@ -199,15 +231,19 @@ slides:
           #[AsMessageHandler(bus: 'event.bus')]
           final readonly class ReserveStockWhenOrderPlaced
           {
+              public function __construct(private StockService $stock)
+              {
+              }
+
               public function __invoke(OrderPlaced $event): void
               {
-                  // the work of setting the stock aside
+                  $this->stock->reserveFor($event->orderId);
               }
           }
         marks:
-          - {line: 2, tip: 'The name is OrderPlaced, not PlaceOrder. An event gives information; it doesn''t give orders.'}
-          - {line: 22, tip: 'Sales only announces here. It doesn''t know which handlers exist, and it doesn''t need to.'}
-          - {line: 28, tip: 'Inventory wrote its own handler. Adding a new listener means no change to the Sales files.'}
+          - {line: 1, tip: 'The name is OrderPlaced, not PlaceOrder. An event gives information; it doesn''t give orders.'}
+          - {line: 20, tip: 'Sales only announces here. It doesn''t know which handlers exist, and it doesn''t need to.'}
+          - {line: 26, tip: 'Inventory wrote its own handler. Adding a new listener means no change to the Sales files.'}
     aside:
       - type: pitfalls
         items:
@@ -219,6 +255,66 @@ slides:
     check:
       q: 'Why is "OrderPlaced" in the past tense, and not an instruction like "PlaceOrder"?'
       a: 'An event is a fact that has already happened; listeners can''t be forced to act on it, but they can know about it. "PlaceOrder" is an instruction, a command, which has one specific recipient.'
+
+  - slug: event-lost-on-crash
+    title: 'A crash between save and announce loses the event'
+    kind: pitfall
+    tldr: 'If the server dies after saving the order but before dispatching the event, nothing is announced. Store the event in the same database transaction and send it from a worker.'
+    keywords: ['transactional outbox', 'lost event', 'doctrine_transaction', 'at least once', 'Messenger Doctrine transport', 'crash']
+    blocks:
+      - type: text
+        body: |
+          Look again at `PlaceOrderHandler`: it saves the order, then dispatches `OrderPlaced`. Two steps, and the server can die between them (a deploy, an out-of-memory kill). Order 4821 is saved, but no stock is set aside and no email goes out. Nothing logs an error, because the line that failed never ran.
+      - type: visual
+        kind: sequence
+        caption: 'Broken: the order is saved, then the process dies'
+        actors:
+          - {id: handler, label: 'Order handler', icon: code, tip: 'The PlaceOrderHandler running inside the web request.'}
+          - {id: db, label: 'Database', icon: db, tip: 'Where the order row is stored.'}
+          - {id: bus, label: 'Event bus', icon: megaphone, tip: 'Where OrderPlaced should have been sent.'}
+        messages:
+          - {from: handler, to: db, label: 'Save order 4821'}
+          - {from: db, to: handler, label: 'Saved', dashed: true}
+          - {at: handler, note: 'Server killed here', tone: bad}
+          - {at: bus, note: 'OrderPlaced never sent', tone: bad}
+      - type: visual
+        kind: sequence
+        caption: 'Fixed: the event is stored with the order, and a worker sends it'
+        actors:
+          - {id: handler, label: 'Order handler', icon: code, tip: 'Same handler, same code.'}
+          - {id: db, label: 'Database', icon: db, tip: 'Holds both the orders table and the messenger_messages table, on one connection.'}
+          - {id: worker, label: 'Worker', icon: worker, tip: 'A separate process run by messenger:consume. It delivers stored events.'}
+        messages:
+          - {from: handler, to: db, label: 'One transaction: save order, store OrderPlaced', tip: 'Both rows are written inside the same BEGIN ... COMMIT.'}
+          - {at: db, note: 'COMMIT: both exist, or neither', tone: good}
+          - {from: worker, to: db, label: 'Fetch the stored OrderPlaced'}
+          - {from: db, to: worker, label: 'OrderPlaced', dashed: true}
+          - {at: worker, note: 'Stock reserved, email sent. If it dies, the message is retried', tone: good}
+      - type: code
+        lang: yaml
+        file: 'config/packages/messenger.yaml'
+        variant: good
+        code: |
+          framework:
+              messenger:
+                  buses:
+                      command.bus:
+                          middleware:
+                              - doctrine_transaction
+        marks:
+          - {line: 6, tip: 'Wraps the whole handler in one database transaction. The async transport uses the same connection (doctrine://default), so the stored event commits or rolls back with the order.'}
+      - type: text
+        body: |
+          The price: delivery is at least once, so a handler can run twice and must be idempotent. Events now arrive after a short worker delay. This only works because the queue lives in the same database as the orders; with RabbitMQ or SQS the save and the send are two systems, and you need a real outbox table plus a relay. If losing an event is harmless (say, analytics), plain dispatch is fine.
+    aside:
+      - type: commands
+        items:
+          - {cmd: 'php bin/console messenger:setup-transports', desc: 'create the messenger_messages table'}
+          - {cmd: 'php bin/console messenger:consume async -vv', desc: 'run the worker that delivers events'}
+          - {cmd: 'php bin/console messenger:failed:show', desc: 'see events that failed all their retries'}
+    check:
+      q: 'Why does storing the event in the same transaction as the order stop events from being lost?'
+      a: 'The order and the event commit together or not at all, so there is never a saved order without its event. A worker then delivers it, and retries if it fails.'
 
   - slug: worth-the-cost
     title: 'When it pays off, and what it costs'
@@ -304,6 +400,21 @@ flashcards:
     more: |
       Write `#[AsMessageHandler(bus: 'event.bus')]` on a handler and it attaches to that bus. Inject `MessageBusInterface $eventBus` and Symfony supplies the event.bus. An event bus with no listeners is not a mistake.
     ref: events-in-symfony
+  - q: 'What can go wrong between saving an order and dispatching its event?'
+    a: 'If the server dies between the two, the order exists but the event is never sent, so no stock, no email, and no error.'
+    more: |
+      The line that failed never ran, so nothing is logged. The fix is to store the event in the same database transaction as the order, then let a worker deliver it.
+    ref: event-lost-on-crash
+  - q: 'How does Messenger avoid losing an event when the server crashes?'
+    a: 'The `doctrine_transaction` middleware plus a Doctrine transport store the event in the same transaction as the data. A worker delivers it later.'
+    more: |
+      The price is at-least-once delivery, so handlers must be idempotent. It works because the queue shares the database connection; with RabbitMQ or SQS you need a real outbox table and a relay. If losing an event is harmless, plain dispatch is fine.
+    ref: event-lost-on-crash
+  - q: 'What is the concrete pain that CQRS fixes on a list page?'
+    a: 'Building 20 full Order objects costs 1 query plus one per order for the lines: 21 queries. A flat read table answers in 1.'
+    more: |
+      The write model is shaped for rules, not for display, so reading through it is slow and heavy. The read side skips the objects and reads one pre-arranged row per order. The price is keeping that table in step, with a short lag.
+    ref: cqrs-split
 
 quiz:
   - q: 'After checkout you must notify Inventory, email, Loyalty and Analytics. Every new addition means editing the checkout file, and when Loyalty is slow the order is slow too. Which design is best?'
@@ -399,3 +510,19 @@ quiz:
         correct: false
         why: 'Here the benefit of shaping the read side separately (CQRS) is obvious.'
     ref: worth-the-cost
+  - q: 'Karim''s handler saves an order, then dispatches OrderPlaced to RabbitMQ. A deploy kills the process between the two lines. What is the best fix?'
+    hint: 'The process died, so no exception can be caught. What must be saved together?'
+    options:
+      - text: 'Wrap the dispatch in try/catch and log the error'
+        correct: false
+        why: 'A killed process throws nothing to catch. The dispatch line simply never runs.'
+      - text: 'Dispatch the event before saving the order'
+        correct: false
+        why: 'Now a crash can announce an order that was never saved, and listeners act on something that does not exist.'
+      - text: 'Save the event in an outbox table in the same transaction as the order, and let a relay send it to RabbitMQ'
+        correct: true
+        why: 'Order and event commit together or not at all. The relay delivers the stored event, and retries until it succeeds.'
+      - text: 'Retry the whole web request after 3 seconds'
+        correct: false
+        why: 'The order is already saved, so a retry creates a duplicate order and still gives no guarantee about the event.'
+    ref: event-lost-on-crash
