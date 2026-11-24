@@ -1,0 +1,385 @@
+slides:
+  - slug: half-done-order
+    title: 'Money taken, stock held, no courier'
+    kind: story
+    tldr: 'Work spread over several services can''t sit in one database transaction; if a middle step fails, the earlier steps stay done and the order hangs half-finished.'
+    keywords: ['saga', 'distributed transaction', 'partial failure', 'multi-service', 'half-done order', 'consistency']
+    blocks:
+      - type: text
+        body: |
+          Rahim's order flow is split across three services: payment, stock and courier. Rina places an order, the payment service takes her money, the stock service sets the goods aside, and then the courier service says "no couriers available today". Each of the three services has its own database, so a single `ROLLBACK` can't undo everything. Rina's money is gone, the goods are held, and the order goes nowhere.
+      - type: visual
+        kind: sequence
+        caption: 'The third step fails, and the first two stay done'
+        actors:
+          - {id: order, label: 'Order service', icon: cart, tip: 'Its job is to run the whole order, step by step.'}
+          - {id: pay, label: 'Payment', icon: wallet, tip: 'Has already charged the money and committed in its own database.'}
+          - {id: stock, label: 'Stock', icon: box, tip: 'Has already held the goods and committed in its own database.'}
+          - {id: ship, label: 'Courier', icon: truck, tip: 'No courier is free today, so it reports failure.'}
+        messages:
+          - {from: order, to: pay, label: 'Charge 1200'}
+          - {from: order, to: stock, label: 'Hold the goods'}
+          - {from: order, to: ship, label: 'Book a courier'}
+          - {from: ship, to: order, label: 'Failed: no courier', dashed: true, tone: bad}
+          - {at: order, note: 'Money taken, goods held, order hanging', tone: bad, tip: 'Two steps were committed earlier. They won''t undo themselves now.'}
+      - type: quote
+        body: 'Work across many services will break midway. Decide in advance how the earlier steps get undone.'
+    aside:
+      - type: problem
+        body: 'Every service has its own database, so running one transaction over all of them is hard and slow (two-phase commit). A saga replaces it with a chain of small transactions plus a defined way back.'
+      - type: refs
+        items:
+          - {to: 'concurrency/distributed-transactions', label: 'Why distributed transactions are hard'}
+    check:
+      q: 'Why can''t a single `ROLLBACK` undo everything here?'
+      a: 'The payment and stock services have already committed in their own separate databases. Committed work can''t be rolled back.'
+
+  - slug: cancel-the-wedding
+    title: 'Cancelling the wedding bookings: compensating actions'
+    kind: concept
+    tldr: 'A saga is a chain of small local transactions, each with an undo action (a compensation); when one fails, the earlier steps are cancelled in reverse order.'
+    keywords: ['compensating action', 'semantic rollback', 'saga steps', 'reverse order', 'compensation', 'undo']
+    blocks:
+      - type: metaphor
+        icon: calendar
+        title: 'Cancelling the wedding bookings'
+        body: |
+          For a wedding you've booked a community hall, a caterer and a photographer, and each took a deposit. Then the photographer says he can't come. You can't just "erase" the other bookings, because the deposits are already paid. Instead you do **new work**: call the caterer to cancel, ask for the deposit back, tell the hall. You may not get all of it back.
+      - type: visual
+        kind: flow
+        caption: 'Steps move forward; when the courier fails, the undo actions run'
+        nodes:
+          - {id: pay, label: 'Charge money', sub: 'step 1', icon: wallet, col: 0, row: 0, tip: 'The payment service charges the money in its own transaction and commits.'}
+          - {id: stock, label: 'Hold goods', sub: 'step 2', icon: box, col: 2, row: 0, tip: 'The stock service holds the goods in its own transaction and commits.'}
+          - {id: ship, label: 'Book courier', sub: 'step 3: failed', icon: truck, tone: bad, col: 4, row: 0, tip: 'This step fails. From here on, the undo actions of the earlier steps must run.'}
+          - {id: release, label: 'Release goods', sub: 'undo of step 2', icon: archive, tone: warn, col: 2, row: 2, tip: 'The stock compensation: put the held goods back on sale.'}
+          - {id: refund, label: 'Refund money', sub: 'undo of step 1', icon: money, tone: warn, col: 0, row: 2, tip: 'The payment compensation: return the charged money to the customer.'}
+        edges:
+          - {from: pay, to: stock, label: 'Money is charged, now hold the goods', tone: good}
+          - {from: stock, to: ship, label: 'Goods are held, now book the courier', tone: good}
+          - {from: ship, to: release, label: 'The courier failed, so release the stock first', tone: bad, dashed: true}
+          - {from: release, to: refund, label: 'Then refund the money', tone: warn, dashed: true}
+      - type: text
+        body: |
+          This is called a **semantic rollback**. It isn't a real rollback (nothing is erased); it's a new action that undoes the earlier one in meaning. So the books still show that the money was charged and later refunded.
+    aside:
+      - type: terms
+        items:
+          - {term: 'Saga', meaning: 'A chain of small local transactions where each step has an undo action.'}
+          - {term: 'Compensating action', meaning: 'A new action that reverses the effect of an earlier one in meaning, rather than erasing it.'}
+      - type: remember
+        body: 'Undoing is not erasing. Undoing is a new action in the opposite direction.'
+    check:
+      q: 'Why do compensations run in reverse order, and why isn''t this a "real rollback"?'
+      a: 'A later step may depend on an earlier one, so the later one is undone first. And nothing is erased: a new action is added, and the history stays in the books.'
+
+  - slug: persist-saga-state
+    title: 'Saga state in the database: building an orchestrator'
+    kind: howto
+    tldr: 'Store the saga''s step in an OrderSaga entity; an orchestrator, as Messenger handlers, listens to events and either sends the next command or runs compensations on failure.'
+    keywords: ['saga state', 'orchestrator', 'Messenger handler', 'AsMessageHandler', 'Doctrine entity', 'saga persistence']
+    blocks:
+      - type: text
+        body: |
+          An orchestrator that lives only in memory forgets everything on a server restart. So the saga's position is written to a table: the step, a deadline and the reason for any failure. Whenever an event arrives, the orchestrator reads the table, changes the step and sends the next command.
+      - type: code
+        lang: php
+        file: 'src/Saga/OrderSaga.php'
+        variant: good
+        code: |
+          #[ORM\Entity]
+          class OrderSaga
+          {
+              #[ORM\Id, ORM\Column(type: 'uuid')]
+              private Uuid $orderId;
+
+              #[ORM\Column(length: 20)]
+              private string $step = 'started';   // started → paid → reserved → completed
+                                                  // on failure: compensating → cancelled
+              #[ORM\Column]
+              private \DateTimeImmutable $deadline;
+
+              #[ORM\Column(nullable: true)]
+              private ?string $failure = null;
+
+              public function step(): string { return $this->step; }
+              public function moveTo(string $step): void { $this->step = $step; }
+          }
+        marks:
+          - {line: 8, tip: 'Which step the saga is on now. This is what lets work continue after a restart or crash.'}
+          - {line: 11, tip: 'If the step doesn''t advance by this time, the sweeper treats the saga as timed out (next slide).'}
+      - type: code
+        lang: php
+        file: 'src/Saga/OrderSagaOrchestrator.php'
+        variant: good
+        code: |
+          #[AsMessageHandler]
+          public function onPaid(PaymentCharged $e): void
+          {
+              $saga = $this->sagas->find($e->orderId);
+              if ('started' !== $saga->step()) {
+                  return;                                      // duplicate event
+              }
+              $saga->moveTo('paid');
+              $this->em->flush();
+              $this->bus->dispatch(new ReserveStock($e->orderId));
+          }
+
+          #[AsMessageHandler]
+          public function onCourierFailed(CourierBookingFailed $e): void
+          {
+              $this->sagas->find($e->orderId)->moveTo('compensating');
+              $this->em->flush();
+              $this->bus->dispatch(new ReleaseStock($e->orderId));   // stock first
+          }
+
+          #[AsMessageHandler]
+          public function onStockReleased(StockReleased $e): void
+          {
+              $this->bus->dispatch(new RefundPayment($e->orderId));  // then the money
+          }
+        marks:
+          - {line: 5, tip: 'If the saga isn''t at the expected step, the event is old or a duplicate. Do nothing and return.'}
+          - {line: 9, tip: 'The flush and the dispatch are separate steps with a gap between them. Close it with an outbox.'}
+          - {line: 24, tip: 'Compensation runs in reverse: the refund happens only after the news that stock was released.'}
+    aside:
+      - type: tips
+        items:
+          - 'Put the saga/order id in every command, and make every handler idempotent. Duplicate events will happen.'
+          - 'Use an [[workflows/outbox-inbox|outbox]] to close the gap around the dispatch.'
+      - type: refs
+        items:
+          - {to: 'payments/payment-state-machine', label: 'Organising steps with a state machine'}
+    check:
+      q: 'What happens if the orchestrator keeps the saga step in memory instead of the database?'
+      a: 'On a restart or crash it forgets which order was at which step, so half-finished orders hang and nobody can run their undo actions.'
+
+  - slug: orchestration-vs-choreography
+    title: 'Conductor or dance troupe: orchestration vs choreography'
+    kind: compare
+    tldr: 'In orchestration one conductor decides the steps; in choreography each service listens for events and triggers the next one itself. With many or complex steps, orchestration is easier.'
+    keywords: ['orchestration', 'choreography', 'saga coordination', 'event-driven saga', 'conductor', 'flow control']
+    blocks:
+      - type: metaphor
+        icon: users
+        title: 'A wedding manager versus everyone for themselves'
+        body: |
+          Orchestration is the wedding manager who tells everyone who does what and when, and who knows exactly where things got stuck. Choreography has no manager: the cook finishes and calls the waiter, the waiter serves and tells the decorator. Nobody sees the whole picture.
+      - type: visual
+        kind: table
+        caption: 'The two kinds of saga side by side'
+        headers: ['', 'Orchestration', 'Choreography']
+        rows:
+          - cells: ['Who sets the order', 'One orchestrator', 'Each service itself']
+            tip: 'In orchestration the whole story is written in one place. In choreography it is spread across the events.'
+          - cells: ['Seeing the whole flow', 'Readable in one place', 'Piece it together from all services']
+            tip: 'To find a bug, you look at the orchestrator''s table and see the step.'
+          - cells: ['Coupling', 'Orchestrator knows everyone', 'Services only know events']
+            tip: 'In choreography services don''t know each other directly, so the coupling is loose.'
+          - cells: ['Adding a step', 'One place in the orchestrator', 'New subscriber, unclear impact']
+            tip: 'Adding a step looks easy in choreography, but who depends on whom gets lost.'
+          - cells: ['When it fits', 'Many steps, conditions, timeouts', 'Small flows of two or three steps']
+            tip: 'As steps grow, the web of events in choreography becomes hard to follow.'
+      - type: quote
+        body: 'Choreography for simple flows of two or three steps; orchestration when there are many steps or conditions.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Don''t let the orchestrator swell with business rules. It should handle only order and failures; the rules belong in the services.'
+          - 'Cycles (A→B→A) are easy to create in choreography, and nobody notices.'
+      - type: refs
+        items:
+          - {to: 'messaging/events-vs-commands', label: 'Events versus commands'}
+    check:
+      q: 'For a flow with ten steps, a few conditions and timeouts, which would you pick, and why?'
+      a: 'Orchestration. The whole sequence, the conditions and the timeouts can be read in one place, so bugs are easier to find and changes easier to make. In choreography that complexity gets lost in the web of events.'
+
+  - slug: timeouts-and-failing-compensations
+    title: 'Stuck sagas and failing compensations'
+    kind: pitfall
+    tldr: 'When a deadline passes, a sweeper treats the saga as timed out and starts compensation; compensations must be idempotent and retried forever, and steps that can''t be undone go last.'
+    keywords: ['saga timeout', 'compensation failure', 'idempotent compensation', 'pivot step', 'deadline', 'sweeper']
+    blocks:
+      - type: text
+        body: |
+          The hardest thing to handle is silence: the courier service simply never answers. The saga would hang forever. So every saga gets a **deadline**, and a sweeper treats sagas past their deadline as timed out and starts compensation.
+      - type: code
+        lang: php
+        file: 'src/Saga/SagaTimeoutSweeper.php'
+        variant: good
+        code: |
+          #[AsPeriodicTask(frequency: '1 minute', schedule: 'default')]
+          final readonly class SagaTimeoutSweeper
+          {
+              public function __invoke(): void
+              {
+                  $ids = $this->db->fetchFirstColumn(
+                      "SELECT order_id FROM order_saga
+                       WHERE step IN ('started', 'paid', 'reserved') AND deadline < now()"
+                  );
+                  foreach ($ids as $id) {
+                      $this->bus->dispatch(new SagaTimedOut($id));  // the orchestrator picks it up
+                  }
+              }
+          }
+        marks:
+          - {line: 8, tip: 'Sagas stuck at a step that isn''t finished, and whose time has run out.'}
+          - {line: 11, tip: 'A timeout is just another event. The orchestrator treats it like any other failure and starts compensation.'}
+      - type: points
+        title: 'Rules for compensations'
+        style: check
+        items:
+          - 'Make compensations idempotent: even if `refund` runs twice, the money goes back only once (use a key).'
+          - 'If a compensation fails, keep retrying. "The undo failed" is never a place to stop.'
+          - 'Put steps that can''t be undone (sending an email, a courier leaving) at the very end.'
+          - 'Alert a human for anything that can''t be undone.'
+      - type: quote
+        body: 'A compensation never gives up with "failed". It retries until it succeeds, so it must be idempotent.'
+    aside:
+      - type: tips
+        items:
+          - 'A step that can''t be undone is called a pivot step. Keep every step before it undoable, and every step after it guaranteed to succeed (retryable).'
+          - 'Give the compensation its own idempotency key: `saga-refund-<orderId>`.'
+      - type: refs
+        items:
+          - {to: 'payments/idempotency-keys', label: 'Idempotency keys'}
+    check:
+      q: 'If the refund compensation fails with a network error, what should the saga do, and why?'
+      a: 'Try again with the same idempotency key. If it stopped, the customer''s money would stay taken, and the key guarantees that a retry won''t refund twice.'
+
+flashcards:
+  - q: 'What is a saga, and why do you need one?'
+    a: 'Running work across many services as a chain of small local transactions, each with an undo action. You need it because one big transaction can''t span the services.'
+    more: |
+      Each service commits its own transaction in its own database. If a middle step fails, the undo actions of the earlier steps bring the order back to a consistent state.
+    ref: half-done-order
+  - q: 'What is a compensating action?'
+    a: 'A new action that reverses the effect of an earlier step in meaning. For example, the opposite of charging money is refunding it.'
+    more: |
+      It isn't a real rollback. The charged money doesn't become "never charged"; both the charge and the refund stay in the books. That's why it's called a semantic rollback.
+    ref: cancel-the-wedding
+  - q: 'How does a semantic rollback differ from a real database rollback?'
+    a: 'A real rollback erases the work. A semantic rollback erases nothing: it performs a new opposite action, and the old history stays.'
+    more: |
+      A database can't roll back work that has already committed. Across services, the only way back is a new action. It can have side effects too: the customer may already have received a notification, and a refund may cost a fee.
+    ref: cancel-the-wedding
+  - q: 'In what order do a saga''s compensations run?'
+    a: 'In reverse: the last successful step is undone first, and the first step last.'
+    more: |
+      A later step may depend on the result of an earlier one. Think of taking down a building: roof first, foundation last. So steps 1-2-3 are undone in the order 3-2-1, which keeps each step's foundation in place while it is undone.
+    ref: cancel-the-wedding
+  - q: 'Why is a saga''s state stored in the database?'
+    a: 'So that after a crash or restart you still know which step each saga is at, and can continue or undo it.'
+    more: |
+      If the orchestrator's state lives in memory, a shutdown orphans every half-finished order. With the step, deadline and failure reason in the database, a new process can pick up exactly where the old one stopped.
+    ref: persist-saga-state
+  - q: 'What is the core difference between orchestration and choreography?'
+    a: 'In orchestration a conductor sets the order. In choreography each service listens for events and triggers the next step itself.'
+    more: |
+      Orchestration lets you read the whole flow in one place, but the orchestrator knows everyone. Choreography couples services loosely, but the flow is scattered. With many steps, orchestration is usually easier.
+    ref: orchestration-vs-choreography
+  - q: 'How do you handle timeouts in a saga?'
+    a: 'Give every saga a deadline. A sweeper treats a saga as timed out once the deadline passes and starts compensation.'
+    more: |
+      If another service stays silent, a saga could hang forever. A deadline and a sweeper let you handle silence as an ordinary failure event.
+    ref: timeouts-and-failing-compensations
+  - q: 'What if a compensation fails, and what must it be like?'
+    a: 'It must be retried until it succeeds, so it has to be idempotent (for example the same key on the refund).'
+    more: |
+      A compensation can't be a path that "fails and stops", because the system would stay stuck half-done. A step that can't be undone at all (a pivot step) goes last, and a human should be alerted if needed.
+    ref: timeouts-and-failing-compensations
+
+quiz:
+  - q: 'The order service succeeded in payment and stock but failed at the courier service. Why isn''t one `ROLLBACK` enough?'
+    hint: 'Is every service''s database the same one?'
+    options:
+      - text: 'Each service already committed in its own database, so it can''t be rolled back from outside'
+        correct: true
+        why: 'Work that has committed needs a new opposite action (a compensation) to undo it.'
+      - text: 'ROLLBACK only works for SELECT'
+        correct: false
+        why: 'ROLLBACK does undo writes, but only inside the same transaction.'
+      - text: 'Messenger doesn''t support rollback'
+        correct: false
+        why: 'The problem isn''t Messenger; the work was committed in separate services'' separate databases.'
+      - text: 'The courier service is always slow'
+        correct: false
+        why: 'Speed has nothing to do with it.'
+    ref: half-done-order
+  - q: 'Which compensation order is right for this saga? Steps: 1) payment, 2) hold stock, 3) courier (failed).'
+    hint: 'Should the thing done last be undone first?'
+    options:
+      - text: 'Refund the money, then release the stock'
+        correct: false
+        why: 'This order is forward, not reversed: the earlier step is undone first.'
+      - text: 'Release the stock, then refund the money'
+        correct: true
+        why: 'The last successful step (stock) first and the first step (payment) last: reverse order.'
+      - text: 'Both at the same time; order doesn''t matter'
+        correct: false
+        why: 'Steps may depend on each other, so the order matters.'
+      - text: 'Do nothing, the courier will try again'
+        correct: false
+        why: 'A retry may be an option, but once the failure is final, compensation is needed.'
+    ref: cancel-the-wedding
+  - q: 'Here is the orchestrator code. Which line stops a duplicate event?'
+    lang: php
+    code: |
+      #[AsMessageHandler]
+      public function onPaid(PaymentCharged $e): void
+      {
+          $saga = $this->sagas->find($e->orderId);
+          if ('started' !== $saga->step()) {
+              return;
+          }
+          $saga->moveTo('paid');
+          $this->em->flush();
+          $this->bus->dispatch(new ReserveStock($e->orderId));
+      }
+    hint: 'If PaymentCharged arrives a second time, which step will the saga be at?'
+    options:
+      - text: '`if (''started'' !== $saga->step())`: the step has already moved on, so it returns'
+        correct: true
+        why: 'On the second arrival the step is no longer started, so ReserveStock isn''t sent twice.'
+      - text: '`$this->em->flush()`'
+        correct: false
+        why: 'flush only saves the state; it doesn''t recognise duplicates.'
+      - text: '`$this->bus->dispatch(...)`'
+        correct: false
+        why: 'dispatch sends the next command; it doesn''t stop duplicates.'
+      - text: '`#[AsMessageHandler]`'
+        correct: false
+        why: 'This attribute only registers the method as a handler.'
+    ref: persist-saga-state
+  - q: 'A small flow of two or three steps, and a ten-step flow with conditions: which style fits which?'
+    hint: 'When does seeing the whole picture in one place matter more?'
+    options:
+      - text: 'Choreography is fine for the small flow; orchestration is better for the big flow with conditions'
+        correct: true
+        why: 'As steps grow, the web of events is hard to follow, and timeouts and conditions are easier to handle in one place.'
+      - text: 'Choreography for both, because it has less coupling'
+        correct: false
+        why: 'Coupling is lower, but the flow is scattered, and finding bugs in a big flow is hard.'
+      - text: 'Orchestration for both, because it is the only correct one'
+        correct: false
+        why: 'For a small flow an orchestrator can be extra weight. Both are valid; it comes down to complexity.'
+      - text: 'Neither needs a saga'
+        correct: false
+        why: 'For work across several services, a saga is the usual approach.'
+    ref: orchestration-vs-choreography
+  - q: 'Which of these saga rules are correct?'
+    hint: 'What can and can''t you do with a failed compensation?'
+    options:
+      - text: 'Compensations must be idempotent'
+        correct: true
+        why: 'They must give the same result even when run twice on a retry, for example the same key on a refund.'
+      - text: 'Steps that can''t be undone (like sending an email) belong at the very end'
+        correct: true
+        why: 'If the irreversible action happens only after every earlier step has succeeded, there is less to undo.'
+      - text: 'If a compensation fails, you can close the saga as successful'
+        correct: false
+        why: 'The customer''s money would stay taken. Compensations are retried, not abandoned.'
+      - text: 'Keeping the saga''s step in memory is enough'
+        correct: false
+        why: 'A restart loses everything. The step must be kept in the database.'
+    ref: timeouts-and-failing-compensations

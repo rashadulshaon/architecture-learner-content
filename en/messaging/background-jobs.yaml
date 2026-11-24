@@ -1,0 +1,377 @@
+slides:
+  - slug: nightly-job-restarts
+    title: 'The 2 a.m. report and a server restart halfway'
+    kind: story
+    tldr: 'Run one huge job in a single go and a mid-run crash means starting over. Run cron on two servers and the job runs twice.'
+    keywords: ['background job', 'cron', 'long running job', 'restart', 'batch job', 'duplicate cron']
+    blocks:
+      - type: metaphor
+        icon: building
+        title: 'The giant wedding pot'
+        body: |
+          For a wedding, food for 1000 guests goes into one enormous pot. If the stove dies halfway, the whole pot is thrown out and the cooking starts again. A smart cook uses 20 small pots and ticks each one off in a notebook when it's done. If the stove dies, only the pot on the fire goes back on.
+      - type: visual
+        kind: sequence
+        caption: 'When a one-shot job crashes, it starts over from scratch every time'
+        actors:
+          - {id: cron, label: 'Cron', icon: clock, tip: 'The clock that starts the job at a set time.'}
+          - {id: job, label: 'Report job', icon: worker, tip: 'Processes every user''s data in a single go.'}
+          - {id: db, label: 'Database', icon: db, tip: 'Where the 1 million rows are being read from.'}
+        messages:
+          - {from: cron, to: job, label: '02:00 start the report', tip: 'The call that comes at the same time every night.'}
+          - {from: job, to: db, label: '600,000 of 1 million rows processed'}
+          - {at: job, note: 'Server restarts, no checkpoint', tone: bad}
+          - {from: cron, to: job, label: '02:10 start again, from row one', tone: bad, dashed: true}
+      - type: quote
+        body: 'Break big work into small pieces, and write down where you are after every piece.'
+    aside:
+      - type: story
+        title: 'Two servers, two payroll emails'
+        body: |
+          A company had a cron job that emailed payslips at the end of each month. After the app was moved onto two servers, the same cron ran on both, and everyone received two emails.
+      - type: terms
+        items:
+          - {term: 'Background job', meaning: 'Work done by a worker outside the web request.'}
+          - {term: 'Checkpoint', meaning: 'A saved mark showing how far the work has got.'}
+    check:
+      q: 'What is the main weakness of a job that processes 1 million rows in one go?'
+      a: 'If it stops midway, it loses all its progress and must start over each time. With small pieces and a checkpoint, only the piece in progress runs again.'
+
+  - slug: visibility-and-priority
+    title: 'Visibility timeout and priority'
+    kind: concept
+    tldr: 'When a worker takes a message it is hidden for a while, and if no ack arrives in time another worker gets it. Urgent work in its own queue never waits behind slow work.'
+    keywords: ['visibility timeout', 'redeliver_timeout', 'priority queue', 'SQS', 'urgent jobs', 'timeout']
+    blocks:
+      - type: metaphor
+        icon: hourglass
+        title: 'The cook takes a pot'
+        body: |
+          Once a cook picks up a pot, nobody else touches it, because it's his now. But if he doesn't bring it back within 30 minutes, the manager assumes he has gone missing and gives the pot to someone else. Those 30 minutes are the **visibility timeout**. The manager also keeps a separate "urgent pot" shelf, so a guest's tea doesn't get stuck behind the biryani.
+      - type: visual
+        kind: sequence
+        caption: 'Visibility timeout: if a worker dies, the message goes to someone else'
+        actors:
+          - {id: queue, label: 'Queue', icon: queue, tip: 'Stores messages and remembers who has been holding each one, and for how long.'}
+          - {id: w1, label: 'Worker A', icon: worker, tip: 'Takes the message first, then dies midway.'}
+          - {id: w2, label: 'Worker B', icon: worker, tip: 'Gets the same message once the time is up.'}
+        messages:
+          - {from: queue, to: w1, label: 'Message #9, hidden for 30s', tip: 'For these 30 seconds nobody else can see the message.'}
+          - {at: w1, note: 'Crashes before the ack', tone: bad}
+          - {at: queue, note: '30s is up, message visible again'}
+          - {from: queue, to: w2, label: 'Same message #9, now to B', dashed: true}
+          - {from: w2, to: queue, label: 'Done, ack, delete it', tone: good}
+      - type: points
+        title: 'Two rules'
+        style: check
+        items:
+          - 'Set the timeout longer than the longest the job can take. Too short, and the message passes to someone else while the job is still running, so you get duplicates.'
+          - 'Keep urgent and slow work in separate queues, and have the worker read the urgent queue first.'
+    aside:
+      - type: tips
+        items:
+          - 'On SQS the transport option is `visibility_timeout`; on the Doctrine transport it is `redeliver_timeout`.'
+          - 'Splitting long jobs into pieces lets you keep the timeout short.'
+      - type: pitfalls
+        items:
+          - 'The job takes 5 minutes but the timeout is 30 seconds: someone else picks up the message while the job is still running.'
+    check:
+      q: 'A job takes up to 2 minutes, and the visibility timeout is 30 seconds. What happens?'
+      a: 'The worker is still working, but after 30 seconds the message becomes visible again and another worker gets it. The same job then runs in two places.'
+
+  - slug: scheduler-and-lanes
+    title: 'Symfony Scheduler and priority transports'
+    kind: howto
+    tldr: 'Instead of cron, keep the schedule in code, use a lock so it runs on only one server, and give urgent work its own transport.'
+    keywords: ['Symfony Scheduler', 'RecurringMessage', 'AsSchedule', 'cron', 'priority transport', 'schedule lock']
+    blocks:
+      - type: code
+        lang: php
+        file: 'src/Scheduler/MainSchedule.php'
+        variant: good
+        code: |
+          #[AsSchedule('default')]
+          final readonly class MainSchedule implements ScheduleProviderInterface
+          {
+              public function __construct(
+                  private CacheInterface $cache,
+                  private LockFactory $locks,
+              ) {}
+
+              public function getSchedule(): Schedule
+              {
+                  return (new Schedule())
+                      ->add(RecurringMessage::cron(
+                          '0 2 * * *', new BuildDailyReport(), new \DateTimeZone('Asia/Dhaka'),
+                      ))
+                      ->add(RecurringMessage::every('5 minutes', new ReleaseStuckPayouts()))
+                      ->stateful($this->cache)
+                      ->lock($this->locks->createLock('schedule-default'));
+              }
+          }
+        marks:
+          - {line: 13, tip: '2 a.m. Dhaka time. Without a time zone, the server''s time is used.'}
+          - {line: 16, tip: '`stateful` remembers the last run time, so runs missed while the worker was down come back.'}
+          - {line: 17, tip: 'Thanks to the lock, even with workers on several servers the job is released only once per slot.'}
+      - type: code
+        lang: yaml
+        file: 'config/packages/messenger.yaml'
+        variant: good
+        code: |
+          framework:
+              messenger:
+                  transports:
+                      high: '%env(MESSENGER_TRANSPORT_DSN)%?queue_name=high'
+                      low:  '%env(MESSENGER_TRANSPORT_DSN)%?queue_name=low'
+                  routing:
+                      'App\Message\SendOtp': high        # the user is waiting
+                      'App\Message\BuildDailyReport': low # fine if it's late
+
+          # worker: high first, then low when high is empty
+          #   php bin/console messenger:consume high low
+          #   php bin/console messenger:consume scheduler_default
+        marks:
+          - {line: 7, tip: 'Work like an OTP goes on the high queue, so it never gets stuck behind hundreds of thousands of reports.'}
+          - {line: 11, tip: 'The order of the transport names is the priority: high is always emptied first.'}
+    aside:
+      - type: commands
+        title: 'Scheduler commands'
+        items:
+          - {cmd: 'php bin/console debug:scheduler', desc: 'See every schedule and its next run time'}
+          - {cmd: 'php bin/console messenger:consume scheduler_default', desc: 'The worker that releases the scheduled messages'}
+      - type: tips
+        items:
+          - '`RecurringMessage::cron()` needs the `dragonmantank/cron-expression` package.'
+          - 'A Scheduler job is just a Messenger message, so retries and the failure transport apply to it too.'
+    check:
+      q: 'With workers on two servers, how do you stop a Scheduler job from being released twice?'
+      a: 'Add `->lock(...)` to the schedule so only one worker can release the message at a time. Add `stateful()` as well and you don''t need to worry about missed runs either.'
+
+  - slug: chunks-and-checkpoints
+    title: 'The trap: one giant job in a single go'
+    kind: pitfall
+    tldr: 'Split big work into small chunks. Each chunk is one message, and the next chunk''s message carries a checkpoint (the last id), so a crash reruns only the current chunk.'
+    keywords: ['chunk', 'checkpoint', 'cursor', 'batch', 'long running', 'keyset pagination']
+    blocks:
+      - type: code
+        lang: php
+        file: 'src/MessageHandler/ExportUsersHandler.php'
+        variant: bad
+        code: |
+          public function __invoke(ExportUsers $m): void
+          {
+              // 1 million entities in memory, an hour of running
+              foreach ($this->users->findAll() as $user) {
+                  $this->csv->write($user);
+              }
+          }
+        marks:
+          - {line: 4, tip: 'Memory runs out, the visibility timeout passes, and a crash means 1 million rows again.'}
+      - type: code
+        lang: php
+        file: 'src/MessageHandler/ExportUsersHandler.php'
+        variant: good
+        code: |
+          public function __invoke(ExportUsers $m): void
+          {
+              $ids = $this->db->fetchFirstColumn(
+                  'SELECT id FROM users WHERE id > ? ORDER BY id LIMIT 500',
+                  [$m->afterId],
+              );
+              if ([] === $ids) {
+                  $this->jobs->markDone($m->jobId);
+                  return;
+              }
+              $this->exporter->upsertChunk($m->jobId, $ids);   // safe even if a chunk runs twice
+              $last = (int) end($ids);
+              $this->jobs->saveCheckpoint($m->jobId, $last);
+              $this->bus->dispatch(new ExportUsers($m->jobId, $last));
+          }
+        marks:
+          - {line: 4, tip: 'Start after the last id, not with OFFSET. The query is just as fast at the millionth row.'}
+          - {line: 11, tip: 'A rerun of a chunk must give the same result, because redelivery can happen.'}
+          - {line: 13, tip: 'The checkpoint goes into the next chunk''s message. If the job crashes, it starts again from here.'}
+      - type: quote
+        body: 'Keep chunks small, keep chunks idempotent, and write down your progress.'
+    aside:
+      - type: tips
+        items:
+          - 'Size chunks so each one finishes in a few seconds; that keeps both memory and the timeout safe.'
+          - 'You can also fan out the next chunks with a Messenger batch handler instead of dispatching them yourself, but this cursor style is simple and safe.'
+      - type: pitfalls
+        items:
+          - '`LIMIT 500 OFFSET n` gets slow at a large n, and if new rows arrive in between, rows get skipped or duplicated.'
+    check:
+      q: 'Which two properties let a chunked job safely rerun after a crash?'
+      a: 'Each chunk is idempotent, so running twice gives the same result. And the next message carries a checkpoint, so it continues from the last position instead of redoing everything.'
+
+  - slug: job-observability
+    title: 'Seeing your jobs: what to measure'
+    kind: howto
+    tldr: 'Background jobs die quietly. Measure queue depth, the age of the oldest message, the failure rate and the run time, and set alerts on them.'
+    keywords: ['observability', 'queue depth', 'queue age', 'messenger:stats', 'WorkerMessageFailedEvent', 'monitoring']
+    blocks:
+      - type: visual
+        kind: table
+        caption: 'Four signals for background jobs'
+        headers: ['What to measure', 'What it tells you', 'When to alert']
+        rows:
+          - cells: ['Queue depth', 'How many messages are waiting', 'If it keeps growing']
+            tip: 'A growing backlog means the workers can''t keep up with the flow, or every worker has died.'
+          - cells: ['Age of the oldest message', 'How far behind the work is', 'Above your SLO']
+            tip: 'This is the delay the user actually feels. The age can be high even when the depth is small.'
+          - cells: ['Failure rate', 'How many messages throw exceptions', 'On a sudden jump']
+            tip: 'It is the first thing to jump after a bad deploy or when an external API breaks.'
+          - cells: ['DLQ size', 'Work lost after the retries', 'Anything above zero']
+            tip: 'Even one message here means a piece of work was quietly dropped.'
+      - type: code
+        lang: php
+        file: 'src/EventListener/JobFailureLogger.php'
+        variant: good
+        code: |
+          #[AsEventListener]
+          final readonly class JobFailureLogger
+          {
+              public function __construct(private LoggerInterface $logger) {}
+
+              public function __invoke(WorkerMessageFailedEvent $event): void
+              {
+                  $this->logger->error('background job failed', [
+                      'message' => $event->getEnvelope()->getMessage()::class,
+                      'will_retry' => $event->willRetry(),
+                      'error' => $event->getThrowable()->getMessage(),
+                  ]);
+              }
+          }
+        marks:
+          - {line: 6, tip: 'Messenger fires this event whenever a worker fails on a message.'}
+          - {line: 10, tip: 'If `will_retry` is false, the message is heading to the DLQ, which deserves its own alert.'}
+    aside:
+      - type: commands
+        items:
+          - {cmd: 'php bin/console messenger:stats', desc: 'How many messages are waiting in each transport'}
+          - {cmd: 'php bin/console messenger:failed:show', desc: 'See the failed messages and their causes'}
+      - type: remember
+        body: 'Not the queue depth but the age of the oldest message tells you how far behind the user is.'
+      - type: refs
+        items:
+          - {to: 'observability/metrics-slos', label: 'Metrics and SLOs'}
+    check:
+      q: 'Only 10 messages are waiting in the queue, yet the app has a problem. Which measure would tell you why?'
+      a: 'The age of the oldest message. If even one of those 10 has been sitting for half an hour, a worker is stuck, even though the depth looks fine.'
+
+flashcards:
+  - q: 'Why split big work into chunks instead of running it in one go?'
+    a: 'If it crashes midway, only the current chunk reruns, not everything. Small chunks also keep memory and the timeout within limits.'
+    more: |
+      Each chunk is its own message, so it gets its own retry. Writing a checkpoint at the end of each chunk also lets you show how far the work has got.
+    ref: chunks-and-checkpoints
+  - q: 'What is a checkpoint, and how do you store it?'
+    a: 'A mark of how far the work has got, such as the last processed id. It travels in the next chunk''s message or sits in a job table.'
+    more: |
+      With a checkpoint, a crashed job continues from the last position. And if you use a cursor like `WHERE id > ?` instead of `LIMIT/OFFSET`, queries stay fast even on big data.
+    ref: chunks-and-checkpoints
+  - q: 'What is a visibility timeout?'
+    a: 'When a worker takes a message, it stays hidden from the others for a set time. If no ack arrives in that time, it becomes visible again and another worker gets it.'
+    more: |
+      This stops messages being lost when a worker dies. But if the timeout is shorter than the longest the job can take, someone else takes the message while the job is still running, and the work runs twice.
+    ref: visibility-and-priority
+  - q: 'How long should the visibility timeout be?'
+    a: 'Longer than the longest the job can possibly take. And if the job is long, split it into chunks instead of stretching the timeout.'
+    more: |
+      A very long timeout means a message takes a long time to come back after a worker dies. Small chunks and a moderate timeout strike a good balance.
+    ref: visibility-and-priority
+  - q: 'How do you keep urgent and slow work apart?'
+    a: 'Use separate queues or transports, such as high and low. A worker run as `messenger:consume high low` empties high first.'
+    more: |
+      If slow jobs share a queue, an urgent message like an OTP gets stuck behind them. Routing each message class to its own transport avoids that.
+    ref: scheduler-and-lanes
+  - q: 'What does Symfony Scheduler offer that cron does not?'
+    a: 'The schedule lives in code and in version control, it gets Messenger''s retries, and with a lock it runs only once across several servers.'
+    more: |
+      You write the schedule with `RecurringMessage::cron()` or `every()`. `stateful()` brings back runs missed while the worker was down, and `lock()` keeps the same slot from running twice.
+    ref: scheduler-and-lanes
+  - q: 'Which background-job measure is closest to the delay a user feels?'
+    a: 'The age of the oldest message in the queue. Looking at depth alone misses a single stuck message in a small queue.'
+    more: |
+      Also measure the failure rate, the run time and the DLQ size. Even one message in the DLQ means a piece of work was lost, so it deserves its own alert.
+    ref: job-observability
+
+quiz:
+  - q: 'The app runs on two servers, each with a Scheduler worker. The 2 a.m. report is released twice every night. What is the fix?'
+    hint: 'If two workers try to release a message at the same moment, who wins?'
+    options:
+      - text: 'Add a lock to the schedule so only one worker releases the message at a time'
+        correct: true
+        why: 'The Scheduler''s `lock()` exists for exactly this.'
+      - text: 'Keep one server''s worker switched off and never start it'
+        correct: false
+        why: 'If that server dies, all the work stops. It is no real fix.'
+      - text: 'Change the time from 2:00 to 2:01'
+        correct: false
+        why: 'Changing the time doesn''t help; both servers will still release the message together at the new time.'
+    ref: scheduler-and-lanes
+  - q: 'A job takes up to 5 minutes. The SQS visibility timeout is 30 seconds. What happens?'
+    hint: 'What is the message''s state after 30 seconds?'
+    options:
+      - text: 'The job stops by itself after 30 seconds'
+        correct: false
+        why: 'The timeout doesn''t stop the worker; it only makes the message visible again.'
+      - text: 'The first worker keeps going while another worker takes the message and starts the same job'
+        correct: true
+        why: 'After 30 seconds the message becomes visible again, and a second worker picks up the same job.'
+      - text: 'The message is lost forever'
+        correct: false
+        why: 'It isn''t lost. It becomes visible again, and that is what causes the duplicate.'
+    ref: visibility-and-priority
+  - q: 'What problems does this handler have?'
+    lang: php
+    code: |
+      public function __invoke(ExportUsers $m): void
+      {
+          foreach ($this->users->findAll() as $user) {
+              $this->csv->write($user);
+          }
+          $this->jobs->markDone($m->jobId);
+      }
+    hint: 'Think about memory, time, and what happens on a crash.'
+    options:
+      - text: 'All entities load into memory, and with hundreds of thousands it runs out'
+        correct: true
+        why: '`findAll()` fetches every row at once.'
+      - text: 'A crash midway leaves no checkpoint, so everything restarts from the beginning'
+        correct: true
+        why: 'Progress is written nowhere, so every retry starts from the first row.'
+      - text: 'Calling `markDone` at the end is wrong; it should be called at the start'
+        correct: false
+        why: 'Saying "done" when the work finishes is right. Saying it at the start would show a false state.'
+      - text: 'The handler can''t use `$m->jobId`'
+        correct: false
+        why: 'A message''s plain fields can be used in the handler.'
+    ref: chunks-and-checkpoints
+  - q: 'OTP messages and the monthly report share one queue. While the report runs, OTPs arrive late. What is the best fix?'
+    hint: 'Which work is hurt by delay, and which isn''t?'
+    options:
+      - text: 'A separate high transport for OTPs and low for reports, with workers reading high first'
+        correct: true
+        why: 'Urgent messages no longer get stuck behind slow work.'
+      - text: 'Switch the report off'
+        correct: false
+        why: 'The work is needed; you only have to move it to its own lane.'
+      - text: 'Run 10 times as many workers, with no separate queue'
+        correct: false
+        why: 'It costs more, and the same problem returns when the reports grow. A separate lane is the real fix.'
+    ref: scheduler-and-lanes
+  - q: 'Only 5 messages are waiting in the queue, yet you suspect a worker is stuck. Which measure shows it?'
+    hint: 'Even when the number is small, something may have been sitting there for a long time.'
+    options:
+      - text: 'Queue depth, the number of messages'
+        correct: false
+        why: 'A small number can look healthy while one message has been stuck for hours.'
+      - text: 'The age of the oldest message'
+        correct: true
+        why: 'A stuck message keeps getting older. It exposes the delay even when the count is low.'
+      - text: 'The worker''s CPU usage alone'
+        correct: false
+        why: 'A stuck worker may be waiting on I/O, with low CPU, so this tells you nothing.'
+    ref: job-observability

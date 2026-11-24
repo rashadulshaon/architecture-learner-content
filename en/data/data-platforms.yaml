@@ -1,0 +1,411 @@
+slides:
+  - slug: three-revenue-numbers
+    title: 'Last month''s sales: three departments, three numbers'
+    kind: story
+    tldr: 'When everyone copies the data and does their own sums, one question gets three answers. A data platform means one place, one definition, one set of rules.'
+    keywords: ['data platform', 'single source', 'metric definition', 'data warehouse', 'single source of truth']
+    blocks:
+      - type: metaphor
+        icon: shop
+        title: 'Warehouses scattered around the market'
+        body: |
+          Three sellers of the same product each count their own stock in their own shop; one subtracts returns, another doesn't. Ask the owner and you get three numbers. The fix is one central warehouse, the same counting rules for everybody, and a name on every shelf saying who looks after it.
+      - type: text
+        body: |
+          At Rahim's company, someone asked for last month's sales. Finance said 4,200,000 taka, Marketing said 4,500,000, and the product database gave 4,000,000. Nobody made a mistake. Each counted at a different time, from a different copy, with a different definition.
+      - type: visual
+        kind: table
+        caption: 'The real reason for the three numbers'
+        headers: ['Department', 'Number', 'What they counted']
+        rows:
+          - cells: ['Finance', '4,200,000 taka', 'Net of refunds, paid orders']
+            tip: 'Counted the money actually received, with refunds subtracted.'
+          - cells: ['Marketing', '4,500,000 taka', 'Including refunds, at order time']
+            tip: 'Counted at the moment of ordering without subtracting refunds, so the figure is higher.'
+          - cells: ['Product database', '4,000,000 taka', 'Last night''s copy, UTC month']
+            tip: 'The time zone and the copy''s date differ, so the month boundary shifted.'
+      - type: quote
+        body: 'One metric, one definition, one owner, one place.'
+    aside:
+      - type: story
+        title: 'The board meeting numbers'
+        body: |
+          At a board meeting, two directors showed different customer counts. Half the meeting went on reconciling the numbers. Nobody could decide anything, because nobody knew which number to trust.
+      - type: terms
+        items:
+          - {term: 'Metric', meaning: 'A business number, like "monthly sales", that has one fixed definition.'}
+          - {term: 'Pipeline', meaning: 'An automated path that takes data from one place and moves it, step by step, to another.'}
+    check:
+      q: 'Finance and Marketing gave different numbers and neither made a mistake. Why didn''t they match?'
+      a: 'They counted from different copies with different definitions: refunds in or out, different time boundaries. Without one definition and one source, the numbers won''t agree.'
+
+  - slug: warehouse-lake-lakehouse
+    title: 'Warehouse, lake, lakehouse: three kinds of storehouse'
+    kind: concept
+    tldr: 'A warehouse is a tidy store of clean data; a lake is a huge reservoir of raw data of every kind; a lakehouse tries to bring the strengths of both into one place.'
+    keywords: ['data warehouse', 'data lake', 'lakehouse', 'Parquet', 'BigQuery', 'Snowflake', 'schema on read']
+    blocks:
+      - type: text
+        body: |
+          A **warehouse** is a storehouse with labelled shelves: data is cleaned first and arranged into defined tables, so SQL reports are fast and reliable. A **lake** is like a village grain store: images, logs, JSON and CSV are dumped as they are into cheap object storage and read later as needed. It's cheap, but without tidiness it turns into a "data swamp". A **lakehouse** puts shelf labels on top of the grain store (Parquet, Delta Lake and Iceberg formats), so SQL runs directly on the same files.
+      - type: visual
+        kind: table
+        caption: 'The three compared'
+        headers: ['', 'Warehouse', 'Lake', 'Lakehouse']
+        rows:
+          - cells: ['What the data is like', 'Clean, structured', 'Raw, of every kind', 'Raw to clean, in layers']
+            tip: 'A lakehouse often keeps three layers called raw, cleaned and curated.'
+          - cells: ['When the shape is fixed', 'Before writing (schema on write)', 'At read time (schema on read)', 'A schema spans the formats']
+            tip: 'Schema on write catches mistakes early; schema on read is flexible but catches them late.'
+          - cells: ['Cost', 'Higher', 'Low', 'Low to medium']
+            tip: 'Lakes and lakehouses use object storage, which is much cheaper.'
+          - cells: ['Good for', 'BI reports, dashboards', 'ML, raw logs, images', 'Reports and ML together']
+            tip: 'Data science wants raw data and BI wants clean data; a lakehouse gives both teams one place.'
+          - cells: ['Examples', 'BigQuery, Snowflake, Redshift', 'S3 + Parquet files', 'Delta Lake, Iceberg']
+            tip: 'For a small team, a PostgreSQL replica or a managed warehouse is often enough.'
+      - type: points
+        title: 'Which one, and when'
+        style: dot
+        items:
+          - 'First step: for a small app a read replica or a separate PostgreSQL is enough; don''t reach for big-data tools in advance.'
+          - 'When reports and dashboards multiply, use a managed warehouse.'
+          - 'When you need raw logs, images or ML, use a lake or lakehouse.'
+    aside:
+      - type: remember
+        body: 'Warehouse = tidy shelves, lake = grain store, lakehouse = shelf labels on the grain store.'
+      - type: refs
+        items:
+          - {to: 'data/oltp-olap', label: 'Why reports belong in a separate place'}
+          - {to: 'data/choosing-database', label: 'Choosing a database'}
+    check:
+      q: 'You want to keep images, logs and JSON files together cheaply and analyse them later as needed. Which fits?'
+      a: 'A data lake. All the raw data can be kept as it is in object storage, and the schema is decided at read time. For tidy SQL reports, use a warehouse.'
+
+  - slug: elt-pipeline
+    title: 'The ELT pipeline: bring it in first, cook in the warehouse'
+    kind: howto
+    tldr: 'With ELT, raw data goes into the warehouse first (Extract, Load), then SQL cleans and shapes it there (Transform). Data sits in three layers: raw, staging, mart.'
+    keywords: ['ETL', 'ELT', 'watermark', 'incremental extract', 'raw staging mart', 'dbt', 'idempotent']
+    blocks:
+      - type: text
+        body: |
+          In old-style **ETL**, you bought goods at the market and cooked them at home before putting them in the warehouse. In modern **ELT**, the raw goods go straight into the warehouse, and the cooking happens on its big stove (the warehouse's SQL). The benefits: raw data stays intact, and if the cooking rules change you can cook again. Symfony only handles the first step: it picks up changed rows using a **watermark** (a marker for how far we got) and drops them in the raw layer.
+      - type: visual
+        kind: layers
+        caption: 'The warehouse''s three layers: from raw to business-ready'
+        layers:
+          - {label: 'mart: mart_daily_sales', sub: 'Answers business questions; dashboards read from here', tone: good, tip: 'Shaped for the owner. Definitions are settled here, and everyone reads this table.'}
+          - {label: 'staging: stg_orders', sub: 'Duplicates removed, names and types fixed', tip: 'Raw data gets cleaned in this layer; the latest row is picked.'}
+          - {label: 'raw: raw_orders', sub: 'Exactly as it arrived, unchanged', tone: muted, tip: 'Never modified. If something goes wrong, you can rebuild from here.'}
+      - type: code
+        lang: php
+        file: 'src/Etl/ExtractOrdersCommand.php'
+        variant: good
+        code: |
+          protected function execute(InputInterface $in, OutputInterface $out): int
+          {
+              $since = $this->db->fetchOne(
+                  "SELECT value FROM etl_watermark WHERE name = 'orders'"
+              );
+              $rows = $this->replica->iterateAssociative(
+                  'SELECT id, user_id, total_amount, status, updated_at FROM orders
+                   WHERE updated_at >= :s ORDER BY updated_at',
+                  ['s' => $since],
+              );
+
+              $stream = fopen('php://temp', 'w+b');
+              foreach ($rows as $row) {
+                  fwrite($stream, json_encode($row, JSON_THROW_ON_ERROR)."\n");
+                  $max = $row['updated_at'];
+              }
+              rewind($stream);
+
+              $key = sprintf('raw/orders/dt=%s/%s.jsonl', date('Y-m-d'), Uuid::v7());
+              $this->lakeStorage->writeStream($key, $stream);
+              $this->db->executeStatement(
+                  "UPDATE etl_watermark SET value = :v WHERE name = 'orders'",
+                  ['v' => $max ?? $since],
+              );
+
+              return Command::SUCCESS;
+          }
+        marks:
+          - {line: 8, tip: 'With `>=`, rows with the same timestamp come again. Some duplicates will arrive, but no row gets lost (at-least-once).'}
+          - {line: 6, tip: 'It reads from a read replica, not the transactional database, so the OLTP side isn''t put under load.'}
+          - {line: 21, tip: 'The watermark moves only after the file has been written. If it fails midway, the next run starts from the same place.'}
+      - type: code
+        lang: sql
+        file: 'warehouse/transform.sql'
+        variant: good
+        code: |
+          -- staging: the latest row for each id (duplicates removed)
+          CREATE OR REPLACE VIEW stg_orders AS
+          SELECT DISTINCT ON (id) id, user_id, total_amount, status, updated_at
+          FROM raw_orders
+          ORDER BY id, updated_at DESC;
+
+          -- mart: the business definition is settled here, once
+          CREATE OR REPLACE VIEW mart_daily_sales AS
+          SELECT date_trunc('day', updated_at AT TIME ZONE 'Asia/Dhaka') AS day,
+                 SUM(total_amount) AS revenue
+          FROM stg_orders
+          WHERE status = 'paid'
+          GROUP BY 1;
+        marks:
+          - {line: 3, tip: '`DISTINCT ON (id)` keeps one row per id, the one with the newest `updated_at`.'}
+          - {line: 9, tip: 'The day boundary uses Dhaka time, not UTC. This ends the arguments about "month end".'}
+    aside:
+      - type: tips
+        items:
+          - 'Keep ELT steps idempotent: running one twice gives the same result. Then rerunning is the fix when something fails.'
+          - 'Keep the transform SQL in git; a tool like dbt can run it and test it too.'
+      - type: pitfalls
+        items:
+          - 'Rows that were DELETEd can''t be caught by `updated_at`. Use soft delete, or CDC.'
+      - type: refs
+        items:
+          - {to: 'data/oltp-olap', label: 'CDC and derived data'}
+    check:
+      q: 'What is the benefit of keeping the raw data untouched in ELT?'
+      a: 'If a mistake turns up in a transformation rule, you can rebuild from raw without going back to the source system.'
+
+  - slug: batch-vs-streaming
+    title: 'Batch or streaming: how fast do you need it?'
+    kind: compare
+    tldr: 'Batch moves data in one go at set times: simple and cheap. Streaming moves every event immediately: fast but complex. How much delay you can tolerate decides it.'
+    keywords: ['batch', 'streaming', 'Kafka', 'latency', 'freshness', 'Messenger']
+    blocks:
+      - type: text
+        body: |
+          A wholesale delivery arriving once a night by truck is **batch**: simple and cheap, but in the morning you're looking at last night's figures. Every packet arriving instantly on a conveyor belt is **streaming**: always current, but it needs machinery and someone watching it. Most reports are fine with "yesterday's data", so start with batch. You need a stream when you must react within minutes or seconds of an event, such as fraud detection.
+      - type: visual
+        kind: compare
+        caption: 'Two kinds of pipeline'
+        columns:
+          - title: 'Batch'
+            tone: good
+            icon: calendar
+            tip: 'Picks up data in one go at set times, such as every night or every hour.'
+            items:
+              - 'Data is hours or a day old'
+              - 'Simple, cheap, easy to rerun'
+              - 'If it fails, the whole batch reruns'
+              - 'Dashboards, monthly reports'
+          - title: 'Streaming'
+            tone: accent
+            icon: bolt
+            tip: 'Each event enters the pipe as it happens and reaches the other end within seconds.'
+            items:
+              - 'Data is seconds to minutes old'
+              - 'Complex: ordering, late events, duplicates'
+              - 'Always running, needs monitoring'
+              - 'Fraud detection, live tracking'
+      - type: points
+        title: 'Questions that decide it'
+        style: number
+        items:
+          - 'How old can the data be before it hurts? Hours or days means batch.'
+          - 'Must every event trigger immediate action (an alert, a block)? If so, streaming.'
+          - 'Can the team keep a pipeline running around the clock? If not, batch.'
+      - type: quote
+        body: 'Start with batch. Only move to streaming once "we need it now" is proven.'
+    aside:
+      - type: when
+        use:
+          - 'Batch: daily sales reports, monthly accounts, ML training data'
+          - 'Streaming: fraud detection, live dashboards, search index sync'
+        avoid:
+          - 'Installing Kafka just because it sounds "modern", where even minute-old data isn''t needed'
+      - type: refs
+        items:
+          - {to: 'messaging/delivery-guarantees', label: 'Message delivery guarantees'}
+    check:
+      q: 'The daily sales report is needed at 9am. Batch or streaming, and why?'
+      a: 'Batch. A few hours of staleness does no harm, and batch is simple, cheap and easy to rerun after a failure.'
+
+  - slug: data-governance
+    title: 'Governance: owners, quality and a catalogue'
+    kind: howto
+    tldr: 'Every dataset gets an owner, a written definition and quality checks, plus a catalogue everyone can search. That settles "which number do I trust?".'
+    keywords: ['data governance', 'data catalog', 'data quality', 'data contract', 'ownership', 'freshness']
+    blocks:
+      - type: text
+        body: |
+          Getting goods into the warehouse isn't enough; every shelf needs three things. An **owner**: who is responsible, and who you call when it's wrong. **Quality**: automatic checks, such as "revenue is never negative, and the data arrived before 6am". A **catalogue**: a list of every dataset with its definition, so nobody quietly builds yet another copy. Together these three are data governance.
+      - type: code
+        lang: yaml
+        file: 'catalog/mart_daily_sales.yaml'
+        variant: good
+        code: |
+          dataset: mart_daily_sales
+          owner: team-finance-data          # who to tell when it's wrong
+          description: 'Daily paid sales, BDT, day by Dhaka time. Refunds excluded.'
+          freshness: 'Updated daily by 6am'
+          pii: false                        # no personal data
+          columns:
+            day:     {type: date,   not_null: true, unique: true}
+            revenue: {type: bigint, not_null: true, min: 0}
+        marks:
+          - {line: 2, tip: 'A team name, not a person''s name. People move on; the team stays.'}
+          - {line: 4, tip: 'The promise is written down, so late data raises an alert instead of a guess.'}
+      - type: code
+        lang: sql
+        file: 'warehouse/checks/mart_daily_sales.sql'
+        variant: good
+        code: |
+          -- a check passes when its query returns zero rows; any row means failure
+          SELECT 'negative_revenue' AS failed_check, day
+          FROM mart_daily_sales WHERE revenue < 0
+          UNION ALL
+          SELECT 'duplicate_day', day
+          FROM mart_daily_sales GROUP BY day HAVING COUNT(*) > 1
+          UNION ALL
+          SELECT 'stale_data', max(day)
+          FROM mart_daily_sales
+          HAVING max(day) < CURRENT_DATE - 1;
+        marks:
+          - {line: 1, tip: 'In this convention a check means "look for bad rows"; zero rows means all is well.'}
+          - {line: 10, tip: 'The freshness check: if the latest day is older than yesterday, the pipeline is surely stuck.'}
+      - type: points
+        title: 'Starting governance on a small team'
+        style: check
+        items:
+          - 'One YAML or Markdown file in git per dataset: owner, definition, freshness.'
+          - 'Run quality checks as the last pipeline step; on failure, show a warning on the dashboard.'
+          - 'Mark columns holding personal data (`pii: true`) and restrict access.'
+    aside:
+      - type: tips
+        items:
+          - 'The catalogue can start as a wiki page; tools (DataHub, OpenMetadata) can come later.'
+      - type: refs
+        items:
+          - {to: 'data/data-lifecycle', label: 'How long to keep and delete data'}
+          - {to: 'security/data-protection', label: 'Protecting personal data'}
+    check:
+      q: 'A dashboard suddenly shows negative revenue. Which part of governance could have caught it earlier?'
+      a: 'A quality check (a test that fails on `revenue < 0`). And with an owner assigned, they could have been notified the moment it failed.'
+
+flashcards:
+  - q: 'What is a data warehouse?'
+    a: 'A separate database for clean, structured data, built for analysis and reporting.'
+    more: |
+      Data is cleaned and arranged into tables before being stored, so SQL reports are fast and reliable. Examples: BigQuery, Snowflake, Redshift. Data is copied here from the transactional databases.
+    ref: warehouse-lake-lakehouse
+  - q: 'What is the main difference between a data lake and a warehouse?'
+    a: 'A lake stores every kind of raw data cheaply and fixes the shape at read time. A warehouse cleans and arranges data before storing it.'
+    more: |
+      A lake usually keeps Parquet, JSON, images and logs in object storage. It's flexible and cheap, but without organisation it becomes a messy "data swamp". A warehouse costs more but is clean and fast.
+    ref: warehouse-lake-lakehouse
+  - q: 'What is a lakehouse?'
+    a: 'A way to add table structure, transactions and SQL on top of a lake''s cheap files, so you get a warehouse''s benefits.'
+    more: |
+      Formats like Delta Lake and Apache Iceberg add a metadata layer over the files. That lets BI reports and ML both run on the same data, with no separate copy needed.
+    ref: warehouse-lake-lakehouse
+  - q: 'What is the difference between ETL and ELT?'
+    a: 'ETL transforms first and loads after. ELT loads raw data first and transforms it inside the warehouse with SQL.'
+    more: |
+      In ELT the raw data stays intact, so if a transformation rule is wrong you can rebuild. Modern cloud warehouses have made ELT cheap and fast. Data is usually arranged in three layers: raw, staging, mart.
+    ref: elt-pipeline
+  - q: 'What does a watermark do in an incremental extract?'
+    a: 'It marks how far data was last taken (such as an `updated_at` value), so the next run picks up only new rows.'
+    more: |
+      The watermark moves only after the file has been written successfully. Using `>=` brings some duplicates but loses no rows; remove duplicates by id in the staging layer. To catch DELETEs you need soft delete or CDC.
+    ref: elt-pipeline
+  - q: 'When should you use batch and when streaming?'
+    a: 'Batch when data that is hours or a day old is fine; streaming when you must act the moment an event happens.'
+    more: |
+      Batch is simple, cheap and easy to rerun. Streaming is fast but you have to handle ordering, duplicates and late events. Most reports are fine with batch, so start there.
+    ref: batch-vs-streaming
+  - q: 'What are the three core parts of data governance?'
+    a: 'An owner (who is responsible), quality (automatic checks) and a catalogue (a list of datasets with definitions).'
+    more: |
+      Without an owner, nobody is accountable for mistakes. Without quality checks, bad data flows quietly to dashboards. Without a catalogue, everyone builds their own copy, and one metric gets three numbers.
+    ref: data-governance
+quiz:
+  - q: 'Finance said 4,200,000 taka and Marketing said 4,500,000; each counted from their own copy. What fixes the root problem?'
+    hint: 'Before reconciling numbers, look at the definition and the source.'
+    options:
+      - text: 'One `mart` table in one warehouse with a single definition, which everyone reads from'
+        correct: true
+        why: 'With one source and one definition, everyone gets the same number.'
+      - text: 'Ask each department to refresh its own copy more often'
+        correct: false
+        why: 'If the definitions differ, refreshing won''t make the numbers match.'
+      - text: 'Buy a more powerful database server'
+        correct: false
+        why: 'The problem is the definition, not the speed.'
+      - text: 'Stop Marketing from giving out numbers'
+        correct: false
+        why: 'That hides the problem; it doesn''t solve it.'
+    ref: three-revenue-numbers
+  - q: 'Which of these are characteristics of a data lake?'
+    hint: 'How is grain kept in a grain store?'
+    options:
+      - text: 'Raw data can be stored exactly as it is'
+        correct: true
+        why: 'Images, logs, JSON and CSV can all be kept.'
+      - text: 'It usually uses cheap object storage'
+        correct: true
+        why: 'So the cost is low.'
+      - text: 'Every piece of data must have a schema before it is written'
+        correct: false
+        why: 'That is a warehouse trait; in a lake the schema is applied at read time.'
+      - text: 'It doesn''t matter if it gets messy'
+        correct: false
+        why: 'Without organisation it becomes a "data swamp" where nobody can find anything.'
+    ref: warehouse-lake-lakehouse
+  - q: 'Why does the ELT extract command use `WHERE updated_at >= :s` (greater than or equal), not `>`?'
+    lang: php
+    code: |
+      $rows = $this->replica->iterateAssociative(
+          'SELECT id, total_amount, updated_at FROM orders
+           WHERE updated_at >= :s ORDER BY updated_at',
+          ['s' => $since],
+      );
+    hint: 'What happens if two rows change at the same instant?'
+    options:
+      - text: 'So that rows with the same timestamp aren''t lost if they arrive after the previous run; duplicates are removed in staging'
+        correct: true
+        why: 'At-least-once: some rows may arrive twice, but none are lost.'
+      - text: 'To fetch more rows and speed things up'
+        correct: false
+        why: 'It is for correctness, not speed.'
+      - text: 'Writing `>` causes a SQL syntax error'
+        correct: false
+        why: '`>` is valid; the problem is losing rows on the boundary.'
+      - text: 'To catch DELETEd rows'
+        correct: false
+        why: 'DELETEd rows can''t be caught using `updated_at`.'
+    ref: elt-pipeline
+  - q: 'For fraud detection, a purchase must be blocked within a few seconds. Which kind fits?'
+    hint: 'How fast must the reaction be?'
+    options:
+      - text: 'Streaming'
+        correct: true
+        why: 'You must act the moment each event happens.'
+      - text: 'A nightly batch'
+        correct: false
+        why: 'If it is caught the next morning, the money is already gone.'
+      - text: 'A monthly report'
+        correct: false
+        why: 'That isn''t meant for instant reaction.'
+      - text: 'No pipeline is needed'
+        correct: false
+        why: 'The decision depends on analysing events, so there is a pipeline regardless.'
+    ref: batch-vs-streaming
+  - q: 'Which are good governance practices?'
+    hint: 'When data causes trouble, who do you call, and how do you catch it early?'
+    options:
+      - text: 'A team owner and a written definition for each dataset'
+        correct: true
+        why: 'Responsibility and meaning are clear.'
+      - text: 'Automatic checks for freshness and negative values'
+        correct: true
+        why: 'Bad data is caught before it reaches a dashboard.'
+      - text: 'Write permission on every dataset for everyone'
+        correct: false
+        why: 'If anyone can change data without an owner, trust in it disappears.'
+      - text: 'Passing metric definitions around by word of mouth'
+        correct: false
+        why: 'If it isn''t written down and in the catalogue, everyone assumes their own version.'
+    ref: data-governance

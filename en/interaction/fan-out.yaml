@@ -1,0 +1,357 @@
+slides:
+  - slug: feed-join-slow
+    title: 'Opening the feed stitches together 1,000 people''s posts'
+    kind: story
+    tldr: 'If every feed view searches for "all posts from the people I follow", that one query is what chokes the site as users grow.'
+    keywords: ['feed', 'timeline', 'news feed', 'join', 'follow']
+    blocks:
+      - type: metaphor
+        icon: book
+        title: 'The newspaper stand vs the delivery boy'
+        body: |
+          In the stand model, the reader walks around 1,000 newspaper stands every morning, hunting for the pieces they like. In the delivery-boy model, the moment an article is printed, the delivery boy drops it at the reader's door. Feed design is a choice between the two: should the work happen at **read time** or at **write time**?
+      - type: code
+        lang: sql
+        file: 'feed.sql'
+        variant: bad
+        code: |
+          -- runs every time the feed is opened
+          SELECT p.*
+          FROM posts p
+          JOIN follows f ON f.followee_id = p.author_id
+          WHERE f.follower_id = 7
+          ORDER BY p.created_at DESC
+          LIMIT 20;
+        marks:
+          - {line: 4, tip: 'If the user follows 1,000 people, the database wades through all 1,000 people''s posts just to pick the newest 20.'}
+          - {line: 6, tip: 'To sort, it must first collect every matching row. As data grows, this is what gets slow.'}
+      - type: quote
+        body: 'A feed is read many times more often than it is written, so make the read path cheap.'
+    aside:
+      - type: story
+        title: 'The slow page of year one'
+        body: |
+          A social app ran fine on this JOIN in its first year. Once users passed 2 million, the feed query reached 3 seconds and the database CPU sat at 100% all day.
+      - type: terms
+        items:
+          - {term: 'Feed', meaning: 'A time-ordered list of posts from the people a user follows.'}
+          - {term: 'Fan-out', meaning: 'Spreading something one person creates to many people.'}
+    check:
+      q: 'Why is running that JOIN on every feed open harmful, even though the query is correct?'
+      a: 'Both the follow counts and the posts keep growing, and opening the feed is the most frequent action. A huge join-and-sort every time makes the database buckle.'
+
+  - slug: push-vs-pull
+    title: 'Write-time vs read-time fan-out'
+    kind: concept
+    tldr: 'Write-time puts a post into every follower''s feed as it is written, so reads are cheap. Read-time stitches the feed together on read, so writes are cheap.'
+    keywords: ['fan-out on write', 'fan-out on read', 'push model', 'pull model', 'precomputed feed']
+    blocks:
+      - type: metaphor
+        icon: truck
+        title: 'The delivery boy and the stand'
+        body: |
+          In the delivery-boy way (**write-time**), when a new issue comes out he drops 200 copies at 200 subscribers' doors. Printing day is hard work, but the moment a subscriber sits down to read, the paper is ready. In the stand way (**read-time**), nothing happens at printing, but every reader has to go around collecting it each time.
+      - type: visual
+        kind: compare
+        caption: 'The trade-offs of the two ways'
+        columns:
+          - title: 'Write-time (push)'
+            tone: good
+            icon: send
+            tip: 'When a post is created it is put into every follower''s feed. Opening a feed means reading one ready-made list.'
+            items:
+              - 'Feed reads are very fast: one list from one key'
+              - 'Write cost grows with the number of followers'
+              - 'More space: a separate copy per person'
+              - 'With many followers, the write itself is a burden'
+          - title: 'Read-time (pull)'
+            tone: warn
+            icon: search
+            tip: 'The post is written only once. On opening the feed, new posts from everyone you follow are joined and sorted.'
+            items:
+              - 'Writes are cheap: the post is stored once'
+              - 'Feed reads are slow: joined every time'
+              - 'No extra space needed'
+              - 'Whoever follows the most people gets the slowest feed'
+      - type: points
+        title: 'How to think about it'
+        style: dot
+        items:
+          - 'When reads dominate (nearly every social feed), do extra work at write time to make reads cheap.'
+          - 'When reads are rare and writes frequent (logs, weekly reports), read-time is the right one.'
+    aside:
+      - type: remember
+        body: 'Delivery boy = write-time: hard work first, reading is easy. Stand = read-time: printing is easy, reading is hard.'
+      - type: refs
+        items:
+          - {to: 'caching/cache-strategies', label: 'Computing ahead: caching'}
+    check:
+      q: 'Most users post rarely but open their feed many times. Which fan-out suits them?'
+      a: 'Write-time. Reads far outnumber writes, so doing the work once at write time to make every read cheap pays off.'
+
+  - slug: celebrity-problem
+    title: 'The celebrity problem: one post, 5 million writes'
+    kind: pitfall
+    tldr: 'With write-time fan-out, one post from a celebrity with 5 million followers makes 5 million writes. The fix is hybrid: push posts from ordinary users, pull the celebrity''s at feed-read time.'
+    keywords: ['celebrity problem', 'hot key', 'hybrid fan-out', 'write amplification']
+    blocks:
+      - type: visual
+        kind: bars
+        caption: 'How many feeds one post must be written to (under write-time)'
+        items:
+          - {label: 'Ordinary', value: 200, display: '200 writes', tone: good, tip: 'Placed into 200 followers'' feeds: done in a few seconds.'}
+          - {label: 'Popular', value: 20000, display: '20,000 writes', tone: warn, tip: 'The workers now need a few minutes, but it is manageable.'}
+          - {label: 'Celebrity', value: 5000000, display: '5,000,000 writes', tone: bad, tip: 'One post creates 5 million writes. The queue fills up and everyone else''s posts are delayed too.'}
+      - type: text
+        body: |
+          This is the **hot key** problem: one user can jam the entire system. The fix is **hybrid**. For users whose follower count is below a threshold (say 10,000), put their posts into followers' feeds at write time. Don't fan out celebrities' posts at all. When a feed is opened, fetch the recent posts of the celebrities that user follows directly, and merge them into the user's own feed.
+      - type: quote
+        body: 'Push the ordinary users'' posts; pull the celebrity''s at read time and merge.'
+    aside:
+      - type: when
+        use: ['Hybrid: when follower counts differ hugely (social, news)']
+        avoid: ['Hybrid: when everyone has similar follower counts; then plain write-time is simple and enough']
+      - type: pitfalls
+        items:
+          - 'Set the threshold once and forget it, and feeds break as users cross it; keep watching follower counts.'
+      - type: refs
+        items:
+          - {to: 'data/sharding', label: 'Hot keys and shard balance'}
+    check:
+      q: 'Why does hybrid not write a celebrity''s post into followers'' feeds?'
+      a: 'One post would mean 5 million writes, filling the queue and holding up everyone else''s posts. So it is stored once and merged in when the feed is read.'
+
+  - slug: write-fanout-code
+    title: 'Fan-out in chunks with Messenger'
+    kind: howto
+    tldr: 'Fan-out is huge work, so break it up: each message takes 1,000 followers, writes to Redis, then dispatches the next chunk. If a message runs twice, the feed stays correct.'
+    keywords: ['Messenger', 'Redis sorted set', 'ZADD', 'chunked fan-out', 'idempotent', 'FanOutPost']
+    blocks:
+      - type: text
+        body: |
+          When a post is saved, a `FanOutPost` message goes out. The handler takes 1,000 followers, adds the post id to each one's Redis **sorted set** (the score is the time), then dispatches a message for the next 1,000. Running `ZADD` again with the same member and score changes nothing, so redelivery of a message does no harm.
+      - type: code
+        lang: php
+        file: 'src/MessageHandler/FanOutPostHandler.php'
+        variant: good
+        code: |
+          #[AsMessageHandler]
+          final readonly class FanOutPostHandler
+          {
+              private const CHUNK = 1000;
+              private const FEED_MAX = 800;
+
+              public function __invoke(FanOutPost $m): void
+              {
+                  $ids = $this->follows->followerIdsAfter($m->authorId, $m->afterId, self::CHUNK);
+                  if ([] === $ids) {
+                      return;                                   // reached everyone
+                  }
+
+                  $pipe = $this->redis->multi(\Redis::PIPELINE);
+                  foreach ($ids as $uid) {
+                      $pipe->zAdd('feed:'.$uid, $m->createdAtMs, (string) $m->postId);
+                      $pipe->zRemRangeByRank('feed:'.$uid, 0, -(self::FEED_MAX + 1));
+                  }
+                  $pipe->exec();
+
+                  $this->bus->dispatch(new FanOutPost(
+                      $m->postId, $m->authorId, $m->createdAtMs, (int) end($ids),
+                  ));
+              }
+          }
+        marks:
+          - {line: 9, tip: '1,000 followers after the last id seen. No OFFSET, so it stays fast even on a huge list.'}
+          - {line: 16, tip: 'ZADD is idempotent: adding the same (post, time) again creates no duplicate in the feed.'}
+          - {line: 17, tip: 'We keep at most 800 items per feed. Older ones come from the database when needed.'}
+          - {line: 21, tip: 'The next chunk''s message carries a checkpoint (the last follower id). If it breaks midway, work resumes from there.'}
+    aside:
+      - type: tips
+        items:
+          - 'The Redis feed is really a cache: if lost, it can be rebuilt from the posts table, where the true data lives.'
+          - 'For a celebrity''s post, don''t dispatch `FanOutPost` at all; past the threshold, let it live in the posts table only.'
+      - type: refs
+        items:
+          - {to: 'messaging/background-jobs', label: 'Chunks and checkpoints'}
+          - {to: 'messaging/dlq-retries', label: 'The idempotent consumer'}
+    check:
+      q: 'If the fan-out handler runs twice on redelivery, why doesn''t the same post appear twice in the feed?'
+      a: 'Giving a sorted set the same member again with `ZADD` doesn''t create a new row, it only updates the score. The member is the postId, so a duplicate has nowhere to go.'
+
+  - slug: read-merge-ordering
+    title: 'Reading the feed: merge, and keep the order stable'
+    kind: howto
+    tldr: 'Feed = the user''s precomputed list + the new posts of the celebrities they follow, merged in a stable order by time and id. Page forward with a cursor, not an offset.'
+    keywords: ['feed merge', 'cursor pagination', 'ordering', 'eventual consistency', 'hybrid read']
+    blocks:
+      - type: visual
+        kind: flow
+        caption: 'The path when a feed opens: two sources, one sorted list'
+        nodes:
+          - {id: user, label: 'User', sub: 'opens the feed', icon: user, col: 0, row: 0, tip: 'Asks for the first or the next chunk of the page, with a cursor.'}
+          - {id: api, label: 'Feed API', sub: 'merges', icon: api, tone: accent, col: 1.5, row: 0, tip: 'Combines the results of both sources and sorts them by time and id.'}
+          - {id: redis, label: 'Redis feed', sub: 'precomputed', icon: cache, col: 3, row: 0, tip: 'The post ids of ordinary followees, placed there at write time.'}
+          - {id: db, label: 'Posts table', sub: 'celebrities'' new posts', icon: db, col: 3, row: 1.5, tip: 'The recent posts of the celebrities this user follows come from here.'}
+        edges:
+          - {from: user, to: api, label: 'The user asks for the feed, with the previous page''s cursor'}
+          - {from: api, to: redis, label: 'It reads 20 ids from its own feed, those before the cursor'}
+          - {from: api, to: db, label: 'It fetches the new posts of the followed celebrities'}
+          - {from: api, to: user, label: 'It merges, sorts by time and sends the best 20', tone: good, dashed: true}
+      - type: code
+        lang: php
+        file: 'src/Feed/FeedReader.php'
+        variant: good
+        code: |
+          public function page(int $userId, ?int $beforeMs, int $limit = 20): array
+          {
+              $max = null === $beforeMs ? '+inf' : '('.$beforeMs;       // a cursor, not an offset
+              $own = $this->redis->zRevRangeByScore(
+                  'feed:'.$userId, $max, '-inf', ['withscores' => true, 'limit' => [0, $limit]],
+              );
+              $items = [];
+              foreach ($own as $postId => $score) {
+                  $items[] = ['id' => (int) $postId, 'at' => (int) $score];
+              }
+
+              $stars = $this->follows->celebritiesFollowedBy($userId);
+              foreach ($this->posts->latestBy($stars, $beforeMs, $limit) as $p) {
+                  $items[] = ['id' => $p->getId(), 'at' => $p->getCreatedAtMs()];
+              }
+
+              usort($items, fn ($a, $b) => [$b['at'], $b['id']] <=> [$a['at'], $a['id']]);
+
+              return array_slice($items, 0, $limit);                   // the last at is the next cursor
+          }
+        marks:
+          - {line: 3, tip: '`(` means "less than" (exclusive). The cursor''s own post doesn''t come back.'}
+          - {line: 17, tip: 'Two posts at the same time are ordered by id; otherwise posts get skipped or duplicated across page turns.'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'If you don''t pair the id with the time, posts with equal times come out in random order, and the cursor skips posts.'
+          - 'Deleted or blocked posts stay in the feed; when reading, filter them by checking the true state in the posts table.'
+      - type: tips
+        items:
+          - 'The feed is eventually consistent: a post reaches followers'' feeds a few seconds later. That is acceptable, but show the author their own post immediately.'
+      - type: refs
+        items:
+          - {to: 'api/pagination', label: 'Cursor pagination'}
+    check:
+      q: 'Why page through a feed with a cursor (the last post''s time) instead of `OFFSET`?'
+      a: 'New posts keep arriving in a feed. With OFFSET, new posts push earlier posts onto the next page again. A cursor says "older than this", so it stays stable.'
+
+flashcards:
+  - q: 'What is fan-out?'
+    a: 'Spreading something one person creates (like a post) to many people, for example into every follower''s feed.'
+    more: |
+      The question is when to do the spreading: when the post is written (write-time), or when the feed is opened (read-time). The follower counts and the read-to-write ratio decide.
+    ref: push-vs-pull
+  - q: 'What is write-time fan-out, and what does it cost?'
+    a: 'When a post is written, put it into every follower''s feed. Feed reads are fast, but the write work scales with the number of followers.'
+    more: |
+      A separate copy per follower also takes more space. But feeds are read far more often than written, so this way usually pays off.
+    ref: push-vs-pull
+  - q: 'When is read-time fan-out the right one?'
+    a: 'When reads are rare and writes frequent, or follower counts are huge. The post is written once and joined with everyone else''s when the feed is read.'
+    more: |
+      Feed reads are slow because they must join and sort every time. Whoever follows the most people gets the slowest feed. So on its own this way is rarely used for ordinary feeds.
+    ref: push-vs-pull
+  - q: 'What is the celebrity (hot key) problem?'
+    a: 'One post from a user with a huge following creates millions of writes under write-time, filling the queue and delaying everyone else''s posts.'
+    more: |
+      One user jamming the whole system is the hot key. The fix is hybrid: don't fan out celebrities' posts; fetch and merge them separately when a feed is read.
+    ref: celebrity-problem
+  - q: 'How does hybrid fan-out work?'
+    a: 'Posts from users below the follower threshold are fanned out at write time. Celebrities'' posts are fetched at feed-read time and merged into the user''s own feed.'
+    more: |
+      Reads stay cheap for ordinary followees, and a celebrity's post doesn't create millions of writes. Fetching the posts of the few celebrities a user follows when the feed opens is cheap work.
+    ref: celebrity-problem
+  - q: 'Why is a Redis sorted set good for a feed?'
+    a: 'With the time as the score you can read newest-to-oldest quickly, and adding the same member again creates no duplicate.'
+    more: |
+      `ZADD` is idempotent, so redelivery of a message leaves the feed correct. `ZREMRANGEBYRANK` keeps each feed small, at about 800 items. The real data lives in the posts table; Redis is only a cache.
+    ref: write-fanout-code
+  - q: 'In a feed, offset or cursor for paging, and how do you handle posts with equal times?'
+    a: 'A cursor, because it stays stable when new posts arrive. Order by the (time, id) pair so posts with equal times keep a stable order.'
+    more: |
+      Sort by time alone and two posts with equal times come out in random order, so one can be skipped or shown twice at a page boundary. Pinning the order with the id makes the cursor reliable.
+    ref: read-merge-ordering
+
+quiz:
+  - q: 'An app has 1 million users, most with fewer than 200 followers, and the feed is opened 100 times more often than posts are written. What is the best starting choice?'
+    hint: 'Look at the read-to-write ratio.'
+    options:
+      - text: 'Write-time fan-out'
+        correct: true
+        why: 'Followers are few and reads dominate, so 200 writes at write time are cheap and every feed read is fast.'
+      - text: 'Read-time fan-out, with a JOIN every time'
+        correct: false
+        why: 'Running a heavy JOIN on every frequent read makes the database buckle.'
+      - text: 'No feed; just show all posts by time'
+        correct: false
+        why: 'That doesn''t separate the posts of the people the user follows. There is no feed anymore.'
+    ref: push-vs-pull
+  - q: 'A celebrity has 5 million followers. What happens when they post under write-time fan-out?'
+    hint: 'How many feeds must one post be written to?'
+    options:
+      - text: '5 million writes are created, the queue fills up, and everyone else''s posts are delayed'
+        correct: true
+        why: 'This is the hot key problem: one user slows the whole system.'
+      - text: 'Nothing happens, Redis handles it all'
+        correct: false
+        why: 'Redis is fast, but 5 million writes and the load on workers and the queue are still there.'
+      - text: 'Only the celebrity''s own feed is updated'
+        correct: false
+        why: 'The post is placed in the followers'' feeds, not in the celebrity''s own.'
+    ref: celebrity-problem
+  - q: 'Which of these statements about hybrid fan-out are correct?'
+    hint: 'Which posts are spread, and when?'
+    options:
+      - text: 'An ordinary user''s post is placed in followers'' feeds at write time'
+        correct: true
+        why: 'Followers are few, so spreading is cheap and reads stay fast.'
+      - text: 'A celebrity''s post is fetched and merged when the feed is read'
+        correct: true
+        why: 'It avoids millions of writes, and fetching a few celebrities'' posts is cheap.'
+      - text: 'Every post runs read-time first and write-time after'
+        correct: false
+        why: 'There is no such rule; the split is based on the user''s follower count.'
+      - text: 'A copy of a celebrity''s post is stored in every follower''s feed'
+        correct: false
+        why: 'This is exactly what hybrid avoids.'
+    ref: celebrity-problem
+  - q: 'This handler ran twice because of redelivery. What happens to the feed?'
+    lang: php
+    code: |
+      foreach ($ids as $uid) {
+          $pipe->zAdd('feed:'.$uid, $m->createdAtMs, (string) $m->postId);
+      }
+      $pipe->exec();
+    hint: 'What happens when you add the same member to a sorted set again?'
+    options:
+      - text: 'The post will appear twice in every feed'
+        correct: false
+        why: 'Members in a sorted set are unique. Adding the same postId again creates no new row.'
+      - text: 'Nothing changes, because it is the same member with the same score'
+        correct: true
+        why: '`ZADD` is idempotent. Running it a second time gives the same result.'
+      - text: 'An exception is thrown the second time'
+        correct: false
+        why: 'Redis ZADD throws no exception; if the member exists, it just updates the score.'
+    ref: write-fanout-code
+  - q: 'What goes wrong if you show a feed''s "next page" with `LIMIT 20 OFFSET 20`?'
+    hint: 'What happens if a new post arrives while the page is open?'
+    options:
+      - text: 'New posts push earlier posts onto the next page again'
+        correct: true
+        why: 'When a new post enters at the front, every row shifts back one place, so the last post of the previous page appears again.'
+      - text: 'With a large OFFSET the query gets slow'
+        correct: true
+        why: 'The database has to walk past every row up to the OFFSET.'
+      - text: 'Nothing is wrong, this is the best way for feeds'
+        correct: false
+        why: 'In a feed where new data keeps arriving, OFFSET is especially unreliable.'
+      - text: 'OFFSET doesn''t work in feeds at all'
+        correct: false
+        why: 'It works, but with the problems above.'
+    ref: read-merge-ordering

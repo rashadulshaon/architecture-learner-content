@@ -1,0 +1,322 @@
+slides:
+  - slug: nobody-asked-what-if
+    title: 'The feature shipped, and nobody asked "what if someone does the opposite?"'
+    kind: story
+    tldr: 'Most security holes come not from coding slips but from never asking "what could an attacker do?" at design time. Threat modeling makes you ask it early.'
+    keywords: ['threat modeling', 'security design', 'attacker mindset', 'risk analysis', 'secure by design']
+    blocks:
+      - type: metaphor
+        icon: home
+        title: 'Thinking like a burglar before you build'
+        body: |
+          While drawing the plans, you decide whether the windows need grilles and what kind of lock the back door gets. Once the house is built and a burglar has been in, breaking walls is painful. Threat modeling is asking "which way would a burglar come in?" before you write the code, or even earlier, while you design the feature.
+      - type: visual
+        kind: compare
+        caption: 'The same feature: fixing it after an incident vs. thinking ahead'
+        columns:
+          - title: 'Caught after launch'
+            tone: bad
+            icon: bug
+            tip: 'By the time it is caught, the data, the customers'' trust and the money are already gone.'
+            items:
+              - 'A customer changes the order id in the URL and sees someone else''s order'
+              - 'An emergency patch, a sleepless night, compensation'
+              - 'Nobody knows why it happened or whether there are more'
+          - title: 'Thought through at design time'
+            tone: good
+            icon: shield
+            tip: 'A half-hour discussion is far cheaper than a week-long crisis later.'
+            items:
+              - '"What if they send someone else''s id?" comes up on design day'
+              - 'The object-level check becomes part of the feature'
+              - 'The decisions are written down, so newcomers can read them'
+      - type: quote
+        body: 'Ask what an attacker could do at design time, not after the incident.'
+    aside:
+      - type: problem
+        body: 'Security mistakes hide best in features that "work fine", because we only think about what the user will do, not what an attacker will do.'
+      - type: terms
+        items:
+          - {term: 'Threat', meaning: 'An event that could harm the system (for example, someone taking over another person''s account).'}
+          - {term: 'Threat model', meaning: 'A short written analysis of what you are building, what could go wrong, and what you will do about it.'}
+    check:
+      q: 'Why do we do threat modeling at design time instead of after the code is written?'
+      a: 'Because that is when a design is cheapest to change. Fixing a flaw after launch means changing data structures, APIs and behavior, which costs far more.'
+
+  - slug: trust-boundary
+    title: 'Trust boundary: where the level of trust changes'
+    kind: concept
+    tldr: 'A trust boundary is the line where data passes between zones of different trustworthiness. Almost every attack happens around those lines.'
+    keywords: ['trust boundary', 'data flow diagram', 'attack surface', 'trust zones', 'DFD']
+    blocks:
+      - type: metaphor
+        icon: bank
+        title: 'The bank counter'
+        body: |
+          In a bank, a customer can go as far as the counter, the cashier works behind it, and only authorized staff can enter the vault. Every door between two zones is a place to stand guard. In software, those doors are trust boundaries, and at each one you check every time: who are you, what did you send, and are you allowed to do it?
+      - type: visual
+        kind: flow
+        caption: 'Data flow of a refund feature: the red and yellow arrows cross a boundary, so they get checked'
+        nodes:
+          - {id: user, label: 'Customer (browser)', sub: 'not trusted', icon: user, tone: bad, col: 0, row: 1, tip: 'The customer''s device is outside our control. Whatever it sends may be altered or forged.'}
+          - {id: api, label: 'Symfony API', sub: 'our code', icon: api, tone: accent, col: 1.5, row: 1, tip: 'The zone of our own code. Everything from outside enters here and gets validated.'}
+          - {id: db, label: 'Database', sub: 'inner zone', icon: db, tone: good, col: 3, row: 1, tip: 'The innermost zone. Only validated code is allowed to write here.'}
+          - {id: pay, label: 'Payment gateway', sub: 'third party', icon: card, tone: warn, col: 3, row: 0, tip: 'An outside company. Even the webhooks it sends can''t be trusted without verification.'}
+        edges:
+          - {from: user, to: api, label: 'The customer sends a refund request (first boundary)', tone: bad}
+          - {from: api, to: db, label: 'After validation, the API writes the order and the refund'}
+          - {from: api, to: pay, label: 'The API tells the gateway to return the money (second boundary)', tone: warn}
+          - {from: pay, to: api, label: 'The gateway sends a webhook whose signature must be verified', dashed: true, tone: warn}
+      - type: quote
+        body: 'Put a check wherever the level of trust changes.'
+    aside:
+      - type: tips
+        items:
+          - 'Pen and paper are enough for the picture: boxes (components), arrows (which way data flows), and a line where trust changes.'
+          - 'Don''t always trust internal services either; once one service is compromised, it becomes a path of attack into the rest.'
+      - type: terms
+        items:
+          - {term: 'Attack surface', meaning: 'All the doors an outsider could try to get in through: endpoints, file uploads, webhooks.'}
+      - type: refs
+        items:
+          - {to: 'security/input-validation', label: 'Validating input at the boundary'}
+    check:
+      q: 'In the refund diagram, which arrows cross a trust boundary?'
+      a: 'Customer to API, and API to the payment gateway (plus the gateway''s webhook coming back). Those three need checks; API to database is an internal path.'
+
+  - slug: stride-questions
+    title: 'STRIDE: a checklist of six questions'
+    kind: concept
+    tldr: 'STRIDE names six kinds of threat: spoofing, tampering, repudiation, information disclosure, denial of service and elevation of privilege. Ask all six at every arrow.'
+    keywords: ['STRIDE', 'spoofing', 'tampering', 'repudiation', 'information disclosure', 'DoS', 'elevation of privilege']
+    blocks:
+      - type: text
+        body: |
+          To remember what can go wrong, there is a six-letter name: **STRIDE**. Stand in front of each arrow or box and ask these six questions one by one, and you will catch most serious threats. The table below gives the meaning of each letter and its usual countermeasure.
+      - type: visual
+        kind: table
+        caption: 'STRIDE: six questions and the usual Symfony answers'
+        headers: ['Threat', 'Question', 'Countermeasure']
+        rows:
+          - cells: ['S — Spoofing', 'Is someone pretending to be someone else?', 'Solid login, MFA, webhook signatures']
+            tip: 'Stolen or faked identity: posing as a customer, or posing as the gateway to send a webhook.'
+          - cells: ['T — Tampering', 'Can data be altered in transit or at rest?', 'Compute values on the server, HMAC, HTTPS']
+            tip: 'Altering data. For example, a customer changes the price or amount in the request.'
+          - cells: ['R — Repudiation', 'Could someone say "I didn''t do that"?', 'Audit log: who, when, what']
+            tip: 'The chance to deny an action. Without logs you can''t prove who issued a refund.'
+          - cells: ['I — Info disclosure', 'Is someone seeing what they shouldn''t?', 'Object-level checks, encryption, less data']
+            tip: 'Leaking information: seeing someone else''s order, or a stack trace or secret appearing in an error.'
+          - cells: ['D — Denial of service', 'Can someone knock the service over?', 'Rate limits, timeouts, size limits']
+            tip: 'Taking the service down: a huge file upload, or a thousand requests per second.'
+          - cells: ['E — Elevation', 'Can a normal user do admin things?', 'Role/voter checks, least privilege']
+            tip: 'Gaining power that isn''t theirs: a normal user or support agent doing something beyond their limits.'
+    aside:
+      - type: remember
+        body: 'STRIDE: fake, alter, deny, leak, knock over, overreach. Six questions at every arrow.'
+      - type: pitfalls
+        items:
+          - 'Not all six questions apply to every arrow. Write down which ones don''t, so nobody wonders later whether they were forgotten.'
+          - 'Don''t just write down what comes to mind; going through the checklist surfaces the uncomfortable threats too.'
+      - type: refs
+        items:
+          - {to: 'security/authn-authz', label: 'Countermeasures for Spoofing and Elevation'}
+    check:
+      q: 'A customer sends a different amount in the request. Which STRIDE letter is it, and what is the countermeasure?'
+      a: 'T, Tampering. Don''t take the amount from the client; compute it on the server from the order. The client only says which order.'
+
+  - slug: threat-model-in-30-min
+    title: 'A feature''s threat model in 30 minutes'
+    kind: howto
+    tldr: 'Four steps: draw what you are building, look for what can go wrong with STRIDE, decide what to do, and verify it was done.'
+    keywords: ['threat model workshop', 'mitigation', 'risk', 'refund endpoint', 'lightweight threat model', 'voter']
+    blocks:
+      - type: visual
+        kind: steps
+        caption: 'Four steps, half an hour, a whiteboard'
+        steps:
+          - {title: '1. Draw', body: 'Boxes, arrows and trust boundaries', tip: 'Drawing alone exposes a lot of vagueness, such as "who actually sends this webhook?"'}
+          - {title: '2. Hunt', body: 'The six STRIDE questions at every arrow', tip: 'Start with the riskiest arrow of the feature, where money or personal data moves.'}
+          - {title: '3. Decide', body: 'A countermeasure or an acceptance for each threat', tip: 'You don''t have to block every threat. If you skip one, write down why.'}
+          - {title: '4. Verify', body: 'Tests and tickets for the countermeasures', tip: 'If it isn''t in a test, you can''t count on it staying there.'}
+      - type: points
+        title: 'A worked example: the refund API'
+        style: number
+        items:
+          - 'S: what if someone asks for a refund with a stolen token? Ask for the password or an OTP again on risky actions.'
+          - 'T/I: can the customer supply the amount or someone else''s order id? Compute the amount on the server and check ownership of the order.'
+          - 'R/E: how much can a support agent refund, and where is it recorded who did it?'
+          - 'D: what if someone requests refunds in a loop to flood the gateway or the database? Add a rate limit and an idempotency key.'
+      - type: code
+        lang: php
+        file: 'src/Controller/RefundController.php'
+        variant: good
+        code: |
+          #[Route('/orders/{id}/refund', methods: ['POST'])]
+          #[IsGranted('REFUND', subject: 'order')]   // E, I: the voter looks at the object
+          public function refund(
+              Order $order,
+              RefundService $refunds,
+              #[CurrentUser] User $user,
+          ): JsonResponse {
+              // T: the amount comes from the order, not from the client
+              $refund = $refunds->refundFully($order, requestedBy: $user);
+
+              // R: who, when, how much - the audit log
+              $this->auditLogger->info('refund.issued', [
+                  'order_id' => $order->getId(),
+                  'actor_id' => $user->getId(),
+                  'amount_minor' => $refund->getAmountMinor(),
+              ]);
+
+              return $this->json(['refund_id' => $refund->getId()], 201);
+          }
+        marks:
+          - {line: 2, tip: 'The voter looks at the order and decides whether this user may refund it. One line blocks both E and I.'}
+          - {line: 8, tip: 'The request body has no amount at all, so there is nothing to tamper with.'}
+          - {line: 11, tip: 'With an audit log, nobody can claim "I didn''t do it".'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'Writing a threat model once and filing it away. Look at it again when the feature changes.'
+          - 'Treating all threats as equal. Look at the size of the damage and the likelihood, and handle the big ones first.'
+          - 'Leaving it to the security expert alone. Keep the person building the feature in the room; they know the inside story.'
+      - type: when
+        use:
+          - 'New features involving money, personal data or permissions, and new outside integrations.'
+        avoid:
+          - 'A small UI change doesn''t need a whole workshop; the one-line question "what could go wrong?" is enough.'
+      - type: refs
+        items:
+          - {to: 'security/authorization-models', label: 'Voters and permission models'}
+          - {to: 'api/rate-limiting', label: 'Rate limiting'}
+    check:
+      q: 'In step 3 of a threat model, must you build a countermeasure for every threat?'
+      a: 'No. Every threat needs a decision: block it, reduce it, or accept it with a written reason. What matters most is that accepted risks are written down.'
+
+flashcards:
+  - q: 'What is threat modeling?'
+    a: 'Thinking before you build a feature: what could go wrong, who could cause harm, and what you will do about it.'
+    more: |
+      It is a design discussion, not a code review. You sketch a few boxes and arrows on paper and ask "what happens if someone does the opposite here?" That catches holes before launch, when fixing them is cheapest.
+    ref: nobody-asked-what-if
+  - q: 'When is the best time to do a threat model?'
+    a: 'At design time, before the code is written. Changing a design after launch costs far more.'
+    more: |
+      Data structures, APIs and trust boundaries are settled on design day. Changing them later touches many places. So a half-hour discussion at design time pays off the most.
+    ref: nobody-asked-what-if
+  - q: 'What is a trust boundary?'
+    a: 'The line between two zones, where data moves between places of different trustworthiness.'
+    more: |
+      Browser to API, API to an outside payment gateway, gateway back to our webhook: all of these cross a line. Like the doors in a bank, each one needs a check. Even data coming from an inner zone shouldn't be trusted blindly.
+    ref: trust-boundary
+  - q: 'What do the six letters of STRIDE stand for?'
+    a: 'Spoofing, Tampering, Repudiation, Information disclosure, Denial of service, Elevation of privilege.'
+    more: |
+      In plain words: faking identity, altering data, denying an action, leaking information, taking the service down, and gaining power you shouldn't have. Asking all six at every arrow catches most serious threats.
+    ref: stride-questions
+  - q: 'How do Spoofing and Elevation of privilege differ?'
+    a: 'Spoofing is pretending to be someone else. Elevation is gaining power under your own identity that you shouldn''t have.'
+    more: |
+      Authentication (who are you) stops spoofing. Authorization (what may you do) stops elevation. Logging in with a stolen password is spoofing. A normal user changing the URL to reach an admin page is elevation.
+    ref: stride-questions
+  - q: 'What do you do to prevent Repudiation?'
+    a: 'Keep an audit log of who did what, when and to which thing, stored so it can''t be altered.'
+    more: |
+      For important actions like refunds or settings changes, record the actor id, the time and the old and new values. It helps if the log is append-only, so entries can't be edited or deleted. Then nobody can get away with "I didn't do it".
+    ref: stride-questions
+  - q: 'What are the four steps of a threat model?'
+    a: 'Draw (boxes, arrows, boundaries), hunt (STRIDE), decide (countermeasure or acceptance), verify (tests and tickets).'
+    more: |
+      The whole thing takes half an hour at a whiteboard. The output is a list of threats and a decision for each. Keep it in a document and it is useful again whenever the feature changes.
+    ref: threat-model-in-30-min
+  - q: 'Must you block every threat?'
+    a: 'No. Each one needs a decision: block it, reduce it, or accept it and write down why.'
+    more: |
+      When the damage is small and the likelihood is low, the countermeasure may cost more than the risk. Then you can accept it, but you must write down why. If you don't, someone later will think nobody noticed it.
+    ref: threat-model-in-30-min
+
+quiz:
+  - q: 'Eimon is building a purchase API. The request looks like { "product_id": 5, "price": 100 } and the server uses that price as given. Which STRIDE threat is this?'
+    hint: 'What if the customer sends the price as 50, or as 1?'
+    options:
+      - text: 'Spoofing'
+        correct: false
+        why: 'Nobody got in under someone else''s identity. The problem is trusting data the client sent.'
+      - text: 'Tampering: the server should take the price from the database, not from the client'
+        correct: true
+        why: 'Values sent by the client can be altered. Things like prices are always computed on the server.'
+      - text: 'Repudiation'
+        correct: false
+        why: 'That is about denying an action. Here the problem is that data can be altered.'
+      - text: 'Denial of service'
+        correct: false
+        why: 'Nothing here is about taking the service down; the damage is selling at the wrong price.'
+    ref: stride-questions
+  - q: 'Which STRIDE threat is the most obvious in the code below?'
+    lang: php
+    code: |
+      #[Route('/invoices/{id}', methods: ['GET'])]
+      public function show(Invoice $invoice): JsonResponse
+      {
+          return $this->json($invoice);
+      }
+    hint: 'Could a user call this with someone else''s invoice id?'
+    options:
+      - text: 'Information disclosure: with no ownership check, other people''s invoices can be seen'
+        correct: true
+        why: 'Any logged-in user can change the id and read someone else''s invoice. It needs an object-level check (a voter).'
+      - text: 'Repudiation'
+        correct: false
+        why: 'This is a read endpoint; denying an action is not the main question here.'
+      - text: 'Spoofing, because the method is GET'
+        correct: false
+        why: 'Using GET is not what causes spoofing. The identity is fine here; the permission was never checked.'
+    ref: stride-questions
+  - q: 'Which of these data flows cross a trust boundary?'
+    hint: 'Think about where the level of trust changes.'
+    options:
+      - text: 'A POST request from the browser to the Symfony API'
+        correct: true
+        why: 'The browser is outside our control, so this is the first boundary.'
+      - text: 'A webhook sent by the payment gateway'
+        correct: true
+        why: 'It is data sent by an outside company, so a fake webhook can get in if you don''t verify the signature.'
+      - text: 'A call from one method of a controller to another'
+        correct: false
+        why: 'It is a call inside the same code; the zone of trust hasn''t changed.'
+      - text: 'The validated API writing to your own database'
+        correct: false
+        why: 'It is an internal path. You still need parameterized queries, but this is not a trust boundary.'
+    ref: trust-boundary
+  - q: 'Sumi is threat-modeling the refund feature and is short on time. Which arrow should she start with?'
+    hint: 'Where is the damage greatest?'
+    options:
+      - text: 'Where money moves: customer to refund API, and API to gateway'
+        correct: true
+        why: 'Paths carrying money and personal data carry the most risk. Starting there catches the big holes even if time runs out.'
+      - text: 'Whichever is easiest to draw'
+        correct: false
+        why: 'Easy doesn''t mean important. Order the work by level of risk.'
+      - text: 'The arrow few people know about'
+        correct: false
+        why: 'Unknown doesn''t mean dangerous; the size of the damage and the likelihood are the yardstick.'
+      - text: 'No order, everything at once'
+        correct: false
+        why: 'You can''t cover everything in half an hour, and with no order the biggest risk may be the one left out.'
+    ref: threat-model-in-30-min
+  - q: 'A threat model shows that blocking one threat would take 3 weeks, but the damage is minor and the likelihood low. What is the best decision?'
+    hint: 'Compare the cost of the countermeasure with the damage.'
+    options:
+      - text: 'Accept the risk and write down the reason'
+        correct: true
+        why: 'When the cost exceeds the damage, accepting is reasonable, as long as you record the decision and the reason.'
+      - text: 'Quietly delete the threat from the list'
+        correct: false
+        why: 'If you delete it, nobody will know later that it was considered.'
+      - text: 'Build the countermeasure no matter how long it takes'
+        correct: false
+        why: 'Not all threats are equal; other important work could be held up.'
+      - text: 'Cancel the whole feature'
+        correct: false
+        why: 'Cancelling a whole feature over minor damage is out of proportion.'
+    ref: threat-model-in-30-min

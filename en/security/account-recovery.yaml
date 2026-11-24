@@ -1,0 +1,389 @@
+slides:
+  - slug: guessable-reset-link
+    title: 'Account takeover through a guessable reset link'
+    kind: story
+    tldr: 'Forgot-password is a back door weaker than the front door. If the reset token is guessable, an attacker can open any account.'
+    keywords: ['password reset', 'account takeover', 'guessable token', 'forgot password', 'account recovery', 'hijacked account']
+    blocks:
+      - type: text
+        body: |
+          Login in Rahim's app is very solid: hashed passwords, and a limit on wrong attempts. But for the "I forgot my password" feature he built the reset-link token from the email with `md5`. The attacker knows Sumi's email, so on his own computer he built the same token, opened the reset link directly and changed Sumi's password. The front door was locked, but the back door was wide open.
+      - type: code
+        lang: php
+        file: 'src/Service/PasswordReset.php'
+        variant: bad
+        code: |
+          public function tokenFor(User $user): string
+          {
+              // anyone who knows the email can build this token themselves
+              return md5($user->getEmail());
+          }
+        marks:
+          - {line: 3, tip: 'md5 is not a secret. If you know the input (the email), the output is the same for everyone, so it is no secret key.'}
+      - type: visual
+        kind: sequence
+        caption: 'The attacker built the token from the email himself and took Sumi''s account'
+        actors:
+          - {id: attacker, label: 'Attacker', icon: user, tip: 'Knows Sumi''s email but not her password.'}
+          - {id: app, label: 'App', icon: server, tip: 'Checks the reset link''s token and sets the new password.'}
+          - {id: sumi, label: 'Sumi', icon: mail, tip: 'The real owner. No email ever reached her inbox, so she never noticed.'}
+        messages:
+          - {at: attacker, note: 'Builds token = md5("sumi@x.com") himself', tone: bad, tip: 'Knowing the email is enough; no stolen mail is needed.'}
+          - {from: attacker, to: app, label: 'POST /reset?token=... + new password', tone: bad}
+          - {at: app, note: 'Token matches, so the password is changed', tone: warn, tip: 'The app doesn''t know who made the token. It only checks whether it matches.'}
+          - {from: app, to: attacker, label: '200 OK, the new password now works for login', dashed: true, tone: bad}
+    aside:
+      - type: story
+        title: 'The weakest spot is the target'
+        body: |
+          Attackers don't try to break login head-on. They look for a way in without the password: reset, an email change, "just tell support". An account is only as safe as its weakest recovery path.
+      - type: terms
+        items:
+          - {term: 'Account takeover', meaning: 'An attacker gaining full control of someone else''s account.'}
+    check:
+      q: 'The attacker never got into Sumi''s email inbox. How did he still complete the reset?'
+      a: 'The token was made from the email with md5, so anyone who knows the email can build it. A token must be an unguessable, random secret value.'
+
+  - slug: good-reset-token
+    title: 'A good reset token: random, hashed, expiring, single-use'
+    kind: concept
+    tldr: 'A reset token is random from a CSPRNG, stored only as a hash, short-lived and single-use. Without all four properties the back door is open.'
+    keywords: ['reset token', 'CSPRNG', 'random_bytes', 'hashed token', 'single-use', 'expiry', 'password reset token']
+    blocks:
+      - type: metaphor
+        icon: bank
+        title: 'Replacing a lost chequebook'
+        body: |
+          When you lose your chequebook, the bank issues a new one, but carefully. Nobody should be able to guess the numbers (**random**). The bank doesn't keep the full number in its ledger, only a fingerprint, so even if the ledger is stolen no cheque can be forged (**hash**). A cheque has a validity period (**expiry**). And once a cheque has been cashed, it is void (**single-use**).
+      - type: visual
+        kind: compare
+        caption: 'Rahim''s old token versus the right one'
+        columns:
+          - title: 'md5(email)'
+            tone: bad
+            icon: cross
+            tip: 'Any value that depends on known input or can be guessed falls in this category: the time, a user id, a hash of the email.'
+            items: ['Can be built by anyone who knows the email', 'Plain in the database, usable the moment it leaks', 'No expiry: works forever', 'Can be used many times']
+          - title: 'random_bytes(32) + hash'
+            tone: good
+            icon: check
+            tip: 'There is no room for guessing, damage after a leak is limited, and once used it is void.'
+            items: ['256 bits of randomness, impossible to guess', 'Only the SHA-256 hash in the database', 'Expires after 30 minutes', 'Marked used after a single use']
+      - type: quote
+        body: 'A reset token is random, stored hashed, expiring and single-use. Not one of the four may be missing.'
+    aside:
+      - type: tips
+        items:
+          - 'Use `random_bytes(32)` or `bin2hex(random_bytes(32))` for tokens. Never `rand()`, `uniqid()`, the time or a user id.'
+          - 'Instead of building it yourself, you can use SymfonyCasts ResetPasswordBundle, which already follows these rules and throttles requests.'
+      - type: refs
+        items:
+          - {to: 'security/data-protection', label: 'Why a fast hash is enough here and not for passwords'}
+    check:
+      q: 'Why is a reset token stored hashed in the database, even though it is short-lived?'
+      a: 'Even if the database leaks or an admin sees it, the hash doesn''t reveal the real token, so nobody can use it to take over an account within its validity period.'
+
+  - slug: issue-reset
+    title: 'Sending the reset link: always the same answer'
+    kind: howto
+    tldr: 'The forgot endpoint gives the same answer whether or not the email exists (blocking user enumeration), rate-limits, and creates the token and sends the mail in an async handler.'
+    keywords: ['user enumeration', 'rate limit', 'forgot password endpoint', 'Messenger', 'reset email', 'Host header', 'throttling']
+    blocks:
+      - type: text
+        body: |
+          If you say "no account with this email", an attacker can ask about a thousand emails and learn exactly who your users are. This is **user enumeration**. So the answer is always the same: "If the email exists, a link has been sent." The real work happens in the background, in a Messenger handler, so even the response time reveals nothing.
+      - type: code
+        lang: php
+        file: 'src/Controller/PasswordController.php'
+        variant: good
+        code: |
+          #[Route('/api/password/forgot', methods: ['POST'])]
+          public function forgot(
+              #[MapRequestPayload] ForgotPassword $dto,
+              Request $request,
+              RateLimiterFactory $passwordResetLimiter,
+              MessageBusInterface $bus,
+          ): JsonResponse {
+              $limit = $passwordResetLimiter->create($request->getClientIp())->consume();
+              if (!$limit->isAccepted()) {
+                  throw new TooManyRequestsHttpException();
+              }
+
+              // we don't check whether the email exists here; the handler will, in the background
+              $bus->dispatch(new SendPasswordReset(mb_strtolower($dto->email)));
+
+              return $this->json(['message' => 'If the email exists, a link has been sent.'], 202);
+          }
+        marks:
+          - {line: 8, tip: 'A rate limit by IP; excess requests stop email bombing and enumeration. Also add a separate limit per email.'}
+          - {line: 14, tip: 'The server never looks up whether the user exists here, so even timing differences leak nothing.'}
+          - {line: 16, tip: 'Whether the email exists or not, the answer is identical: the same words, the same status.'}
+      - type: code
+        lang: php
+        file: 'src/MessageHandler/SendPasswordResetHandler.php'
+        variant: good
+        code: |
+          #[AsMessageHandler]
+          public function __invoke(SendPasswordReset $message): void
+          {
+              $user = $this->users->findOneBy(['email' => $message->email]);
+              if (null === $user) {
+                  return;                                        // stop quietly
+              }
+
+              $plain = bin2hex(random_bytes(32));                // 256 bits of randomness
+              $this->em->persist(new ResetToken(
+                  $user, hash('sha256', $plain), new \DateTimeImmutable('+30 minutes'),
+              ));
+              $this->em->flush();
+
+              $link = $this->urls->generate('password_reset', ['token' => $plain],
+                  UrlGeneratorInterface::ABSOLUTE_URL);          // host comes from config
+              $this->mailer->send((new TemplatedEmail())->to($user->getEmail())
+                  ->subject('Password reset')->htmlTemplate('mail/reset.html.twig')
+                  ->context(['link' => $link]));
+          }
+        marks:
+          - {line: 6, tip: 'If there is no such email, nothing happens and no error is raised. From outside, the two cases can''t be told apart.'}
+          - {line: 9, tip: 'The plain token goes only into the email; it is never in the database or the queue.'}
+          - {line: 11, tip: 'The database holds only the hash and a 30-minute expiry.'}
+          - {line: 16, tip: 'The link''s host comes from framework.router.default_uri, not the request''s Host header; otherwise Host header poisoning could send the link to the attacker''s site.'}
+    aside:
+      - type: commands
+        items:
+          - {cmd: 'php bin/console debug:config framework rate_limiter', desc: 'Look at the rate limiter configuration'}
+          - {cmd: 'php bin/console messenger:consume async', desc: 'Start the worker so emails get sent'}
+      - type: refs
+        items:
+          - {to: 'messaging/background-jobs', label: 'How background jobs run'}
+    check:
+      q: 'Why does the forgot endpoint always return the same message instead of "this email was not found"?'
+      a: 'A different message would let an attacker try many emails and learn who the users are. An identical answer, in the same time, leaks nothing (user enumeration).'
+
+  - slug: consume-reset
+    title: 'Completing the reset: verify, change, and close every door'
+    kind: howto
+    tldr: 'Match the token hash and check expiry and use, change the password, mark the token used, revoke old sessions and API tokens, and notify the user.'
+    keywords: ['reset password', 'single-use token', 'session invalidation', 'revoke tokens', 'password changed email', 'atomic update']
+    blocks:
+      - type: text
+        body: |
+          The final step of a reset has several jobs, and all of them are needed. Many people stop after changing the password. But if the attacker was already logged in, his session or refresh token keeps working after the password change. So a reset means closing all the old doors too.
+      - type: visual
+        kind: steps
+        caption: 'The order for completing a reset'
+        steps:
+          - {title: '1. Match the hash', body: 'Look up the row by the token''s SHA-256', tip: 'The database holds only the hash; hash the token the user sent and compare.'}
+          - {title: '2. Expiry and use', body: 'Reject if expired or used', tip: 'In both cases give the same generic message: the link is invalid or old.'}
+          - {title: '3. Change the password', body: 'Store the new hash, mark the token used', tip: 'Both in the same transaction. If it isn''t marked used, the same link will work again.'}
+          - {title: '4. Revoke everything old', body: 'Sessions, refresh tokens, remember-me', tip: 'When the password hash changes, Symfony logs the user out of other sessions itself; API tokens must be revoked separately.'}
+          - {title: '5. Notify by email', body: 'A "your password was changed" message', tip: 'If the user didn''t do it themselves, this email is the first warning sign.'}
+      - type: code
+        lang: php
+        file: 'src/Controller/PasswordController.php'
+        variant: good
+        code: |
+          #[Route('/api/password/reset', methods: ['POST'])]
+          public function reset(
+              #[MapRequestPayload] ResetPassword $dto,
+              ResetTokenRepository $tokens,
+              UserPasswordHasherInterface $hasher,
+              RefreshTokenRepository $refresh,
+              EntityManagerInterface $em,
+          ): JsonResponse {
+              $row = $tokens->findOneBy(['tokenHash' => hash('sha256', $dto->token)]);
+              if (null === $row || $row->isUsed() || $row->isExpired(new \DateTimeImmutable())) {
+                  return $this->json(['error' => 'The link is invalid or has expired'], 400);
+              }
+
+              $user = $row->getUser();
+              $user->setPassword($hasher->hashPassword($user, $dto->newPassword));
+              $row->markUsed();                 // works only once
+              $refresh->revokeAllFor($user);    // revoke the old API tokens
+              $em->flush();
+
+              return $this->json(['message' => 'Your password has been changed.']);
+          }
+        marks:
+          - {line: 9, tip: 'The database lookup is by hash, so no timing comparison is done on the plain token.'}
+          - {line: 16, tip: 'The same link can''t work twice. If two requests arrive at once, make it atomic with UPDATE ... WHERE used_at IS NULL.'}
+          - {line: 17, tip: 'The user''s session cookies stop working on their own, but unless you revoke refresh tokens a thief stays in through the API.'}
+    aside:
+      - type: tips
+        items:
+          - 'Run the same validation on the new password (length, a list of leaked passwords). Don''t let a weak password in through the reset path.'
+          - 'Send `Referrer-Policy: no-referrer` on the reset page, so the token doesn''t travel to other sites in the Referer header.'
+    check:
+      q: 'Why must the attacker''s old refresh token be revoked even after the reset is complete?'
+      a: 'A refresh token isn''t tied to the password; unless you revoke it, he can keep getting new access tokens even after the password change.'
+
+  - slug: recovery-back-doors
+    title: 'More back doors in recovery, and resetting MFA'
+    kind: pitfall
+    tldr: 'Resetting by skipping MFA, security questions, passwords sent in plain email and unlimited attempts all make even strong login worthless.'
+    keywords: ['MFA reset', 'recovery codes', 'security questions', 'account recovery', 'rate limit', 'cooling period', 'support impersonation']
+    blocks:
+      - type: text
+        body: |
+          Put MFA on the front door and an attacker walks around to the back door (recovery). So the recovery path must be at least as hard as login. In particular, decide in advance what happens when someone loses their MFA.
+      - type: visual
+        kind: table
+        caption: 'Common recovery gaps and the right way'
+        headers: ['Mistake', 'What happens', 'The right way']
+        rows:
+          - cells: ['A reset switches MFA off', 'MFA is useless once the email is taken', 'MFA is still required after the reset']
+            tip: 'When an email is hacked, MFA is the last line of defense. A reset must not break it.'
+          - cells: ['Support disables MFA after one phone call', 'Takeover by social engineering', 'Recovery codes, plus a waiting period and email notices']
+            tip: 'Give out one-time recovery codes in advance. If there are none, impose a 24 to 72 hour wait and warnings to every address.'
+          - cells: ['Security questions (mother''s name, favorite city)', 'The answers are known or guessable', 'Drop them; use an email link or recovery codes instead']
+            tip: 'The answers can be found on social media. This isn''t a second password; it is a weak password.'
+          - cells: ['Emailing the new password', 'A plain password sits in the inbox', 'Send only a single-use link']
+            tip: 'Email is like a postcard: it passes through many hands. Never send a password in plain text.'
+          - cells: ['No limit on attempts', 'Brute force on the token or code', 'Rate-limit by both IP and email']
+            tip: 'A 6-digit code has only a million possibilities; with no limit it can be found within minutes.'
+      - type: quote
+        body: 'If the recovery path is easier than login, all of login''s security is meaningless.'
+    aside:
+      - type: tips
+        items:
+          - 'When MFA is turned on, show 10 one-time recovery codes, store them hashed, and void each one when it is used.'
+          - 'When the account email or MFA changes, send a warning to the old email and ask for extra verification on sensitive actions for a while.'
+      - type: refs
+        items:
+          - {to: 'security/threat-modeling', label: 'A way to think about which paths an attacker looks for'}
+    check:
+      q: 'A user lost their MFA device. What is the risk if support disables MFA after only hearing "it''s me" over the phone?'
+      a: 'An attacker can use social engineering and a false identity to get MFA switched off and take the account. You need recovery codes issued beforehand, or a waiting period and warning messages.'
+
+flashcards:
+  - q: 'Why is account recovery a prime target for attackers?'
+    a: 'Because it is a way into the account without the password. However strong login is, a weak recovery path is the back door.'
+    more: |
+      Reset, changing the email, switching off MFA, asking support: all of these are recovery. Attackers look for the weakest path, so keep these as hard as the front door.
+    ref: guessable-reset-link
+  - q: 'What are the four properties of a good reset token?'
+    a: 'Random (from a CSPRNG), stored hashed in the database, short-lived (such as 30 minutes), and single-use.'
+    more: |
+      Generate it with `bin2hex(random_bytes(32))`, store `hash('sha256', ...)` in the database, set an expiry, and mark it used when it is spent. Miss any one and the attack comes through that gap.
+    ref: good-reset-token
+  - q: 'What should you not use to generate a reset token?'
+    a: '`md5(email)`, `uniqid()`, `rand()`, the time or a user id. They are all guessable. Use `random_bytes()`.'
+    more: |
+      `random_bytes()` uses the operating system's secure random source (a CSPRNG). `rand()` and `uniqid()` depend on the time and can be guessed.
+    ref: guessable-reset-link
+  - q: 'What is user enumeration, and how do you prevent it?'
+    a: 'Learning who your users are by checking whether an email exists. Prevent it by always giving the same message, in the same time.'
+    more: |
+      The gap shows up in three places: forgot-password, login and signup. If you hand the real work to Messenger and return the same message in the response, even the response time reveals nothing.
+    ref: issue-reset
+  - q: 'Where should the host of a reset link come from?'
+    a: 'From configuration (`framework.router.default_uri`), not from the request''s Host header.'
+    more: |
+      If an attacker sends a changed Host header, the emailed link can carry his site's name, and the victim who clicks it hands over the token. This is called Host header poisoning. A host taken from config closes that gap.
+    ref: issue-reset
+  - q: 'What else must be revoked when a password is reset?'
+    a: 'All the user''s other sessions, refresh tokens and remember-me cookies. Then send a "your password was changed" email.'
+    more: |
+      In Symfony, changing the password hash invalidates other sessions on its own. Refresh tokens are separate, so you must revoke them yourself. Otherwise a thief who was already logged in stays in after the change.
+    ref: consume-reset
+  - q: 'How should a reset handle MFA?'
+    a: 'MFA stays on after a reset. If MFA is lost, it is restored through recovery codes, or through a waiting period and warning messages.'
+    more: |
+      Switching MFA off with just an email link means that once the email is taken, everything is lost. Hand out 10 one-time recovery codes (stored hashed) in advance. If there are none, impose a 24 to 72 hour wait and email every address.
+    ref: recovery-back-doors
+  - q: 'Why does a recovery endpoint need a rate limit?'
+    a: 'Otherwise an attacker can send links to a thousand emails or brute-force a short (6-digit) code. Limit by both IP and email.'
+    more: |
+      In Symfony's RateLimiter you can build one limiter by IP and another by email. Past the limit you return 429 with `Retry-After`. This stops email bombing and guessing alike.
+    ref: issue-reset
+
+quiz:
+  - q: 'How is the code below weak?'
+    lang: php
+    code: |
+      $token = sha1($user->getId() . time());
+      $db->insert('reset_tokens', ['user_id' => $user->getId(), 'token' => $token]);
+      mail($user->getEmail(), 'Reset', "https://app.bd/reset/$token");
+    hint: 'What goes into the token, and what is kept in the database?'
+    options:
+      - text: 'The token is guessable (user id + time), stored in plain form, and has no expiry or used flag'
+        correct: true
+        why: 'An attacker can guess the id and time to build the token; it is usable the moment the database leaks; and it works forever.'
+      - text: 'Only sha1 is old; sha256 would be safe'
+        correct: false
+        why: 'The kind of hash isn''t the main problem. The input itself is guessable, so any hash can be guessed.'
+      - text: 'No problem, since the link goes by email'
+        correct: false
+        why: 'Sending by email is not security; the attacker can build the token himself without any inbox.'
+    ref: guessable-reset-link
+  - q: 'Which behavior of a forgot-password endpoint opens a user enumeration gap?'
+    hint: 'How can an outsider tell whether an email exists?'
+    options:
+      - text: '404 "user not found" when the email doesn''t exist, 200 when it does'
+        correct: true
+        why: 'Seeing this difference, an attacker tests many emails and gets a list of users.'
+      - text: 'Always 202 with the same message'
+        correct: false
+        why: 'This is the correct behavior, not a gap.'
+      - text: 'Keeping a rate limit by IP'
+        correct: false
+        why: 'This slows enumeration down; it doesn''t open a gap.'
+    ref: issue-reset
+  - q: 'Which of these are part of a correct reset implementation?'
+    hint: 'Think of a complete, single-use flow.'
+    options:
+      - text: 'Storing the token in the database only as a SHA-256 hash'
+        correct: true
+        why: 'Even after a leak, the real token can''t be recovered.'
+      - text: 'Revoking the user''s refresh tokens after a successful reset'
+        correct: true
+        why: 'Otherwise a thief stays in with an old token.'
+      - text: 'A token lifetime of 30 days so the user can do it later'
+        correct: false
+        why: 'A long lifetime widens the window for attack; 15 to 60 minutes is enough.'
+      - text: 'Emailing the new password after the reset'
+        correct: false
+        why: 'A plain password sits in the inbox; send only a single-use link.'
+    ref: consume-reset
+  - q: 'The reset link''s URL is built with `$request->getSchemeAndHttpHost()`. What can happen if an attacker sends `Host: evil.example`?'
+    hint: 'Which site will the link point to?'
+    options:
+      - text: 'Nothing, since the email goes out from our server'
+        correct: false
+        why: 'The email does go out from us, but the link''s host has been set by the attacker.'
+      - text: 'The link in the victim''s email points to evil.example, and a click puts the token in the attacker''s hands'
+        correct: true
+        why: 'This is Host header poisoning. The host should come from configuration.'
+      - text: 'Symfony changes the Host itself'
+        correct: false
+        why: 'To stop untrusted hosts you have to configure trusted_hosts and default_uri; it doesn''t happen on its own.'
+    ref: issue-reset
+  - q: 'After resetting the password, the user clicked the link again. What should happen?'
+    hint: 'What does single-use mean?'
+    options:
+      - text: 'Show the reset form again'
+        correct: false
+        why: 'If the same link kept working, a thief who reads the email could change the password all over again.'
+      - text: 'A message saying "the link is invalid or has expired"'
+        correct: true
+        why: 'A used token is marked used and won''t work again. Keep the message generic.'
+      - text: 'Log them in directly'
+        correct: false
+        why: 'The link would become a way in without a password.'
+    ref: consume-reset
+  - q: 'Which measures keep the recovery path as strong as login?'
+    hint: 'The back door must not be weaker than the front door.'
+    options:
+      - text: 'When MFA is lost, recovery codes issued in advance, otherwise a 24 to 72 hour wait and an email to every address'
+        correct: true
+        why: 'It makes fast deception hard and gives the real owner time to notice.'
+      - text: 'A rate limit by IP and email on the recovery endpoint'
+        correct: true
+        why: 'It stops brute force and enumeration.'
+      - text: 'Keeping security questions (mother''s name, favorite city)'
+        correct: false
+        why: 'These answers can be guessed from social media; they are weak.'
+      - text: 'Support disabling MFA after hearing "it''s me" on the phone'
+        correct: false
+        why: 'A simple path for social engineering.'
+    ref: recovery-back-doors

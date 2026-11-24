@@ -1,0 +1,557 @@
+slides:
+  - slug: double-charge
+    title: 'One tap, charged twice'
+    kind: story
+    tldr: 'If a reply is lost on the way back, the client sends again; and if the server can''t tell the two requests apart, the same payment happens twice.'
+    keywords: ['double charge', 'duplicate request', 'retry', 'double payment', 'lost response']
+    blocks:
+      - type: text
+        body: |
+          Rahima taps "Send" in her app to transfer 500 taka to Karim. The server deducts the money, but the reply gets lost in the network on its way back. All Rahima sees is a spinning wheel, so she taps again. To the server this is a brand-new request, and it deducts another 500 taka.
+      - type: visual
+        kind: sequence
+        caption: 'One intention, two requests, charged twice'
+        actors:
+          - {id: rahima, label: 'Rahima''s phone', icon: mobile, tip: 'Rahima wants to send 500 taka exactly once. With no reply, she taps again.'}
+          - {id: api, label: 'Server', icon: api, tip: 'Treats every POST as new work. It has nothing that links this request to the earlier one.'}
+          - {id: db, label: 'Database', icon: db, tip: 'Does what the server tells it to; if the same transfer arrives twice, it writes it twice.'}
+        messages:
+          - {from: rahima, to: api, label: 'POST /transfers: 500 taka'}
+          - {from: api, to: db, label: 'Deduct 500 from the balance'}
+          - {from: api, to: rahima, label: 'Success (reply lost on the way)', dashed: true, tone: bad, tip: 'The work is done, but the news never reached Rahima. From her side it looks as if nothing happened.'}
+          - {at: rahima, note: 'No reply, so she taps again', tone: warn}
+          - {from: rahima, to: api, label: 'POST /transfers: 500 taka'}
+          - {from: api, to: db, label: 'Deduct 500 again', tone: bad, tip: 'The server has no idea this is the second attempt at the same job.'}
+          - {at: db, note: 'Total deducted: 1000 taka', tone: bad, tip: 'Rahima wanted to send 500. No code threw an exception, yet the books are wrong.'}
+      - type: quote
+        body: 'Any request you send once can arrive twice. Build every write so that arriving twice still happens once.'
+    aside:
+      - type: story
+        title: 'Who else sends again?'
+        body: |
+          It isn't only impatient fingers. A mobile app's auto-retry, a load balancer, a queue worker, a payment gateway's webhook: all of them send again when no reply comes back. Duplicate requests are not an edge case, they are an everyday event.
+      - type: terms
+        items:
+          - {term: 'Retry', meaning: 'Sending the same request again because no reply came back.'}
+          - {term: 'Duplicate request', meaning: 'A request for the same job that has reached the server more than once.'}
+    check:
+      q: 'The server did deduct the money correctly the first time. Why did it deduct a second time?'
+      a: 'The reply was lost, so Rahima never learned the job was done and sent it again. And the server had nothing that told it the two requests were the same job.'
+
+  - slug: cheque-number
+    title: 'The cheque number: one cheque can''t be cashed twice'
+    kind: concept
+    tldr: 'The client sends a unique key with each job; the server records the key, and when the same key comes back it returns the earlier reply.'
+    keywords: ['idempotency key', 'idempotent', 'Idempotency-Key header', 'cheque number', 'exactly once']
+    blocks:
+      - type: metaphor
+        icon: bank
+        title: 'The bank''s cheque book'
+        body: |
+          Every page in a cheque book has its own printed number. When the bank pays out, it writes that number in its register. If the same cheque turns up at the counter again, the cashier doesn't pay a second time. She checks the register and says, "This was already paid, here's the receipt." An **idempotency key** is a request's cheque number.
+      - type: visual
+        kind: flow
+        caption: 'The first time the work is done; the second time only the stored reply comes back'
+        nodes:
+          - {id: client, label: 'Vue app', sub: 'makes the key', icon: browser, col: 0, row: 1, tip: 'The owner of the cheque book. It generates a new UUID for every new job and sends the same one again on a retry.'}
+          - {id: api, label: 'API', sub: 'the cashier', icon: api, tone: accent, col: 2, row: 1, tip: 'Before touching anything, it checks the key in the register: a new key means do the work, a known key means hand back the receipt.'}
+          - {id: store, label: 'Key register', sub: 'idempotency_key table', icon: book, col: 4, row: 0, tip: 'The ledger of which key got which reply. The same key can''t be entered here twice.'}
+          - {id: work, label: 'The real work', sub: 'sending the money', icon: money, col: 4, row: 2, tip: 'The job that causes harm if it runs twice. For one key it runs exactly once.'}
+        edges:
+          - {from: client, to: api, label: 'The client sends an Idempotency-Key with the request'}
+          - {from: api, to: store, label: 'The server enters the key in the register: it is new'}
+          - {from: api, to: work, label: 'Since the key is new, it does the real work once'}
+          - {from: api, to: store, label: 'It stores the reply next to the key'}
+          - {from: api, to: client, label: 'The reply goes out, but say it gets lost on the way', dashed: true, tone: warn}
+          - {from: client, to: api, label: 'The client sends again with the same key'}
+          - {from: store, to: api, label: 'Known key: no new work, the stored reply is returned', dashed: true, tone: good}
+      - type: text
+        body: |
+          A job is **idempotent** if doing it once or ten times gives the same final result. `GET`, `PUT` and `DELETE` are naturally like that; `POST` is not, which is why `POST` needs this key.
+    aside:
+      - type: terms
+        items:
+          - {term: 'Idempotent', meaning: 'An operation whose end result is the same whether you do it once or many times.'}
+          - {term: 'Idempotency key', meaning: 'A unique identity for one job, usually a UUID; the client makes it and sends it in a header.'}
+      - type: remember
+        body: 'New job = new key. Another try at the same job = the same key.'
+      - type: refs
+        items:
+          - {to: 'api/error-design', label: 'Which errors are safe to retry'}
+    check:
+      q: 'When a second request arrives with the same idempotency key, what does the server do, and what does it not do?'
+      a: 'It does not repeat the real work. It returns the stored reply from the first time, exactly as it was.'
+
+  - slug: key-table-and-fingerprint
+    title: 'Building the register: key, fingerprint and stored reply'
+    kind: howto
+    tldr: 'Keep one table with (scope, key) unique, and store the request''s fingerprint and the response; the controller takes the key from the header and hands it to a guard.'
+    keywords: ['idempotency table', 'request fingerprint', 'unique constraint', 'key storage', 'register', 'scope']
+    blocks:
+      - type: text
+        body: |
+          Each line of the register holds four things: whose key it is (the **scope**), the key itself, the request's **fingerprint** (a hash of the body, like the amount written on a cheque), and the reply from the first time. A unique constraint on `(scope, idem_key)` is what guarantees the same cheque number never gets entered twice.
+      - type: code
+        lang: php
+        file: 'src/Entity/IdempotencyKey.php'
+        variant: good
+        code: |
+          #[ORM\Entity]
+          #[ORM\Table(name: 'idempotency_key')]
+          #[ORM\UniqueConstraint(name: 'uniq_scope_key', columns: ['scope', 'idem_key'])]
+          class IdempotencyKey
+          {
+              #[ORM\Id, ORM\GeneratedValue, ORM\Column]
+              private ?int $id = null;
+
+              #[ORM\Column(length: 80)]
+              private string $scope;                  // whose key: 'user:42'
+
+              #[ORM\Column(length: 36)]
+              private string $idemKey;                // the UUID the client sent
+
+              #[ORM\Column(length: 64)]
+              private string $fingerprint;            // sha256 of the request
+
+              #[ORM\Column(nullable: true)]
+              private ?int $responseStatus = null;    // filled in when the work is done
+
+              #[ORM\Column(type: Types::TEXT, nullable: true)]
+              private ?string $responseBody = null;
+
+              #[ORM\Column]
+              private \DateTimeImmutable $createdAt;  // so old keys can be purged
+          }
+        marks:
+          - {line: 3, tip: 'The backbone of the whole scheme. The database itself refuses a second row for the same key in the same scope, even if your code gets it wrong.'}
+          - {line: 16, tip: 'If the same key comes with a different amount or recipient, this hash won''t match and we turn the request away.'}
+      - type: code
+        lang: php
+        file: 'src/Controller/TransferController.php'
+        variant: good
+        code: |
+          #[Route('/api/transfers', methods: ['POST'])]
+          #[IsGranted('ROLE_USER')]
+          public function create(
+              #[MapRequestPayload] TransferRequest $dto,
+              Request $request,
+              IdempotencyGuard $guard,
+              TransferService $transfers,
+          ): JsonResponse {
+              $key = (string) $request->headers->get('Idempotency-Key');
+              if (!Uuid::isValid($key)) {
+                  throw new BadRequestHttpException('Idempotency-Key header must be a UUID');
+              }
+
+              $hash = hash('sha256', implode('|', [
+                  $request->getMethod(), $request->getPathInfo(), $request->getContent(),
+              ]));
+
+              return $guard->run(
+                  scope: 'user:'.$this->getUser()->getUserIdentifier(),
+                  key: $key,
+                  hash: $hash,
+                  work: fn () => $this->json($transfers->send($dto), 201),
+              );
+          }
+        marks:
+          - {line: 10, tip: 'A request that moves money is not accepted without a key. Making the header mandatory means no client can forget it.'}
+          - {line: 14, tip: 'The fingerprint: a hash of the method, path and raw body. An honest retry sends exactly the same bytes, so the hash matches.'}
+          - {line: 22, tip: 'The real work is passed in as a closure. The guard decides whether to run it or return the stored reply.'}
+    aside:
+      - type: tips
+        items:
+          - 'Keep keys for at least 24 hours, longer than a client can keep retrying. Then run a job that deletes old rows by `created_at`.'
+          - 'Put the user id in the scope. Otherwise one person''s key could return another person''s stored reply.'
+      - type: terms
+        items:
+          - {term: 'Fingerprint', meaning: 'A hash of the request''s contents; it exposes a different request arriving under the same key.'}
+          - {term: 'Scope', meaning: 'Who the key belongs to, usually the logged-in user or API client.'}
+    check:
+      q: 'Without the fingerprint column, which mistake would go unnoticed?'
+      a: 'A different request under the same key (say 5000 taka instead of 500). The server couldn''t tell, and would return the old 500-taka reply as a "success".'
+
+  - slug: claim-run-replay
+    title: 'Claim, work, store the reply: in one transaction'
+    kind: howto
+    tldr: 'Insert the key row, do the real work and store the reply in one transaction; if the INSERT affects 0 rows, replay the stored reply without doing the work.'
+    keywords: ['replay response', 'ON CONFLICT DO NOTHING', 'concurrency', 'atomic claim', 'simultaneous requests', 'transaction']
+    blocks:
+      - type: text
+        body: |
+          The guard does three things, all in **one transaction**: insert the key row, run the real work, write the reply onto the row. If anything breaks halfway, all three roll back together. The key disappears too, so the client can safely try again. If the same key arrives twice at once, the unique constraint makes the second request wait, and then it simply gets the stored reply.
+      - type: code
+        lang: php
+        file: 'src/Idempotency/IdempotencyGuard.php'
+        variant: good
+        code: |
+          final readonly class IdempotencyGuard
+          {
+              public function __construct(private Connection $db) {}
+
+              /** @param \Closure(): JsonResponse $work */
+              public function run(string $scope, string $key, string $hash, \Closure $work): JsonResponse
+              {
+                  return $this->db->transactional(function () use ($scope, $key, $hash, $work) {
+                      $claimed = $this->db->executeStatement(
+                          'INSERT INTO idempotency_key (scope, idem_key, fingerprint, created_at)
+                           VALUES (?, ?, ?, now()) ON CONFLICT (scope, idem_key) DO NOTHING',
+                          [$scope, $key, $hash],
+                      );
+                      if (0 === $claimed) {
+                          return $this->replay($scope, $key, $hash);   // key seen before
+                      }
+                      $response = $work();                             // the real work, once
+                      $this->db->update('idempotency_key', [
+                          'response_status' => $response->getStatusCode(),
+                          'response_body' => $response->getContent(),
+                      ], ['scope' => $scope, 'idem_key' => $key]);
+                      return $response;
+                  });
+              }
+
+              private function replay(string $scope, string $key, string $hash): JsonResponse
+              {
+                  $row = $this->db->fetchAssociative('SELECT fingerprint, response_status, response_body
+                      FROM idempotency_key WHERE scope = ? AND idem_key = ?', [$scope, $key]);
+                  if (!hash_equals($row['fingerprint'], $hash)) {
+                      throw new UnprocessableEntityHttpException('Same key, different request');
+                  }
+                  return JsonResponse::fromJsonString(
+                      $row['response_body'], (int) $row['response_status']);
+              }
+          }
+        marks:
+          - {line: 8, tip: 'Everything inside this closure is one transaction. If an exception is thrown, everything rolls back, key row included.'}
+          - {line: 11, tip: 'No SELECT first, just INSERT. If another running transaction holds the same key, the database makes you wait here, then returns 0 rows.'}
+          - {line: 14, tip: '0 rows means someone else already finished this key''s work. The real work is not touched again.'}
+          - {line: 30, tip: 'If someone brings a changed amount under the same cheque number, the bank sends them away. Here that is a 422: the client has a bug and needs to hear about it.'}
+      - type: visual
+        kind: sequence
+        caption: 'When the same key arrives twice at once, the work still happens once'
+        actors:
+          - {id: a, label: 'Request A', icon: send, tip: 'The first attempt. It manages to insert the key row first, so it is the one that does the work.'}
+          - {id: db, label: 'Database', icon: db, tip: 'Thanks to the unique constraint, it holds back a second INSERT of the same key until the first one''s outcome is final.'}
+          - {id: b, label: 'Request B', icon: repeat, tip: 'A second attempt with the same key (a double-click, say) that arrived before A finished.'}
+        messages:
+          - {from: a, to: db, label: 'INSERT key: 1 row inserted'}
+          - {from: b, to: db, label: 'INSERT key (the same key)'}
+          - {at: db, note: 'B waits: A has not committed yet', tone: warn, tip: 'The database can''t know whether A will commit or roll back, so it makes B wait.'}
+          - {from: a, to: db, label: 'Send money, store reply, COMMIT'}
+          - {from: db, to: b, label: '0 rows: key already exists', dashed: true}
+          - {from: b, to: db, label: 'Read the stored reply'}
+          - {at: b, note: 'B gives the same reply without working', tone: good, tip: 'The money moved once, yet both requests got the same "success" reply.'}
+      - type: quote
+        body: 'Never SELECT first and INSERT later. INSERT straight away: the unique constraint is the judge.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'If you SELECT "does the key exist?" and then INSERT, two requests can both see "no" and both do the work.'
+          - 'If the key row is committed first in a separate transaction, a failure in the work leaves the key stuck, and no retry can ever do the job.'
+      - type: tips
+        items:
+          - 'On MySQL, write `INSERT IGNORE` in place of `ON CONFLICT … DO NOTHING`; the behaviour is the same.'
+          - 'If the work calls an outside gateway, pass the same key to it too. Then you also have to deal with the [[payments/unknown-outcomes|"we don''t know" state]].'
+      - type: refs
+        items:
+          - {to: 'concurrency/atomic-operations', label: 'Correctness through unique constraints'}
+    check:
+      q: 'If the server crashes halfway through the work, what happens to the key row, and why is that good?'
+      a: 'The row was in the same transaction as the work, so it is rolled back and vanishes. The next retry can then do the whole job from scratch, exactly once.'
+
+  - slug: new-key-every-retry
+    title: 'A new key on every try: the classic mistake'
+    kind: pitfall
+    tldr: 'A key belongs to the user''s intention, not to an attempt: the same key on a retry, a new key when the form changes.'
+    keywords: ['client retry', 'crypto.randomUUID', 'Vue', 'double click', 'same key', 'frontend']
+    blocks:
+      - type: text
+        body: |
+          However careful the server is, if the client makes a fresh key on every click, each retry looks like a new cheque and the money is deducted again. Tie the key to the user's **intention**: "500 taka to Karim" is one intention, no matter how many times the button is pressed. If the recipient or amount changes, that's a new intention and gets a new key.
+      - type: code
+        lang: ts
+        file: 'src/components/SendMoney.vue (wrong)'
+        variant: bad
+        code: |
+          async function send(): Promise<void> {
+            await fetch('/api/transfers', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Idempotency-Key': crypto.randomUUID(),   // a new cheque on every try!
+              },
+              body: JSON.stringify({ to: props.to, amount: props.amount }),
+            })
+          }
+        marks:
+          - {line: 6, tip: 'The key is created at the moment of sending. So on a second click or a retry the server sees a completely new key and does the work again.'}
+      - type: code
+        lang: vue
+        file: 'src/components/SendMoney.vue'
+        variant: good
+        code: |
+          <script setup lang="ts">
+          import { ref, watch } from 'vue'
+
+          const props = defineProps<{ to: string; amount: number }>()
+          const sending = ref(false)
+          const message = ref('')
+          let key = crypto.randomUUID()                  // one key for this intention
+
+          watch(() => [props.to, props.amount], () => {  // form changed = new intention
+            key = crypto.randomUUID()
+          })
+
+          async function send(): Promise<void> {
+            if (sending.value) return
+            sending.value = true
+            try {
+              const res = await fetch('/api/transfers', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key },
+                body: JSON.stringify({ to: props.to, amount: props.amount }),
+              })
+              if (res.status >= 500) throw new Error('server error')
+              message.value = res.ok ? 'Money sent' : 'Could not send'
+              key = crypto.randomUUID()                  // a final answer has arrived
+            } catch {
+              message.value = 'Not sure it went through. Tap again: you will not be charged twice.'
+            } finally {
+              sending.value = false
+            }
+          }
+          </script>
+
+          <template>
+            <button :disabled="sending" @click="send">Send money</button>
+            <p>{{ message }}</p>
+          </template>
+        marks:
+          - {line: 7, tip: 'The key is created once, when the form opens. However many times send() runs after that, the same key goes out.'}
+          - {line: 9, tip: 'If the recipient or amount changes and you keep the old key, the fingerprint won''t match and the server returns 422. So a new intention gets a new key.'}
+          - {line: 24, tip: 'The server has clearly said yes or no, so the matter is settled. The next transfer should get a new key.'}
+          - {line: 25, tip: 'A network error or a 5xx means "we don''t know". The key stays unchanged, so tapping again lets the server recognise the same job.'}
+    aside:
+      - type: tips
+        items:
+          - 'Disabling the button is good practice but not enough: a page refresh, two tabs or an auto-retry get past it. Only the server''s key check stops those.'
+          - '`crypto.randomUUID()` works only over HTTPS or on localhost.'
+          - 'If the job should survive a page reload, keep the key in `sessionStorage`.'
+      - type: remember
+        body: 'Make the key when the form opens, not when you send.'
+    check:
+      q: 'The user changes the amount from 500 to 700 and taps "Send" again. Should the key stay the same? Why?'
+      a: 'No, make a new key. Changing the amount is a new intention. With the old key the fingerprint wouldn''t match and the server would answer 422.'
+
+  - slug: every-write-repeatable
+    title: 'Every write: what if it arrives twice?'
+    kind: recap
+    tldr: 'Not every write needs a key: some are naturally idempotent, some are covered by a unique constraint, and the rest are made safe with an idempotency key.'
+    keywords: ['repeatable write', 'safe retry', 'natural idempotency', 'checklist', 'safe writes', 'at-least-once']
+    blocks:
+      - type: text
+        body: |
+          An idempotency key is not the only tool. In front of every write endpoint, queue handler and webhook, ask one question: "What happens if this arrives twice?" Then pick the simplest approach in the table below that fits.
+      - type: visual
+        kind: table
+        caption: 'How each kind of write becomes safe against duplicates'
+        headers: ['Kind of write', 'Example', 'What makes it safe']
+        rows:
+          - cells: ['Setting a fixed value', 'PUT /profile, status = paid', 'Naturally idempotent']
+            tip: 'Setting the same value ten times gives the same result. So "set this value" writes are always safer than "increase/decrease" ones.'
+          - cells: ['Should happen once by rule', 'One payment per order', 'Unique constraint (order_id)']
+            tip: 'Put the business rule into the database. The second attempt hits the constraint, so no separate key table is needed.'
+          - cells: ['Creating something new, moving money', 'POST /transfers', 'Idempotency-Key + stored reply']
+            tip: 'The same user can legitimately send the same amount twice, so you can''t spot a duplicate from the data. You need the client''s key.'
+          - cells: ['Queue message', 'Send email, reduce stock', 'Processed table of message ids']
+            tip: 'A queue can deliver the same message more than once. The handler first checks whether it has handled this id before.'
+          - cells: ['Webhook', 'Gateway''s "paid" notification', 'Accept each event id once']
+            tip: 'If the gateway gets no reply, it sends the same news again. Keep a unique constraint on the event id and ignore the second one.'
+      - type: points
+        title: 'Idempotency key checklist'
+        style: check
+        items:
+          - 'The client makes the key, once per job; a retry reuses the same key.'
+          - 'Key row, real work and reply: all in one transaction.'
+          - 'Unique constraint on `(scope, key)`; never SELECT first and then INSERT.'
+          - 'Same key with a different fingerprint gets 422; keep keys for at least 24 hours.'
+    aside:
+      - type: remember
+        body: 'Wherever you can, write "set", not "increase": setting twice does no harm.'
+      - type: refs
+        items:
+          - {to: 'messaging/dlq-retries', label: 'The idempotent consumer'}
+          - {to: 'payments/webhooks', label: 'Handling duplicate webhooks'}
+          - {to: 'testing/testing-hard-parts', label: 'Testing idempotency'}
+    check:
+      q: 'Of `balance = balance - 500` and `status = ''paid''`, which UPDATE is dangerous if it runs twice, and why?'
+      a: 'The first: it takes off another 500 each time. The second sets the same value, so running it twice leaves the same result.'
+
+flashcards:
+  - q: 'What is an idempotent operation?'
+    a: 'An operation where doing it once and doing it over and over end in the same result.'
+    more: |
+      Setting `status = 'paid'` is idempotent: ten times over, the status is the same. `balance = balance - 500` is not, because each run takes off more. Requests arriving twice over a network is normal, so the goal is to make every write idempotent.
+    ref: cheque-number
+  - q: 'What is an idempotency key, and who makes it?'
+    a: 'A unique identity for one job (usually a UUID). The client makes it and sends it in the `Idempotency-Key` header.'
+    more: |
+      It works like a cheque number. The server records the key, and when the same key returns it knows this isn't a new job but another try at the earlier one. The server can't be the one to make the key: if the reply is lost, the client would never learn it.
+    ref: cheque-number
+  - q: 'What does the server return when a request comes again with the same idempotency key?'
+    a: 'It skips the work and returns the first attempt''s stored status code and body exactly.'
+    more: |
+      This is called response replay. From the client's side it looks as if the request just succeeded, yet the real work happened once on the server. That's why the key row has to store the first reply's status and body.
+    ref: claim-run-replay
+  - q: 'Why store a request fingerprint?'
+    a: 'To catch a different request (another amount or recipient) arriving under the same key; it is turned away with 422.'
+    more: |
+      The fingerprint is a hash of the method, path and body. Without it, a client bug sending a 5000-taka request under the same key would get the old 500-taka "success" back, and the client would think 5000 had gone through.
+    ref: key-table-and-fingerprint
+  - q: 'When two requests with the same key arrive together, what stops the work from running twice?'
+    a: 'A unique constraint on `(scope, key)`: only one INSERT succeeds, and the other waits and gets the stored reply.'
+    more: |
+      If you SELECT first and see "no key", then INSERT, both requests can see "no". So you run `INSERT … ON CONFLICT DO NOTHING` straight away: 1 row inserted means you own the job, 0 rows means someone else got there first. More in [[concurrency/atomic-operations|atomic operations]].
+    ref: claim-run-replay
+  - q: 'Why are the key row and the real work kept in the same transaction?'
+    a: 'If the work fails, the key rolls back too, so a retry can try again; if it succeeds, the key and reply persist together.'
+    more: |
+      If the key were committed first on its own, a failure halfway through the work would leave the key behind with no reply. A retry would see "key exists" although nothing was done, and the transfer would be stuck forever. One transaction never creates that in-between state.
+    ref: claim-run-replay
+  - q: 'When should a client make a new idempotency key, and when keep the old one?'
+    a: 'New key for a new job or a changed form. Same key when retrying the same job (timeout, network error, 5xx).'
+    more: |
+      The key belongs to the user's intention, not to an attempt. The classic mistake is calling `crypto.randomUUID()` inside the `fetch` call itself, so every retry gets a new key and the server's protection is useless.
+    ref: new-key-every-retry
+  - q: 'How long should idempotency keys be stored?'
+    a: 'At least 24 hours, longer than a client can keep retrying. After that, delete old rows.'
+    more: |
+      Delete too early and a late retry will be treated as new work. Keep them forever and the table grows for no reason. A regular cleanup job removes old rows using the `created_at` column.
+    ref: key-table-and-fingerprint
+  - q: 'Which HTTP methods are naturally idempotent, and which needs an idempotency key?'
+    a: '`GET`, `PUT` and `DELETE` are naturally idempotent. `POST` is not, so `POST` needs the key.'
+    more: |
+      `PUT` sets the whole value and `DELETE` removes something, so doing either a second time leaves the same state. `POST` creates something new each time. `PATCH` depends on what it does: "set a value" is safe, "increase" is not.
+    ref: cheque-number
+
+quiz:
+  - q: 'On a slow network, Rahima taps "Send" twice and the money is deducted twice. Which fix goes to the root of the problem?'
+    hint: 'Would the fix still work if the page is refreshed, or the mobile app retries by itself?'
+    options:
+      - text: 'Disable the button after the first click'
+        correct: false
+        why: 'Good practice, but it doesn''t stop a refresh, a second tab or an auto-retry. The server still can''t tell two requests apart.'
+      - text: 'The client sends an idempotency key, and the server recognises it and returns the earlier reply for the same key'
+        correct: true
+        why: 'However the request arrives twice, the server knows it is the same job and does it only once.'
+      - text: 'Raise the server timeout to 60 seconds'
+        correct: false
+        why: 'If the reply is lost on the way, no timeout will tell the client whether the work was done.'
+      - text: 'Block a second transfer of the same amount within a minute'
+        correct: false
+        why: 'It is guesswork: someone who really wants to send the same amount twice gets blocked, and a retry after a minute slips through.'
+    ref: cheque-number
+  - q: 'What problems does the guard code below have?'
+    lang: php
+    code: |
+      if ($keys->findOneBy(['idemKey' => $key])) {
+          return $this->replay($key);
+      }
+
+      $response = $work();          // does its own flush() inside
+
+      $keys->save(new IdempotencyKey($key, $response));
+
+      return $response;
+    hint: 'Look at two places: the gap between checking and writing, and the gap between the work and saving the key.'
+    options:
+      - text: 'If two requests with the same key arrive together, both see "no key" and both do the work'
+        correct: true
+        why: 'Checking (SELECT) and writing (INSERT) are separate steps, and the second request slips into the gap. The fix is a direct INSERT backed by a unique constraint.'
+      - text: 'If it crashes after the work but before the key is saved, a retry does the whole job again'
+        correct: true
+        why: 'The work and the key are committed in different transactions. Unless both are in one transaction, this gap is always there.'
+      - text: 'findOneBy() is slow; using find() would fix it'
+        correct: false
+        why: 'Speed isn''t the problem. However fast the lookup, the gap between checking and writing remains.'
+      - text: 'The key should have been an auto-increment number rather than a UUID'
+        correct: false
+        why: 'The client makes the key, and it must be able to produce a unique value without the server''s help. That is exactly why UUIDs are used.'
+    ref: claim-run-replay
+  - q: 'A request for 500 taka arrives with an idempotency key, and a while later a request for 5000 taka arrives with the same key. What should the server do?'
+    hint: 'What does a bank do when a cheque number comes back with a different amount?'
+    options:
+      - text: 'Return the stored reply from the 500-taka request'
+        correct: false
+        why: 'The client would think 5000 taka went through when only 500 did. The mistake would be hidden.'
+      - text: 'Treat it as a new request and send 5000 taka'
+        correct: false
+        why: 'Then the key means nothing: two different transfers happened under one key.'
+      - text: 'Turn it away with 422 because the fingerprint doesn''t match'
+        correct: true
+        why: 'The same key with a different request means a bug in the client''s code. Only a clear error gets it noticed.'
+      - text: 'Quietly ignore the request and return 200'
+        correct: false
+        why: '200 means "the work was done". Returning 200 without doing anything is lying to the client.'
+    ref: key-table-and-fingerprint
+  - q: 'The Vue app sends a transfer request and gets no reply after 10 seconds (a timeout). What should the client do next?'
+    hint: 'Does the client know right now whether the money moved?'
+    options:
+      - text: 'Make a new key and send again'
+        correct: false
+        why: 'If the first request succeeded, a request with a new key will deduct the money a second time.'
+      - text: 'Send again with the same key'
+        correct: true
+        why: 'If the first one went through, the stored reply comes back; if not, it will now happen once. Safe either way.'
+      - text: 'Show "failed" and stop'
+        correct: false
+        why: 'A timeout doesn''t mean failure, it means "we don''t know". The money may have gone, and the user is being told something false.'
+      - text: 'Assume it succeeded and move to the next page'
+        correct: false
+        why: 'The request may never have reached the server. Showing success without knowing is just as wrong.'
+    ref: new-key-every-retry
+  - q: 'Which of these writes are safe to run twice even without an idempotency key?'
+    hint: 'Which are "set this value" writes, and which are "add another one" writes?'
+    options:
+      - text: 'PUT /users/7: set the whole profile to new values'
+        correct: true
+        why: 'Setting the same values twice leaves the profile the same.'
+      - text: 'UPDATE orders SET status = ''paid'' WHERE id = 9'
+        correct: true
+        why: 'If the status is already paid, setting it to paid again changes nothing.'
+      - text: 'POST /transfers: create a new transfer'
+        correct: false
+        why: 'Each run creates a new transfer; arriving twice sends the money twice.'
+      - text: 'UPDATE wallet SET balance = balance + 100'
+        correct: false
+        why: 'Each run adds another 100. This is an "increase" write.'
+      - text: 'DELETE /cart/items/5'
+        correct: true
+        why: 'Once the item is gone, deleting it again leaves the same state (at worst you get a 404).'
+    ref: every-write-repeatable
+  - q: 'In IdempotencyGuard, the key row, the money transfer and the stored reply share one transaction. An exception is thrown halfway through sending the money. What does a retry with the same key get?'
+    hint: 'What happens to the key row when the transaction rolls back?'
+    options:
+      - text: 'A stored "success" reply, even though no money moved'
+        correct: false
+        why: 'Everything rolled back before any reply was stored; there is no stored reply.'
+      - text: 'A permanent "key already used" error'
+        correct: false
+        why: 'That would happen if the key had been committed first in a separate transaction. Here the key rolled back too.'
+      - text: 'The whole job runs again from scratch, because the key row was rolled back too'
+        correct: true
+        why: 'That is the benefit of one transaction: if the work doesn''t happen, the key doesn''t stay either, so the retry starts from a clean state.'
+    ref: claim-run-replay
+  - q: 'What is the risk if the idempotency table has no scope (such as a user id) and only a unique constraint on the key?'
+    hint: 'What happens if two different users send the same key?'
+    options:
+      - text: 'If one user''s key collides with another''s, that person could receive the other''s stored reply'
+        correct: true
+        why: 'The key then lives in one namespace shared by everyone. If someone knows another''s key, or a bug makes them collide, details of another person''s transfer leak.'
+      - text: 'The database won''t be able to create the unique index at all'
+        correct: false
+        why: 'A unique index on a single column is perfectly possible; the problem is security, not a technical limit.'
+      - text: 'The client can no longer generate UUIDs'
+        correct: false
+        why: 'Making the UUID is entirely the client''s job; it has nothing to do with how the server''s table is built.'
+    ref: key-table-and-fingerprint

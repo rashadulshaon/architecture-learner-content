@@ -1,0 +1,420 @@
+slides:
+  - slug: deploy-breaks-live-users
+    title: 'During a deploy, old code meets a new database'
+    kind: story
+    tldr: 'A deploy is not instant. For a few minutes old and new code run side by side on the same database, so renaming one column can send users a 500.'
+    keywords: ['zero downtime', 'deploy', 'rolling', 'schema change', 'column rename', 'downtime']
+    blocks:
+      - type: metaphor
+        icon: shop
+        title: 'Installing a new stove at the tea stall'
+        body: |
+          The owner of a tea stall wants to replace the old stove with a new one. If he closes the stall, customers go to another one. So a smart owner sets up the new stove next to it first, tries it out, moves the customers over, and only then removes the old one. During the switch both stoves serve customers at once. Code works the same way: in a **zero-downtime deploy**, the old and new versions run together for a while.
+      - type: visual
+        kind: sequence
+        caption: 'Rolling deploy: the new server ran the migration while the old server is still serving customers'
+        actors:
+          - {id: user, label: 'User', icon: user, tip: 'They have no idea a deploy is running. For them the site should always be open.'}
+          - {id: v1, label: 'Old server (v1)', icon: server, tip: 'Still running the old code. It reads the `phone` column.'}
+          - {id: v2, label: 'New server (v2)', icon: rocket, tip: 'The new code, which uses the `mobile` column. It went live first.'}
+          - {id: db, label: 'Database', icon: db, tip: 'There is only one database and both versions use it. The root of all the trouble is here.'}
+        messages:
+          - {from: v2, to: db, label: 'migration: the phone column becomes mobile', tip: 'RENAME COLUMN happens in an instant, but the old code is still running.'}
+          - {at: db, note: 'There is no column called phone now', tone: warn}
+          - {from: user, to: v1, label: 'Show my profile'}
+          - {from: v1, to: db, label: 'SELECT phone FROM user'}
+          - {from: db, to: v1, label: 'ERROR: column phone does not exist', dashed: true, tone: bad}
+          - {from: v1, to: user, label: '500 Internal Server Error', dashed: true, tone: bad}
+      - type: quote
+        body: 'While a deploy runs, old and new code use the same database at the same time.'
+    aside:
+      - type: story
+        title: 'The Friday evening deploy'
+        body: |
+          A team renamed a column on a Friday evening and called it a "2-minute deploy". The rolling deploy took 8 minutes to finish. For those 8 minutes the old servers returned a 500 on every profile request, and roughly 200 users a minute abandoned checkout.
+      - type: terms
+        items:
+          - {term: 'Zero-downtime deploy', meaning: 'Rolling out a new version without the site being down at any point.'}
+          - {term: 'Backward compatible', meaning: 'A new change that still works fine with the old code.'}
+    check:
+      q: 'The deploy takes only 2 minutes. Why does renaming a column still cause trouble?'
+      a: 'For those two minutes (or more) the old servers are still running. They look for the column under its old name, which no longer exists in the database, so they error.'
+
+  - slug: rolling-bluegreen-canary
+    title: 'Three ways: rolling, blue/green, canary'
+    kind: compare
+    tldr: 'Rolling replaces servers one at a time, blue/green switches to a whole new environment, canary tests on a small slice first. In all three, two versions run together for a while.'
+    keywords: ['rolling deploy', 'blue green', 'canary', 'deployment strategy', 'rollback', 'traffic switch']
+    blocks:
+      - type: text
+        body: |
+          Back to the tea stall. **Rolling**: replace the stoves one by one. **Blue/green**: set up a whole new stall next door, send every customer there in a single moment, and keep the old one ready. **Canary**: let just a few people taste one cup of the new tea, and serve everyone if it goes well.
+      - type: visual
+        kind: flow
+        caption: 'Blue/green: switch once Green is up and tested, and keep Blue as the way back'
+        nodes:
+          - {id: lb, label: 'Load balancer', sub: 'picks the traffic', icon: lb, tone: accent, col: 0, row: 1, tip: 'The switch lives here. It decides whether traffic goes to Blue or to Green.'}
+          - {id: blue, label: 'Blue (v1)', sub: 'current', icon: server, col: 2, row: 0, tip: 'The version that is live right now. It is not shut down even after the switch.'}
+          - {id: green, label: 'Green (v2)', sub: 'new', icon: rocket, tone: good, col: 2, row: 2, tip: 'The new version, on separate servers. It is fully tested before it gets any traffic.'}
+          - {id: db, label: 'Database', sub: 'just one', icon: db, col: 4, row: 1, tip: 'Both environments use the same database, so the schema has to suit both versions.'}
+        edges:
+          - {from: lb, to: blue, label: 'All traffic goes to Blue (v1) right now'}
+          - {from: lb, to: green, label: 'Green (v2) starts up and passes health checks, but gets no traffic', dashed: true, tone: warn}
+          - {from: green, to: db, label: 'Green runs smoke tests against the same database', dashed: true}
+          - {from: lb, to: green, label: 'The switch: all traffic moves to Green', tone: good}
+          - {from: lb, to: blue, label: 'If there is a problem, the switch goes back to Blue', tone: warn, dashed: true, tip: 'This is the strength of blue/green: rollback just means flipping the switch back, not deploying again.'}
+      - type: visual
+        kind: table
+        caption: 'The three strategies compared'
+        headers: ['', 'Rolling', 'Blue/green', 'Canary']
+        rows:
+          - cells: ['How', 'Replaces one server at a time', 'Two environments and a switch', 'New version on a small slice first']
+            tip: 'All three end up giving everyone the new version. They differ only in how they spread the risk.'
+          - cells: ['Extra cost', 'Almost none', 'Double the servers, briefly', 'A small extra group']
+            tip: 'Blue/green is expensive on rented servers, but in the cloud it is cheap to rent for a few minutes.'
+          - cells: ['Rollback', 'Slow: another rolling deploy', 'Fastest: flip the switch back', 'Quick: pull back the small slice']
+            tip: 'The speed of rollback decides how big the damage is when something goes wrong.'
+          - cells: ['Main risk', 'v1 and v2 run together', 'Everyone moves at the moment of the switch', 'Needs good monitoring']
+            tip: 'A canary only works if you can read the error rate and latency properly.'
+          - cells: ['When', 'Regular small releases', 'Big or risky changes', 'Risky features']
+            tip: 'Most teams start with rolling, then add canary or blue/green for risky work.'
+      - type: quote
+        body: 'Whichever strategy you use, old and new code run side by side during the deploy: every release must be backward compatible.'
+    aside:
+      - type: when
+        use: ['Rolling: small daily changes, when you want low cost', 'Blue/green: big changes, when you need fast rollback', 'Canary: risky features, tested on real traffic']
+        avoid: ['Canary: if you have no way to measure the error rate']
+      - type: terms
+        items:
+          - {term: 'Smoke test', meaning: 'A short test, right after startup, that checks a few core actions (login, add to cart) actually work.'}
+          - {term: 'Canary', meaning: 'Like the canary in a coal mine: the new version first gets a small slice of traffic, and if something is wrong, that slice tells you first.'}
+      - type: refs
+        items:
+          - {to: 'infra/ci-cd', label: 'CI/CD and safe deploys'}
+    check:
+      q: 'Which strategy has the fastest rollback, and why?'
+      a: 'Blue/green: the old environment (Blue) is still up and ready. You just flip the load balancer switch back, and nothing needs to be deployed again.'
+
+  - slug: expand-contract
+    title: 'Expand-contract: the safe way to change a column'
+    kind: howto
+    tldr: 'Not in one go but across several releases: first add the new column (expand), write to both, move reads to the new one, and finally drop the old one (contract). At every step old code survives.'
+    keywords: ['expand contract', 'parallel change', 'Doctrine Migrations', 'dual write', 'backfill', 'rename column']
+    blocks:
+      - type: text
+        body: |
+          The `phone` column has to become `mobile`. Instead of a single rename, do it like setting up the new stove next to the old: first add the new column (**expand**), and only after everything has moved over, drop the old one (**contract**). Each step is its own release, so at every step both old and new code keep working.
+      - type: visual
+        kind: steps
+        caption: 'From phone to mobile: four steps, four separate releases'
+        steps:
+          - {title: '1. Expand', body: 'Add a mobile column (nullable). The code doesn''t change.', tip: 'Adding a column is always safe: old code doesn''t even know the new column exists.'}
+          - {title: '2. Write to both', body: 'New code writes to phone and mobile. Backfill the old data.', tip: 'On a big table, run the backfill in small batches, not one huge UPDATE.'}
+          - {title: '3. Move reads', body: 'New code reads from mobile. Nobody reads phone any more.', tip: 'Before this, make sure no old server or job still reads phone.'}
+          - {title: '4. Contract', body: 'Drop the phone column, in the next release.', tone: warn, tip: 'This is the only step you can''t undo. So it comes last, and only after enough time has passed.'}
+      - type: code
+        lang: php
+        file: 'migrations/Version20261120100000.php'
+        variant: good
+        code: |
+          final class Version20261120100000 extends AbstractMigration
+          {
+              public function getDescription(): string
+              {
+                  return 'expand: add the user.mobile column';
+              }
+
+              public function up(Schema $schema): void
+              {
+                  // nullable, so old code can still INSERT without breaking
+                  $this->addSql('ALTER TABLE "user" ADD mobile VARCHAR(20) DEFAULT NULL');
+              }
+
+              public function down(Schema $schema): void
+              {
+                  $this->addSql('ALTER TABLE "user" DROP mobile');
+              }
+          }
+        marks:
+          - {line: 11, tip: 'No NOT NULL, and DEFAULT NULL: in PostgreSQL this is instant and doesn''t lock the table. Old INSERTs keep working too.'}
+      - type: code
+        lang: php
+        file: 'src/Entity/User.php'
+        variant: good
+        code: |
+          #[ORM\Column(length: 20, nullable: true)]
+          private ?string $phone = null;
+
+          #[ORM\Column(length: 20, nullable: true)]
+          private ?string $mobile = null;
+
+          public function setMobile(string $number): void
+          {
+              $this->mobile = $number;
+              $this->phone = $number;      // step 2: write to both
+          }
+
+          public function getMobile(): ?string
+          {
+              return $this->mobile ?? $this->phone;   // safe until the backfill finishes
+          }
+        marks:
+          - {line: 10, tip: 'Old servers still read phone. To make sure the new number reaches them, it is written to phone too.'}
+          - {line: 15, tip: 'If the new column is empty, show the old one. Once the backfill is done, this fallback is no longer needed.'}
+      - type: quote
+        body: 'Never change a column or table in a single release: add first, and drop only after everyone has moved.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Adding a NOT NULL column with no default breaks INSERTs from old code. Keep it nullable first, and add the constraint after the backfill.'
+          - 'On a big table, one UPDATE holds locks on every row. Run the backfill in batches of 1,000 rows.'
+      - type: refs
+        items:
+          - {to: 'data/zero-downtime-migrations', label: 'Lock details in database migrations'}
+    check:
+      q: 'Why does expand-contract take four steps instead of a rename? Which step can''t be undone?'
+      a: 'At every step both the old and the new version run fine, so nothing breaks in the middle of a deploy. Only the last step (contract), dropping the column, can''t be undone.'
+
+  - slug: graceful-shutdown
+    title: 'Shut the old server down politely'
+    kind: howto
+    tldr: 'Before shutting an old server down, tell the load balancer to stop sending new requests, let work in progress finish, then stop. A worker that gets SIGTERM finishes its current message and stops.'
+    keywords: ['graceful shutdown', 'SIGTERM', 'readiness probe', 'messenger worker', 'drain', 'connection draining']
+    blocks:
+      - type: text
+        body: |
+          At the tea stall, before you take away the old stove you let the cups already poured be finished, or the customer's cup gets dropped. A server is the same: shut it down abruptly and the requests in flight are cut off halfway. Here are the five steps of a polite shutdown.
+      - type: visual
+        kind: steps
+        caption: 'The polite order for shutting down a server'
+        steps:
+          - {title: '1. Take it off the line', body: 'Readiness goes off: the load balancer stops sending new requests.', tip: 'It takes a few seconds for the news to reach the load balancer, so this step adds a short wait (preStop).'}
+          - {title: '2. SIGTERM', body: 'The process is sent the "finish up now" signal.', tip: 'SIGTERM is a polite request. The process can finish its own work and stop if it chooses.'}
+          - {title: '3. Finish work in progress', body: 'Current requests and messages finish, and nothing new is taken.', tip: 'A Messenger worker that gets SIGTERM finishes its current message and only then stops (this needs the pcntl extension).'}
+          - {title: '4. A time limit', body: 'Say 45 seconds. If it hasn''t stopped by then...', tip: 'The limit should be longer than the longest request or message in your system.'}
+          - {title: '5. SIGKILL', body: '...it is killed by force. This is the last resort.', tone: bad, tip: 'SIGKILL can''t be caught. Work in progress is lost, so you don''t want to get this far.'}
+      - type: code
+        lang: yaml
+        file: 'k8s/deployment.yaml'
+        variant: good
+        code: |
+          spec:
+            terminationGracePeriodSeconds: 45
+            containers:
+              - name: app
+                readinessProbe:
+                  httpGet: { path: /health/ready, port: 8080 }
+                  periodSeconds: 5
+                  failureThreshold: 2
+                lifecycle:
+                  preStop:
+                    exec: { command: ['sleep', '10'] }
+        marks:
+          - {line: 2, tip: 'This many seconds are allowed after SIGTERM, then SIGKILL. Set it longer than your longest request.'}
+          - {line: 6, tip: 'If this URL fails, the orchestrator takes that pod off the line. It doesn''t kill it, it just stops sending new requests.'}
+          - {line: 11, tip: 'Wait 10 seconds before SIGTERM: in that time the load balancer drops the server from its list.'}
+      - type: code
+        lang: php
+        file: 'src/Controller/HealthController.php'
+        variant: good
+        code: |
+          #[Route('/health/ready', methods: ['GET'])]
+          public function ready(Connection $connection): Response
+          {
+              try {
+                  $connection->executeQuery('SELECT 1');   // the core dependency: the database
+              } catch (Exception) {
+                  return new Response('db unavailable', Response::HTTP_SERVICE_UNAVAILABLE);
+              }
+
+              return new Response('ok');
+          }
+        marks:
+          - {line: 5, tip: 'Check only what the app truly can''t run without. If you checked the external courier API here, one slow reply would pull every server off the line.'}
+    aside:
+      - type: commands
+        title: 'Running workers politely'
+        items:
+          - {cmd: 'php bin/console messenger:consume async --time-limit=3600 --memory-limit=128M', desc: 'Stops itself politely after an hour or 128MB, and the supervisor starts it again'}
+          - {cmd: 'php bin/console messenger:stop-workers', desc: 'After a deploy, tells running workers to finish their last message and stop, then restart on the new code'}
+      - type: tips
+        items:
+          - 'During a deploy the workers are running old code too. If you don''t run messenger:stop-workers, they stay on the old code.'
+          - 'A message cut off halfway goes back on the queue. So keep handlers idempotent, so that running twice does no harm.'
+      - type: refs
+        items:
+          - {to: 'messaging/delivery-guarantees', label: 'What happens when a message arrives twice'}
+    check:
+      q: 'In a rolling deploy, why switch readiness off first instead of shutting the old server straight down?'
+      a: 'Once readiness is off, the load balancer sends no new requests, but the requests in flight can finish. Shutting down directly would cut those requests off halfway.'
+
+  - slug: rollback-trap
+    title: 'Pitfall: you can roll code back, but not data'
+    kind: pitfall
+    tldr: 'If a release drops a column, rolling the code back no longer helps: the old code can''t run. To keep rollback safe, release migrations and code separately, and write the plan in advance.'
+    keywords: ['rollback', 'destructive migration', 'down migration', 'rollback plan', 'feature flag', 'revert']
+    blocks:
+      - type: text
+        body: |
+          When the error rate jumps after a deploy, our first thought is "go back to the previous version". But rolling code back is easy, and rolling a database back is nearly impossible. If the same release dropped the `phone` column, the old code will crash against the new database even after you roll back.
+      - type: code
+        lang: php
+        file: 'migrations/Version20261120103000.php'
+        variant: bad
+        code: |
+          public function up(Schema $schema): void
+          {
+              // in the same deploy as the code release
+              $this->addSql('ALTER TABLE "user" DROP phone');
+          }
+
+          public function down(Schema $schema): void
+          {
+              // the data is gone for good and can't be restored
+              $this->addSql('ALTER TABLE "user" ADD phone VARCHAR(20) DEFAULT NULL');
+          }
+        marks:
+          - {line: 4, tip: 'Dropping the column in the same release as the code change: the rolled-back old code won''t find this column.'}
+          - {line: 10, tip: 'down() does bring the column back, but not the numbers that were in it. This is not a real rollback.'}
+      - type: points
+        title: 'Five conditions for a rollback plan'
+        style: check
+        items:
+          - 'The previous version''s artifact is built and kept, and can be started with one command'
+          - 'Every migration is compatible with the old code (expand only, contract in a separate release)'
+          - 'Risky features sit behind a feature flag, so undoing them needs no deploy'
+          - 'A trigger decided in advance: for example, roll back within 5 minutes if 5xx passes 1%'
+          - 'The rollback has been rehearsed once before you need it'
+      - type: quote
+        body: 'A deploy without a rollback plan is not a deploy, it is a gamble.'
+    aside:
+      - type: pitfalls
+        items:
+          - '"We''ll fix it with a hotfix" is not a rollback. Spotting the mistake, writing the code and deploying it takes several times longer.'
+          - 'Migrations that change data (a backfill) can''t be undone. So make sure a backup exists before you run them.'
+      - type: refs
+        items:
+          - {to: 'config/feature-flags', label: 'Isolating risk with feature flags'}
+          - {to: 'recovery/backups-restore', label: 'Backups and restore'}
+    check:
+      q: 'A release shipped the new code together with "DROP COLUMN phone". Why doesn''t rolling back solve it?'
+      a: 'Even when the code goes back, the column is gone. The old code will fail trying to read phone, and down() restores only the column, not the data inside it.'
+
+flashcards:
+  - q: 'Why do old and new code use the database together during a deploy?'
+    a: 'A deploy isn''t instant. For a few minutes some servers run the old version and some the new, but they all share the one database.'
+    more: |
+      In a rolling deploy servers are replaced one at a time, and in blue/green the old environment stays ready for rollback even after the switch. So every release has to be compatible with the old code (backward compatible).
+    ref: deploy-breaks-live-users
+  - q: 'What is the difference between rolling, blue/green and canary deploys?'
+    a: 'Rolling: replace servers one at a time. Blue/green: switch between two environments. Canary: new version on a small slice first, then everyone if it goes well.'
+    more: |
+      Rolling is the cheapest but its rollback is slow. In blue/green, rollback is just flipping the switch, though you need double the servers for a while. A canary tests the risk on a small slice of real traffic, but needs good monitoring.
+    ref: rolling-bluegreen-canary
+  - q: 'Which deploy strategy has the fastest rollback?'
+    a: 'Blue/green: the old environment is ready, and flipping the load balancer switch sends traffic straight back.'
+    more: |
+      In rolling, rollback means another rolling deploy, which takes minutes. In blue/green the switch goes back in seconds. But both environments share one database, so without schema compatibility this doesn't work either.
+    ref: rolling-bluegreen-canary
+  - q: 'What is the expand-contract pattern?'
+    a: 'Splitting a database change over several releases: first add the new thing (expand), then drop the old one once everyone has moved (contract).'
+    more: |
+      To rename a column: add the new column, write to both and backfill the old data, move reads to the new one, and drop the old column in the last release. At every step both the old and new code run.
+    ref: expand-contract
+  - q: 'Why is the migration that adds a new column made nullable?'
+    a: 'Old code doesn''t know the new column exists. If it were NOT NULL, INSERTs from old code would break.'
+    more: |
+      In PostgreSQL, adding a nullable column with DEFAULT NULL is instant and doesn't lock the table. After the backfill is done, you can add the constraint. On big tables, run the backfill in small batches.
+    ref: expand-contract
+  - q: 'What are the steps of a graceful shutdown?'
+    a: 'Take it off the line (readiness), SIGTERM, finish work in progress, a time limit, and SIGKILL if it still hasn''t stopped.'
+    more: |
+      A short wait in preStop gives the load balancer time to drop the server. terminationGracePeriodSeconds should be longer than your longest job. A Messenger worker that gets SIGTERM finishes its current message and stops, and a message cut off halfway goes back on the queue.
+    ref: graceful-shutdown
+  - q: 'Why can you roll code back, but not a database?'
+    a: 'Rolling code back means running the old files again. A dropped column or changed data can''t be restored, and down() brings back only the structure, not the data.'
+    more: |
+      So the safe rule is that migrations only add things (expand), and dropping (contract) happens in a later release. A rollback plan also has: the previous artifact ready, a feature flag, a trigger threshold and a rehearsal.
+    ref: rollback-trap
+
+quiz:
+  - q: 'Sabir''s team renamed a column and ran a rolling deploy. For 5 minutes some users got a 500. What is the most likely cause?'
+    hint: 'Which versions run side by side during a deploy?'
+    options:
+      - text: 'The old servers were still looking for the column under its old name, which no longer exists in the database'
+        correct: true
+        why: 'In a rolling deploy the old code keeps running for a while. If the migration has already run, that code breaks.'
+      - text: 'The new code had a bug, so every server failed'
+        correct: false
+        why: 'If every server failed, the problem would not have ended in 5 minutes. Here the failures were only on the old servers, and they stop when the deploy completes.'
+      - text: 'The database had become slow'
+        correct: false
+        why: 'A slow database would give timeouts, not a "column does not exist" error.'
+      - text: 'The load balancer was misconfigured'
+        correct: false
+        why: 'The load balancer was fine: it was sending traffic to the old servers, which were still running.'
+    ref: deploy-breaks-live-users
+  - q: 'In which situation is blue/green the most sensible choice?'
+    hint: 'When does the speed of rollback matter most?'
+    options:
+      - text: 'A big, risky change, where if something goes wrong you must be back within a minute'
+        correct: true
+        why: 'The old environment is ready, and flipping the switch takes you back.'
+      - text: 'Server capacity is very tight, and no extra servers can be kept'
+        correct: false
+        why: 'Blue/green briefly runs two environments, so it needs spare capacity. With limited resources rolling is better.'
+      - text: 'You want to test a new feature on 5% of users first'
+        correct: false
+        why: 'That is a job for canary: testing on a small slice of traffic first.'
+      - text: 'A few small changes every day, at the lowest cost'
+        correct: false
+        why: 'For small regular changes, rolling is the simplest and cheapest.'
+    ref: rolling-bluegreen-canary
+  - q: 'In expand-contract, the phone column is being turned into mobile. Which order is right?'
+    hint: 'The old code must never see a broken state.'
+    options:
+      - text: 'Add mobile, write to both and backfill, read from mobile, drop phone in the next release'
+        correct: true
+        why: 'At every step both old and new code work. The drop comes last, after everyone has moved.'
+      - text: 'Rename phone to mobile, then deploy the code'
+        correct: false
+        why: 'That breaks the old servers, because they are still looking for phone.'
+      - text: 'Drop phone and add mobile, in the same release'
+        correct: false
+        why: 'Data is lost, and on rollback the old code can''t find phone.'
+      - text: 'Deploy the code, then add mobile'
+        correct: false
+        why: 'The new code would try to write to a column that doesn''t exist yet, which means errors.'
+    ref: expand-contract
+  - q: 'Which of these are part of a graceful shutdown?'
+    hint: 'Think of work in progress and new work separately.'
+    options:
+      - text: 'Failing readiness before shutdown, so new requests stop coming'
+        correct: true
+        why: 'Once no new requests arrive, it is easy to finish the ones in progress.'
+      - text: 'A Messenger worker that gets SIGTERM finishes its current message and stops'
+        correct: true
+        why: 'This way the message isn''t cut off halfway. And if it is, it comes back to the queue.'
+      - text: 'Sending SIGKILL straight away, because it is fast'
+        correct: false
+        why: 'SIGKILL cuts work in progress off halfway. It is the last resort, not the first.'
+      - text: 'Keeping terminationGracePeriodSeconds short so the server goes quickly'
+        correct: false
+        why: 'If the time is shorter than the longest request, work in progress gets cut off.'
+    ref: graceful-shutdown
+  - q: 'A release shipped the new code and "ALTER TABLE user DROP phone" together. Ten minutes later the error rate rose. What would have been the best move, and what now?'
+    hint: 'Code can be rolled back, but what can''t be?'
+    options:
+      - text: 'The mistake was putting the contract in the same release. Now the column has to be restored from backup, and in future the contract goes in a separate release'
+        correct: true
+        why: 'After a code rollback, the old code asks for phone but the column is gone. Restoring the data needs a backup. In future, the drop should be a separate, later release.'
+      - text: 'Just rolling the code back to the previous version will fix everything'
+        correct: false
+        why: 'The old code will ask for the phone column, which no longer exists. It will break too.'
+      - text: 'Running the down() migration will bring the data back'
+        correct: false
+        why: 'down() only recreates an empty column. The numbers that were in it do not come back.'
+      - text: 'Writing a new hotfix and waiting, with no rollback'
+        correct: false
+        why: 'A hotfix can take hours, and users get errors meanwhile. You need a rollback plan in advance.'
+    ref: rollback-trap

@@ -1,0 +1,442 @@
+slides:
+  - slug: friday-hand-deploy
+    title: 'The Friday night hand-made deploy'
+    kind: story
+    tldr: 'Deploy by hand and steps get forgotten, untested code reaches production, and a mistake leaves no way back.'
+    keywords: ['deploy', 'manual deploy', 'CI/CD', 'release', 'rollback']
+    blocks:
+      - type: text
+        body: |
+          At 10 p.m. Rafi logged into the server and started the deploy: `git pull`, `composer install`, `migrate`. Halfway through, his internet dropped and `migrate` stopped midway. The server had the new code, the database was half old and half new, the site was down, and there was no way back to how things were.
+      - type: code
+        lang: bash
+        file: 'deploy.sh (run by hand)'
+        variant: bad
+        code: |
+          ssh prod-1
+          cd /var/www/shop
+          git pull origin main
+          composer install
+          php bin/console doctrine:migrations:migrate
+          php bin/console cache:clear
+          sudo systemctl restart php8.3-fpm
+        marks:
+          - {line: 3, tip: 'The code is pulled on the server itself: whatever is on main right now runs, and nobody checked whether it was tested.'}
+          - {line: 4, tip: 'Building on the server. Dev libraries can sneak in, and two servers can give two different results.'}
+          - {line: 5, tip: 'Stop midway and the database is half changed. There is no safety net.'}
+      - type: quote
+        body: 'Humans make mistakes at manual work, so deploying must be a machine''s job.'
+    aside:
+      - type: problem
+        body: 'A hand deploy is slow, scary and different every time. CI/CD turns it into a boring, repeatable, tested pipeline.'
+      - type: terms
+        items:
+          - {term: 'CI', meaning: 'Continuous Integration: automatically building and testing on every push.'}
+          - {term: 'CD', meaning: 'Continuous Delivery/Deployment: automatically (or with one click) shipping code that passed to the servers.'}
+    check:
+      q: 'Name three dangers of logging into the server and deploying with `git pull`.'
+      a: 'Untested code can go live, different servers can end up different, and if it fails midway there is no way back to the earlier state.'
+
+  - slug: pipeline-stages
+    title: 'The pipeline: a factory conveyor belt'
+    kind: concept
+    tldr: 'Every push goes through the same stages: lint, test, build, scan, staging, then production after approval. If any stage fails, it stops there.'
+    keywords: ['pipeline', 'CI', 'stages', 'quality gate', 'automated checks']
+    blocks:
+      - type: metaphor
+        icon: gear
+        title: 'A biscuit factory line'
+        body: |
+          In a factory, biscuits ride a conveyor past a weight check, a broken-biscuit check and a packet seal. Fail any check and the biscuit never reaches the market; the belt stops right there. A pipeline is the conveyor belt for code, and each check is a **quality gate**.
+      - type: visual
+        kind: steps
+        caption: 'One push''s journey: if any stage fails, it stops there'
+        steps:
+          - {title: '1. Lint and static analysis', body: 'PHPStan, code style, composer audit', tip: 'Mistakes caught in seconds. The cheapest check, so it goes first.'}
+          - {title: '2. Test', body: 'PHPUnit: unit tests and integration tests with a DB', tip: 'Run against a real MySQL, or SQL mistakes only show up in production.'}
+          - {title: '3. Build image', body: 'Once only; tag = git commit hash', tip: 'This same image goes to every environment later and is never built again.'}
+          - {title: '4. Scan', body: 'Does the image contain known vulnerabilities?', tip: 'A tool like Trivy checks the image''s libraries. A serious vulnerability stops the pipeline.'}
+          - {title: '5. Deploy to staging', body: 'Smoke test and health check', tip: 'Run the same image in a production-like environment and see whether it really comes up.'}
+          - {title: '6. Production', body: 'After approval, gradually', tip: 'A person may give a one-click approval, but the work itself is done by a machine.'}
+      - type: quote
+        body: 'The main branch must always be in a deployable state.'
+    aside:
+      - type: tips
+        items:
+          - 'People avoid a pipeline that takes more than ten minutes. Split out the slow tests and use caches.'
+          - 'Fix or remove flaky tests (sometimes pass, sometimes fail), or nobody will trust a failure any more.'
+      - type: remember
+        body: 'Cheap checks first, expensive checks later.'
+      - type: refs
+        items:
+          - {to: 'testing/what-to-test', label: 'Which test catches what'}
+    check:
+      q: 'Why do lint and static analysis run before the tests?'
+      a: 'Because they take only seconds. If a cheap check catches the mistake, you save the time of the slow tests and the build.'
+
+  - slug: github-actions-ci
+    title: 'CI and image build in GitHub Actions'
+    kind: howto
+    tldr: 'Run tests against a real MySQL service. When they pass, build the image, tag it with the git commit hash and push it to the registry.'
+    keywords: ['GitHub Actions', 'CI pipeline', 'phpunit', 'docker build', 'workflow']
+    blocks:
+      - type: code
+        lang: yaml
+        file: '.github/workflows/ci.yaml (part 1)'
+        variant: good
+        code: |
+          name: ci
+          on:
+            push:
+              branches: [main]
+            pull_request:
+          jobs:
+            test:
+              runs-on: ubuntu-latest
+              services:
+                mysql:
+                  image: mysql:8.0
+                  env:
+                    MYSQL_ROOT_PASSWORD: root
+                    MYSQL_DATABASE: shop_test
+                  ports: ['3306:3306']
+                  options: --health-cmd="mysqladmin ping" --health-retries=10
+              steps:
+                - uses: actions/checkout@v4
+                - uses: shivammathur/setup-php@v2
+                  with:
+                    php-version: '8.3'
+                    extensions: intl, pdo_mysql
+                - run: composer install --no-interaction --prefer-dist
+                - run: vendor/bin/phpstan analyse
+                - run: vendor/bin/phpunit
+                  env:
+                    DATABASE_URL: mysql://root:root@127.0.0.1:3306/shop_test
+        marks:
+          - {line: 5, tip: 'It runs on pull requests too, so you know whether something breaks before the merge.'}
+          - {line: 11, tip: 'If production runs MySQL, tests should too. Testing on SQLite behaves differently.'}
+          - {line: 25, tip: 'If a step''s command returns non-zero, the job fails and the pipeline stops here.'}
+      - type: code
+        lang: yaml
+        file: '.github/workflows/ci.yaml (part 2)'
+        variant: good
+        code: |
+            build:
+              needs: test
+              if: github.ref == 'refs/heads/main'
+              runs-on: ubuntu-latest
+              steps:
+                - uses: actions/checkout@v4
+                - uses: docker/login-action@v3
+                  with:
+                    registry: registry.example.com
+                    username: ${{ secrets.REG_USER }}
+                    password: ${{ secrets.REG_TOKEN }}
+                - uses: docker/build-push-action@v6
+                  with:
+                    push: true
+                    tags: registry.example.com/shop-api:${{ github.sha }}
+        marks:
+          - {line: 2, tip: 'If the tests don''t pass, the build never starts.'}
+          - {line: 3, tip: 'Build images only from main. Raw code from pull requests doesn''t belong in the registry.'}
+          - {line: 11, tip: 'The registry password comes from GitHub''s secret store, not from the code.'}
+          - {line: 15, tip: 'The tag is the commit hash, so you always know exactly which code this image came from.'}
+      - type: quote
+        body: 'Tag images with the git commit hash, never with "latest".'
+    aside:
+      - type: tips
+        items:
+          - 'Turn on the Composer cache and the Docker layer cache, and the pipeline finishes in half the time.'
+          - 'Give secrets only to the job that needs them. Pull requests from forks don''t get access to secrets.'
+      - type: refs
+        items:
+          - {to: 'infra/containers-k8s', label: 'Images and Dockerfiles'}
+          - {to: 'security/supply-chain-compliance', label: 'Dependency and image security'}
+    check:
+      q: 'What do you gain by using the commit hash as the image tag?'
+      a: 'Every image is tied to specific code, and you can see at a glance what is running in production. A rollback just means going back to the earlier hash.'
+
+  - slug: build-once-promote
+    title: 'Build once, promote the same artifact'
+    kind: compare
+    tldr: 'Don''t build separately for staging and production. Move one image forward and change only the config, so what you tested is what reaches production.'
+    keywords: ['build once', 'promote', 'artifact', 'environment parity', 'staging', 'config']
+    blocks:
+      - type: metaphor
+        icon: archive
+        title: 'The sealed carton'
+        body: |
+          A factory seals a carton of biscuits once and stamps it with a batch number. That same carton goes to the showroom first and then, if approved, to the shop. Nobody opens it and repacks it. Repack every time and what was tested and what is being sold are two different things.
+      - type: visual
+        kind: flow
+        caption: 'One image, three places: hash 3f9a2c1 is the same everywhere'
+        nodes:
+          - {id: ci, label: 'CI', sub: 'builds once', icon: gear, col: 0, row: 1, tip: 'The image is created here, once only. Nobody builds it again later.'}
+          - {id: reg, label: 'Registry', sub: 'shop-api:3f9a2c1', icon: archive, tone: accent, col: 1.5, row: 1, tip: 'The image warehouse. The image under this tag never changes, so the code inside it is fixed for good.'}
+          - {id: stg, label: 'Staging', sub: 'config: staging', icon: server, col: 3, row: 0, tip: 'Almost a twin of production. Its own database and its own secrets, but the same image.'}
+          - {id: prod, label: 'Production', sub: 'config: prod', icon: cloud, col: 3, row: 2, tip: 'The environment real users see. The very image that passed in staging comes here.'}
+        edges:
+          - {from: ci, to: reg, label: 'CI builds the image and pushes it with the commit hash 3f9a2c1 as its tag'}
+          - {from: reg, to: stg, label: 'Staging pulls the same image and runs it with its own config'}
+          - {from: stg, to: prod, label: 'If it passes in staging, the same hash is promoted to production', tone: good, dashed: true}
+      - type: visual
+        kind: table
+        caption: 'Environment parity: what stays the same, what differs'
+        headers: ['', 'Staging', 'Production']
+        rows:
+          - cells: ['Image', 'shop-api:3f9a2c1', 'shop-api:3f9a2c1']
+            tip: 'The same, no exceptions.'
+          - cells: ['PHP and MySQL version', '8.3 / 8.0', '8.3 / 8.0']
+            tip: 'If the versions differ, a pass in staging means nothing.'
+          - cells: ['Config and secrets', 'staging''s own', 'production''s own']
+            tip: 'These should differ. They are supplied through ENV, not baked into the image.'
+          - cells: ['Data', 'Fake or masked', 'Real']
+            tip: 'If you must copy real data into staging, remove or scramble the personal information first.'
+    aside:
+      - type: problem
+        body: 'Building separately per environment can give you "it worked in staging but not in prod", because each build may pull in newer library versions.'
+      - type: terms
+        items:
+          - {term: 'Artifact', meaning: 'An unchangeable result produced by the pipeline. Here it is the Docker image.'}
+          - {term: 'Promote', meaning: 'Sending the same tested artifact on to the next environment, without building it again.'}
+    check:
+      q: 'What is the real risk of building again for production?'
+      a: 'The image that was tested in staging and the one running in production can end up different, through newer dependency versions or differences in the build environment.'
+
+  - slug: safe-deploy-rollback
+    title: 'Safe deploys and fast rollback'
+    kind: howto
+    tldr: 'Smoke tests in staging, approval for production, a check on rollout status, and an automatic return to the previous version when it fails.'
+    keywords: ['rollback', 'deploy safety', 'smoke test', 'kubectl rollout', 'approval']
+    blocks:
+      - type: text
+        body: |
+          A safe deploy doesn't mean nothing goes wrong. It means that when something does, you're back in minutes. So every step is followed by a check, and the command to go back to the previous image is ready in advance. Rollback is easiest when the previous image is still intact in the registry.
+      - type: code
+        lang: yaml
+        file: '.github/workflows/deploy.yaml'
+        variant: good
+        code: |
+          deploy-staging:
+            environment: staging
+            steps:
+              - run: |
+                  kubectl set image deploy/shop-api \
+                    api=registry.example.com/shop-api:${{ github.sha }}
+                  kubectl rollout status deploy/shop-api --timeout=120s
+              - run: curl --fail --retry 5 https://staging.shop.example.com/health/ready
+
+          deploy-prod:
+            needs: deploy-staging
+            environment: production # a human approval is required here
+            steps:
+              - run: |
+                  kubectl set image deploy/shop-api \
+                    api=registry.example.com/shop-api:${{ github.sha }}
+                  kubectl rollout status deploy/shop-api --timeout=180s \
+                    || { kubectl rollout undo deploy/shop-api; exit 1; }
+        marks:
+          - {line: 7, tip: 'Wait until the rollout finishes. If the new Pods don''t become ready, this step fails.'}
+          - {line: 8, tip: 'Smoke test: call a few of the most important URLs and see whether they really respond.'}
+          - {line: 12, tip: 'Set "required reviewers" on the GitHub environment and someone must approve before anything goes to production.'}
+          - {line: 18, tip: 'If the rollout fails, return to the previous version automatically. The site is fixed before anyone wakes up.'}
+      - type: quote
+        body: 'Decide the way back before you deploy.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'If a migration drops a column, rolling back the code no longer helps: the old code will look for that column. Make migrations backward-compatible (expand, then contract).'
+          - 'Never testing rollback. Try it on purpose in staging now and then.'
+      - type: refs
+        items:
+          - {to: 'data/zero-downtime-migrations', label: 'Backward-compatible migrations'}
+          - {to: 'resilience/zero-downtime-deploys', label: 'Canary and blue-green'}
+      - type: commands
+        title: 'Rollback'
+        items:
+          - {cmd: 'kubectl rollout history deploy/shop-api', desc: 'See the earlier revisions'}
+          - {cmd: 'kubectl rollout undo deploy/shop-api', desc: 'Go back to the previous version'}
+    check:
+      q: 'Even after you roll back the code, a database migration can stop things working. When?'
+      a: 'When the migration removed a column or table the earlier code needs. So migrations should only add first (expand) and remove the old parts later.'
+
+  - slug: pipeline-pitfalls
+    title: 'Three classic pipeline traps'
+    kind: pitfall
+    tldr: 'Rebuilding for production, keeping secrets on the server, and skipping failing tests all defeat the purpose of a pipeline.'
+    keywords: ['pipeline pitfalls', 'secret', 'rebuild', 'flaky tests', 'CI mistakes']
+    blocks:
+      - type: code
+        lang: yaml
+        file: '.github/workflows/bad.yaml'
+        variant: bad
+        code: |
+          deploy-prod:
+            steps:
+              - uses: actions/checkout@v4
+              - run: composer install
+              - run: docker build -t shop-api:latest .
+              - run: docker push shop-api:latest
+              - run: kubectl rollout restart deploy/shop-api
+                continue-on-error: true
+        marks:
+          - {line: 5, tip: 'Building again for production. Nothing guarantees it matches the image that was tested in staging.'}
+          - {line: 6, tip: 'Pushing "latest" over the old one loses the earlier version, so there is nothing to roll back to.'}
+          - {line: 8, tip: 'Even if it fails, the pipeline stays green, and nobody knows the deploy never happened.'}
+      - type: points
+        title: 'The right way'
+        style: check
+        items:
+          - 'Build only once; in the deploy stage, just change the tag'
+          - 'When a stage fails, the pipeline stops and hides nothing'
+          - 'Secrets live in the CI secret store, not in the code or the image'
+          - 'Fix flaky tests; "just rerun it" must not become a habit'
+      - type: quote
+        body: 'A green pipeline is only worth something if everyone stops when it turns red.'
+    aside:
+      - type: story
+        title: 'Always green'
+        body: |
+          One team's pipeline was always green, because the test stage had `|| true` tacked on. One day a nasty bug reached production, though the tests had been failing for the previous two weeks.
+      - type: when
+        use: ['A failure in any stage stops the pipeline', 'Always keep the previous version''s image in the registry']
+        avoid: ['Hiding failures with continue-on-error or || true']
+    check:
+      q: 'Why is `continue-on-error: true` on a deploy step dangerous?'
+      a: 'Even when the deploy fails, the pipeline looks green, so nobody finds out that the new version never went live, or went only half way.'
+
+flashcards:
+  - q: 'What is the difference between CI and CD?'
+    a: 'CI: build and test automatically on every push. CD: automatically (or with one click) ship code that passed to the servers.'
+    more: |
+      CI's central question is "did the code break anything?". CD's is "did the code reach users safely?". In continuous delivery the last step has a human approval; in continuous deployment even that is gone.
+    ref: friday-hand-deploy
+  - q: 'Why shouldn''t you deploy by logging into the server and running git pull?'
+    a: 'Steps get forgotten, untested code can go live, servers end up different, and there is no way back.'
+    more: |
+      A pipeline runs the same steps in the same order every time and keeps a record of who deployed what. A hand deploy has neither.
+    ref: friday-hand-deploy
+  - q: 'Why do cheap checks run first in a pipeline?'
+    a: 'Lint and static analysis take seconds. If they catch a mistake, you save the time of the slow tests and the build.'
+    more: |
+      The usual order: lint, static analysis, unit tests, integration tests, build, scan, deploy. The further right you go, the slower and costlier the check.
+    ref: pipeline-stages
+  - q: 'What is a quality gate?'
+    a: 'A pipeline stage that blocks code from moving on to the next stage if it fails.'
+    more: |
+      For example, the build doesn't run if the tests fail, and the deploy doesn't run if the scan finds a serious vulnerability. A gate works only if a failure genuinely stops the pipeline.
+    ref: pipeline-stages
+  - q: 'Why should CI tests run against a real MySQL?'
+    a: 'On a production-like database you catch the real behaviour of SQL, indexes and migrations. SQLite behaves differently.'
+    more: |
+      GitHub Actions can start a MySQL container through services. Match the version to production as well (8.0 if production runs MySQL 8.0).
+    ref: github-actions-ci
+  - q: 'What does "build once, promote the same artifact" mean?'
+    a: 'The image is built only once, and that same image moves from staging to production. Only the config changes, never the code.'
+    more: |
+      So what you tested and what you run are always identical. Build again for each environment and newer dependency versions can slip in and change the result.
+    ref: build-once-promote
+  - q: 'What does environment parity mean?'
+    a: 'Keeping staging and production as alike as possible: the same image, the same PHP and database versions. Only config, secrets and data differ.'
+    more: |
+      If the versions differ, passing in staging doesn't mean passing in production. Config differs through ENV variables, and is never written inside the image.
+    ref: build-once-promote
+  - q: 'What do you need in order to roll back quickly?'
+    a: 'The previous image intact in the registry, commit-hash tags, and backward-compatible migrations.'
+    more: |
+      In Kubernetes, `kubectl rollout undo` returns to the previous Deployment with one command. But if a migration dropped an old column, the app won't run even after the code goes back, so a migration should add first and delete later.
+    ref: safe-deploy-rollback
+
+quiz:
+  - q: 'What problems does this pipeline have?'
+    lang: yaml
+    code: |
+      deploy-prod:
+        steps:
+          - run: docker build -t shop-api:latest .
+          - run: docker push shop-api:latest
+          - run: kubectl rollout restart deploy/shop-api
+            continue-on-error: true
+    hint: 'Which image is being deployed, and what happens when it fails?'
+    options:
+      - text: 'It builds again for production, so it isn''t the image tested in staging'
+        correct: true
+        why: 'What was tested and what is running can end up different.'
+      - text: 'The "latest" tag: you can''t tell which code is running, and rollback is hard'
+        correct: true
+        why: 'The same tag is overwritten each time, and the previous version is lost.'
+      - text: 'continue-on-error: a failed deploy still shows green'
+        correct: true
+        why: 'Nobody realises the new version never went live.'
+      - text: 'Writing commands in YAML is wrong; you should only use a shell script'
+        correct: false
+        why: 'Putting commands in a pipeline is normal. The problem is what the commands do and their order.'
+    ref: pipeline-pitfalls
+  - q: 'On Tanvir''s team the pipeline takes 40 minutes per PR, so everyone only looks at the tests after merging. What is the best first step?'
+    hint: 'Why do people avoid the pipeline?'
+    options:
+      - text: 'Turn the tests off'
+        correct: false
+        why: 'It would be faster, but the safety net is gone.'
+      - text: 'Turn on caching, run independent stages in parallel, and split out the slow tests'
+        correct: true
+        why: 'That is the accepted way to cut time without cutting safety. Fast feedback keeps people trusting the pipeline.'
+      - text: 'Run the pipeline only before a release'
+        correct: false
+        why: 'Mistakes are found late, and it is hard to tell which commit broke things.'
+    ref: pipeline-stages
+  - q: 'The image that passed tests in staging has the hash 3f9a2c1. What exactly should go to production?'
+    hint: 'Is the thing that was tested the thing being shipped?'
+    options:
+      - text: 'An image freshly built from the current code on main'
+        correct: false
+        why: 'New commits may have landed on main since, and they haven''t been tested.'
+      - text: 'The shop-api:3f9a2c1 image from the registry, with only the production config'
+        correct: true
+        why: 'Exactly what was tested is what ships. Only the ENV differs.'
+      - text: 'shop-api:latest'
+        correct: false
+        why: '"latest" can be a different image at any moment.'
+    ref: build-once-promote
+  - q: 'When a production deploy fails, what should happen automatically?'
+    hint: 'What if the people are asleep?'
+    options:
+      - text: 'Nothing; someone will look in the morning'
+        correct: false
+        why: 'The site could stay broken all night.'
+      - text: 'Return to the previous tested image (rollout undo) and show the pipeline as failed'
+        correct: true
+        why: 'The site recovers quickly and the failure stays visible, so nothing is hidden.'
+      - text: 'Keep running it in the failed state until it passes'
+        correct: false
+        why: 'It often fails again for the same reason, and the half-deployed state drags on.'
+    ref: safe-deploy-rollback
+  - q: 'In a new release, a migration dropped a column. After the deploy a bug turned up. What happens if you roll back the code now?'
+    hint: 'Won''t the old code look for that column?'
+    options:
+      - text: 'The old code comes back and runs normally'
+        correct: false
+        why: 'The old code will ask for the dropped column and fail.'
+      - text: 'The old code and the database structure won''t match, so it may break. The migration should have only added first and removed later'
+        correct: true
+        why: 'With expand-contract there is room for both versions to run, so rollback is safe.'
+      - text: 'The database reverts to its earlier state by itself'
+        correct: false
+        why: 'A migration doesn''t undo itself. Once a column''s data is gone, only a backup can bring it back.'
+    ref: safe-deploy-rollback
+  - q: 'Which of these are fine to differ between staging and production?'
+    hint: 'Which ones are supplied through ENV?'
+    options:
+      - text: 'The database password and secrets'
+        correct: true
+        why: 'Staging''s secrets must never open production. These are passed in from outside at run time.'
+      - text: 'The kind of data: fake or masked in staging'
+        correct: true
+        why: 'Spreading real personal data into staging is a risk.'
+      - text: 'The PHP or MySQL version'
+        correct: false
+        why: 'If these differ, a pass in staging means nothing.'
+      - text: 'The app''s image'
+        correct: false
+        why: 'Keeping the image identical is the whole point of build-once.'
+    ref: build-once-promote

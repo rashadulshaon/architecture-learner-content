@@ -1,0 +1,361 @@
+slides:
+  - slug: status-anyone-writes
+    title: 'A status that anyone can write anything into'
+    kind: story
+    tldr: 'If a payment''s status is a plain string that any code can set, a failed payment gets refunded and a successful one slips back to pending.'
+    keywords: ['payment status', 'illegal transition', 'status string', 'state bug', 'invalid state change']
+    blocks:
+      - type: text
+        body: |
+          In Rahim's app, the `payments` table has a `status` column, and ten places in the code call `setStatus('...')`. One day a stale webhook turns up late and flips a `succeeded` payment back to `pending`. Another day a support agent hits refund on a `failed` payment, and money that never arrived goes back out. No exception, no log, just wrong books.
+      - type: visual
+        kind: compare
+        caption: 'What a plain string status allows, and what a state machine allows'
+        columns:
+          - title: 'Anything can be written'
+            tone: bad
+            icon: cross
+            tip: 'Any code can set any status from anywhere, so nothing stands in the way of a wrong change.'
+            items: ['succeeded → pending (from stale news)', 'failed → refunded (no money ever came)', 'No way to tell who changed it, or when']
+          - title: 'Only legal paths work'
+            tone: good
+            icon: check
+            tip: 'Every change goes through a named transition, and an illegal one is rejected on the spot.'
+            items: ['No way from succeeded back to pending', 'No way forward from failed', 'Every change is logged']
+      - type: quote
+        body: 'A payment''s status is never written directly. It changes only through a named, legal transition.'
+    aside:
+      - type: story
+        title: 'The train ticket rules'
+        body: 'A ticket that has been refunded never becomes valid again, and a ticket that was never bought can''t be refunded. These rules aren''t memorised by the clerk at the counter; they are built into the system itself.'
+      - type: terms
+        items:
+          - {term: 'State', meaning: 'The condition something is in right now, such as pending or succeeded.'}
+          - {term: 'Transition', meaning: 'A named, legal path from one state to another.'}
+    check:
+      q: 'If some code mistakenly tries to run `refund` on a `failed` payment, what happens when a state machine is in place?'
+      a: 'There is no transition called refund out of failed, so it can''t run. The code throws an exception or `can()` returns false, and no money goes back.'
+
+  - slug: ticket-lifecycle
+    title: 'The ticket''s life: states, transitions and terminals'
+    kind: concept
+    tldr: 'Draw the payment''s legal states and the legal transitions between them up front; nothing leaves failed or refunded.'
+    keywords: ['state machine', 'terminal state', 'legal transitions', 'payment lifecycle', 'state diagram']
+    blocks:
+      - type: metaphor
+        icon: ticket
+        title: 'The life of a train ticket'
+        body: |
+          It starts with a booking request: the money is being collected (pending), then the ticket is issued (succeeded) or cancelled because no money came (failed). An issued ticket can be returned for a refund (refunded). But a cancelled or refunded ticket has nothing more to do. Those end positions are called **terminal states**.
+      - type: visual
+        kind: flow
+        animate: false
+        caption: 'A payment''s five states and four legal transitions'
+        nodes:
+          - {id: created, label: 'created', sub: 'start', icon: pencil, col: 0, row: 1, tip: 'The payment has been made as a record, but not yet sent to the gateway.'}
+          - {id: pending, label: 'pending', sub: 'awaiting the gateway', icon: hourglass, tone: warn, col: 1.5, row: 1, tip: 'The gateway has been told. Until it answers, we don''t know whether the money came.'}
+          - {id: succeeded, label: 'succeeded', sub: 'money received', icon: check, tone: good, col: 3, row: 0, tip: 'The money has arrived. From here only the refund path is open.'}
+          - {id: failed, label: 'failed', sub: 'terminal', icon: cross, tone: bad, col: 3, row: 2, tip: 'The money did not come. This is an end state; there are no transitions out of it.'}
+          - {id: refunded, label: 'refunded', sub: 'terminal', icon: money, tone: muted, col: 4, row: 1, tip: 'The money has gone back. Also an end state; once fully refunded there is nothing more to do.'}
+        edges:
+          - {from: created, to: pending, label: 'submit', tip: 'The payment is sent to the gateway.'}
+          - {from: pending, to: succeeded, label: 'succeed', tone: good, tip: 'The gateway reports that the money came.'}
+          - {from: pending, to: failed, label: 'fail', tone: bad, tip: 'The gateway reports that the money did not come.'}
+          - {from: succeeded, to: refunded, label: 'refund', tip: 'The money is returned. This is possible only from succeeded.'}
+      - type: points
+        title: 'What this diagram gives us'
+        style: check
+        items:
+          - 'There is no direct `created → succeeded`: you can''t call a payment successful without asking the gateway whether the money came.'
+          - 'Nothing leaves `failed` or `refunded`, so stale news can''t change them.'
+          - 'Complications like partial refunds live in [[workflows/refunds-reversals|a separate segment]].'
+    aside:
+      - type: remember
+        body: 'Draw the diagram first, then the code. A path that''s not in the diagram is not in the code.'
+      - type: when
+        use: ['Anything with a few clear states: a payment, an order, a contract', 'When stale or late events must be rejected']
+        avoid: ['Where there are only two states (active/inactive) and no rules']
+    check:
+      q: 'The diagram has no arrow from `refunded` back to `succeeded`. Why is that deliberate?'
+      a: 'If a refunded payment went back to "succeeded", the books would be wrong. To take money again, you create a new payment.'
+
+  - slug: symfony-workflow
+    title: 'Putting the diagram into code with Symfony Workflow'
+    kind: howto
+    tldr: 'Describe places and transitions under framework.workflows with type: state_machine; then calling can() and apply() rejects an illegal change on the spot.'
+    keywords: ['Symfony Workflow', 'state_machine', 'can apply', 'marking_store', 'audit trail', 'workflow config']
+    blocks:
+      - type: text
+        body: |
+          In the Symfony Workflow component, the diagram is written under `framework.workflows`. `type: state_machine` says a payment is in exactly one state at a time. `marking_store` says which property holds the status, so the entity's `status` field is updated for you. After that, you just ask with `can()` and change with `apply()`.
+      - type: code
+        lang: yaml
+        file: 'config/packages/workflow.yaml'
+        variant: good
+        code: |
+          framework:
+              workflows:
+                  payment:
+                      type: state_machine
+                      audit_trail: {enabled: true}
+                      marking_store: {type: method, property: status}
+                      supports: [App\Entity\Payment]
+                      initial_marking: created
+                      places: [created, pending, succeeded, failed, refunded]
+                      transitions:
+                          submit:  {from: created,   to: pending}
+                          succeed: {from: pending,   to: succeeded}
+                          fail:    {from: pending,   to: failed}
+                          refund:  {from: succeeded, to: refunded}
+        marks:
+          - {line: 4, tip: 'state_machine means exactly one state at a time. (The workflow type can hold several places at once; we don''t want that for a payment.)'}
+          - {line: 5, tip: 'Every transition is written to the log: which payment, and from which state to which.'}
+          - {line: 6, tip: 'The workflow uses Payment::getStatus()/setStatus(). The status field on the entity is a string.'}
+      - type: code
+        lang: php
+        file: 'src/Payment/PaymentTransitions.php'
+        variant: good
+        code: |
+          final readonly class PaymentTransitions
+          {
+              public function __construct(private WorkflowInterface $paymentStateMachine) {}
+
+              public function apply(Payment $payment, string $transition): bool
+              {
+                  if (!$this->paymentStateMachine->can($payment, $transition)) {
+                      return false;                    // not legal: quietly dropped
+                  }
+                  $this->paymentStateMachine->apply($payment, $transition);
+
+                  return true;
+              }
+          }
+        marks:
+          - {line: 3, tip: 'If the parameter is named paymentStateMachine, Symfony automatically injects the state machine called payment.'}
+          - {line: 7, tip: 'can() asks: "is there a path with this name out of the current state?" If false, the state is left unchanged.'}
+          - {line: 10, tip: 'apply() changes the status. So far only in memory; you need a flush to write it to the database.'}
+    aside:
+      - type: commands
+        title: 'Inspecting the diagram'
+        items:
+          - {cmd: 'php bin/console debug:container --tag=workflow', desc: 'See which workflows are registered'}
+          - {cmd: 'composer require symfony/workflow', desc: 'Add the component if it''s missing'}
+          - {cmd: 'php bin/console workflow:dump payment | dot -Tpng -o payment.png', desc: 'Draw the diagram (needs graphviz)'}
+      - type: tips
+        items:
+          - 'You can hook in work before or after a transition with an event listener: `#[AsEventListener(event: ''workflow.payment.completed.succeed'')]`.'
+          - 'A guard adds conditions: `guard: ''is_granted("ROLE_ADMIN")''`.'
+    check:
+      q: 'Does calling `apply()` change the status in the database? And what does `can()` tell you?'
+      a: 'No. apply() changes only the in-memory object; the database changes when you flush. can() tells you whether that transition is legal from the current state.'
+
+  - slug: race-on-transition
+    title: 'Two workers at once: can() is not enough'
+    kind: pitfall
+    tldr: 'can() and apply() work in memory; if two workers read the same pending payment together, both think they are legal. Use a database lock or a conditional UPDATE to make the change atomic.'
+    keywords: ['race condition', 'pessimistic lock', 'optimistic lock', 'atomic transition', 'concurrent webhook', 'lock']
+    blocks:
+      - type: text
+        body: |
+          Say a `succeed` webhook and a `fail` webhook arrive almost together, picked up by two different workers. Both read the payment, both see status `pending`, and `can()` is true for both. One writes `succeeded`, and the other writes `failed` over it. The diagram was right, but it was fooled in the gap between reading and writing.
+      - type: code
+        lang: php
+        file: 'src/Payment/PaymentTransitions.php (has a gap)'
+        variant: bad
+        code: |
+          $payment = $em->find(Payment::class, $id);           // both see 'pending'
+          if ($this->paymentStateMachine->can($payment, 'fail')) {
+              $this->paymentStateMachine->apply($payment, 'fail');
+              $em->flush();                                    // the last writer wins
+          }
+        marks:
+          - {line: 1, tip: 'No lock. Another worker has read the same row at the same time.'}
+          - {line: 4, tip: 'Both flushes succeed. The later one writes without knowing what the earlier one did.'}
+      - type: code
+        lang: php
+        file: 'src/Payment/PaymentTransitions.php'
+        variant: good
+        code: |
+          public function apply(int $id, string $transition): bool
+          {
+              return $this->em->wrapInTransaction(function () use ($id, $transition): bool {
+                  $payment = $this->em->find(Payment::class, $id, LockMode::PESSIMISTIC_WRITE);
+
+                  if (!$this->paymentStateMachine->can($payment, $transition)) {
+                      return false;                  // someone else got there first
+                  }
+                  $this->paymentStateMachine->apply($payment, $transition);
+                  $this->em->persist(new PaymentLog($payment, $transition));
+
+                  return true;                       // wrapInTransaction flushes here
+              });
+          }
+        marks:
+          - {line: 4, tip: 'SELECT ... FOR UPDATE. Another worker trying to read this row waits until this transaction finishes.'}
+          - {line: 6, tip: 'The second worker will now read a status that is no longer pending, so can() returns false.'}
+          - {line: 10, tip: 'The transition history is written in the same transaction, so "who changed what, when" is never lost.'}
+      - type: quote
+        body: 'Checking that a transition is legal and changing the status happen under one lock, in one transaction.'
+    aside:
+      - type: when
+        use: ['Pessimistic lock: when several actors are likely to reach the same payment at once', 'Optimistic lock (`#[ORM\Version]`): when conflicts are rare and retrying is easy']
+        avoid: ['Relying on can() alone with no lock']
+      - type: refs
+        items:
+          - {to: 'concurrency/locking', label: 'Pessimistic and optimistic locks'}
+          - {to: 'payments/webhooks', label: 'This transition inside a webhook handler'}
+    check:
+      q: 'After waiting for the lock, what does the second worker see, and what does it do?'
+      a: 'Once the first worker commits, it sees that the status is no longer pending. So `can()` returns false, and it returns without changing anything.'
+
+flashcards:
+  - q: 'What is the risk if a payment''s status is just a string column?'
+    a: 'Anyone can set any status, so succeeded goes back to pending, or a failed payment gets refunded. Nothing stands in the way.'
+    more: |
+      With `setStatus()` called from ten places in the code, there are ten places to make a mistake. A state machine brings these rules into one place, so a wrong change can't run at all.
+    ref: status-anyone-writes
+  - q: 'What is a state machine?'
+    a: 'A diagram fixed in advance: which states exist, and which named paths lead from one state to another.'
+    more: |
+      The thing is in exactly one state at a time. Each path from one state to another has a name (such as `succeed`). A path that isn't in the diagram can't be run.
+    ref: ticket-lifecycle
+  - q: 'What is a terminal state? Give examples from a payment.'
+    a: 'A state with no transitions out of it. For example failed and refunded.'
+    more: |
+      The benefit of a terminal state: old or late events can't change it. The work is finished, and if anything more needs to change, you create a new record rather than altering the old one.
+    ref: ticket-lifecycle
+  - q: 'Why is there no direct path from `created` to `succeeded` in the payment diagram?'
+    a: 'Because you can''t assume the money came without asking the gateway. `pending` sits in between to mean "we don''t know".'
+    more: |
+      Without a pending state, there'd be no way to show "sent, but no answer yet", and after a timeout we would just assume success or failure. That is the biggest mistake with unknown outcomes, covered in [[payments/unknown-outcomes|the next segment]].
+    ref: ticket-lifecycle
+  - q: 'In Symfony Workflow, what is the difference between the `state_machine` and `workflow` types?'
+    a: 'In a `state_machine` the thing is in only one place at a time. The `workflow` type allows it to be in several places at once.'
+    more: |
+      A payment needs exactly one state, so state_machine. If you have several parallel steps (say "verify photo" and "verify address" running together), you need the workflow type.
+    ref: symfony-workflow
+  - q: 'What do `can()` and `apply()` do in Symfony Workflow?'
+    a: '`can()` tells you whether a transition is legal from the current state. `apply()` changes the status if it is legal, and throws if it isn''t.'
+    more: |
+      apply() changes only the in-memory object; you need a flush to write to the database. So for events from outside, check with can() first. Calling apply() directly on an illegal transition throws a `LogicException`.
+    ref: symfony-workflow
+  - q: 'What goes wrong if two workers run transitions on the same payment at once, and how do you fix it?'
+    a: 'Both see pending and think it is legal, so the last writer wins. Fix: bind the read and write together in a transaction with a pessimistic lock or an optimistic version.'
+    more: |
+      `LockMode::PESSIMISTIC_WRITE` runs SELECT ... FOR UPDATE, so the second worker waits. When it gets its turn it sees the new status, and its can() returns false. The alternative is a `#[ORM\Version]` column: on a conflict the flush throws, and you retry.
+    ref: race-on-transition
+  - q: 'Why must a transition''s history (the audit log) be written in the same transaction?'
+    a: 'So you never end up with a status that changed but no log, or a log entry but no status change.'
+    more: |
+      With money, losing the answer to "who changed this, when and why" makes disputes impossible to settle. If the two are written in separate transactions, a crash in between leaves them out of step. `audit_trail` only writes to the log file; you keep the database history in the same transaction yourself.
+    ref: race-on-transition
+
+quiz:
+  - q: 'In Rahim''s payments table the status is a plain `VARCHAR`, and code in many places calls `setStatus()` directly. Which problem is the most likely?'
+    hint: 'If an old event arrives late, what will stop it?'
+    options:
+      - text: 'A stale event will arrive and turn a succeeded payment back into pending'
+        correct: true
+        why: 'The status accepts any value, and the rule "no going backwards" lives nowhere.'
+      - text: 'The database won''t be able to store a `VARCHAR`'
+        correct: false
+        why: 'VARCHAR works fine; the problem is the rules, not the type.'
+      - text: 'Payments can''t be created at all'
+        correct: false
+        why: 'Creating them works fine; what you can''t do is stop wrong changes.'
+      - text: 'Updating the status column will be very slow'
+        correct: false
+        why: 'Speed has nothing to do with it.'
+    ref: status-anyone-writes
+  - q: 'In the config below, where does the `refund` transition go from and to? And which states are terminal?'
+    lang: yaml
+    code: |
+      places: [created, pending, succeeded, failed, refunded]
+      transitions:
+          submit:  {from: created,   to: pending}
+          succeed: {from: pending,   to: succeeded}
+          fail:    {from: pending,   to: failed}
+          refund:  {from: succeeded, to: refunded}
+    hint: 'What do you call a state that never appears in a `from:`?'
+    options:
+      - text: 'refund: succeeded → refunded; failed and refunded are terminal'
+        correct: true
+        why: 'failed and refunded appear in no transition''s from, so there is no way out of them.'
+      - text: 'refund: failed → refunded; only created is terminal'
+        correct: false
+        why: 'created has submit, and refund''s from is succeeded.'
+      - text: 'refund: pending → refunded; only succeeded is terminal'
+        correct: false
+        why: 'There is no refund from pending; and refund leaves succeeded, so it isn''t terminal.'
+      - text: 'No state is terminal; every state has some way out'
+        correct: false
+        why: 'No arrow leaves failed or refunded.'
+    ref: ticket-lifecycle
+  - q: 'A payment is in the pending state. According to the diagram, which transitions are directly legal from here?'
+    hint: 'Count the arrows leaving pending.'
+    options:
+      - text: 'succeed'
+        correct: true
+        why: 'pending → succeeded, when the gateway reports the money arrived.'
+      - text: 'fail'
+        correct: true
+        why: 'pending → failed, when the gateway reports a failure.'
+      - text: 'refund'
+        correct: false
+        why: 'refund runs only from succeeded; there is nothing to give back before the money arrives.'
+      - text: 'submit'
+        correct: false
+        why: 'submit takes created to pending. The payment is already in pending.'
+    ref: ticket-lifecycle
+  - q: 'In Symfony a payment should be in exactly one state at a time, with no parallel steps. Which config is right?'
+    hint: 'Can one thing be in two places at once?'
+    options:
+      - text: '`type: workflow`, because it is the default and works for everything'
+        correct: false
+        why: 'In the workflow type a thing can be in several places at once; we don''t want that for a payment.'
+      - text: '`type: state_machine`, `marking_store: {type: method, property: status}`'
+        correct: true
+        why: 'state_machine keeps only one place at a time, and the method marking store keeps the value in the entity''s status property.'
+      - text: 'No config needed; just write `if ($status === ...)` in the code'
+        correct: false
+        why: 'Scattered ifs bring back the old problem: the rules aren''t in one place, and mistakes aren''t stopped.'
+    ref: symfony-workflow
+  - q: 'Two workers run the `succeed` and `fail` transitions on the same pending payment at the same time. Is the code below safe?'
+    lang: php
+    code: |
+      $payment = $em->find(Payment::class, $id);
+      if ($sm->can($payment, $transition)) {
+          $sm->apply($payment, $transition);
+          $em->flush();
+      }
+    hint: 'What happens if another worker slips in between the read and the write?'
+    options:
+      - text: 'Not safe: both can see pending, and the last flush wins'
+        correct: true
+        why: 'can() only looks at its own in-memory object. It can''t know what another worker did in the database.'
+      - text: 'Safe, because there is a can()'
+        correct: false
+        why: 'can() sees a snapshot from the moment of reading. If another worker changes it in the gap, it has no idea.'
+      - text: 'Safe, because Doctrine automatically locks the row'
+        correct: false
+        why: 'By default find() takes no lock. You have to ask for a LockMode or a version column separately.'
+      - text: 'Safe, because the state machine opens a transaction itself'
+        correct: false
+        why: 'The Workflow component never touches the database; transactions and locks are your job.'
+    ref: race-on-transition
+  - q: 'Which approaches make the race between two transitions on the same payment safe?'
+    hint: 'How does the database make sure whoever arrives first wins?'
+    options:
+      - text: 'Read the row with `LockMode::PESSIMISTIC_WRITE` inside a transaction, then can()/apply()'
+        correct: true
+        why: 'The second worker waits, then sees the new status.'
+      - text: 'A `#[ORM\Version]` column on the entity, catching the conflict exception and retrying'
+        correct: true
+        why: 'The version is checked at write time; the one that arrives later fails.'
+      - text: 'Adding a `sleep(1)` between the two workers'
+        correct: false
+        why: 'It relies on timing: it will work sometimes and fail other times. That doesn''t solve a race.'
+      - text: 'Calling can() twice'
+        correct: false
+        why: 'Even called twice, both calls see the same stale snapshot.'
+    ref: race-on-transition

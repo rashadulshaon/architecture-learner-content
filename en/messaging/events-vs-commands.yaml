@@ -1,0 +1,521 @@
+slides:
+  - slug: cashier-does-everything
+    title: 'One button, six and a half seconds of waiting'
+    kind: story
+    tldr: 'Send the email, SMS, PDF and courier call inside the order request and the customer waits, and one failure breaks everything.'
+    keywords: ['async', 'synchronous', 'slow request', 'background work', 'slow endpoint']
+    blocks:
+      - type: metaphor
+        icon: shop
+        title: 'The biryani restaurant''s cashier'
+        body: |
+          Picture a cashier at a biryani restaurant who takes your order, walks into the kitchen to dish out the rice, packs the box and goes hunting for a delivery boy, and only then calls the next customer. The queue spills onto the street, and if the delivery boy can't be found, the whole order is cancelled. A smarter cashier takes the money, writes a slip, sends it to the kitchen and calls the next person. The controller below is the first cashier.
+      - type: code
+        lang: php
+        file: 'src/Controller/OrderController.php'
+        variant: bad
+        code: |
+          #[Route('/orders', methods: ['POST'])]
+          public function create(#[MapRequestPayload] CreateOrder $dto): JsonResponse
+          {
+              $order = $this->orders->place($dto, $this->getUser());    // 40ms
+
+              $this->mailer->send($this->emails->orderPlaced($order));  // 1.8s
+              $this->texter->send(new SmsMessage($order->getPhone(), 'Order received')); // 1.2s
+              $this->invoices->generatePdf($order);                      // 0.9s
+              $this->courier->book($order);                              // 2.5s, external API
+
+              return $this->json(['id' => $order->getId()], 201);
+          }
+        marks:
+          - {line: 4, tip: 'This one line is all the customer needs: the order is now in the database.'}
+          - {line: 6, tip: 'If the mail server is slow, the whole request is slow, yet nobody would mind the email arriving ten seconds later.'}
+          - {line: 9, tip: 'If the courier API is down, an exception is thrown here. The customer sees "order failed" even though the order is saved.'}
+      - type: visual
+        kind: bars
+        caption: 'Where the 6.4 seconds of one request went'
+        items:
+          - {label: 'Save order', value: 40, display: '40ms', tone: good, tip: 'The only step you can''t skip: without it there is no order number to give the customer.'}
+          - {label: 'Email', value: 1800, display: '1.8s', tip: 'Waiting for an external mail server to answer. It can safely go out later.'}
+          - {label: 'SMS', value: 1200, display: '1.2s', tip: 'Waiting for the SMS gateway. When the gateway is slow, this can stretch to 30 seconds.'}
+          - {label: 'Invoice PDF', value: 900, display: '0.9s', tip: 'Heavy CPU work, and the customer isn''t opening the PDF right now anyway.'}
+          - {label: 'Courier API', value: 2500, display: '2.5s', tone: bad, tip: 'The slowest and most fragile step: another company''s server, which you don''t control.'}
+      - type: quote
+        body: 'Make the user wait only for what the response truly needs.'
+    aside:
+      - type: story
+        title: 'Triple orders on sale night'
+        body: |
+          On sale night an online shop's SMS gateway slowed down. The SMS was sent inside the order request, so every order took half a minute. Impatient customers kept hitting "Place order", and the same order was created three times. The problem was in the SMS, but the orders broke.
+      - type: terms
+        items:
+          - {term: 'Synchronous (sync)', meaning: 'Standing there and waiting until the work is finished.'}
+          - {term: 'Asynchronous (async)', meaning: 'Writing "to be done later" on a note and getting back to your own work.'}
+      - type: refs
+        items:
+          - {to: 'resilience/containing-failure', label: 'Keeping one failure from spreading to others'}
+    check:
+      q: 'Which of the controller''s five jobs must stay inside the request, and why?'
+      a: 'Only saving the order, because without it there is no order number to give the customer. The email, SMS, PDF and courier booking can happen a few seconds later without hurting anyone.'
+
+  - slug: command-vs-event
+    title: 'A command says "do this", an event says "this happened"'
+    kind: concept
+    tldr: 'A command orders one specific handler to do a job. An event only announces what happened, and zero or many listeners react on their own.'
+    keywords: ['command', 'event', 'message', 'pub/sub', 'decoupling', 'domain event']
+    blocks:
+      - type: metaphor
+        icon: bell
+        title: 'The kitchen slip and the counter bell'
+        body: |
+          The cashier sends a slip to the kitchen: "Table 5, two plates of kacchi." That's a **command**: an order for one specific person, and the job has to get done. The cashier can also ring a bell and announce, "Order 42 is in." That's an **event**: the cook, the accountant and the delivery boy each hear it and pick up their own work, and the cashier never knows who is listening.
+      - type: visual
+        kind: compare
+        caption: 'The same order, two kinds of message'
+        columns:
+          - title: 'Command'
+            icon: send
+            tip: 'An order to do a job. The sender knows who it is talking to and expects the job to be done.'
+            items:
+              - 'Named as an order: SendInvoiceEmail'
+              - 'Exactly one handler'
+              - 'The sender knows who does the job'
+              - 'A new job means changing the sender''s code'
+          - title: 'Event'
+            icon: megaphone
+            tone: accent
+            tip: 'An announcement of something that already happened. The sender has no need to know who listens.'
+            items:
+              - 'Named in the past tense: OrderPlaced'
+              - 'Zero, one or many handlers'
+              - 'The sender doesn''t know who is listening'
+              - 'A new job is just a new handler'
+      - type: text
+        body: |
+          The real difference isn't the name but **who knows whom**. Send commands, and the order code knows about the email, the courier and the invoice. Publish an event, and the order code knows nobody. If you add "loyalty points" tomorrow, you don't touch the order code at all.
+      - type: quote
+        body: 'A command says "do this". An event says "this happened".'
+    aside:
+      - type: tips
+        items:
+          - 'Start command names with a verb: `GenerateInvoicePdf`, `BookCourier`.'
+          - 'Put event names in the past tense: `OrderPlaced`, `PaymentFailed`.'
+          - 'An event carries what happened and an id, not instructions about who should do what.'
+      - type: pitfalls
+        items:
+          - 'An event called `OrderPlacedSendEmail` is a command in disguise: the sender is again telling the listener what to do.'
+          - 'If the sender waits for a listener''s result, it is no longer an event. Use a direct method call or a command.'
+      - type: refs
+        items:
+          - {to: 'thinking/event-driven-cqrs', label: 'Event-driven architecture at a glance'}
+    check:
+      q: 'After an order you need an email, a courier booking and loyalty points. Which approach means fewer changes to the order code later, and why?'
+      a: 'An event (`OrderPlaced`). The order code only announces the fact, and three separate handlers listen. When a fourth job shows up, you add a handler and never touch the order code.'
+
+  - slug: messenger-basics
+    title: 'Symfony Messenger: message, handler, transport, worker'
+    kind: howto
+    tldr: 'A message is a small DTO, the handler does the job, the transport stores the message, and a worker in a separate process picks it up and runs the handler.'
+    keywords: ['Symfony Messenger', 'message bus', 'handler', 'transport', 'worker', 'messenger:consume', 'routing']
+    blocks:
+      - type: text
+        body: |
+          Messenger has four parts. The controller just calls `$bus->dispatch(new OrderPlaced($order->getId()))` and returns immediately. The message is stored in a **transport** (a queue), and a separate process, the **worker**, picks it up and runs the **handler**. Remember: without a `routing` entry, the handler runs inside the request itself and nothing is async.
+      - type: visual
+        kind: flow
+        caption: 'The journey of one OrderPlaced message'
+        nodes:
+          - {id: ctrl, label: 'Controller', sub: 'calls dispatch()', icon: api, col: 0, row: 0, tip: 'After saving the order it only hands the message to the bus. There is no email-sending code here.'}
+          - {id: bus, label: 'Message bus', sub: 'checks routing', icon: shuffle, col: 1.5, row: 0, tip: 'Looks at the message class and decides: run the handler now, or send the message to a transport.'}
+          - {id: transport, label: 'Transport: async', sub: 'stored in a queue', icon: queue, tone: accent, col: 3, row: 0, tip: 'Where messages wait: a Doctrine table, RabbitMQ, SQS or Redis. The message stays safe here until a worker picks it up.'}
+          - {id: worker, label: 'Worker', sub: 'messenger:consume', icon: worker, col: 3, row: 1.5, tip: 'A separate, long-running PHP process. It has nothing to do with web requests.'}
+          - {id: handler, label: 'Handler', sub: 'sends the email', icon: mail, col: 1.5, row: 1.5, tip: 'The code that does the real work. If it is slow or fails here, the customer never notices.'}
+          - {id: user, label: 'Customer', sub: 'already got 201', icon: user, col: 0, row: 1.5, tip: 'Has the order number after 40 milliseconds. The email arrives a few seconds later.'}
+        edges:
+          - {from: ctrl, to: bus, label: 'The controller hands the message to the bus'}
+          - {from: bus, to: transport, label: 'Routing says this message goes to the async transport'}
+          - {from: ctrl, to: user, label: 'The customer gets a response right away, with work still pending', tone: good}
+          - {from: transport, to: worker, label: 'A worker takes the message off the queue', dashed: true}
+          - {from: worker, to: handler, label: 'It matches the message class and runs the right handler'}
+      - type: code
+        lang: php
+        file: 'src/MessageHandler/SendOrderEmailHandler.php'
+        variant: good
+        code: |
+          // src/Message/OrderPlaced.php
+          final readonly class OrderPlaced
+          {
+              public function __construct(public int $orderId) {}
+          }
+
+          #[AsMessageHandler]
+          final readonly class SendOrderEmailHandler
+          {
+              public function __construct(
+                  private OrderRepository $orders,
+                  private MailerInterface $mailer,
+              ) {}
+
+              public function __invoke(OrderPlaced $event): void
+              {
+                  $order = $this->orders->find($event->orderId);
+                  if (null === $order) {
+                      return; // the order is gone, nothing to do
+                  }
+
+                  $this->mailer->send((new TemplatedEmail())
+                      ->to($order->getCustomerEmail())
+                      ->subject('We received order #'.$order->getId())
+                      ->htmlTemplate('email/order_placed.html.twig')
+                      ->context(['order' => $order]));
+              }
+          }
+        marks:
+          - {line: 4, tip: 'Only the id goes in the message. A whole entity would reach the worker as a stale copy, because the order can change while the message waits in the queue.'}
+          - {line: 7, tip: 'This attribute tells Messenger that the class type-hinted in `__invoke()` is the message this handler handles.'}
+          - {line: 17, tip: 'The handler reads a fresh copy of the order from the database every time.'}
+      - type: code
+        lang: yaml
+        file: 'config/packages/messenger.yaml'
+        code: |
+          framework:
+              messenger:
+                  transports:
+                      # doctrine://default, amqp://… or sqs://… — the code doesn't change
+                      async: '%env(MESSENGER_TRANSPORT_DSN)%'
+
+                  routing:
+                      # without this line the handler runs inside the request
+                      'App\Message\OrderPlaced': async
+        marks:
+          - {line: 5, tip: 'To switch transports, change only the DSN in `.env`. A small app can start with the Doctrine transport and needs no extra server.'}
+          - {line: 9, tip: 'Message class → transport. If the class isn''t listed here, Messenger sends the message nowhere and runs the handler on the spot.'}
+    aside:
+      - type: commands
+        title: 'Messenger commands'
+        items:
+          - {cmd: 'php bin/console messenger:consume async -vv', desc: 'Start a worker; -vv prints every message as it is handled'}
+          - {cmd: 'php bin/console debug:messenger', desc: 'List which handler handles which message'}
+          - {cmd: 'php bin/console messenger:stats', desc: 'Show how many messages are waiting in each transport'}
+          - {cmd: 'php bin/console messenger:stop-workers', desc: 'Stop workers after a deploy so they restart with the new code'}
+      - type: pitfalls
+        items:
+          - 'Workers run for a long time, so after a deploy the old code stays in memory. Run `messenger:stop-workers` on every deploy.'
+          - 'In production run workers under Supervisor or systemd so they come back up on their own after stopping.'
+          - 'Use `--time-limit=3600` or `--memory-limit=128M` so workers restart themselves regularly.'
+      - type: refs
+        items:
+          - {to: 'messaging/dlq-retries', label: 'When a handler fails: retries and the DLQ'}
+    check:
+      q: 'What exactly happens if you forget to list the message class under routing in messenger.yaml?'
+      a: 'Messenger sends the message to no transport, and the handler runs inside `dispatch()`, so inside the request. The code works, but nothing is async.'
+
+  - slug: queue-vs-stream
+    title: 'Queue vs stream: the order spike and the ledger'
+    kind: compare
+    tldr: 'A queue gives each message to one worker and deletes it when done. A stream keeps every message in order, and each reader reads from its own position.'
+    keywords: ['queue', 'stream', 'log', 'RabbitMQ', 'SQS', 'Kafka', 'offset', 'consumer group']
+    blocks:
+      - type: metaphor
+        icon: receipt
+        title: 'The order spike and the ledger'
+        body: |
+          The spike on the kitchen counter, where order slips are pushed onto a metal spindle, is a **queue**: one cook takes a slip, finishes the dish and tears the slip up, so nobody else ever sees it. The restaurant's ledger is a **stream**: every order is written in sequence and nobody erases it. The owner, the accountant and the tax officer all read the whole ledger, each from their own bookmark, and any of them can start again from page one.
+      - type: visual
+        kind: table
+        caption: 'Queue vs stream: who does what'
+        headers: ['', 'Queue', 'Stream / log']
+        rows:
+          - cells: ['Examples', 'RabbitMQ, Amazon SQS', 'Kafka, Redpanda, Kinesis']
+            tip: 'Symfony Messenger''s Doctrine, AMQP, SQS and Redis transports all behave like queues.'
+          - cells: ['When the job is done', 'The message is deleted', 'The message stays']
+            tip: 'In a queue, an ack is the end of the message. In a stream, messages go away only when the retention period (say 7 days) runs out.'
+          - cells: ['Who gets a message', 'Any one of the workers', 'Every consumer group']
+            tip: 'In a queue, workers share the same job. In a stream, each consumer group reads the entire ledger on its own.'
+          - cells: ['Who remembers progress', 'The broker', 'The reader (offset)']
+            tip: 'An offset is a bookmark showing how far into the ledger a group has read. Each consumer group has its own.'
+          - cells: ['Reading old messages again', 'Not possible', 'Move the offset back to replay']
+            tip: 'A new service added to a stream can read the whole history from the start. In a queue the old messages are already gone.'
+          - cells: ['Best fit', 'Handing out background jobs', 'An event history shared by many services']
+            tip: 'A queue splits up jobs and retries each message separately. A stream keeps an ordered history of events, useful for analytics, CDC and event sourcing.'
+      - type: points
+        title: 'Which to pick'
+        style: check
+        items:
+          - '"Do it once" jobs such as emails, PDFs and API calls → queue. For most apps that is enough.'
+          - 'Many services read the same events separately, or you need to replay old events → stream.'
+          - 'Running Kafka is a skill of its own. Stick with a queue until you can prove you need more.'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Broker', meaning: 'The server that stores and delivers messages, such as RabbitMQ or Kafka.'}
+          - {term: 'Consumer group', meaning: 'A team of readers sharing one job; together they receive each message once.'}
+          - {term: 'Offset', meaning: 'The sequence number showing how far a reader has read in a stream.'}
+          - {term: 'Retention', meaning: 'How long a stream keeps its messages.'}
+      - type: pitfalls
+        items:
+          - 'Installing Kafka just to send emails is using a cannon to swat a mosquito.'
+          - 'Treating a queue as a permanent history of events. Once a job is done the message is gone; keep history in the database or in a stream.'
+      - type: refs
+        items:
+          - {to: 'messaging/delivery-guarantees', label: 'Ordering and partitions'}
+          - {to: 'api/api-styles', label: 'REST, GraphQL, gRPC or messages?'}
+    check:
+      q: 'A new analytics service wants to read all order events from the last 7 days. Why is that impossible with a queue and possible with a stream?'
+      a: 'In a queue, a message is deleted once a worker finishes it. In a stream, messages stay until the retention period ends, so a new consumer group can start reading from the very first offset.'
+
+  - slug: async-is-not-done
+    title: 'The trap: in the queue does not mean done'
+    kind: pitfall
+    tldr: 'dispatch() means the job was written down, not done. Make async an answer the user needs right now and you have to lie to them.'
+    keywords: ['202 Accepted', 'pending', 'eventual consistency', 'when to go async', 'status']
+    blocks:
+      - type: text
+        body: |
+          Async has a price: you don't know **when** the job will finish, the user may have left the page by the time it fails, and the same message can arrive twice. So if the user needs a result right now, you can't toss the job into a queue and say "done". The first code below says "paid" before any money has been taken.
+      - type: code
+        lang: php
+        file: 'src/Controller/PaymentController.php'
+        variant: bad
+        code: |
+          #[Route('/orders/{id}/pay', methods: ['POST'])]
+          #[IsGranted('PAY', subject: 'order')]
+          public function pay(Order $order, MessageBusInterface $bus): JsonResponse
+          {
+              $bus->dispatch(new ChargeOrder($order->getId()));   // only written to the queue
+
+              return $this->json(['status' => 'paid']);           // a lie: nothing charged yet
+          }
+        marks:
+          - {line: 7, tip: 'The worker may run 3 seconds from now, or fail. By then the customer has seen "payment successful" and closed the page.'}
+      - type: code
+        lang: php
+        file: 'src/Controller/PaymentController.php'
+        variant: good
+        code: |
+          #[Route('/orders/{id}/pay', methods: ['POST'])]
+          #[IsGranted('PAY', subject: 'order')]
+          public function pay(
+              Order $order,
+              OrderService $orders,
+              MessageBusInterface $bus,
+          ): JsonResponse {
+              $orders->markPaymentPending($order);                // state: pending, with flush
+              $bus->dispatch(new ChargeOrder($order->getId()));
+
+              return $this->json(
+                  ['status' => 'pending', 'statusUrl' => '/orders/'.$order->getId()],
+                  Response::HTTP_ACCEPTED,                        // 202: received, work in progress
+              );
+          }
+        marks:
+          - {line: 8, tip: 'Write the true state to the database and commit first, then dispatch. Do it the other way round and the worker looks for an order that isn''t saved yet.'}
+          - {line: 13, tip: '`202 Accepted` means "request received, not finished yet". The client uses `statusUrl` or live updates to learn the final result.'}
+      - type: visual
+        kind: compare
+        caption: 'Which work goes to the queue and which stays in the request'
+        columns:
+          - title: 'Send to async'
+            tone: good
+            icon: queue
+            tip: 'These jobs can finish a little later without hurting the user, and separating them keeps one failure away from the order.'
+            items:
+              - 'Slow work: email, SMS, PDF, reports'
+              - 'External APIs that can go down any time'
+              - 'Results you can learn a few seconds later'
+              - 'Jobs that can safely retry on their own after a failure'
+          - title: 'Keep in the request'
+            tone: warn
+            icon: stopwatch
+            tip: 'You can''t tell the user the truth without these answers, so a short wait is the right call.'
+            items:
+              - 'Input validation'
+              - 'Checking and reserving stock or seats'
+              - 'Results the user needs to decide what to do next'
+              - 'Quick work that must sit in the same transaction'
+      - type: quote
+        body: 'dispatch() means the job was written down, not done.'
+    aside:
+      - type: remember
+        body: 'Need to know now? Stay sync. Fine to know later? Go async, and answer with the true state: "pending".'
+      - type: pitfalls
+        items:
+          - 'Dispatch before the transaction commits and the worker may look for a row it can''t see yet. Commit first, then dispatch.'
+          - 'Once work is async, the handler must be ready to run twice: the same message can arrive again.'
+      - type: refs
+        items:
+          - {to: 'workflows/outbox-inbox', label: 'Making commit and dispatch happen together: the outbox'}
+          - {to: 'interaction/realtime-delivery', label: 'Telling the user when the job finishes'}
+    check:
+      q: 'After queuing the job, which status code and state is the honest answer from the API, and why?'
+      a: '`202 Accepted` with a `pending` state and a URL to check progress. Saying `200`/`paid` would be a lie: the job hasn''t run yet and may still fail.'
+
+flashcards:
+  - q: 'What is the core difference between a command and an event?'
+    a: 'A command is an order to do a job ("do this") with exactly one handler. An event announces something that happened ("this happened") and has zero to many handlers.'
+    more: |
+      With a command, the sender knows who will do the job and expects it to be done. With an event, the sender only states the fact and doesn't need to know who is listening. That's why you can add new work to an event by writing one more handler, without touching the sender's code.
+    ref: command-vs-event
+  - q: 'How do you name commands and events?'
+    a: 'Commands as orders: `SendInvoiceEmail`, `BookCourier`. Events in the past tense: `OrderPlaced`, `PaymentFailed`.'
+    more: |
+      The name alone should tell you whether a message is an order or a piece of news. A name like `OrderPlacedSendEmail` is a warning sign: it's a command in an event's clothing, where the sender is again telling the listener what to do. That throws away the real benefit of events, that the sender knows nobody.
+    ref: command-vs-event
+  - q: 'What are the four parts of Symfony Messenger?'
+    a: 'The message (a small DTO), the handler (does the job), the transport (stores the message) and the worker (takes messages off the transport and runs the handler).'
+    more: |
+      The controller calls `$bus->dispatch()` and returns right away. The message waits in a transport, such as a Doctrine table or RabbitMQ. A worker (`messenger:consume async`), running as its own process, picks it up and runs the class marked `#[AsMessageHandler]`.
+    ref: messenger-basics
+  - q: 'Why put only an id in a Messenger message instead of the whole entity?'
+    a: 'A message is serialized and sits in the queue, and the entity can change in the meantime. The handler reads fresh data from the database by id.'
+    more: |
+      A serialized entity reaches the worker as an old copy with no connection to Doctrine. It also makes the message large, and if the entity's shape changes, old messages already in the queue break. So a message carries just an id and a few small values.
+    ref: messenger-basics
+  - q: 'What happens in Messenger if a message class has no routing entry?'
+    a: 'The message goes to no transport, and the handler runs inside `dispatch()`, which means inside the request.'
+    more: |
+      It's the classic beginner mistake: the handler is written and a worker is running, yet the request is as slow as before. The cause is a missing `'App\Message\OrderPlaced': async` line under `routing` in `messenger.yaml`. Use `debug:messenger` and `messenger:stats` to check that messages really reach the queue.
+    ref: messenger-basics
+  - q: 'What is the core difference between a queue and a stream?'
+    a: 'In a queue, one worker gets each message and it is deleted when done. In a stream, messages stay in order, many readers read them separately, and they can be read again.'
+    more: |
+      A queue (RabbitMQ, SQS) is a line for handing out work, like the spike of order slips in the kitchen. A stream or log (Kafka) is the ledger: what is written stays, and each reader group reads from its own bookmark. Use a queue for background jobs, and a stream to spread an event history across many services.
+    ref: queue-vs-stream
+  - q: 'What is an offset in a stream?'
+    a: 'The sequence number showing how far a consumer group has read, like a bookmark in the ledger. Move it back and you can read old messages again.'
+    more: |
+      In a queue the broker remembers which message went to whom. In a stream the messages simply sit in order, and each consumer group moves its own offset forward. So ten different groups can read the same stream at their own pace without getting in each other's way.
+    ref: queue-vs-stream
+  - q: 'Which kinds of work should you make async?'
+    a: 'Work that is slow or depends on an outside service, can be retried after a failure, and whose result the user doesn''t need right now.'
+    more: |
+      Email, SMS, PDFs, reports and courier bookings are the classic examples. On the other side, validation, reserving stock, or any result the user needs for their next decision stays inside the request. The test is one question: "Is the answer needed right now?"
+    ref: async-is-not-done
+  - q: 'What is the honest response after you queue a job?'
+    a: '`202 Accepted`, a `pending` state, and a URL to check status, because the job hasn''t run yet.'
+    more: |
+      `dispatch()` only writes the message to the queue. The worker may run a few seconds later, and it may fail. So saying "success" is a lie. Write the `pending` state to the database first, then dispatch, and let the client learn the final result from a status URL or a live update.
+    ref: async-is-not-done
+
+quiz:
+  - q: 'An order controller does all of the jobs below in one request. Which are safe to move to a queue?'
+    hint: 'For each one, ask: if this happened ten seconds later, would the customer lose anything?'
+    options:
+      - text: 'Sending the order confirmation email'
+        correct: true
+        why: 'An email arriving a few seconds late hurts nobody, and if it fails you can retry.'
+      - text: 'Saving the order row to the database'
+        correct: false
+        why: 'Without it you have no order number to give the customer. The response needs this step.'
+      - text: 'Generating the invoice PDF'
+        correct: true
+        why: 'It is heavy work, and the customer isn''t asking for the PDF this second. A worker can build it in the background.'
+      - text: 'Checking and reserving stock'
+        correct: false
+        why: 'The customer needs the "out of stock" answer right now. Delaying it means first telling them a false "order successful".'
+      - text: 'Booking the courier through their API'
+        correct: true
+        why: 'An external API is slow and fragile. In a queue, orders can still be taken while it is down, and the booking is retried later.'
+    ref: cashier-does-everything
+  - q: 'Which of these names is an event rather than a command?'
+    hint: 'Which name describes something that has already happened?'
+    options:
+      - text: 'SendInvoiceEmail'
+        correct: false
+        why: 'It is an order: "send the email". The job hasn''t happened yet, so it is a command.'
+      - text: 'PaymentFailed'
+        correct: true
+        why: 'A fact stated in the past tense. What happens next, whether telling the customer or cancelling the order, is not decided by the sender.'
+      - text: 'GenerateSalesReport'
+        correct: false
+        why: 'It starts with a verb and is an order; exactly one handler will do it. That makes it a command.'
+      - text: 'BookCourier'
+        correct: false
+        why: '"Book a courier" is an order for one specific job, so it is a command.'
+    ref: command-vs-event
+  - q: 'The ChargeOrder message is routed to an async transport. What is wrong with this controller?'
+    lang: php
+    code: |
+      #[Route('/orders/{id}/pay', methods: ['POST'])]
+      public function pay(Order $order, MessageBusInterface $bus): JsonResponse
+      {
+          $bus->dispatch(new ChargeOrder($order->getId()));
+
+          return $this->json(['status' => 'paid']);
+      }
+    hint: 'When the response goes out, has the worker started the job yet?'
+    options:
+      - text: 'It says "paid" before any money is taken; it should return 202 and "pending"'
+        correct: true
+        why: 'dispatch() only writes the message to the queue. The job runs later and may fail, so the honest answer is pending.'
+      - text: 'flush() is never called after dispatch(), so the message won''t be sent'
+        correct: false
+        why: 'dispatch() writes the message to the transport by itself; it doesn''t need the EntityManager''s flush().'
+      - text: 'The message should carry the whole $order entity instead of the id'
+        correct: false
+        why: 'The opposite: passing the id is correct. An entity would reach the worker as a stale copy.'
+      - text: 'Payments can never be handled through a queue'
+        correct: false
+        why: 'They can, and many systems do. The one condition is that you tell the user the true state (pending).'
+    ref: async-is-not-done
+  - q: 'In a marketplace, three teams (analytics, fraud, search) each read every order event at their own pace. A new team will want to read the last 7 days of events from the beginning. What fits?'
+    hint: 'Which setup keeps messages after they are read, and gives each reader its own bookmark?'
+    options:
+      - text: 'One RabbitMQ queue that workers from all three teams consume together'
+        correct: false
+        why: 'In one queue, each message goes to just one of the workers. Once one team gets it, the other two never see it.'
+      - text: 'A Kafka-style stream, with each team as its own consumer group'
+        correct: true
+        why: 'A stream keeps messages until retention runs out. Each group reads from its own offset, and a new group can replay from the start.'
+      - text: 'Direct HTTP calls from the controller to each team''s service'
+        correct: false
+        why: 'The order request would then depend on the speed and health of three services, and replaying old events would be impossible.'
+      - text: 'A cron job every minute that scans the orders table and notifies everyone'
+        correct: false
+        why: 'Scanning is slow, events get missed or sent twice, and you would have to track by hand how far each team has read, which a stream does for you.'
+    ref: queue-vs-stream
+  - q: 'Rima wrote the handler and a worker is running. Yet the request is as slow as ever, and messenger:stats always shows an empty queue. What is the most likely cause?'
+    hint: 'Does the message ever reach the transport?'
+    options:
+      - text: 'The worker isn''t fast enough'
+        correct: false
+        why: 'A slow worker would let messages pile up in the queue. An empty queue means messages never get there.'
+      - text: 'The message class isn''t listed in routing, so the handler runs inside the request'
+        correct: true
+        why: 'Without routing, Messenger sends the message to no transport and runs the handler inside dispatch().'
+      - text: 'The handler is missing #[AsMessageHandler]'
+        correct: false
+        why: 'Then Messenger would find no handler and throw an exception. The work wouldn''t silently happen inside the request.'
+      - text: 'The Doctrine transport doesn''t support async work'
+        correct: false
+        why: 'It does. The Doctrine transport uses a database table as the queue, and it is enough for a small app.'
+    ref: messenger-basics
+  - q: 'Which of these are true costs of making work async?'
+    hint: 'Think about how much control you keep over a job once it is in the queue.'
+    options:
+      - text: 'You can''t say in advance exactly when the job will finish'
+        correct: true
+        why: 'A backlog or busy workers add delay, so the user sees the old state for a while.'
+      - text: 'The same message may arrive twice, and the handler has to be ready for that'
+        correct: true
+        why: 'If a worker dies midway, the queue redelivers the message. So the handler must be harmless when run twice.'
+      - text: 'Async work no longer needs a database transaction'
+        correct: false
+        why: 'The writes inside the handler still have to succeed or fail together. Async is no replacement for that.'
+      - text: 'When it fails, the user is no longer on the page, so you need another way to tell them'
+        correct: true
+        why: 'In a request you can show an error on screen. A failed async job needs a notification, a status page or a retry.'
+    ref: async-is-not-done
+  - q: 'New code has been deployed, but the background jobs still behave the old way. What is the most likely cause?'
+    hint: 'A web request loads the code fresh each time. Does a worker?'
+    options:
+      - text: 'The messages waiting in the queue carried the old code with them'
+        correct: false
+        why: 'A message holds only data, not code. The worker process decides which code runs.'
+      - text: 'The worker is a long-running process and keeps the old code in memory until restarted'
+        correct: true
+        why: 'A worker reads the code once and runs for hours. Running messenger:stop-workers after a deploy makes it restart with the new code.'
+      - text: 'The transport DSN needs to change'
+        correct: false
+        why: 'The DSN decides where messages are stored. It has nothing to do with which version of the code runs.'
+    ref: messenger-basics

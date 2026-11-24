@@ -1,0 +1,434 @@
+slides:
+  - slug: slow-vendor-stops-us
+    title: 'An outside service slowed down, and our site stopped'
+    kind: story
+    tldr: 'Without a timeout, every worker gets stuck on the outside call. Once a vendor slows down, your whole site is dead within seconds.'
+    keywords: ['timeout', 'slow vendor', 'worker exhaustion', 'HttpClient', 'external API', 'hanging requests']
+    blocks:
+      - type: text
+        body: |
+          The night before Eid, the payment gateway suddenly slows to 30 seconds per call. We have 50 PHP workers and 10 checkout requests per second. Within 5 seconds, every worker is stuck waiting on the gateway. Pages that have nothing to do with the gateway, like the home page and user profiles, stop responding too.
+      - type: visual
+        kind: flow
+        caption: 'One slow vendor, and every worker on the site is stuck'
+        nodes:
+          - {id: users, label: 'Users', sub: '10 requests/second', icon: users, col: 0, row: 1, tip: 'The night before Eid, lots of users hit checkout at the same moment.'}
+          - {id: workers, label: '50 PHP workers', sub: 'All busy', icon: server, tone: warn, col: 2, row: 1, tip: 'Each worker holds one request at a time. While it is stuck, it can''t take anyone new.'}
+          - {id: vendor, label: 'Gateway', sub: '30 seconds per call', icon: cloud, tone: bad, col: 4, row: 1, tip: 'A system outside our control. When it is slow, we can''t fix it.'}
+        edges:
+          - {from: users, to: workers, label: '10 checkout requests arrive every second'}
+          - {from: workers, to: vendor, label: 'Each worker calls the gateway and sits waiting for the reply'}
+          - {from: vendor, to: workers, label: 'The reply comes after 30 seconds, by which time 10 × 30 requests have piled up', dashed: true, tone: bad}
+          - {from: workers, to: users, label: 'All 50 workers are used up within 5 seconds; every page on the site returns errors', dashed: true, tone: bad}
+      - type: code
+        lang: php
+        file: 'A call without a timeout (wrong)'
+        variant: bad
+        code: |
+          $client = HttpClient::create();      // no timeout set
+
+          $response = $client->request('POST', 'https://api.acmepay.example/charges', [
+              'json' => ['amount' => 50000, 'currency' => 'BDT'],
+          ]);
+          $data = $response->toArray();        // stuck here when the vendor is slow
+        marks:
+          - {line: 1, tip: 'By default it waits up to about 60 seconds (`default_socket_timeout`). With a slow vendor, that is far too long.'}
+          - {line: 6, tip: 'Until the reply arrives, the worker can''t do anything else. When all workers are stuck here, the site is dead.'}
+      - type: quote
+        body: 'An outside service will be slow one day. Never make an outside call without a timeout.'
+    aside:
+      - type: problem
+        body: 'We can''t make the vendor faster. What we can do is make sure its slowness doesn''t trap our workers.'
+      - type: terms
+        items:
+          - {term: 'Timeout', meaning: 'The longest we are willing to wait. When it passes, the call is cancelled, we catch the error and move on.'}
+    check:
+      q: 'When the gateway is slow, why does the home page die as well as checkout?'
+      a: 'The slow calls hold every worker. There is no free worker left to take the home page request.'
+
+  - slug: httpclient-timeout-retry
+    title: 'Symfony HttpClient: timeouts and retries done right'
+    kind: howto
+    tldr: 'Set timeout, max_duration and retry_failing on a scoped client; tell transport errors apart from 4xx; retry a POST only with an idempotency key.'
+    keywords: ['HttpClient', 'scoped_clients', 'retry_failing', 'max_duration', 'exponential backoff', 'jitter']
+    blocks:
+      - type: text
+        body: |
+          Build one **scoped client** per vendor, with the base URL, key, timeout and retry settings in one place. **timeout** is the longest the server may stay silent, while **max_duration** caps the whole request. On retries, increase the wait each time (**exponential backoff**) and add a little randomness (**jitter**), or everyone hits the vendor again at the same moment.
+      - type: code
+        lang: yaml
+        file: 'config/packages/framework.yaml'
+        variant: good
+        code: |
+          framework:
+            http_client:
+              scoped_clients:
+                gateway.client:
+                  base_uri: '%env(GATEWAY_URL)%'
+                  auth_bearer: '%env(GATEWAY_KEY)%'
+                  timeout: 3          # longest silence allowed (seconds)
+                  max_duration: 10    # cap for the whole request
+                  retry_failing:
+                    max_retries: 3
+                    delay: 500        # first wait (ms)
+                    multiplier: 2     # 500, 1000, 2000
+                    jitter: 0.3       # random +/-30%
+                    http_codes: [429, 502, 503, 504]
+        marks:
+          - {line: 7, tip: 'If the server sends nothing for 3 seconds, a TransportException is thrown. The worker is no longer stuck.'}
+          - {line: 8, tip: 'Even if the server trickles out its reply, we never wait longer than 10 seconds.'}
+          - {line: 13, tip: 'Without random gaps, thousands of clients retry at the same instant and knock the vendor down again.'}
+      - type: code
+        lang: php
+        file: 'src/Payment/AcmeClient.php'
+        variant: good
+        code: |
+          public function __construct(private HttpClientInterface $gatewayClient) {}
+
+          public function charge(string $key, int $amountMinor): array
+          {
+              try {
+                  return $this->gatewayClient->request('POST', '/charges', [
+                      'headers' => ['Idempotency-Key' => $key],
+                      'json' => ['amount' => $amountMinor, 'currency' => 'BDT'],
+                  ])->toArray();
+              } catch (TransportExceptionInterface|ServerExceptionInterface) {
+                  throw new OutcomeUnknown();      // we don't know if the money was taken
+              } catch (ClientExceptionInterface $e) {
+                  throw new ChargeRejected($e->getResponse()->getStatusCode());
+              }
+          }
+        marks:
+          - {line: 1, tip: 'The `gateway.client` scoped client is injected automatically into the argument named `$gatewayClient`.'}
+          - {line: 7, tip: 'If a POST is retried, the money could be taken twice. So the same Idempotency-Key goes out on every retry.'}
+          - {line: 10, tip: 'A timeout or a 5xx doesn''t mean "failed", it means "we don''t know". That state needs its own handling.'}
+          - {line: 12, tip: 'A 4xx means our request itself was wrong or rejected. Retrying won''t help.'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'Don''t retry every error. Retrying a 4xx (a bad request) just repeats the same mistake.'
+          - 'Don''t run long retries inside a web request; move long work to a queue worker.'
+      - type: refs
+        items:
+          - {to: 'payments/unknown-outcomes', label: 'The "we don''t know" state after a timeout'}
+          - {to: 'payments/idempotency-keys', label: 'Idempotency keys'}
+    check:
+      q: 'What goes wrong if you leave out `jitter` on retries, and which header matters when retrying a POST?'
+      a: 'Thousands of clients retry at the same instant and knock the vendor down again. On a POST, send the same Idempotency-Key so the money isn''t taken twice.'
+
+  - slug: rate-limits-outgoing
+    title: 'Rate limits: the courier''s busy phone line'
+    kind: howto
+    tldr: 'A vendor accepts a limited number of calls per second. Stop on a 429, and also pace your own calls with the Symfony RateLimiter.'
+    keywords: ['rate limit', '429', 'RateLimiter', 'token bucket', 'throttle', 'slow down']
+    blocks:
+      - type: metaphor
+        icon: truck
+        title: 'The courier office phone line'
+        body: |
+          A courier office can only answer so many calls at once. Phone them 100 times in a minute and they'll block your number. A smart customer sets their own pace: at most 20 calls a minute, and a short wait when they hear "busy". That self-imposed pace is a client-side rate limiter.
+      - type: visual
+        kind: flow
+        caption: 'Our own limiter stops us first; if a 429 still comes, we wait'
+        nodes:
+          - {id: app, label: 'Our app', icon: server, col: 0, row: 1, tip: 'Before calling the vendor, it asks the limiter, "May I send now?"'}
+          - {id: lim, label: 'RateLimiter', sub: '50 per second', icon: stopwatch, tone: accent, col: 2, row: 0, tip: 'A token bucket: 50 tokens are added every second. With no token, you wait.'}
+          - {id: vendor, label: 'Gateway', sub: 'Limit 60/second', icon: cloud, col: 4, row: 1, tip: 'The vendor''s own limit. We want to stay below it.'}
+        edges:
+          - {from: app, to: lim, label: 'Asks for a token before the call'}
+          - {from: lim, to: vendor, label: 'With a token, the call goes through'}
+          - {from: vendor, to: app, label: 'If a 429 still comes back, the app waits before retrying', dashed: true, tone: warn}
+      - type: code
+        lang: yaml
+        file: 'config/packages/rate_limiter.yaml'
+        variant: good
+        code: |
+          framework:
+            rate_limiter:
+              gateway_outgoing:
+                policy: 'token_bucket'
+                limit: 50
+                rate: { interval: '1 second', amount: 50 }
+        marks:
+          - {line: 5, tip: 'The bucket holds at most 50 tokens. In a sudden rush that many calls can go out at once.'}
+          - {line: 6, tip: '50 tokens are added back every second. This is the long-run pace.'}
+      - type: code
+        lang: php
+        file: 'src/Payment/AcmeClient.php'
+        variant: good
+        code: |
+          public function __construct(
+              private HttpClientInterface $gatewayClient,
+              private RateLimiterFactory $gatewayOutgoingLimiter,
+          ) {}
+
+          private function throttle(): void
+          {
+              $this->gatewayOutgoingLimiter->create('acme')
+                  ->reserve(1, maxTime: 2.0)    // wait at most 2 seconds
+                  ->wait();
+          }
+        marks:
+          - {line: 3, tip: 'The config name `gateway_outgoing` is injected automatically as `$gatewayOutgoingLimiter`.'}
+          - {line: 9, tip: 'If it would need to wait over 2 seconds, an exception is thrown. The worker never sleeps indefinitely.'}
+    aside:
+      - type: tips
+        items:
+          - 'In a web request, reply with a 503 straight away instead of calling `wait()`; long waits belong in a queue worker.'
+          - 'The limiter''s state lives in the cache, so several servers together respect the same limit.'
+    check:
+      q: 'The vendor''s limit is 60/second. Why set our own limiter to 50?'
+      a: 'Staying below the limit means you almost never see a 429. Run right at the limit and the vendor blocks you at the slightest rush.'
+
+  - slug: wrap-the-vendor
+    title: 'Keep the vendor behind your own interface'
+    kind: concept
+    tldr: 'The domain only knows its own `PaymentGateway` interface; the vendor''s language lives in a single adapter, so changing vendor leaves the rest of the code alone.'
+    keywords: ['adapter', 'port', 'vendor lock-in', 'exit plan', 'interface', 'anti-corruption layer']
+    blocks:
+      - type: metaphor
+        icon: plug
+        title: 'The wall socket and the adapter'
+        body: |
+          Every appliance in your house plugs into the same standard socket. If you travel with a foreign plug, you put an adapter in between and the appliance itself doesn't change. In code, the **interface** is the socket and the **adapter** is that travel adapter. When the vendor changes, only the adapter changes.
+      - type: visual
+        kind: flow
+        caption: 'The domain knows only the interface, nothing about the vendor'
+        nodes:
+          - {id: domain, label: 'Checkout', sub: 'Our domain', icon: cart, col: 0, row: 1, tip: 'The business rules live here. No vendor name, field or error code gets in.'}
+          - {id: port, label: 'PaymentGateway', sub: 'interface', icon: plug, tone: accent, col: 2, row: 1, tip: 'Our own socket: charge(ChargeRequest): ChargeResult. The shape is the same whichever vendor sits behind it.'}
+          - {id: acme, label: 'AcmePayGateway', sub: 'adapter', icon: cloud, col: 4, row: 0, tip: 'Translates Acme''s JSON, fields and error codes into our language.'}
+          - {id: other, label: 'OtherPayGateway', sub: 'A future adapter', icon: cloud, tone: muted, col: 4, row: 2, tip: 'When the vendor changes, only this new adapter has to be written.'}
+        edges:
+          - {from: domain, to: port, label: 'Checkout calls only the interface'}
+          - {from: port, to: acme, label: 'Today, Acme''s adapter sits behind the interface'}
+          - {from: port, to: other, label: 'Tomorrow, another vendor can be plugged in here', dashed: true, tone: muted}
+      - type: code
+        lang: php
+        file: 'src/Payment/AcmePayGateway.php'
+        variant: good
+        code: |
+          interface PaymentGateway
+          {
+              /** @throws GatewayUnavailable|GatewayDeclined */
+              public function charge(ChargeRequest $request): ChargeResult;
+          }
+
+          final readonly class AcmePayGateway implements PaymentGateway
+          {
+              public function __construct(private AcmeClient $client) {}
+
+              public function charge(ChargeRequest $r): ChargeResult
+              {
+                  $raw = $this->client->charge($r->key, $r->money->amount);
+
+                  return new ChargeResult(
+                      vendorRef: $raw['id'],
+                      status: 'paid' === $raw['state'] ? ChargeStatus::Paid : ChargeStatus::Pending,
+                  );
+              }
+          }
+        marks:
+          - {line: 4, tip: 'The interface contains only our own types: ChargeRequest and ChargeResult. Nothing from Acme.'}
+          - {line: 17, tip: 'Acme''s "state" field and its "paid" value are translated into our enum in this one place only.'}
+      - type: points
+        title: 'A plan for leaving the vendor (exit plan)'
+        style: check
+        items:
+          - 'Store the vendor''s name and the vendor reference for every transaction in your own table.'
+          - 'Get the right to export the vendor''s data (customers, tokens, history) written into the contract.'
+          - 'Write the new vendor''s adapter and run it side by side with the old one for a while.'
+    aside:
+      - type: when
+        use:
+          - 'A vendor that is costly or risky to change (payments, SMS, email)'
+        avoid:
+          - 'A small one-off tool, where a whole adapter layer is needless extra work'
+      - type: refs
+        items:
+          - {to: 'thinking/build-vs-buy', label: 'Build vs buy'}
+          - {to: 'thinking/hexagonal', label: 'Hexagonal architecture'}
+    check:
+      q: 'When the vendor changes, why does only one class change?'
+      a: 'The vendor''s fields, errors and vocabulary exist only in the adapter. The rest of the code knows our own interface and types, so it never has to be touched.'
+
+  - slug: sandbox-is-not-production
+    title: 'Fine in the sandbox, broken in production'
+    kind: pitfall
+    tldr: 'The sandbox is fast, always succeeds and has no crowd; production is slow, failing and limited. Code tested only in the sandbox gets a surprise in production.'
+    keywords: ['sandbox', 'production', 'staging', 'test environment', 'secrets', 'limits']
+    blocks:
+      - type: text
+        body: |
+          The sandbox is the vendor's playground: fake data, fake money, never a crowd. Code that passes tests there takes its first real hit from real customers. If you know the likely differences up front, launch day holds fewer surprises.
+      - type: visual
+        kind: table
+        caption: 'Typical differences between sandbox and production'
+        headers: ['Aspect', 'Sandbox', 'Production']
+        rows:
+          - cells: ['Speed', 'Always fast', 'Slower, and worse under load']
+            tip: 'A timeout never happens in the sandbox, so your timeout code never gets tested.'
+          - cells: ['Failures', 'Almost never', 'Bank failures, OTPs, limits']
+            tip: 'Real cards and banks reject payments for many reasons. The failure paths are most of production''s work.'
+          - cells: ['Rate limit', 'Loose or none', 'Strict, separate per key']
+            tip: 'Limits can differ in production; check the contract or the dashboard.'
+          - cells: ['Webhook', 'Instant, always arrives', 'Late, twice, or out of order']
+            tip: 'Real webhooks come with retries, duplicates and delays.'
+          - cells: ['Keys and data', 'Fake keys, fake customers', 'Real keys, real money']
+            tip: 'The keys differ, so there is a risk of putting the wrong key in the wrong env.'
+      - type: code
+        lang: bash
+        file: 'terminal'
+        variant: good
+        code: |
+          # .env holds only the sandbox default (committed)
+          GATEWAY_URL=https://sandbox.acmepay.example/v2
+
+          # production keys never go in a file, only in the secrets vault
+          php bin/console secrets:set GATEWAY_KEY --env=prod
+          php bin/console secrets:set GATEWAY_URL --env=prod
+        marks:
+          - {line: 2, tip: 'With the sandbox as the default, nobody can move real money by accident from a local machine.'}
+          - {line: 5, tip: 'The real key lives in the vault and never reaches git.'}
+      - type: quote
+        body: 'The sandbox only tests that the pieces connect. Simulate timeouts, failures and duplicates yourself.'
+    aside:
+      - type: tips
+        items:
+          - 'In tests, build the slow or failing vendor yourself: Symfony''s `MockHttpClient` can fake timeouts, 429s and 503s.'
+          - 'On launch day, watch the first few real transactions yourself, and keep the [[ledgers/reconciliation|reconciliation]] job running.'
+    check:
+      q: 'Why does timeout code never get tested in the sandbox, and how will you test it?'
+      a: 'The sandbox always answers quickly, so a timeout never happens. Test it by faking slow or failing responses with `MockHttpClient`.'
+
+flashcards:
+  - q: 'Why must every outside API call have a timeout?'
+    a: 'Otherwise, when the vendor is slow, our workers get stuck waiting for replies and the whole site goes down.'
+    more: |
+      Each PHP worker holds one request at a time. With 50 workers and 10 slow calls per second, all of them are stuck within 5 seconds. Then even pages with nothing to do with the vendor stop responding.
+    ref: slow-vendor-stops-us
+  - q: 'What is the difference between `timeout` and `max_duration` in Symfony HttpClient?'
+    a: '`timeout` is the longest the server may stay silent. `max_duration` caps the total time of the whole request.'
+    more: |
+      With only `timeout`, a server that trickles out its reply bit by bit can hold us for a long time. `max_duration` closes that gap.
+    ref: httpclient-timeout-retry
+  - q: 'What are exponential backoff and jitter for in retries?'
+    a: 'Backoff makes the wait longer on each attempt (500, 1000, 2000 ms). Jitter adds a random gap so that everyone doesn''t hit at once.'
+    more: |
+      If everyone retries at the same moment, a vendor that has just fallen over falls over again. With jitter, the retries spread out over time and the vendor can catch its breath.
+    ref: httpclient-timeout-retry
+  - q: 'Which HTTP responses can you retry, and which can''t you?'
+    a: 'You can retry temporary problems (429, 502, 503, 504, timeouts). Not a 4xx bad request, because the same mistake will happen again.'
+    more: |
+      Before retrying a POST, make sure an Idempotency-Key is being sent. Otherwise, if the first call actually succeeded, the money is taken twice.
+    ref: httpclient-timeout-retry
+  - q: 'What does a 429 from a vendor mean, and what is the right behaviour?'
+    a: 'It means we went over its limit. Stop, retry after a growing delay, and slow down our own calls.'
+    more: |
+      To stay under the limit, you can pace your own outgoing calls with the Symfony RateLimiter (a token bucket), so a 429 almost never appears.
+    ref: rate-limits-outgoing
+  - q: 'What is the benefit of keeping a vendor behind your own interface (an adapter)?'
+    a: 'The vendor''s fields and errors live in a single class. If the vendor changes, you write only a new adapter and the rest of the code stays intact.'
+    more: |
+      The interface holds our own types, such as `ChargeRequest` and `ChargeResult`. That reduces vendor lock-in, and makes it easy to swap in a fake adapter in tests.
+    ref: wrap-the-vendor
+  - q: 'What should you prepare in advance so you can escape vendor lock-in?'
+    a: 'The vendor''s name and reference in your own table for every transaction, a data-export right in the contract, and room to run a new adapter alongside.'
+    more: |
+      If you build an exit plan later, you can't even find the data. Keeping the vendor reference in your own table from day one makes the migration bookkeeping easy.
+    ref: wrap-the-vendor
+  - q: 'Why can something that works in the sandbox break in production?'
+    a: 'The sandbox is fast, almost failure-free and has no rate limits. Production has slowness, failures, duplicate webhooks and strict limits.'
+    more: |
+      So you have to simulate timeouts, 429s, declined cards and duplicate webhooks yourself. Symfony's `MockHttpClient` is useful for this.
+    ref: sandbox-is-not-production
+
+quiz:
+  - q: 'The config below has a serious gap. What is it?'
+    lang: yaml
+    code: |
+      framework:
+        http_client:
+          scoped_clients:
+            sms.client:
+              base_uri: '%env(SMS_URL)%'
+              auth_bearer: '%env(SMS_KEY)%'
+    hint: 'What happens when the vendor is slow?'
+    options:
+      - text: 'There is no timeout or max_duration; when the vendor is slow, workers get stuck'
+        correct: true
+        why: 'The default wait is very long. For every vendor you must set timeout and max_duration explicitly.'
+      - text: '`auth_bearer` should not use an env variable'
+        correct: false
+        why: 'Keeping the key in an env variable is the right approach; that isn''t the problem.'
+      - text: 'A dot in the scoped client''s name is wrong'
+        correct: false
+        why: '`sms.client` is a perfectly valid name; it is injected as `$smsClient`.'
+      - text: 'With a `base_uri`, nothing else is needed'
+        correct: false
+        why: 'base_uri only sets the address; time limits have to be set separately.'
+    ref: httpclient-timeout-retry
+  - q: 'After POST /charges to the gateway, the request times out. What should the app do?'
+    hint: 'Do we know whether the money was taken?'
+    options:
+      - text: 'Try again with a new Idempotency-Key'
+        correct: false
+        why: 'If the first call succeeded, a new key takes the money twice.'
+      - text: 'Show "failed" straight away and cancel the order'
+        correct: false
+        why: 'A timeout means "we don''t know". If the money was taken, the customer pays and gets no order.'
+      - text: 'Mark the state as "unknown", then retry with the same key or check the status'
+        correct: true
+        why: 'Sending again with the same key won''t take the money a second time, and you can also confirm the status another way.'
+      - text: 'Assume "success" and confirm the order'
+        correct: false
+        why: 'We don''t know whether it succeeded. Assuming without knowing is also wrong.'
+    ref: httpclient-timeout-retry
+  - q: 'Which of these are good habits when setting up retries in Symfony HttpClient?'
+    hint: 'Think about the wait, the spreading out, and which errors are worth retrying.'
+    options:
+      - text: 'Increasing the wait on each attempt (multiplier)'
+        correct: true
+        why: 'It gives the vendor time to recover.'
+      - text: 'Randomising the retry timing with jitter'
+        correct: true
+        why: 'Not every client hits at the same instant.'
+      - text: 'Retrying on 429 and 503, but not on 400'
+        correct: true
+        why: '429 and 503 are temporary problems; a 400 means the request is wrong, and sending it again gives the same result.'
+      - text: 'Retrying every error as many times as possible with no pause'
+        correct: false
+        why: 'It puts the vendor under even more pressure, and a bad request is needlessly sent again and again.'
+    ref: httpclient-timeout-retry
+  - q: 'The vendor''s limit is 100 calls/second. A job suddenly sent 500 calls and got many 429s. Which fix is best?'
+    hint: 'The problem starts on our side.'
+    options:
+      - text: 'Put a token bucket limiter on our side and keep the pace at about 80/second'
+        correct: true
+        why: 'Staying below the limit means a 429 almost never comes, and the vendor can''t block us.'
+      - text: 'Resend immediately on every 429, with no pause'
+        correct: false
+        why: 'That brings even more 429s and raises the risk of being blocked.'
+      - text: 'Create a second API key to get around the limit'
+        correct: false
+        why: 'It risks breaking the contract; the vendor can lock the account.'
+      - text: 'Raise the timeout to 60 seconds'
+        correct: false
+        why: 'The problem is the rate limit; a longer wait gets more workers stuck.'
+    ref: rate-limits-outgoing
+  - q: 'Checkout code uses `AcmeClient` directly, and `$raw[''state''] === ''paid''` is scattered everywhere. In six months the vendor has to change. What is the problem?'
+    hint: 'How many files will you have to touch?'
+    options:
+      - text: 'The vendor''s fields and vocabulary are spread across the codebase; every place has to be touched'
+        correct: true
+        why: 'With an adapter, the translation would live in one place. Without one, changing vendor means a big refactor.'
+      - text: 'No problem, a find-and-replace will do'
+        correct: false
+        why: 'Field names, values and error behaviour all differ too; it isn''t just a rename.'
+      - text: 'Using `file_get_contents` instead of AcmeClient would fix it'
+        correct: false
+        why: 'That makes it worse; you lose the timeout, the retries and everything else.'
+      - text: 'The new vendor''s SDK will adapt all of this by itself'
+        correct: false
+        why: 'The new SDK has its own vocabulary; the old code doesn''t change by itself.'
+    ref: wrap-the-vendor

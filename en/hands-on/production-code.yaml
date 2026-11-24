@@ -1,0 +1,505 @@
+slides:
+  - slug: works-on-my-machine
+    title: 'But it works on my laptop!'
+    kind: story
+    tldr: 'Code that worked once on your laptop and code that works a thousand times, even on a bad day in production, are two different grades of code.'
+    keywords: ['production ready', 'works on my machine', 'happy path', 'production code', 'courier booking']
+    blocks:
+      - type: text
+        body: |
+          Rahim writes an endpoint that books a parcel with a courier. He runs it ten times on his laptop and it works ten times. Hover over the marked lines to see where this code breaks on a bad day in production.
+      - type: code
+        lang: php
+        file: 'src/Controller/ShipmentController.php'
+        variant: bad
+        code: |
+          #[Route('/api/shipments', methods: ['POST'])]
+          public function create(Request $request, EntityManagerInterface $em): JsonResponse
+          {
+              $data = json_decode($request->getContent(), true);
+              $order = $em->getRepository(Order::class)->find($data['orderId']);
+
+              $json = file_get_contents(
+                  'https://api.courier.example/v1/shipments?ref='.$order->getNumber()
+              );
+              $order->setTrackingCode(json_decode($json, true)['tracking']);
+              $em->flush();
+
+              return $this->json(['tracking' => $order->getTrackingCode()]);
+          }
+        marks:
+          - {line: 4, tip: 'No validation. If orderId is missing or the JSON is broken, the user gets a raw 500 error.'}
+          - {line: 5, tip: 'Nobody checks whose order it is, so anyone can book a parcel on someone else''s order. If the order isn''t found, calling a method on null crashes.'}
+          - {line: 7, tip: 'No timeout: if the courier is slow, this worker hangs for up to 60 seconds. On failure it returns false, and nothing is logged anywhere.'}
+          - {line: 10, tip: 'If an impatient customer clicks twice, the whole path runs twice: two parcels on the same order.'}
+      - type: points
+        title: 'What happened in production in the first week'
+        style: cross
+        items:
+          - 'The courier''s server slowed down; every worker hung and the whole site went down.'
+          - 'A double click booked two parcels on one order, and the cost was paid twice.'
+          - 'Nobody could tell from the logs which order went wrong.'
+      - type: metaphor
+        icon: fire
+        title: 'Home cooking and wedding cooking'
+        body: |
+          If a biryani for four people at home is a little short on salt, nothing is lost. For 500 guests at a wedding, the cook has to think ahead: what if the gas runs out, what if the meat arrives late, who tastes it before it is served? It's the same recipe, but the preparation is different.
+      - type: quote
+        body: 'Working is not the same as ready. Production-ready code knows what to do on a bad day.'
+    aside:
+      - type: story
+        title: 'The courier''s fault, the shop goes down'
+        body: |
+          One evening, the courier company's server slowed down. The shop's code had no timeout, so every request hung and took over all the PHP workers. The problem was the courier's, yet even browsing products on the shop stopped working.
+      - type: terms
+        items:
+          - {term: 'Happy path', meaning: 'The route where everything goes right: valid input, a good network, nobody clicking twice.'}
+          - {term: 'Worker', meaning: 'A server process that handles one request at a time. There are only so many of them.'}
+      - type: refs
+        items:
+          - {to: 'resilience/containing-failure', label: 'Containing failure: why timeouts matter'}
+    check:
+      q: 'Rahim''s code worked every time on his laptop. Why did it break in production?'
+      a: 'On the laptop only the good-day path ran. Production brings slow APIs, bad input and double clicks, and the code had no preparation for any of them.'
+
+  - slug: production-ready-means
+    title: 'Production-ready means answering seven questions'
+    kind: concept
+    tldr: 'Production-ready code answers seven questions: bad input, failures, repeats, permission, visibility, a way back, and proof.'
+    keywords: ['production readiness', 'definition of done', 'production ready', 'checklist', 'observability', 'rollback']
+    blocks:
+      - type: text
+        body: |
+          Before lighting the stove, the wedding cook asks himself a few questions. For code there are seven. You must be able to **show** the answer to each one in the code. "I think it's fine" is not an answer.
+      - type: visual
+        kind: table
+        caption: 'Seven questions: the cook''s preparation and what it looks like in code'
+        headers: ['Question', 'The cook''s preparation', 'What the code has']
+        rows:
+          - cells: ['What if the input is wrong?', 'Spoiled meat is sent back at the door', 'A typed DTO, the Validator, a 422 response']
+            tip: 'Treat everything from outside with suspicion. Stop bad input at the door so it never reaches the code inside.'
+          - cells: ['What if something outside breaks?', 'A spare cylinder in case the gas runs out', 'Timeouts, caught exceptions, a clear error']
+            tip: 'Another service will be slow or down sooner or later. Your code shouldn''t wait forever, and it should give the user an answer they can understand.'
+          - cells: ['What if the same job arrives twice?', 'No guest gets the roast twice', 'An idempotency key, a unique constraint']
+            tip: 'Double clicks, retries and network glitches send the same request again and again. The result should stay the same as if it came once.'
+          - cells: ['Is this action allowed?', 'Strangers don''t enter the kitchen', '#[IsGranted], ownership checks in a voter']
+            tip: 'Being logged in isn''t enough. You also need to check whether this user may touch this particular order.'
+          - cells: ['How will we know when it goes wrong?', 'A note of what went into which pot', 'Logs with order_id, metrics, alerts']
+            tip: 'In production you aren''t sitting in front of the screen. Logs and metrics are your eyes, and a log without context (which order, which user) is blind.'
+          - cells: ['How do we get back if it goes bad?', 'A substitute dish ready if one is spoiled', 'A feature flag, a reversible migration']
+            tip: 'Before shipping new code, know how fast you can switch it off. If one switch does it, the cost of a mistake drops sharply.'
+          - cells: ['What is the proof that it works?', 'Tasting before serving', 'Automated tests for the bad paths too']
+            tip: 'The answers to the six questions above shouldn''t be words. If there is a test for each one, that is proof.'
+      - type: quote
+        body: 'Production-ready means the bad-day paths are written, tested and visible from outside.'
+    aside:
+      - type: remember
+        body: 'Input, failure, repeat, permission, visibility, way back, proof: if all seven aren''t ticked, the work isn''t "done".'
+      - type: terms
+        items:
+          - {term: 'Idempotent', meaning: 'Doing something ten times has the same result as doing it once.'}
+          - {term: 'Observability', meaning: 'Being able to tell what is happening inside by looking at logs and metrics from outside.'}
+          - {term: 'Rollback', meaning: 'Taking a new change out and going back to the earlier good state.'}
+      - type: refs
+        items:
+          - {to: 'payments/idempotency-keys', label: 'Idempotency keys in detail'}
+          - {to: 'observability/logging-tracing', label: 'How to write useful logs'}
+    check:
+      q: 'Which questions do you ask to tell whether a new endpoint is production-ready?'
+      a: 'What happens on bad input, when an outside service breaks, when the request arrives twice; whether permission is checked; whether a failure shows up in the logs; whether it can be rolled back; and whether tests cover all of this.'
+
+  - slug: from-works-to-ready
+    title: 'From "works" to "ready": the same endpoint, rebuilt'
+    kind: howto
+    tldr: 'The same courier booking, now with validation and permission at the door, and inside it a timeout, an idempotency key and logs with context.'
+    keywords: ['MapRequestPayload', 'HttpClient timeout', 'IsGranted', 'voter', 'idempotency key', 'logger context', 'production code example']
+    blocks:
+      - type: text
+        body: |
+          Rahim's endpoint now comes in two parts. The controller only does the door's job: checking input and permission. The real work lives in a service that is prepared for failure and repeats.
+      - type: code
+        lang: php
+        file: 'src/Controller/ShipmentController.php'
+        variant: good
+        code: |
+          #[Route('/api/shipments', methods: ['POST'])]
+          #[IsGranted('ROLE_MERCHANT')]
+          public function create(
+              #[MapRequestPayload] CreateShipment $input,
+              OrderRepository $orders,
+              ShipmentBooker $booker,
+          ): JsonResponse {
+              $order = $orders->find($input->orderId)
+                  ?? throw $this->createNotFoundException('Order not found');
+
+              $this->denyAccessUnlessGranted('SHIP', $order);
+
+              return $this->json(['tracking' => $booker->book($order)]);
+          }
+        marks:
+          - {line: 4, tip: 'CreateShipment is a readonly DTO whose orderId has #[Assert\Positive]. On wrong or missing input, Symfony returns a 422 by itself.'}
+          - {line: 9, tip: 'If the order isn''t found, no crash, just a clean 404.'}
+          - {line: 11, tip: 'The OrderVoter checks that the order belongs to this merchant. If not, 403: you can''t touch someone else''s order.'}
+      - type: code
+        lang: php
+        file: 'src/Shipping/ShipmentBooker.php'
+        variant: good
+        code: |
+          final readonly class ShipmentBooker
+          {
+              public function __construct(
+                  private HttpClientInterface $courierClient,
+                  private EntityManagerInterface $em,
+                  private LoggerInterface $logger,
+              ) {
+              }
+
+              public function book(Order $order): string
+              {
+                  if (null !== $order->getTrackingCode()) {
+                      return $order->getTrackingCode();   // already booked: don't book again
+                  }
+
+                  try {
+                      $tracking = $this->courierClient->request('POST', '/v1/shipments', [
+                          'headers' => ['Idempotency-Key' => 'order-'.$order->getId()],
+                          'json' => ['reference' => $order->getNumber()],
+                          'timeout' => 3,
+                          'max_duration' => 8,
+                      ])->toArray()['tracking'];
+                  } catch (ExceptionInterface $e) {
+                      $this->logger->error('Courier booking failed', [
+                          'order_id' => $order->getId(), 'exception' => $e,
+                      ]);
+
+                      throw new CourierUnavailableException(previous: $e);
+                  }
+
+                  $order->setTrackingCode($tracking);
+                  $this->em->flush();
+
+                  return $tracking;
+              }
+          }
+        marks:
+          - {line: 12, tip: 'If the same order comes in a second time, no new parcel: the earlier tracking code is returned.'}
+          - {line: 18, tip: 'Even if two requests arrive at exactly the same moment, the courier sees the same key and creates one parcel (provided the courier''s API honours idempotency keys).'}
+          - {line: 20, tip: 'timeout: give up if nothing comes back for 3 seconds. max_duration: at most 8 seconds for the whole call.'}
+          - {line: 24, tip: 'A log with order_id, so you can find exactly this order''s incident later.'}
+          - {line: 28, tip: 'Your own exception. A listener turns it into a 503 with a "please try again shortly" message. The customer never sees a stack trace.'}
+      - type: quote
+        body: 'A timeout on every outside call, and "what if it arrives twice?" answered for every write. Without both answers, the code doesn''t merge.'
+    aside:
+      - type: tips
+        items:
+          - 'Define a client called `courier.client` under `framework.http_client.scoped_clients` and it autowires as `HttpClientInterface $courierClient`.'
+          - 'A timeout doesn''t mean "it didn''t happen", it means "I don''t know". So on the next attempt, send the same idempotency key.'
+          - 'If you don''t want to keep the customer waiting for a slow courier, move the job to a queue with Messenger.'
+      - type: commands
+        title: 'Run these yourself before merging'
+        items:
+          - {cmd: 'php bin/phpunit', desc: 'All tests, including the bad-path ones'}
+          - {cmd: 'vendor/bin/phpstan analyse', desc: 'Catch null and type mistakes early'}
+          - {cmd: 'php bin/console lint:container', desc: 'Check that service wiring is correct'}
+      - type: refs
+        items:
+          - {to: 'payments/unknown-outcomes', label: 'Handling "did it happen or not?"'}
+    check:
+      q: 'What two protections does the new code have against a double click?'
+      a: 'One: if the tracking code already exists, it returns it. Two: it sends the courier the same per-order Idempotency-Key, so even two requests arriving together create just one parcel.'
+
+  - slug: review-checklist
+    title: 'Code review: what to look at, in what order'
+    kind: howto
+    tldr: 'A review is not about catching typos: first the purpose and design, then failure paths, security and tests, and names and style last.'
+    keywords: ['code review', 'pull request', 'review checklist', 'review order', 'checklist', 'LGTM', 'PR size']
+    blocks:
+      - type: metaphor
+        icon: check
+        title: 'Tasting before it is served'
+        body: |
+          At a wedding, another cook tastes the food before it goes to the tables. He doesn't look at how the plate is decorated first. He checks whether the meat is cooked and the salt is right. A code review works the same way: the mistake that would make a guest ill comes first, and the garnish comes last.
+      - type: visual
+        kind: steps
+        caption: 'The six steps of a review, from costly mistakes to cheap ones'
+        steps:
+          - {title: '1. Purpose', body: 'Read the PR description: what problem, and why this solution?', tip: 'Before opening the code, know what it is meant to do. Without the purpose, you can''t judge whether it is right.'}
+          - {title: '2. Design', body: 'Is the logic in the right place? Is that new table or dependency really needed?', tone: accent, tip: 'The costliest mistakes are here. Logic in the wrong place or a wrong data model is hard to change after the merge.'}
+          - {title: '3. Correctness and failure', body: 'What happens with null, an empty list, a double request, a timeout, a break halfway?', tip: 'The author has usually thought about the good-day path. The reviewer''s job is to raise the bad-day questions.'}
+          - {title: '4. Security and data', body: 'Permission checks, input validation, whether a migration locks the table.', tip: 'Tests rarely catch these mistakes, but they do the most damage in production.'}
+          - {title: '5. Tests and visibility', body: 'Are there tests for the bad paths? Will the logs tell you what went wrong?', tip: 'Don''t just check that a test exists. Check whether it would really fail on wrong code.'}
+          - {title: '6. Readability', body: 'Names, function size, extra complexity. A linter catches style.', tone: muted, tip: 'Important, but last. Arguments about whitespace and brackets are a job for machines, not people.'}
+      - type: code
+        lang: text
+        file: 'Four kinds of good review comments'
+        variant: good
+        code: |
+          blocker: this HTTP call has no timeout. If the courier is slow, every worker
+                   will hang. How about adding 'timeout' => 3?
+
+          question: if the same order comes in twice, will two parcels get booked?
+
+          suggestion (optional): these 40 lines would read more easily as a separate
+                   private method.
+
+          praise: great test for the failure case, exactly the one I was looking for.
+        marks:
+          - {line: 1, tip: 'blocker = no merge until this is fixed. Give the reason and a proposal along with it, not just "wrong".'}
+          - {line: 4, tip: 'A question, not an accusation. The author may or may not have thought of it, and either way a conversation starts.'}
+          - {line: 6, tip: 'Label what is mandatory and what is only an opinion, so the author doesn''t have to guess.'}
+      - type: quote
+        body: 'A review judges the code, not the person, and every objection comes with a reason.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Approving with "LGTM" without really thinking about the code.'
+          - 'A 1,500-line PR: nobody reads it carefully. Keep PRs between 200 and 400 lines.'
+          - '20 comments on names and whitespace, and nobody noticed the missing timeout.'
+          - 'Leaving a review sitting for two days: by then the author has lost the context.'
+      - type: tips
+        items:
+          - 'Give style arguments to machines: run php-cs-fixer, PHPStan and ESLint in CI.'
+          - 'Review your own PR first. Half the mistakes get caught right there.'
+      - type: refs
+        items:
+          - {to: 'thinking/design-review', label: 'Design review before the code'}
+    check:
+      q: 'Why does a review look at design and failure paths before names and style?'
+      a: 'Mistakes there cause damage in production and are costly to change later. Style can be caught by a machine and fixed cheaply at any time.'
+
+  - slug: second-ecosystem
+    title: 'Why learn a second ecosystem'
+    kind: compare
+    tldr: 'Know only one language and you mistake its habits for rules. Learn a second one and you can see which ideas are universal principles and which are one framework''s conventions.'
+    keywords: ['second ecosystem', 'polyglot', 'PHP vs Node', 'event loop', 'shared nothing', 'second language', 'AbortSignal']
+    blocks:
+      - type: text
+        body: |
+          A cook who has only ever made biryani thinks cooking means sealing the pot and letting it steam. After a month in a Chinese kitchen he learns that all the ingredients can be cut and laid out beforehand, and that habit helps his biryani too. Learning Node.js (or Go, or Java) next to PHP does the same: the principles stay, while the surface and the traps change.
+      - type: visual
+        kind: table
+        caption: 'The same question, answered differently in two ecosystems'
+        headers: ['Topic', 'PHP + Symfony', 'Node.js + TypeScript']
+        rows:
+          - cells: ['Each request', 'Starts fresh, everything is wiped at the end', 'One process keeps running, non-stop']
+            tip: 'In PHP-FPM, one request''s memory or static data doesn''t carry over to the next. In Node the process stays alive, so leaks pile up and global data is shared by everyone.'
+          - cells: ['Many requests at once', 'A separate worker for each', 'One thread''s event loop takes turns']
+            tip: 'In PHP a slow call blocks one worker, and when workers run out the site is down. In Node, waiting on I/O blocks nobody, but heavy CPU work stops the entire event loop.'
+          - cells: ['Timeout on an outside call', 'The HttpClient timeout option', 'AbortSignal.timeout() on fetch']
+            tip: 'The principle is the same: no network call waits forever. Only the way of writing it changes.'
+          - cells: ['Catching mistakes', 'Exceptions, try/catch', 'Rejected Promises, await + try/catch']
+            tip: 'In Node, the error of a Promise left without await isn''t caught by catch. For a PHP developer this is a completely new kind of trap.'
+          - cells: ['Dependencies', 'Composer, composer.lock', 'npm, package-lock.json']
+            tip: 'In both places you commit the lock file, so every machine and production get exactly the same versions.'
+      - type: code
+        lang: ts
+        file: 'src/shipping/bookShipment.ts'
+        variant: good
+        code: |
+          const response = await fetch(`${COURIER_URL}/v1/shipments`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Idempotency-Key': `order-${order.id}`,
+            },
+            body: JSON.stringify({ reference: order.number }),
+            signal: AbortSignal.timeout(3000),
+          })
+
+          if (!response.ok) {
+            logger.error({ orderId: order.id, status: response.status }, 'Courier booking failed')
+            throw new CourierUnavailableError()
+          }
+        marks:
+          - {line: 5, tip: 'The same idempotency key: the language changed, the principle didn''t.'}
+          - {line: 8, tip: 'If there is no response in 3 seconds, fetch cancels itself and throws a TimeoutError. This takes the place of Symfony''s timeout option.'}
+          - {line: 12, tip: 'A structured log with context, just like Monolog''s context array.'}
+      - type: points
+        title: 'What a second ecosystem gives you'
+        style: check
+        items:
+          - 'You can separate principle from convention: the timeout is a principle, `HttpClient` is a convention.'
+          - 'You can review the code of the mobile, frontend or data teams, and speak their language.'
+          - 'You can say which tool suits which job from your own experience, not hearsay.'
+    aside:
+      - type: when
+        use:
+          - 'You already have experience running code in production in your first ecosystem.'
+          - 'Your team has services in another language that your code talks to.'
+        avoid:
+          - 'Your first one is still shaky: a second one just adds confusion.'
+          - 'Stopping at syntax: you only learn it by deploying a small service.'
+      - type: remember
+        body: 'Know one language and you see from inside it. Know two and you see from above.'
+    check:
+      q: 'Moving from PHP to Node.js, which principles stay the same, and what do you have to rethink?'
+      a: 'Timeouts, idempotency, validation and logs stay the same. You have to rethink the process model: in Node the process stays alive, so memory leaks, shared state and a blocked event loop are new risks.'
+
+flashcards:
+  - q: 'What separates code that "works" from production-ready code?'
+    a: 'Production-ready code also handles the bad-day paths: wrong input, slow or dead services, double requests. And when something fails, the logs show it.'
+    more: |
+      On a laptop we only run the happy path: valid input, a good network, one user. In production all the other paths happen too, every day. So before saying "done", ask the seven questions: input, failure, repeat, permission, visibility, way back, proof.
+    ref: production-ready-means
+  - q: 'When you make an HTTP call to an outside service, what must you never leave out?'
+    a: 'A timeout. Without one, a single slow service can hold all your workers and take the whole site down.'
+    more: |
+      In PHP, if you say nothing, a call can wait up to 60 seconds. For that long the worker can't take any other request. A few dozen requests hanging like this use up all the workers, and even unrelated pages on the site stop. More: [[resilience/containing-failure|Containing failure]].
+    ref: from-works-to-ready
+  - q: 'What is the difference between timeout and max_duration in Symfony HttpClient?'
+    a: 'timeout = how long you can go without receiving any data. max_duration = the maximum time for the whole request and response together.'
+    more: |
+      With only a timeout, a server can trickle out a drop of data every 2 seconds and hold you for minutes, because it is never fully silent. max_duration closes that gap. On important calls, set both.
+    ref: from-works-to-ready
+  - q: 'After a timeout, can you assume the work didn''t happen?'
+    a: 'No. A timeout means "I don''t know": the work may have been done on the other side. So retry with the same idempotency key.'
+    more: |
+      Your request may have arrived and the work may be done, with only the response late on its way back. If you resend with a new key, the same job happens twice: two parcels, two charges. With the same key, the other side recognises it as a repeat of the old request.
+    ref: from-works-to-ready
+  - q: 'What does Symfony''s #[MapRequestPayload] do for you?'
+    a: 'It turns the request''s JSON into a typed DTO and runs the Validator; on invalid input it returns a 422 by itself.'
+    more: |
+      Calling `json_decode()` by hand means checking every field and every type yourself, and forgetting one gives a 500 error. If you write `#[Assert\...]` on the DTO's properties, the rules live in one place, and only valid data reaches the controller.
+    ref: from-works-to-ready
+  - q: 'In what order should you look at things in a code review?'
+    a: 'Purpose, then design, then correctness and failure paths, then security and data, then tests and logs, and names and style last.'
+    more: |
+      The order runs from costly mistakes to cheap ones. A wrong design or a missing permission check does real damage in production and is hard to change later. Names and style can be fixed in five minutes any day, and a linter catches most of them anyway.
+    ref: review-checklist
+  - q: 'How big can a pull request get before review quality drops?'
+    a: 'Roughly beyond 200-400 lines. Split big work into small, independent PRs.'
+    more: |
+      On a big PR the reviewer gets tired, skims and approves, so the real mistakes slip through. Small PRs get reviewed fast and merged fast, and when something goes wrong it is easy to find which change caused it.
+    ref: review-checklist
+  - q: 'What is the main difference between the PHP-FPM and Node.js process models?'
+    a: 'PHP starts fresh on every request and wipes everything at the end. In Node one process runs continuously and one event loop handles all requests.'
+    more: |
+      That's why in PHP, whatever you put in a static variable isn't there for the next request, and even a memory leak is wiped when the request ends. With the same habit in Node, data can pass from one user to another, and memory keeps growing day after day.
+    ref: second-ecosystem
+  - q: 'What is the biggest gain from learning a second ecosystem?'
+    a: 'You can tell which ideas are universal principles (timeouts, idempotency, validation) and which are just one framework''s conventions.'
+    more: |
+      Know only one framework and every habit of it feels like "the way it must be done". Seeing a different solution to the same problem in a second one shows what the real principle was. Then you can also review other teams' code, and argue about tool choices from experience.
+    ref: second-ecosystem
+
+quiz:
+  - q: 'What is missing from the method below for production?'
+    lang: php
+    code: |
+      public function sendConfirmation(Order $order): void
+      {
+          $this->smsClient->request('POST', '/send', [
+              'json' => [
+                  'to' => $order->getPhone(),
+                  'text' => 'Your order is confirmed',
+              ],
+          ]);
+      }
+    hint: 'What happens if the SMS service is slow? And how will you know if it fails?'
+    options:
+      - text: 'There is no timeout: if the SMS service is slow, the request will hang for a long time'
+        correct: true
+        why: 'If you don''t set one, HttpClient waits up to PHP''s default_socket_timeout (usually 60 seconds), and the worker stays stuck that whole time.'
+      - text: 'If it fails, there is no log to tell you which order''s SMS didn''t go out'
+        correct: true
+        why: 'Without catching the exception and writing a log with order_id, nobody can tell later whose SMS was lost.'
+      - text: 'It should have used GET instead of POST'
+        correct: false
+        why: 'Sending an SMS causes a change; GET is only for reading. POST is right.'
+      - text: 'It should call json_encode() by hand instead of using the json option'
+        correct: false
+        why: 'The json option encodes for you and sets the correct Content-Type, which is the usual way.'
+    ref: from-works-to-ready
+  - q: 'A parcel-booking request to the courier''s API times out after 3 seconds. What should the code assume now?'
+    hint: 'Can you tell apart "the request arrived" and "the response got lost on the way"?'
+    options:
+      - text: 'The parcel wasn''t booked, so resend with a new key'
+        correct: false
+        why: 'It may have been booked and only the response failed to come back. With a new key the courier treats it as a new parcel, and two get booked.'
+      - text: 'The outcome is unknown, so retry with the same idempotency key'
+        correct: true
+        why: 'Seeing the same key, the courier knows it is a repeat of the earlier request, so however many times you send it, there is one parcel.'
+      - text: 'The parcel is booked, so carry on without a tracking code'
+        correct: false
+        why: 'The request may never have arrived. If you assume it did, the customer waits for a parcel that was never booked.'
+      - text: 'Ask the customer to place the whole order again'
+        correct: false
+        why: 'This pushes the system''s uncertainty onto the customer, and it also raises the risk of duplicate orders.'
+    ref: from-works-to-ready
+  - q: 'Which of these are part of making an endpoint production-ready?'
+    hint: 'Recall the seven questions. Which one answers none of them?'
+    options:
+      - text: 'Returning a clear 422, not a 500, on bad input'
+        correct: true
+        why: 'This answers "what if the input is wrong?": the mistake is caught at the door.'
+      - text: 'Writing a log with order_id on failure'
+        correct: true
+        why: 'This answers "how will we know when it goes wrong?": without context you can''t search a log for anything.'
+      - text: 'Adding as many design patterns and interfaces as possible'
+        correct: false
+        why: 'The number of patterns answers none of the seven questions, and needless layers only make code harder to read.'
+      - text: 'Keeping a way to switch the new behaviour off with a feature flag'
+        correct: true
+        why: 'This answers "how do we get back if it goes bad?": you can stop bad code without a new deploy.'
+    ref: production-ready-means
+  - q: 'Sumi''s PR got 30 comments, all about names and whitespace. After the merge it turned out there was no permission check, so anyone could cancel someone else''s order. What should change in the process?'
+    hint: 'A reviewer''s attention is limited. Where did it get spent?'
+    options:
+      - text: 'Add two more reviewers to every PR'
+        correct: false
+        why: 'If everyone looks in the same wrong order, even five people will get stuck on the style they notice first. It just takes longer.'
+      - text: 'Hand style to a linter, and have reviewers look at design, failure and security, in that order'
+        correct: true
+        why: 'When a machine handles style, human attention goes to the costly mistakes, and the checklist order brings up the permission question first.'
+      - text: 'Drop reviews and rely only on automated tests'
+        correct: false
+        why: 'The author never thought of the path whose test is missing, so they never wrote it. Catching a missing permission check takes another pair of eyes.'
+      - text: 'Ask for style comments to come last, and keep everything else as is'
+        correct: false
+        why: 'If people look at style, their attention is used up there. It needs to move wholly to machines, and the other steps need an order too.'
+    ref: review-checklist
+  - q: 'Rakib used to collect the current request''s data in a static array in PHP, and it never caused a problem. What happens if he takes the same habit to a Node.js service?'
+    hint: 'What does PHP-FPM do when a request ends, and what does a Node process do?'
+    options:
+      - text: 'Nothing: the behaviour is the same in both'
+        correct: false
+        why: 'PHP-FPM wipes memory at the end of every request; a Node process stays alive. The behaviour is completely different.'
+      - text: 'Data will stay across requests, and memory will keep growing'
+        correct: true
+        why: 'In Node, module-level variables are shared by all requests. One user''s data can be seen by another, and the array never gets emptied.'
+      - text: 'Node will empty the array by itself at the end of each request'
+        correct: false
+        why: 'The garbage collector won''t touch anything that still has a reference, and a module-level variable always has one.'
+      - text: 'TypeScript will catch the mistake at compile time'
+        correct: false
+        why: 'This isn''t a type error, it is a lifetime error. To the compiler the code is perfectly valid.'
+    ref: second-ecosystem
+  - q: 'Rahim''s 1,800-line PR has been sitting for two days and nobody is reviewing it. What is the best step?'
+    hint: 'Put yourself in the reviewer''s seat: which PR would you open first?'
+    options:
+      - text: 'Have the manager pressure someone into approving it quickly'
+        correct: false
+        why: 'Under pressure the reviewer will skim and approve, and the whole point of a review is lost.'
+      - text: 'Merge it yourself and hope someone looks at it later'
+        correct: false
+        why: '"Looking later" after a merge almost never happens, and by then the mistake is already in production.'
+      - text: 'Split the work into small, independent PRs, each with a clear description'
+        correct: true
+        why: 'A PR of 200-400 lines gets reviewed fast and carefully, and with a description the reviewer reads the code knowing its purpose.'
+      - text: 'Add the remaining features to this PR as well and finish in one go'
+        correct: false
+        why: 'The bigger the PR, the longer the review waits, and the less likely it is that mistakes get caught.'
+    ref: review-checklist
+  - q: 'An endpoint that succeeded every time on a laptop broke in production. What is the most likely reason?'
+    hint: 'Which situations never came up on the laptop?'
+    options:
+      - text: 'There are more users in production, so adding server RAM will fix it'
+        correct: false
+        why: 'RAM stops none of these: bad input, double clicks or a hanging outside call.'
+      - text: 'On the laptop only the good-day path ran: slow APIs, bad input and double clicks never came up'
+        correct: true
+        why: 'Running alone, only the happy path is exercised. In production the other paths happen every day, and the code had no preparation for them.'
+      - text: 'Production must be running an older PHP version'
+        correct: false
+        why: 'It could be, but that would show in the very first minute after a deploy. Here it breaks only in particular situations, not all the time.'
+    ref: works-on-my-machine

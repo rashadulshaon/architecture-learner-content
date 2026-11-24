@@ -1,0 +1,363 @@
+slides:
+  - slug: report-kills-checkout
+    title: 'The monthly report started, and checkout froze'
+    kind: story
+    tldr: 'Run fast little transactions and heavy reports on the same database and the report eats every resource, so customers'' orders slow down.'
+    keywords: ['OLTP', 'OLAP', 'report', 'reporting query', 'slow checkout', 'analytics']
+    blocks:
+      - type: metaphor
+        icon: shop
+        title: 'The cash counter and the monthly ledger'
+        body: |
+          At a corner shop's cash counter, twenty people a minute queue up, and each one takes two seconds. If the owner sits down at that very counter and starts leafing through the whole month's bills to add them up, the queue stops dead. Unless the counter and the accounts desk are separate, both jobs suffer.
+      - type: text
+        body: |
+          Rahim's e-commerce app runs a sales report every night. One day the manager ran the same report at noon, and for 20 minutes every order took 8 seconds. Here are the two kinds of query side by side.
+      - type: code
+        lang: sql
+        file: 'Two kinds of work, one database'
+        variant: neutral
+        code: |
+          -- OLTP: 1 row, through an index, 1ms
+          UPDATE orders SET status = 'paid' WHERE id = 90412;
+
+          -- OLAP: reads tens of millions of rows, counts, groups
+          SELECT date_trunc('month', created_at) AS month,
+                 category_id, SUM(total_amount) AS revenue
+          FROM orders
+          GROUP BY month, category_id;
+        marks:
+          - {line: 2, tip: 'It touches one row and it is done. A thousand of these at once won''t make the database gasp.'}
+          - {line: 6, tip: 'It scans the whole table, holding CPU, memory and disk I/O for a long time.'}
+      - type: visual
+        kind: bars
+        caption: 'Checkout response time while the report runs (same server)'
+        items:
+          - {label: 'Report off', value: 120, display: '120ms', tone: good, tip: 'This is how long saving an order takes on a normal day.'}
+          - {label: 'Report running', value: 8000, display: '8000ms', tone: bad, tip: 'The heavy query takes all the CPU and disk, so small queries wait in line.'}
+    aside:
+      - type: story
+        title: 'The manager''s one click'
+        body: |
+          The report code had run safely at night for months. Nobody imagined the manager would run it at noon. The code didn't change; the time it ran did.
+      - type: terms
+        items:
+          - {term: 'OLTP', meaning: 'Online Transaction Processing: a huge number of small transactions such as orders, payments and logins.'}
+          - {term: 'OLAP', meaning: 'Online Analytical Processing: totals, averages and trends computed across a lot of data.'}
+    check:
+      q: 'Why did the manager''s report slow down customers'' orders, even though they use different tables?'
+      a: 'Both share the same database server''s CPU, memory and disk. The heavy scan hogged them, so the small queries had to wait.'
+
+  - slug: oltp-vs-olap
+    title: 'OLTP vs OLAP, and derived data'
+    kind: concept
+    tldr: 'OLTP is for small, fast reads and writes; OLAP is for big calculations. A separate copy built from the original data (the source of truth) is derived data.'
+    keywords: ['OLTP vs OLAP', 'derived data', 'source of truth', 'column store', 'read replica']
+    blocks:
+      - type: text
+        body: |
+          The cash counter is **OLTP**: countless small jobs, each touching a row or two, and the answer must be fast. The owner's accounts desk is **OLAP**: fewer jobs, but each one wades through hundreds of thousands of rows to work out a total. The original bill book is the one and only **source of truth**. A summary copied from that book onto a separate sheet is **derived data**: if it is lost, you can rebuild it from the original.
+      - type: visual
+        kind: table
+        caption: 'What the two kinds of work look like'
+        headers: ['', 'OLTP', 'OLAP']
+        rows:
+          - cells: ['The work', 'Save an order, log in', 'Total sales for the month']
+            tip: 'The app''s daily work is OLTP; the questions behind business decisions are OLAP.'
+          - cells: ['Rows per query', 'A few', 'Hundreds of thousands to tens of millions']
+            tip: 'OLAP reads every row, but needs only a few columns.'
+          - cells: ['Who it serves', 'Customers, the app', 'Analysts, managers']
+            tip: 'A customer wants the answer instantly; an analyst can wait a few seconds.'
+          - cells: ['What the data is', 'Current state', 'History, aggregated']
+            tip: 'In OLAP even yesterday''s data is enough; the goal is to see trends.'
+          - cells: ['Layout', 'By row', 'By column']
+            tip: 'Stored by column, `SUM(total_amount)` reads just that one column, which is much faster.'
+      - type: visual
+        kind: flow
+        caption: 'One original; the report copy lives elsewhere'
+        nodes:
+          - {id: app, label: 'Symfony app', icon: server, col: 0, row: 1, tip: 'All the customers'' transactions come in here.'}
+          - {id: main, label: 'Primary DB', sub: 'OLTP, source of truth', icon: db, tone: accent, col: 1.5, row: 1, tip: 'The real truth lives here. Running heavy reports here is off limits.'}
+          - {id: derived, label: 'Reporting copy', sub: 'derived data', icon: chart, col: 3, row: 1, tip: 'Built from the original data. If it is lost, you can build it again.'}
+          - {id: boss, label: 'Manager', sub: 'dashboard', icon: user, col: 4, row: 1, tip: 'Reads reports from this copy and never bothers the original database.'}
+        edges:
+          - {from: app, to: main, label: 'Order transactions are written straight to the Primary DB'}
+          - {from: main, to: derived, label: 'Changes make their way to the separate reporting copy', dashed: true}
+          - {from: derived, to: boss, label: 'The manager runs heavy reports against the copy', tone: good}
+      - type: quote
+        body: 'Never run reports on the transactional database: there is one original, and everything else is derived.'
+    aside:
+      - type: tips
+        items:
+          - 'Derived data is always slightly old. Put "Last updated: 10 minutes ago" on the report.'
+          - 'The cheapest first step: run reports on a read replica. See [[data/replication|replication]].'
+      - type: terms
+        items:
+          - {term: 'Source of truth', meaning: 'The place whose data is final truth; every other copy is built from it.'}
+          - {term: 'Derived data', meaning: 'A copy or summary built from the original, such as a cache, an index or a materialized view.'}
+    check:
+      q: 'Why is losing derived data cheap, while losing the source of truth is costly?'
+      a: 'Derived data can be rebuilt from the original. If you lose the source of truth, there is nothing left to recover it from.'
+
+  - slug: materialized-views
+    title: 'Precompute summaries with a materialized view'
+    kind: howto
+    tldr: 'Compute the heavy query''s result once and keep it like a table. Reports read the ready-made result, and the Scheduler refreshes it.'
+    keywords: ['materialized view', 'REFRESH CONCURRENTLY', 'Scheduler', 'summary table']
+    blocks:
+      - type: text
+        body: |
+          Instead of leafing through every bill each time, the owner writes a one-page summary called "sales by month" once a night. In a database that is a **materialized view**: the query's result is actually stored on disk. A plain view is just a name, and the query inside runs every time. You can put an index on a materialized view, and `REFRESH ... CONCURRENTLY` keeps reads working during the refresh.
+      - type: code
+        lang: sql
+        file: 'migrations/Version20260301_sales_summary.sql'
+        variant: good
+        code: |
+          CREATE MATERIALIZED VIEW sales_by_month AS
+          SELECT date_trunc('month', created_at) AS month,
+                 category_id,
+                 SUM(total_amount) AS revenue,
+                 COUNT(*)          AS orders
+          FROM orders
+          WHERE status = 'paid'
+          GROUP BY 1, 2;
+
+          -- CONCURRENTLY requires a unique index
+          CREATE UNIQUE INDEX ux_sales_by_month
+              ON sales_by_month (month, category_id);
+
+          REFRESH MATERIALIZED VIEW CONCURRENTLY sales_by_month;
+        marks:
+          - {line: 1, tip: 'The query''s result is stored like a table. A later `SELECT` no longer recomputes anything.'}
+          - {line: 11, tip: 'Without this unique index CONCURRENTLY can''t run, and a plain refresh blocks reads.'}
+          - {line: 14, tip: 'It recomputes the data and swaps it in; the old summary stays readable during the refresh.'}
+      - type: code
+        lang: php
+        file: 'src/Schedule/ReportSchedule.php'
+        variant: good
+        code: |
+          #[AsSchedule('reports')]
+          final class ReportSchedule implements ScheduleProviderInterface
+          {
+              public function getSchedule(): Schedule
+              {
+                  return (new Schedule())->add(
+                      // every night at 2 a.m., when load is low
+                      RecurringMessage::cron('0 2 * * *', new RefreshSalesSummary()),
+                  );
+              }
+          }
+
+          #[AsMessageHandler]
+          final readonly class RefreshSalesSummaryHandler
+          {
+              public function __construct(private Connection $db) {}
+
+              public function __invoke(RefreshSalesSummary $m): void
+              {
+                  $this->db->executeStatement(
+                      'REFRESH MATERIALIZED VIEW CONCURRENTLY sales_by_month'
+                  );
+              }
+          }
+        marks:
+          - {line: 8, tip: 'Symfony Scheduler works like cron; you choose when the refresh runs.'}
+          - {line: 21, tip: 'The handler only refreshes. The report query is separate and reads the `sales_by_month` table.'}
+    aside:
+      - type: when
+        use:
+          - 'The report can live with data a few minutes or an hour old'
+          - 'The same heavy total is needed again and again'
+        avoid:
+          - 'You must show a customer their exact balance right now'
+      - type: pitfalls
+        items:
+          - 'The refresh itself runs a heavy query; don''t run it at peak hours.'
+          - 'MySQL has no materialized views; there you build a summary table and update it yourself.'
+    check:
+      q: 'What is the main difference between a plain view and a materialized view? Which one protects the database in reporting?'
+      a: 'A plain view runs its query every time; a materialized view stores the result. The second does the heavy calculation once, so it protects the database.'
+
+  - slug: change-data-capture
+    title: 'Change data capture: let the changes travel on their own'
+    kind: pitfall
+    tldr: 'If the app writes to two places by hand, one write will eventually be missed. CDC reads the database''s own log and sends the changes to the reporting system.'
+    keywords: ['CDC', 'change data capture', 'Debezium', 'WAL', 'dual write', 'outbox']
+    blocks:
+      - type: text
+        body: |
+          If the app writes every order twice (once to the Primary DB, once to the reporting copy), a single failure leaves the two places disagreeing. This is called a **dual write**. The proper fix is **change data capture (CDC)**: the database itself records every change in a log (PostgreSQL's WAL). A tool such as Debezium reads that log and sends each change on to the reporting side.
+      - type: code
+        lang: php
+        file: 'src/Service/OrderService.php'
+        variant: bad
+        code: |
+          public function pay(Order $order): void
+          {
+              $order->markPaid();
+              $this->em->flush();                         // 1. the main DB
+
+              $this->reportingDb->insert('fact_orders', [ // 2. the copy
+                  'order_id' => $order->getId(),
+                  'amount'   => $order->getTotalAmount(),
+              ]);
+          }
+        marks:
+          - {line: 4, tip: 'This one succeeded.'}
+          - {line: 6, tip: 'If the server dies or the network fails here, the order exists but the copy doesn''t, and nobody notices.'}
+      - type: visual
+        kind: flow
+        caption: 'CDC: the app writes only to the main database, and the log does the rest'
+        nodes:
+          - {id: app, label: 'Symfony app', icon: server, col: 0, row: 1, tip: 'Writes to one place only. It doesn''t worry about reporting.'}
+          - {id: db, label: 'Primary DB', sub: 'WAL log', icon: db, col: 1.5, row: 1, tip: 'Every successful change is written to the log first, so the log never lies.'}
+          - {id: cdc, label: 'CDC tool', sub: 'Debezium', icon: plug, tone: accent, col: 3, row: 1, tip: 'Reads the log and turns each INSERT, UPDATE and DELETE into an event.'}
+          - {id: wh, label: 'Reporting', sub: 'warehouse', icon: chart, col: 4, row: 1, tip: 'Takes the events and updates its own tables.'}
+        edges:
+          - {from: app, to: db, label: 'The app writes the order to the main database only'}
+          - {from: db, to: cdc, label: 'The CDC tool reads new changes from the log', dashed: true}
+          - {from: cdc, to: wh, label: 'Every change reaches reporting, in order', tone: good}
+      - type: quote
+        body: 'Write in one place; build every other copy from the log.'
+    aside:
+      - type: remember
+        body: 'Writing to two places by hand means that one day you will have two truths.'
+      - type: when
+        use:
+          - 'A warehouse, search index or cache must stay in step with the main data'
+        avoid:
+          - 'Small apps: a nightly materialized view is enough, and CDC is extra hassle'
+      - type: refs
+        items:
+          - {to: 'workflows/outbox-inbox', label: 'The outbox pattern'}
+          - {to: 'data/data-platforms', label: 'Warehouses and pipelines'}
+    check:
+      q: 'In a dual write, where does the gap open up between the two places, and how does CDC avoid it?'
+      a: 'If the first write succeeds and the second fails, they no longer match. With CDC the app writes once, and the copies get their changes from the database''s log.'
+
+flashcards:
+  - q: 'What is OLTP?'
+    a: 'A huge number of small, fast transactions (orders, payments, logins), where each query touches a few rows.'
+    more: |
+      Online Transaction Processing is the app's everyday database. Responses are needed within milliseconds. Finding rows through an index, small writes and short transactions are its hallmarks.
+    ref: oltp-vs-olap
+  - q: 'What is OLAP?'
+    a: 'Fewer but heavy queries that total, average or trend across hundreds of thousands to millions of rows.'
+    more: |
+      Online Analytical Processing serves business questions such as "How much did each category sell last year?" These queries read a few columns but from a great many rows, which is why column-oriented storage is faster for them.
+    ref: oltp-vs-olap
+  - q: 'Why shouldn''t reports run on the transactional database?'
+    a: 'A heavy scan hogs CPU, memory and disk, and slows customers'' small queries.'
+    more: |
+      The two jobs share one server's resources. If a report runs for a few minutes, order saves slow down, requests time out and customers leave. So reports need a separate copy.
+    ref: report-kills-checkout
+  - q: 'What is derived data?'
+    a: 'A copy or summary built from the original data (the source of truth), which you can rebuild if it is lost.'
+    more: |
+      Caches, search indexes, materialized views and warehouse tables are all derived data. They are good for reading, but they are not the truth. When there is a mismatch, you trust the source of truth.
+    ref: oltp-vs-olap
+  - q: 'How does a materialized view differ from a plain view?'
+    a: 'A plain view runs its query every time; a materialized view stores the result on disk and changes when you refresh it.'
+    more: |
+      Because the result is stored, you can index it and reads are very fast. The price is that the data stays old until the next refresh. In PostgreSQL, `REFRESH MATERIALIZED VIEW CONCURRENTLY` updates it without blocking reads, but it needs a unique index.
+    ref: materialized-views
+  - q: 'What is change data capture (CDC)?'
+    a: 'Reading the database''s transaction log (such as the WAL) and sending every INSERT, UPDATE and DELETE to another system as an event.'
+    more: |
+      The app's code doesn't change, because the true list of changes is already in the database's log. Debezium is a popular tool for it. It avoids the dual-write gap, and copies receive the changes in order.
+    ref: change-data-capture
+  - q: 'Why is a dual write dangerous?'
+    a: 'If one app writes to two places, one write can succeed and the other fail, and the two quietly drift apart.'
+    more: |
+      The two writes are not in a single transaction, so there is no guarantee that both succeed or both fail. The fix: write in one place and build the other copies with CDC or an outbox.
+    ref: change-data-capture
+
+quiz:
+  - q: 'The nightly report pushes database CPU to 100%, and the morning orders get stuck. What is the simplest first fix?'
+    hint: 'The report and the orders run on the same server. Can you separate them?'
+    options:
+      - text: 'Run the report on a read replica or a separate reporting copy'
+        correct: true
+        why: 'When the heavy query moves to another server, the primary''s resources are protected.'
+      - text: 'Double the primary server''s RAM'
+        correct: false
+        why: 'It helps for a while, but the problem returns as reports grow, and the cost goes up.'
+      - text: 'Add `LIMIT 100` to the report query'
+        correct: false
+        why: 'In a query with GROUP BY, the full scan finishes before the LIMIT applies.'
+      - text: 'Shut the report down'
+        correct: false
+        why: 'The business needs its reports. Don''t stop the work; move it elsewhere.'
+    ref: report-kills-checkout
+  - q: 'Which of these are OLAP work?'
+    hint: 'Which ones read many rows to build a summary?'
+    options:
+      - text: 'Total sales by category for the last 12 months'
+        correct: true
+        why: 'It reads hundreds of thousands of rows and combines them; that is analysis.'
+      - text: 'Changing one order''s status to `paid`'
+        correct: false
+        why: 'A small write to one row: that is OLTP.'
+      - text: 'A data scientist analysing customer retention over three years'
+        correct: true
+        why: 'It looks for trends across a huge amount of historical data.'
+      - text: 'Looking up a user by email at login'
+        correct: false
+        why: 'Finding one row through an index: that is OLTP.'
+    ref: oltp-vs-olap
+  - q: 'What happens when you run this refresh?'
+    lang: sql
+    code: |
+      CREATE MATERIALIZED VIEW sales_by_month AS
+      SELECT date_trunc('month', created_at) AS month,
+             SUM(total_amount) AS revenue
+      FROM orders GROUP BY 1;
+
+      REFRESH MATERIALIZED VIEW CONCURRENTLY sales_by_month;
+    hint: 'CONCURRENTLY has a requirement. Does this view meet it?'
+    options:
+      - text: 'An error: CONCURRENTLY needs a unique index on the view, and there isn''t one'
+        correct: true
+        why: 'PostgreSQL needs a unique index to match old rows with new; without it this refresh can''t run.'
+      - text: 'It succeeds, because GROUP BY makes the rows unique'
+        correct: false
+        why: 'Being unique is not the same as having a unique index; you have to create the index yourself.'
+      - text: 'It deletes all the rows and leaves the view empty'
+        correct: false
+        why: 'It doesn''t empty anything; the command stops with an error at the start.'
+      - text: 'It succeeds, but locks the orders table'
+        correct: false
+        why: 'Locking is not the issue; the unmet requirement means the command never starts.'
+    ref: materialized-views
+  - q: 'After each paid order, the app also INSERTs into the warehouse itself. Why is that risky?'
+    hint: 'If the server dies between the two writes, what is left?'
+    options:
+      - text: 'If one write succeeds and the other fails, the two places end up with different data'
+        correct: true
+        why: 'There is no guarantee the two writes commit together (a dual write).'
+      - text: 'Inserting into a warehouse isn''t allowed'
+        correct: false
+        why: 'It is allowed. The trouble is keeping the two writes consistent.'
+      - text: 'INSERT is very slow'
+        correct: false
+        why: 'Speed isn''t the main problem here; wrong totals are.'
+      - text: 'A warehouse only accepts CSV'
+        correct: false
+        why: 'That is a misconception; modern warehouses accept INSERTs and streams.'
+    ref: change-data-capture
+  - q: 'Where does a database-log approach like CDC work well?'
+    hint: 'Where must data from one main database be kept in step elsewhere?'
+    options:
+      - text: 'Keeping a search index in sync with changes in the main database'
+        correct: true
+        why: 'A search index is also derived data; changes from the log keep it matching the original.'
+      - text: 'Sending data from the transactional database to a warehouse in near real time'
+        correct: true
+        why: 'You can send just the changes instead of a full nightly dump.'
+      - text: 'Showing a customer their exact balance right now'
+        correct: false
+        why: 'A balance must be read straight from the source of truth, not from a derived copy.'
+      - text: 'Repairing data when something in the database gets corrupted'
+        correct: false
+        why: 'CDC only sends copies of changes; it doesn''t repair data.'
+    ref: change-data-capture

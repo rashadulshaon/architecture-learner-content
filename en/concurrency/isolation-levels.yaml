@@ -1,0 +1,464 @@
+slides:
+  - slug: two-reads-two-answers
+    title: 'One transaction, two queries, two different truths'
+    kind: story
+    tldr: 'Even inside one transaction, another commit can slip in between two queries; the isolation level decides how much gets in.'
+    keywords: ['isolation level', 'read committed', 'non-repeatable read', 'report totals mismatch', 'isolation']
+    blocks:
+      - type: text
+        body: |
+          Hasan Store's monthly report says "total outstanding: 5000 taka" on the first page, yet the list below it adds up to 4000. Both queries ran inside the same transaction. But in the gap between them, Karim's 1000 taka payment was committed, and the second query saw it. So where did the I in ACID go? The answer: isolation isn't a switch, it's a dial with four settings, and the default setting is fairly loose.
+      - type: code
+        lang: php
+        file: 'src/Report/DueReport.php'
+        variant: bad
+        code: |
+          // One transaction, default READ COMMITTED level
+          $report = $conn->transactional(function (Connection $c): array {
+              $total = (int) $c->fetchOne('SELECT SUM(due) FROM customer');       // 5000
+
+              // right in this gap, Karim pays 1000 taka in another request and it commits
+
+              $rows = $c->fetchAllAssociative('SELECT name, due FROM customer');  // sums to 4000
+
+              return ['total' => $total, 'rows' => $rows];
+          });
+        marks:
+          - {line: 3, tip: 'It saw whatever was committed at the moment this query ran: total outstanding 5000.'}
+          - {line: 7, tip: 'This query looked at the database afresh. Karim''s payment had been committed by then, so the rows add up to 4000.'}
+      - type: visual
+        kind: sequence
+        caption: 'A payment slips in between the report''s two queries'
+        actors:
+          - {id: report, label: 'Report', icon: chart, tip: 'Runs two queries inside one transaction: the total first, then the list.'}
+          - {id: db, label: 'Database', icon: db, tip: 'At READ COMMITTED, it shows each query the data that was committed at that moment.'}
+          - {id: pay, label: 'Karim''s payment', icon: money, tip: 'A completely separate request that reduces Karim''s 1000 taka due in its own transaction.'}
+        messages:
+          - {from: report, to: db, label: 'What is the total due?'}
+          - {from: db, to: report, label: '5000 taka', dashed: true}
+          - {from: pay, to: db, label: 'Karim''s due −1000, commit', tip: 'The report''s transaction is still open, yet nothing stops this commit.'}
+          - {from: report, to: db, label: 'Give me each person''s due'}
+          - {from: db, to: report, label: 'List: sums to 4000', dashed: true, tone: bad, tip: 'The second query saw the new state. Two queries in one transaction got pictures from two different moments.'}
+          - {at: report, note: 'Total 5000, list says 4000', tone: bad, tip: 'The report disagrees with itself. No error, no log entry, just a wrong sheet of paper.'}
+    aside:
+      - type: terms
+        items:
+          - {term: 'Isolation level', meaning: 'How much of each other''s changes concurrent transactions are allowed to see.'}
+          - {term: 'Anomaly', meaning: 'A strange, wrong result that appears because isolation is loose.'}
+      - type: remember
+        body: 'Being inside a transaction doesn''t mean you are alone. The isolation level decides how alone you are.'
+      - type: refs
+        items:
+          - {to: 'concurrency/acid', label: 'The four promises of ACID'}
+    check:
+      q: 'Both queries were in the same transaction, so why didn''t the numbers match?'
+      a: 'At the default READ COMMITTED level, each query sees the data committed at the moment it runs. Karim''s payment was committed between the two queries, so the second one saw the new state.'
+
+  - slug: read-anomalies
+    title: 'Three read problems: dirty, non-repeatable, phantom'
+    kind: concept
+    tldr: 'Dirty read = reading unconfirmed writes; non-repeatable = a row you read changes; phantom = new rows appear.'
+    keywords: ['dirty read', 'non-repeatable read', 'phantom read', 'anomaly', 'read anomalies']
+    blocks:
+      - type: metaphor
+        icon: book
+        title: 'The credit ledger: pencil and pen'
+        body: |
+          In the corner shop's credit ledger, the clerk first writes in pencil (not yet committed). Once the figures check out, he goes over it in pen (commit); if they don't, he erases it (rollback). You stand beside him reading the ledger. Which entries you may see, and whether you see the same thing when you look twice, is exactly what isolation decides.
+      - type: visual
+        kind: table
+        caption: 'The three read anomalies, in ledger terms'
+        headers: ['Anomaly', 'What happens in the ledger', 'Result']
+        rows:
+          - cells: ['Dirty read', 'You read a pencil entry, then it gets erased', 'You acted on something that never existed']
+            tip: 'Reading another transaction''s uncommitted change. If it rolls back, you have made a decision on data that was never true.'
+          - cells: ['Non-repeatable read', 'You read the same line twice; someone inked over it in between', 'Two different values for the same row']
+            tip: 'Reading the same row twice in one transaction and getting two values, because another transaction changed it and committed in between.'
+          - cells: ['Phantom read', 'You count lines matching a rule twice; a new line appeared in between', 'Extra rows suddenly show up']
+            tip: 'Running the same WHERE query twice and getting extra rows (or missing ones) the second time, because someone committed an INSERT or DELETE in between.'
+      - type: text
+        body: |
+          All three are **read** problems: you didn't corrupt anything, you just looked at a wrong or shifting picture. They bite in reports, reconciliations, and any code that says "count first, then decide".
+    aside:
+      - type: remember
+        body: 'Dirty = reading pencil. Non-repeatable = an old line changes. Phantom = a new line sprouts.'
+      - type: tips
+        items:
+          - 'PostgreSQL never allows dirty reads: even if you ask for READ UNCOMMITTED, it behaves like READ COMMITTED.'
+          - 'The report problem on the previous slide is a close cousin of the non-repeatable read: two queries saw pictures from two moments.'
+    check:
+      q: 'What is the difference between a non-repeatable read and a phantom read?'
+      a: 'In a non-repeatable read, the value of a row you already read changes. In a phantom, running the same query again shows new rows, or earlier rows vanish.'
+
+  - slug: write-anomalies
+    title: 'Two write problems: lost update and write skew'
+    kind: concept
+    tldr: 'In a lost update, a write to the same row disappears; in write skew, two valid writes to different rows together break a rule.'
+    keywords: ['lost update', 'write skew', 'anomaly', 'write anomalies', 'broken invariant']
+    blocks:
+      - type: text
+        body: |
+          Read problems make a report wrong; write problems corrupt the data itself. **Lost update**: two clerks read the same line, each calculates on their own and writes back, and the second wipes out the first. **Write skew** is subtler. The shop's rule is that at least one person must be on duty. Jamal and Kamal both look at the ledger, see "2 on duty", and each writes leave on **their own** line.
+      - type: visual
+        kind: sequence
+        caption: 'Write skew: both read correctly, both wrote validly, yet nobody is minding the shop'
+        actors:
+          - {id: jamal, label: 'Jamal', icon: user, tip: 'Wants leave. Follows the rule by first checking that someone else is on duty.'}
+          - {id: db, label: 'Duty ledger', icon: db, tip: 'The shift table: one row per employee, with on_duty true or false.'}
+          - {id: kamal, label: 'Kamal', icon: user, tip: 'At exactly the same moment, runs the same check and reaches the same decision.'}
+        messages:
+          - {from: jamal, to: db, label: 'How many on duty?'}
+          - {from: kamal, to: db, label: 'How many on duty?'}
+          - {from: db, to: jamal, label: '2 people', dashed: true}
+          - {from: db, to: kamal, label: '2 people', dashed: true, tip: 'Jamal hasn''t written anything yet, so Kamal sees 2 too.'}
+          - {from: jamal, to: db, label: 'My row: on leave', tip: 'He changed only his own row. Looked at alone, this is perfectly valid.'}
+          - {from: kamal, to: db, label: 'My row: on leave', tone: bad, tip: 'A different row, so it doesn''t collide with Jamal''s write. Neither a row lock nor a version column notices anything.'}
+          - {at: db, note: '0 on duty: rule broken', tone: bad, tip: 'No write was lost and no error was raised. What got damaged is the rule both of them checked at the start.'}
+      - type: visual
+        kind: compare
+        caption: 'The two problems side by side'
+        columns:
+          - title: 'Lost update'
+            tone: warn
+            icon: pencil
+            tip: 'Happens in read-modify-write code: read, calculate in PHP, write. Fairly easy to recognise and to prevent.'
+            items:
+              - 'Two people read the same row and write the same row'
+              - 'Due is 500; both add 100 and write 600, instead of 700'
+              - 'Prevented by: atomic UPDATE, FOR UPDATE lock, version column'
+          - title: 'Write skew'
+            tone: bad
+            icon: shuffle
+            tip: 'Happens when the rule spans several rows ("at least one", "at most 10 in total"). The hardest to catch.'
+            items:
+              - 'Two people read the same facts and write different rows'
+              - 'Both take leave, so nobody is on duty'
+              - 'Prevented by: SERIALIZABLE level, or locking what you read to decide'
+    aside:
+      - type: problem
+        body: 'There are plenty of tools against lost updates. Write skew is hard to catch because the two transactions touch different rows, so ordinary row locks and optimistic version checks raise no objection.'
+      - type: refs
+        items:
+          - {to: 'concurrency/race-conditions', label: 'Spotting read-modify-write code'}
+          - {to: 'concurrency/atomic-operations', label: 'Stopping lost updates with an atomic UPDATE'}
+    check:
+      q: 'What sets write skew apart from a lost update?'
+      a: 'In a lost update, two transactions write the same row and one wipes out the other. In write skew they write different rows; no write is lost, but together they break a rule both checked at the start.'
+
+  - slug: four-levels
+    title: 'The four levels: which one stops which problem'
+    kind: compare
+    tldr: 'Read uncommitted → read committed → repeatable read → serializable: the higher you go, the fewer anomalies, but the more waiting and aborted transactions.'
+    keywords: ['read uncommitted', 'read committed', 'repeatable read', 'serializable', 'snapshot', 'four levels']
+    blocks:
+      - type: metaphor
+        icon: book
+        title: 'Four rules for reading the ledger'
+        body: |
+          The four levels are four rules for reading the credit ledger. The stricter the rule, the fewer the surprises, but the more waiting and "do it again".
+      - type: points
+        style: number
+        items:
+          - '**Read uncommitted**: read the pencil entries too.'
+          - '**Read committed**: only pen entries, but every query looks at the ledger afresh.'
+          - '**Repeatable read**: photocopy the ledger up front (a snapshot) and work from that copy for the whole transaction.'
+          - '**Serializable**: the result must look as if everyone had taken the ledger one at a time.'
+      - type: visual
+        kind: table
+        caption: 'Which anomaly happens at which level, and which is prevented'
+        headers: ['Anomaly', 'Read uncommitted', 'Read committed', 'Repeatable read', 'Serializable']
+        rows:
+          - cells: ['Dirty read', 'Happens', 'Prevented', 'Prevented', 'Prevented']
+            tip: 'Happens only at the lowest level. Not even there in PostgreSQL: if you ask for READ UNCOMMITTED, it behaves like READ COMMITTED.'
+          - cells: ['Non-repeatable read', 'Happens', 'Happens', 'Prevented', 'Prevented']
+            tip: 'From REPEATABLE READ on, the whole transaction sees one snapshot, so reading the same row again gives the same value.'
+          - cells: ['Phantom read', 'Happens', 'Happens', 'Allowed by the standard', 'Prevented']
+            tip: 'The SQL standard allows phantoms at REPEATABLE READ. In practice PostgreSQL''s snapshot shows none, and neither does MySQL InnoDB for plain SELECTs.'
+          - cells: ['Lost update', 'Happens', 'Happens', 'Depends on the database', 'Prevented']
+            tip: 'PostgreSQL''s REPEATABLE READ aborts the second writer with an error, so nothing is lost. In MySQL InnoDB''s REPEATABLE READ, a later UPDATE silently overwrites the earlier one.'
+          - cells: ['Write skew', 'Happens', 'Happens', 'Happens', 'Prevented']
+            tip: 'The two transactions write different rows, so a snapshot notices nothing. Only SERIALIZABLE connects the reads and writes of both and aborts one of them.'
+      - type: quote
+        body: 'The default level is not SERIALIZABLE. Unless you take extra measures, lost updates and write skew are not being prevented.'
+    aside:
+      - type: tips
+        items:
+          - 'Defaults: PostgreSQL = READ COMMITTED, MySQL (InnoDB) = REPEATABLE READ. Neither is SERIALIZABLE.'
+          - 'Levels with the same name behave differently across databases. Read your own database''s documentation once.'
+      - type: terms
+        items:
+          - {term: 'Snapshot', meaning: 'A frozen picture of the data as of the start of the transaction; whatever others commit later, you keep seeing that picture.'}
+          - {term: 'Serialization failure', meaning: 'The database realised the result wouldn''t match "one at a time" and aborted the transaction (SQLSTATE 40001).'}
+      - type: commands
+        title: 'Checking the current level'
+        items:
+          - {cmd: 'SHOW transaction_isolation;', desc: 'PostgreSQL'}
+          - {cmd: 'SELECT @@transaction_isolation;', desc: 'MySQL 8'}
+    check:
+      q: 'Of the five anomalies, which one never happens at PostgreSQL''s default level, and which ones can?'
+      a: 'The default READ COMMITTED prevents only dirty reads. Non-repeatable read, phantom, lost update and write skew can all happen.'
+
+  - slug: choose-and-retry
+    title: 'When to raise the level, and why you must retry'
+    kind: howto
+    tldr: 'Keep the default level; when a rule spans several rows, make just that one transaction SERIALIZABLE and retry on serialization failure.'
+    keywords: ['serializable', 'retry', 'serialization failure', 'RetryableException', 'SET TRANSACTION', 'choosing a level']
+    blocks:
+      - type: text
+        body: |
+          Most work stays at the default level, and each specific problem has its own specific tool. Where a rule **spans several rows**, such as "at least one person on duty", make only that transaction SERIALIZABLE. It comes at a price: when the database detects a collision, it aborts one transaction. That's not a bug but normal behaviour, and rerunning the whole transaction usually succeeds.
+      - type: code
+        lang: php
+        file: 'src/Database/SerializableRunner.php'
+        variant: good
+        code: |
+          final readonly class SerializableRunner
+          {
+              public function __construct(private Connection $connection)
+              {
+              }
+
+              /** @param \Closure(Connection): mixed $work */
+              public function run(\Closure $work, int $maxAttempts = 3): mixed
+              {
+                  for ($attempt = 1; ; ++$attempt) {
+                      try {
+                          return $this->connection->transactional(function (Connection $c) use ($work) {
+                              // PostgreSQL: for this transaction only, before the first query
+                              $c->executeStatement('SET TRANSACTION ISOLATION LEVEL SERIALIZABLE');
+
+                              return $work($c);
+                          });
+                      } catch (RetryableException $e) {   // serialization failure or deadlock
+                          if ($attempt >= $maxAttempts) {
+                              throw $e;
+                          }
+                          usleep(random_int(5_000, 30_000) * $attempt);   // pause briefly, retry
+                      }
+                  }
+              }
+          }
+        marks:
+          - {line: 14, tip: 'The level changes for this one transaction only; the rest of the app stays at the default. It must run before the transaction''s first query.'}
+          - {line: 18, tip: 'Doctrine DBAL surfaces both serialization failures (40001) and deadlocks as exceptions implementing RetryableException. Other exceptions aren''t caught, because they are real bugs.'}
+          - {line: 22, tip: 'A short random pause (jitter), so two colliding transactions don''t fire again at exactly the same moment.'}
+      - type: code
+        lang: php
+        file: 'src/Service/LeaveService.php'
+        variant: good
+        code: |
+          $this->serializable->run(function (Connection $c) use ($staffId): void {
+              $onDuty = (int) $c->fetchOne('SELECT COUNT(*) FROM shift WHERE on_duty = true');
+              if ($onDuty < 2) {
+                  throw new CannotTakeLeave('At least one person must stay on duty');
+              }
+
+              $c->executeStatement(
+                  'UPDATE shift SET on_duty = false WHERE staff_id = :id',
+                  ['id' => $staffId],
+              );
+          });
+        marks:
+          - {line: 2, tip: 'It''s fine if Jamal and Kamal both read 2 here: at commit time the database aborts one of them, and on retry he reads 1 and stops.'}
+      - type: points
+        title: 'Which tool for which problem'
+        style: check
+        items:
+          - 'Single-row arithmetic (stock, balance): an atomic UPDATE or a lock; no need to change the level.'
+          - 'A long report that needs one picture for all its queries: REPEATABLE READ.'
+          - 'A rule spanning several rows (write skew): SERIALIZABLE plus retry.'
+      - type: quote
+        body: 'SERIALIZABLE promises "no wrong results", not "no aborts". Without retry it is incomplete.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Don''t make SERIALIZABLE the default for the whole app: more aborts and retries will slow it down.'
+          - 'Keep emails, HTTP calls and queue dispatches out of the retried closure, because it may run several times.'
+          - 'If a transaction is already open outside, SET TRANSACTION fails; call the runner from the outermost layer.'
+      - type: tips
+        items:
+          - 'In MySQL, run `SET TRANSACTION ISOLATION LEVEL …` before the transaction starts; it then applies only to the next transaction.'
+      - type: refs
+        items:
+          - {to: 'concurrency/locking', label: 'Solving the same problem with locks'}
+          - {to: 'concurrency/atomic-operations', label: 'Atomic UPDATE for single-row arithmetic'}
+    check:
+      q: 'What extra piece must your code have when using SERIALIZABLE, and why?'
+      a: 'Retry. When the database detects a collision, it aborts one transaction with a serialization failure. That is normal behaviour, not a bug, and rerunning the whole transaction usually succeeds.'
+
+flashcards:
+  - q: 'What is an isolation level?'
+    a: 'How much of each other''s changes concurrent transactions can see. The stricter the level, the fewer anomalies, but the more waiting and aborts.'
+    more: |
+      The SQL standard defines four levels: read uncommitted, read committed, repeatable read, serializable. So the I in ACID is a dial, not a yes/no. At the default setting, another transaction's commit can still slip in between two queries of yours.
+    ref: two-reads-two-answers
+  - q: 'What is a dirty read?'
+    a: 'Reading another transaction''s uncommitted change. If it rolls back, you acted on data that never existed.'
+    more: |
+      In ledger terms: you read a figure written in pencil and made a decision, then the clerk erased it. It happens only at READ UNCOMMITTED. It never happens in PostgreSQL, because even if you ask for that level, it behaves like READ COMMITTED.
+    ref: read-anomalies
+  - q: 'What is a non-repeatable read?'
+    a: 'Reading the same row twice in one transaction and getting two values, because someone else changed it and committed in between.'
+    more: |
+      At READ COMMITTED, each query sees the data committed at the moment it runs, so this can happen. A report whose "total" doesn't match the sum of its list is one form of it. From REPEATABLE READ on, the whole transaction sees one snapshot, which prevents it.
+    ref: read-anomalies
+  - q: 'What is a phantom read?'
+    a: 'Running the same query twice and seeing new rows (or missing ones) the second time, because someone committed an INSERT or DELETE in between.'
+    more: |
+      In a non-repeatable read the value of a row changes; in a phantom, the number of rows changes. It is dangerous in "count first, then decide" code. The SQL standard allows it at REPEATABLE READ, though PostgreSQL's snapshot shows no phantoms in practice.
+    ref: read-anomalies
+  - q: 'What is a lost update?'
+    a: 'Two transactions read the same row, each calculates on its own and writes back, and the later write wipes out the earlier one.'
+    more: |
+      Example: the due is 500 taka. Both read 500, add 100 and write 600, when the result should be 700. At READ COMMITTED it happens freely, and in MySQL InnoDB's REPEATABLE READ too. Prevent it with an atomic UPDATE, SELECT … FOR UPDATE, or a version column.
+    ref: write-anomalies
+  - q: 'What is write skew?'
+    a: 'Two transactions read the same facts and decide, but write different rows. Each is valid alone; together they break a rule.'
+    more: |
+      Example: the rule says at least one person must be on duty. Both see "2 on duty" and both write leave on their own row, so now nobody is on duty. No write was lost, so row locks and version columns notice nothing. SERIALIZABLE prevents it, or you can lock the rows you read to decide.
+    ref: write-anomalies
+  - q: 'What are the default isolation levels of PostgreSQL and MySQL?'
+    a: 'PostgreSQL: READ COMMITTED. MySQL (InnoDB): REPEATABLE READ. Neither is SERIALIZABLE.'
+    more: |
+      So on both databases, write skew can happen out of the box, and so can lost updates in read-modify-write code. "I used a transaction" does not mean these problems are prevented. To check the current level in PostgreSQL, run `SHOW transaction_isolation;`.
+    ref: four-levels
+  - q: 'What is the main difference between READ COMMITTED and REPEATABLE READ?'
+    a: 'At READ COMMITTED, each query sees the data committed at its own moment. At REPEATABLE READ, the whole transaction sees one snapshot taken at the start.'
+    more: |
+      In ledger terms: READ COMMITTED means looking at the ledger afresh every time, so you notice anything inked in meanwhile. REPEATABLE READ means taking a photocopy at the start and working from it. For a long report whose queries must all show one picture, REPEATABLE READ is the right tool.
+    ref: four-levels
+  - q: 'Which level prevents write skew, and what does it cost?'
+    a: 'Only SERIALIZABLE. The cost: when the database detects a collision it aborts a transaction, so you must write retry.'
+    more: |
+      At SERIALIZABLE, the result is as if the transactions had run one after another. PostgreSQL achieves this by detecting collisions and aborting one with a serialization failure (SQLSTATE 40001). Doctrine DBAL gives you that as a RetryableException; you catch it and rerun the whole transaction, and the closure must contain no outside side effects.
+    ref: choose-and-retry
+
+quiz:
+  - q: 'In a report transaction, the first query returns a total due of 5000, and the next query''s list sums to 4000. The database is PostgreSQL with default settings. What is the simplest fix?'
+    hint: 'The two queries must see the picture of one moment. Which level provides that?'
+    options:
+      - text: 'Call flush() between the two queries'
+        correct: false
+        why: 'flush() sends Doctrine''s pending changes; it has no effect on how your queries see other transactions'' commits.'
+      - text: 'Run the report transaction at REPEATABLE READ'
+        correct: true
+        why: 'Then the whole transaction sees one snapshot from the start, so the total and the list always agree.'
+      - text: 'Run the two queries outside the transaction'
+        correct: false
+        why: 'Each query would then be its own transaction: the same problem, no improvement.'
+      - text: 'Block all writes to the customer table while the report runs'
+        correct: false
+        why: 'It would work, but every payment in the shop would be stuck for as long as the report runs. A snapshot gives the same result without blocking anyone.'
+    ref: two-reads-two-answers
+  - q: 'Transaction A marks an order "paid" but hasn''t committed. Transaction B sees "paid" and ships the goods. Then A rolls back. Which anomaly did B fall victim to?'
+    hint: 'Was the value B read ever confirmed?'
+    options:
+      - text: 'Dirty read'
+        correct: true
+        why: 'B read another transaction''s uncommitted change, which was later rolled back.'
+      - text: 'Non-repeatable read'
+        correct: false
+        why: 'That is reading the same row twice and getting two different committed values. Here the value B read was never committed at all.'
+      - text: 'Phantom read'
+        correct: false
+        why: 'A phantom means new rows appearing under the same condition; no new rows are involved here.'
+      - text: 'Lost update'
+        correct: false
+        why: 'In a lost update, one write wipes out another. Here the problem is reading something wrong, not losing a write.'
+    ref: read-anomalies
+  - q: 'A clinic''s rule: at least one doctor must be on call. Two doctors simultaneously see 2 on call, then each writes on_call = false on their own row. Now nobody is on call. Which anomaly is this?'
+    hint: 'Did the two write the same row, or different rows?'
+    options:
+      - text: 'Lost update'
+        correct: false
+        why: 'No write was lost; both writes are stored, because they changed different rows.'
+      - text: 'Dirty read'
+        correct: false
+        why: 'Both read correct committed data (2 people). The problem isn''t in the reading, but in both writing at once on the strength of it.'
+      - text: 'Write skew'
+        correct: true
+        why: 'Two decisions based on the same facts were written to different rows; each is valid alone, but together they break the rule.'
+      - text: 'Non-repeatable read'
+        correct: false
+        why: 'Nobody read the same row twice. This is a write problem, not a read problem.'
+    ref: write-anomalies
+  - q: 'Which of these can happen at PostgreSQL''s default level (READ COMMITTED)?'
+    hint: 'This level guarantees just one thing: you won''t see unconfirmed writes.'
+    options:
+      - text: 'Dirty read'
+        correct: false
+        why: 'The name says it: READ COMMITTED lets you read only committed data.'
+      - text: 'Non-repeatable read'
+        correct: true
+        why: 'Every query looks afresh, so reading the same row again can return a changed value.'
+      - text: 'Lost update'
+        correct: true
+        why: 'If two transactions read the same stale value and write back, the later one wipes out the earlier; this level does not stop that.'
+      - text: 'Write skew'
+        correct: true
+        why: 'Only SERIALIZABLE prevents write skew; it can happen at every level below it.'
+      - text: 'Phantom read'
+        correct: true
+        why: 'If someone adds a row and commits between your two queries, the second query sees it.'
+    ref: four-levels
+  - q: 'This code correctly sets SERIALIZABLE. Yet under load, users occasionally get a 500 error. What is missing?'
+    lang: php
+    code: |
+      $conn->transactional(function (Connection $c) use ($staffId): void {
+          $c->executeStatement('SET TRANSACTION ISOLATION LEVEL SERIALIZABLE');
+
+          $onDuty = (int) $c->fetchOne('SELECT COUNT(*) FROM shift WHERE on_duty = true');
+          if ($onDuty >= 2) {
+              $c->executeStatement(
+                  'UPDATE shift SET on_duty = false WHERE staff_id = :id',
+                  ['id' => $staffId],
+              );
+          }
+      });
+    hint: 'What does SERIALIZABLE do when it detects a collision?'
+    options:
+      - text: 'Writing COMMIT by hand after the UPDATE'
+        correct: false
+        why: 'transactional() commits by itself when the closure ends; that isn''t missing.'
+      - text: 'Catching the serialization failure and rerunning the whole transaction'
+        correct: true
+        why: 'On a collision the database aborts a transaction. If you don''t catch the RetryableException and rerun, that abort reaches the user as a 500.'
+      - text: 'Lowering the level to READ UNCOMMITTED so collisions can''t happen'
+        correct: false
+        why: 'The errors would go away, but write skew would return: both people would take leave.'
+      - text: 'Moving the SELECT outside the transaction'
+        correct: false
+        why: 'Then the database could not see how the read relates to the write, and could no longer catch write skew.'
+    ref: choose-and-retry
+  - q: 'A transaction at REPEATABLE READ reads due = 500 from a row at the start. Another transaction then changes it to 300 and commits. What does the first transaction see when it reads the same row again?'
+    hint: 'If you write on the original ledger after taking a photocopy, does the photocopy change?'
+    options:
+      - text: '300, because that was committed'
+        correct: false
+        why: 'That is READ COMMITTED behaviour, where every query looks afresh.'
+      - text: '500, because it sees the snapshot from the start of the transaction'
+        correct: true
+        why: 'At REPEATABLE READ the whole transaction sees one frozen picture; whatever others commit later is not visible.'
+      - text: 'An error, because the row has changed'
+        correct: false
+        why: 'Merely reading raises no error. PostgreSQL raises one when this transaction tries to write that changed row.'
+      - text: 'NULL, because the row is locked'
+        correct: false
+        why: 'The other transaction has already committed, so there is no lock; and even with a lock the result wouldn''t be NULL.'
+    ref: four-levels
+  - q: 'Which statements about the SERIALIZABLE level are true?'
+    hint: 'Think about both the benefit and the price of the strictest level.'
+    options:
+      - text: 'It prevents every anomaly, including write skew'
+        correct: true
+        why: 'The result is as if the transactions ran one after another, so there is no room for any anomaly.'
+      - text: 'A transaction may be aborted, so you need retry'
+        correct: true
+        why: 'When the database detects a collision it fails one transaction with a serialization failure; handling that is the application''s job.'
+      - text: 'It is the default in both PostgreSQL and MySQL'
+        correct: false
+        why: 'PostgreSQL defaults to READ COMMITTED and MySQL InnoDB to REPEATABLE READ.'
+      - text: 'Making it the default for the whole app costs nothing'
+        correct: false
+        why: 'More aborts and retries slow things down. Use it only for the transactions whose rule spans several rows.'
+    ref: choose-and-retry

@@ -1,0 +1,375 @@
+slides:
+  - slug: mod-n-breaks
+    title: 'Add a node and the whole cache vanishes'
+    kind: story
+    tldr: 'Split keys across nodes with `hash(key) % N` and changing N moves almost every key. Going from 4 to 5 nodes makes 80% of the cache miss at once.'
+    keywords: ['hash mod N', 'modulo hashing', 'cache miss', 'resharding', 'rehash', 'cache cluster']
+    blocks:
+      - type: metaphor
+        icon: book
+        title: 'Shelving books in a library'
+        body: |
+          A library has 4 shelves and one rule: divide the book's number by 4, and the remainder tells you the shelf. The crowd grows, so a 5th shelf goes in and the rule becomes "divide by 5". Now about 80 out of every 100 books sit on the wrong shelf, and nobody can find anything. A cache cluster behaves exactly the same way.
+      - type: code
+        lang: php
+        file: 'src/Cache/NaiveShardedCache.php'
+        variant: bad
+        code: |
+          public function nodeFor(string $key): string
+          {
+              // $this->nodes = ['redis-1', 'redis-2', 'redis-3', 'redis-4']
+              return $this->nodes[crc32($key) % count($this->nodes)];
+          }
+        marks:
+          - {line: 4, tip: 'As soon as count($this->nodes) changes, the result changes for nearly every key. Going from 4 to 5 nodes sends 80% of keys to a different node.'}
+      - type: visual
+        kind: bars
+        caption: 'Share of keys that change node when going from 4 to 5 nodes'
+        items:
+          - {label: 'hash % N', value: 80, display: '80%', tone: bad, tip: 'Of every 20 keys only 4 stay on their old node. All the rest miss, and everyone rushes to the database at once.'}
+          - {label: 'Consistent hashing', value: 20, display: '20%', tone: good, tip: 'The new node takes only its own share (1/5). The other 80% of keys stay where they were.'}
+      - type: quote
+        body: 'When you add or remove cache nodes, you must not move every key. Only the part that has to move should move.'
+    aside:
+      - type: story
+        title: 'The scale-out the night before a sale'
+        body: 'To prepare for the crowd, a team added one Redis node to their 4. Within a minute the hit rate fell from 95% to 20%, and the database, suddenly getting 5 times the queries, slowed to a crawl. The move meant to ease the load made it worse.'
+      - type: refs
+        items:
+          - {to: 'caching/cache-stampede', label: 'What happens when everything misses at once'}
+    check:
+      q: 'With hash % N over a 4-node cache, what happens when you add a fifth node?'
+      a: 'About 80% of keys change node, so they all miss at once. The extra load lands on the database.'
+
+  - slug: the-ring
+    title: 'Put them on a circle: the first node clockwise'
+    kind: concept
+    tldr: 'Hash both nodes and keys onto a circle. A key belongs to the first node clockwise from it. Add or remove a node and only its neighbour''s share moves.'
+    keywords: ['hash ring', 'consistent hashing', 'ring', 'clockwise', 'ketama', 'wrap-around']
+    blocks:
+      - type: metaphor
+        icon: map
+        title: 'Four tea sellers around a roundabout'
+        body: |
+          Four tea sellers stand spaced out around a roundabout. Wherever you stand, you walk clockwise and buy from the first one you reach. If one packs up, his customers walk on to the next seller, and nobody else is affected.
+      - type: visual
+        kind: table
+        caption: 'The circle runs 0-99. Nodes: A=10, B=40, C=70, D=90'
+        headers: ['key', 'hash', 'First node clockwise']
+        rows:
+          - cells: ['cart:17', '25', 'B (40)']
+            tip: 'Walking on from 25, the first node is B at 40, so cart:17 goes to B.'
+          - cells: ['cart:42', '62', 'C (70)']
+            tip: 'From 62 you reach C at 70.'
+          - cells: ['cart:88', '95', 'A (10)']
+            tip: 'There is no node after 95, so you wrap around past 0 and find A at 10. This is the wrap-around.'
+          - cells: ['cart:05', '05', 'A (10)']
+            tip: 'From 5 the first node is A at 10. In other words, A is responsible for the stretch from 91 to 10.'
+      - type: visual
+        kind: steps
+        caption: 'What moves when nodes change'
+        steps:
+          - {title: '1. Node B leaves', body: 'Keys that were in 11-40 go to C', tip: 'Only B''s own keys move. The keys of A, C and D stay where they were.'}
+          - {title: '2. New node E=55 joins', body: 'E takes the 41-55 part of C''s range', tip: 'E takes a slice only from the node right after it (C). The other nodes never notice.'}
+          - {title: '3. Total movement', body: 'On average about 1/N of the keys', tip: 'When one node joins or leaves among N, roughly 1/N of all keys move. That is far less than the 80% of hash % N.', tone: good}
+    aside:
+      - type: terms
+        items:
+          - {term: 'Hash ring', meaning: 'Treating the whole hash range (say 0 to 2^32) as a circle, where the end connects back to the start.'}
+          - {term: 'Wrap-around', meaning: 'Reaching the end of the circle and carrying on from the node at the start.'}
+      - type: remember
+        body: 'Place the key, walk clockwise, the first node is the owner.'
+    check:
+      q: 'If node C (70) leaves the ring, where do the keys in 41-70 go, and does anything of A''s move?'
+      a: 'They go to the next node clockwise, D (90). A''s keys don''t move, because none of them were under C''s responsibility.'
+
+  - slug: hash-ring-in-php
+    title: 'A small hash ring in PHP'
+    kind: howto
+    tldr: 'A ring is a sorted list of hashes plus a binary search. Give each node 150 virtual positions, then add a 5th node and measure how much moved.'
+    keywords: ['PHP', 'HashRing', 'crc32', 'binary search', 'virtual nodes', 'ring implementation']
+    blocks:
+      - type: text
+        body: |
+          The inner workings are small. Hash each node many times as `node#i` and keep the results in a sorted list. When a key arrives, hash it and binary-search that list for the first position that's larger. If you run off the end of the list, go back to the start.
+      - type: code
+        lang: php
+        file: 'src/Cache/HashRing.php'
+        variant: good
+        code: |
+          final class HashRing
+          {
+              /** @var array<int, string> position => node */
+              private array $ring = [];
+              /** @var list<int> sorted positions */
+              private array $positions = [];
+
+              public function __construct(private readonly int $vnodes = 150) {}
+
+              public function add(string $node): void
+              {
+                  for ($i = 0; $i < $this->vnodes; $i++) {
+                      $this->ring[crc32($node.'#'.$i)] = $node;
+                  }
+                  ksort($this->ring);
+                  $this->positions = array_keys($this->ring);
+              }
+
+              public function nodeFor(string $key): string
+              {
+                  $h = crc32($key);
+                  $lo = 0;
+                  $hi = count($this->positions);
+                  while ($lo < $hi) {                       // binary search
+                      $mid = intdiv($lo + $hi, 2);
+                      if ($this->positions[$mid] < $h) { $lo = $mid + 1; } else { $hi = $mid; }
+                  }
+
+                  return $this->ring[$this->positions[$lo % count($this->positions)]];
+              }
+          }
+        marks:
+          - {line: 8, tip: '150 virtual positions per node. Too few and the split is uneven; too many and memory use grows and add() gets slower.'}
+          - {line: 13, tip: 'Each position is tied to the name of the real node. The positions of one node end up scattered around the circle.'}
+          - {line: 29, tip: '% count(...) is the wrap-around: when h is larger than every position, $lo reaches the end, and the % turns it into 0 so you return to the first position.'}
+      - type: code
+        lang: php
+        file: 'tests/HashRingTest.php'
+        code: |
+          $ring = new HashRing();
+          foreach (['redis-1', 'redis-2', 'redis-3', 'redis-4'] as $n) { $ring->add($n); }
+
+          $before = [];
+          foreach (range(1, 10000) as $i) { $before[$i] = $ring->nodeFor("cart:$i"); }
+
+          $ring->add('redis-5');
+          $moved = 0;
+          foreach ($before as $i => $node) {
+              if ($ring->nodeFor("cart:$i") !== $node) { $moved++; }
+          }
+          // $moved is about 2000 (about 20%); with hash % N it would be about 8000
+    aside:
+      - type: tips
+        items:
+          - 'Don''t write this yourself in production. Use the memcached client''s ketama mode, nginx''s `hash ... consistent`, or Redis Cluster. The code above is here so you can see how it works.'
+          - 'crc32 is small and fast, so it''s fine for learning. Larger systems pick MurmurHash or xxHash for a better spread.'
+      - type: pitfalls
+        items:
+          - 'Every client must use the same hash function, the same node names and the same vnode count. Otherwise two clients look for the same key on two different nodes.'
+    check:
+      q: 'Why is `$lo % count($this->positions)` needed in nodeFor()?'
+      a: 'If the key''s hash is larger than every position, the first node clockwise is the very first position on the circle. The % performs that wrap-around.'
+
+  - slug: virtual-nodes
+    title: 'Virtual nodes: making every share equal'
+    kind: concept
+    tldr: 'With a single position per node, the shares come out badly uneven. Give each node many virtual positions and the shares even out, and a dead node''s share spreads across everyone.'
+    keywords: ['virtual nodes', 'vnodes', 'load distribution', 'hotspot', 'weight', 'ring balance']
+    blocks:
+      - type: metaphor
+        icon: shop
+        title: 'Scatter the pushcarts'
+        body: |
+          If 3 tea sellers each stand at one stall on the roundabout, a big gap between two of them gives one seller far more customers. The fix: each seller spreads 150 small pushcarts all around the roundabout. Now wherever you stand, there is a cart from everyone nearby, and the shares come out almost equal.
+      - type: visual
+        kind: bars
+        caption: 'Shares of three nodes (example numbers): 1 position vs 150'
+        items:
+          - {label: 'A: 1 position', value: 55, display: '55%', tone: bad, tip: 'By luck it landed next to a big gap, so more than half of all keys fall on it.'}
+          - {label: 'B: 1 position', value: 30, display: '30%', tone: warn, tip: 'A middling share. Still not equal.'}
+          - {label: 'C: 1 position', value: 15, display: '15%', tone: muted, tip: 'Stuck in a small gap, it sits almost idle.'}
+          - {label: 'A: 150 positions', value: 34, display: '34%', tone: good, tip: 'Many small slices add up, and the share comes out almost equal.'}
+          - {label: 'B: 150 positions', value: 33, display: '33%', tone: good, tip: 'Almost exactly a third, as it should be.'}
+          - {label: 'C: 150 positions', value: 33, display: '33%', tone: good, tip: 'More positions means the law of averages evens out the share.'}
+      - type: points
+        title: 'What else virtual nodes give you'
+        style: check
+        items:
+          - 'When a node dies, its keys spread over all the nodes instead of landing on a single neighbour.'
+          - 'Give a bigger machine more vnodes and it takes a bigger share, like a weight.'
+          - 'The cost: a little more memory and a little more time to add or remove.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'When a node dies you lose the cache for its keys. They will all go to the database together, so have something in place to stop a stampede.'
+      - type: remember
+        body: 'One node, many positions: the shares come out equal, and everyone shares the pain.'
+      - type: refs
+        items:
+          - {to: 'caching/cache-stampede', label: 'Handling the storm of misses when a node dies'}
+    check:
+      q: 'Without vnodes, with just 1 position per node, what is the problem?'
+      a: 'The shares are uneven: one node gets a big gap and carries too much, another sits almost idle. And when a node dies, its whole load falls on a single neighbour.'
+
+  - slug: where-its-used
+    title: 'Where you meet it in the real world'
+    kind: compare
+    tldr: 'Cache clusters, nginx upstreams and partitioned stores like Cassandra and DynamoDB use consistent hashing. Redis Cluster is close but different: 16384 fixed hash slots.'
+    keywords: ['nginx hash consistent', 'Redis Cluster', 'hash slot', 'Cassandra', 'DynamoDB', 'ketama', 'memcached']
+    blocks:
+      - type: visual
+        kind: table
+        caption: 'Where it is used and how'
+        headers: ['Where', 'How it splits', 'Why']
+        rows:
+          - cells: ['memcached client', 'ketama ring (with vnodes)', 'Less cache lost when nodes are added']
+            tip: 'The client runs the ring itself; the server nodes don''t know about each other.'
+          - cells: ['nginx upstream', 'hash $key consistent', 'The same URL goes to the same cache server']
+            tip: 'To keep each server''s cache separate, the same request has to go to the same server.'
+          - cells: ['Cassandra, DynamoDB', 'A hash ring over the partition key', 'Data is split and replicated across many nodes']
+            tip: 'Here the ring decides where the actual data is stored, not just a cache.'
+          - cells: ['Redis Cluster', '16384 fixed hash slots', 'Slots can be moved, instead of a ring']
+            tip: 'The slot is CRC16(key) % 16384, and each slot belongs to one node. When nodes change, whole slots move.'
+      - type: code
+        lang: nginx
+        file: '/etc/nginx/conf.d/cache-tier.conf'
+        code: |
+          upstream image_cache {
+              hash $request_uri consistent;     # ketama ring, split by URL
+              server 10.0.3.11:8080;
+              server 10.0.3.12:8080;
+              server 10.0.3.13:8080;
+          }
+        marks:
+          - {line: 2, tip: 'Without `consistent` this is plain hash % N. One word in a short line, yet it saves your whole cache after a scale-out.'}
+      - type: points
+        title: 'What consistent hashing does not do'
+        style: cross
+        items:
+          - 'Hot keys: one famous key still lives on a single node.'
+          - 'Moving data: for permanent data, the data really has to be copied to the new node (rebalancing).'
+          - 'Replication: keeping several copies of a key is a separate job; the ring only names the first node.'
+    aside:
+      - type: when
+        use:
+          - 'Caches or partitioned stores where nodes come and go'
+          - 'When the same key must always go to the same server (cache affinity)'
+        avoid:
+          - 'A small fixed cluster whose nodes never change'
+          - 'You have just one Redis node'
+      - type: refs
+        items:
+          - {to: 'data/sharding', label: 'Sharding and rebalancing'}
+          - {to: 'caching/cache-strategies', label: 'Ways to organise a cache'}
+    check:
+      q: 'One viral product key is being read more than any other across the site. Will consistent hashing ease the load on its node?'
+      a: 'No. It is a single key, so the ring keeps it on one node. A hot key needs a different tactic, such as a small local cache inside the app, or several copies of the key.'
+
+flashcards:
+  - q: 'What goes wrong when you pick cache nodes with hash(key) % N?'
+    a: 'When N changes, nearly every key changes node. Going from 4 to 5 nodes makes 80% of keys miss.'
+    more: |
+      The remainder rule depends on N, so changing N reshuffles almost every key. Most of the cache misses at once and piles pressure on the database. That's why cache clusters avoid this rule.
+    ref: mod-n-breaks
+  - q: 'How does the ring in consistent hashing work?'
+    a: 'Nodes and keys are both hashed onto a circle. A key belongs to the first node clockwise from it.'
+    more: |
+      The whole hash range (say 0 to 2^32) is treated as a circle. Reaching the end of the circle, you go back to the start (wrap-around). So the split depends on where the nodes sit on the circle, not on how many nodes there are in total.
+    ref: the-ring
+  - q: 'How many keys move when a node joins or leaves the ring?'
+    a: 'On average about 1/N of them, only the slice next to that node. Nothing else changes.'
+    more: |
+      A new node takes a slice from the node right after it. When a node leaves, its slice goes to the next node clockwise. So going from 4 to 5 nodes moves about 20% of keys, instead of the 80% of hash % N.
+    ref: the-ring
+  - q: 'What is a virtual node, and why is it needed?'
+    a: 'One real node placed at many positions on the ring. It makes the split of keys almost equal.'
+    more: |
+      With one position per node, luck with the gaps makes the split uneven. Give each node 100-200 positions and the law of averages evens it out. When a node dies its keys spread over all the nodes, and a bigger machine can be given more vnodes for a bigger share.
+    ref: virtual-nodes
+  - q: 'When looking up a key on the ring, what do you do with the sorted list?'
+    a: 'Binary-search for the first position greater than or equal to the key''s hash; if there is none, wrap back to the start of the list.'
+    more: |
+      The positions are sorted, so the search is O(log n). In PHP, `$lo % count($positions)` does the wrap-around. Every client must use the same hash function, the same node names and the same vnode count.
+    ref: hash-ring-in-php
+  - q: 'Does Redis Cluster use a ring?'
+    a: 'No. Redis Cluster uses 16384 fixed hash slots; slot = CRC16(key) % 16384, and each slot belongs to one node.'
+    more: |
+      When you add a node, whole slots move from one node to another. The idea is the same: don't tie keys directly to nodes, put a layer in between, so that few things move when nodes change. More in [[data/sharding|sharding]].
+    ref: where-its-used
+  - q: 'Why doesn''t consistent hashing fix the hot key problem?'
+    a: 'A key always goes to one single node. The ring spreads keys evenly but doesn''t look at how often each key is read.'
+    more: |
+      If every user reads one viral product key, that node burns. The fixes: a short-lived local cache inside the app, several copies of the key (spread with a key suffix), or a separate hot-key path.
+    ref: where-its-used
+
+quiz:
+  - q: 'A cache cluster has 4 nodes and picks the node with `crc32($key) % 4`. You add a 5th node before a sale. What do you see in the first minute?'
+    hint: 'Out of four keys, how many stay on their old node?'
+    options:
+      - text: 'About 80% of keys move to another node, the hit rate collapses and the database gets slammed'
+        correct: true
+        why: 'The remainders mod 4 and mod 5 agree for only 4 out of every 20 values (20%), so the other 80% of keys are looked up on a new node and not found.'
+      - text: 'About 20% of keys move and everything else is fine'
+        correct: false
+        why: 'That is the result with consistent hashing. With hash % N, 80% move.'
+      - text: 'Nothing changes, the new node just sits empty'
+        correct: false
+        why: 'The rule depends on N, so changing N changes the result for almost every key.'
+      - text: 'All keys move, 100% of them'
+        correct: false
+        why: 'Nearly all move, but roughly 20% stay in their place.'
+    ref: mod-n-breaks
+  - q: 'The ring has nodes A=10, B=40, C=70, D=90 (circle 0-99). A key hashes to 95. Which node does it go to?'
+    hint: 'Walking clockwise from 95, what do you meet?'
+    options:
+      - text: 'A (10), the first node after going round the circle'
+        correct: true
+        why: 'There is no node after 95, so you wrap past 0 and find A at 10. This is the wrap-around.'
+      - text: 'D (90), the nearest node'
+        correct: false
+        why: 'The rule isn''t "nearest", it''s "first clockwise". 90 is behind you.'
+      - text: 'C (70)'
+        correct: false
+        why: '70 is far behind, against the clockwise direction.'
+      - text: 'None: the key is lost'
+        correct: false
+        why: 'The ring is a circle, so there is always an owner.'
+    ref: the-ring
+  - q: 'Which of these statements about virtual nodes are correct?'
+    hint: 'In how many places does one real node sit on the ring?'
+    options:
+      - text: 'One real node takes many positions on the ring'
+        correct: true
+        why: 'Each position is hashed separately from the node''s name, such as `redis-1#0`, `redis-1#1`.'
+      - text: 'The split becomes more even'
+        correct: true
+        why: 'With many small slices added together, each node''s share comes close to 1/N by the law of averages.'
+      - text: 'When a node dies, its keys spread across all the nodes and don''t land on one neighbour'
+        correct: true
+        why: 'Its positions were scattered around the ring, so the next nodes clockwise belong to different real nodes.'
+      - text: 'It adds no memory or add() work at all'
+        correct: false
+        why: 'You must store and sort N x 150 positions; the cost is small but not zero.'
+    ref: virtual-nodes
+  - q: 'A 4-node ring (150 vnodes each) built with HashRing is running. redis-3 dies and is removed from the ring. What happens next?'
+    hint: 'Which keys were owned by redis-3?'
+    options:
+      - text: 'Only redis-3''s share, about 25% of keys, will miss; the keys of the other nodes stay where they were'
+        correct: true
+        why: 'On the ring only the dead node''s slices go to the next node clockwise. Thanks to vnodes they spread almost evenly over the three nodes.'
+      - text: 'About 80% of keys will miss, because the number of nodes changed'
+        correct: false
+        why: '80% is the hash % N figure. On a ring the node count doesn''t directly decide where keys live.'
+      - text: 'Every key is hashed again, so the whole cache is empty'
+        correct: false
+        why: 'A key''s hash doesn''t change. Only the ownership of positions changes, and only in the dead node''s part.'
+      - text: 'redis-4 alone takes the whole load'
+        correct: false
+        why: 'Because of vnodes, redis-3''s positions were spread around the whole ring, so the load is split across three nodes and not dumped on one.'
+    ref: virtual-nodes
+  - q: 'One product page key (`product:iphone`) is the most read key on sale day, and its node is at 95% CPU. What do you do?'
+    hint: 'A ring splits keys, but on how many nodes does a single key live?'
+    options:
+      - text: 'Spread the load with a local cache of a few seconds inside the app, or by keeping several copies of the key'
+        correct: true
+        why: 'It is a single key, so the ring doesn''t help. A local cache keeps most reads from ever reaching Redis.'
+      - text: 'Double the node''s vnode count'
+        correct: false
+        why: 'Vnodes decide how many keys each node gets, but this key will still live on just one node.'
+      - text: 'Add more nodes'
+        correct: false
+        why: 'A new node takes a share of other keys, but `product:iphone` will still live on a single node.'
+      - text: 'Change the hash function from crc32 to md5'
+        correct: false
+        why: 'A hash function only changes where things sit on the circle. It doesn''t change the fact that a key has exactly one owner.'
+    ref: where-its-used

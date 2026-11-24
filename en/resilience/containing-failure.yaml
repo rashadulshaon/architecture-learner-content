@@ -1,0 +1,500 @@
+slides:
+  - slug: one-slow-call-stops-all
+    title: 'One slow API took the whole site down'
+    kind: story
+    tldr: 'When the courier API slows down, it is not just checkout that dies. The whole site stops, because every worker is stuck waiting for its reply.'
+    keywords: ['cascading failure', 'worker pool', 'slow dependency', 'slow API', 'site down', 'stuck workers']
+    blocks:
+      - type: metaphor
+        icon: shop
+        title: 'A biryani restaurant with 20 waiters'
+        body: |
+          A restaurant has 20 waiters. Today the kebab grill is broken, and one plate of kebab takes half an hour. Every waiter who takes a kebab order ends up standing at the counter, waiting. Soon all 20 are standing there, and a customer who only wants a glass of water can't get anyone to bring it. On your server the waiters are PHP-FPM **workers** (the processes that each handle one request at a time), and the broken grill is the courier API.
+      - type: visual
+        kind: flow
+        caption: 'The courier API is slow, and in 10 seconds the whole site is dead'
+        nodes:
+          - {id: users, label: 'Users', sub: 'home, search, checkout', icon: users, col: 0, row: 1, tip: 'Not everyone is checking out. Most people are just browsing products, yet all of them will suffer.'}
+          - {id: app, label: 'App server', sub: '20 PHP-FPM workers', icon: server, tone: accent, col: 2, row: 1, tip: 'A worker handles one request at a time. 20 workers means at most 20 requests in flight together.'}
+          - {id: courier, label: 'Courier API', sub: 'takes 30 s to reply', icon: truck, tone: bad, col: 4, row: 0, tip: 'It is not down, just slow. So the connection succeeds, but the reply comes very late.'}
+          - {id: db, label: 'Database', sub: 'perfectly healthy', icon: db, tone: good, col: 4, row: 2, tip: 'The database is blameless and its CPU is nearly idle. The problem is somewhere else.'}
+        edges:
+          - {from: users, to: app, label: '2 checkout requests arrive every second'}
+          - {from: app, to: courier, label: 'Each checkout asks the courier for a delivery charge'}
+          - {from: courier, to: app, label: 'The reply arrives 30 seconds later, and the worker is stuck until then', tone: bad, dashed: true}
+          - {from: users, to: app, label: '2 × 10 = 20: within ten seconds every worker is stuck', tone: bad, tip: 'Two more workers get stuck every second, and none is released before the 30 seconds are up.'}
+          - {from: app, to: db, label: 'The database sits idle, but there is no free worker to call it', tone: warn}
+          - {from: app, to: users, label: 'Even home page requests now get a 504', tone: bad, dashed: true, tip: 'nginx finds no free worker, waits, and finally returns 504 Gateway Timeout.'}
+      - type: quote
+        body: 'A slow service is more dangerous than a dead one: it never says "no" right away, it just keeps your workers hostage.'
+    aside:
+      - type: story
+        title: 'Sale-day afternoon'
+        body: |
+          On a sale day, an online shop's courier API slowed down. The team checked: database fine, server CPU only 10%, and yet the site wouldn't load. The CPU wasn't busy because the workers were just sitting and waiting. Waiting costs no CPU, but it does cost a worker.
+      - type: terms
+        items:
+          - {term: 'Worker', meaning: 'A server process that takes one request and handles it to the end. There is only a limited number of them.'}
+          - {term: 'Dependency', meaning: 'Anything your code relies on: an external API, the database, a cache, another service.'}
+          - {term: '504 Gateway Timeout', meaning: 'The front server (nginx) did not get a reply from the app behind it in time.'}
+    check:
+      q: 'The courier API is slow, so why does a user who is only viewing the home page get an error too?'
+      a: 'The checkout requests are holding every worker while they wait for the courier. No free worker is left to handle the home page request.'
+
+  - slug: how-failure-spreads
+    title: 'How failure spreads, and where to build walls'
+    kind: concept
+    tldr: 'A cascading failure spreads through shared, limited resources. Two walls stop it: timeouts and bulkheads.'
+    keywords: ['cascading failure', 'timeout', 'bulkhead', 'isolation', 'failure propagation', 'shared resource']
+    blocks:
+      - type: text
+        body: |
+          When a problem in one place drags healthy parts down one after another, it is called a **cascading failure**. The trick is always the same: the sick part grabs a limited resource that everyone shares, such as workers, database connections, memory or a queue.
+      - type: visual
+        kind: steps
+        caption: 'Five steps from one slow dependency to a whole system down'
+        steps:
+          - {title: '1. One dependency slows', body: 'The courier API takes 30 seconds instead of 200 ms.', tip: 'It always starts small: one slow query, one slow external service, one full disk.'}
+          - {title: '2. Workers get stuck waiting', body: 'Every worker that calls it sits and waits for the reply.', tip: 'Without a timeout, this wait never ends. The first wall goes up here.'}
+          - {title: '3. The pool runs out', body: 'All 20 workers are taken. New requests pile up in line.', tone: warn, tip: 'Because the resource is shared, one feature eats everyone''s share. The second wall goes up here.'}
+          - {title: '4. Healthy features die', body: 'Home, login, search: nothing to do with the courier, yet all down.', tone: bad, tip: 'To the user the whole site is now down, even though only one small part is broken.'}
+          - {title: '5. It spreads upward', body: 'Whoever calls your API gets stuck waiting for you too.', tone: bad, tip: 'Mobile apps, other services, even retries pile on more load, and the failure climbs one level up.'}
+      - type: points
+        title: 'The two walls'
+        style: check
+        items:
+          - '**Timeout** (at step 2): never wait forever for a call. When the time is up, the worker is freed.'
+          - '**Bulkhead** (at step 3): give each dependency its own share of the resource. When one share runs out, the others stay intact.'
+      - type: quote
+        body: 'Failure travels along whatever resource everyone shares.'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Cascading failure', meaning: 'One part''s failure knocking over the other parts one by one, like dominoes.'}
+          - {term: 'Bulkhead', meaning: 'The separate compartments in a ship''s hull. If one floods, the others stay dry and the ship floats.'}
+          - {term: 'Pool', meaning: 'A ready-made, limited stock of a resource, such as 20 workers or 50 database connections.'}
+      - type: remember
+        body: 'The restaurant''s two rules: a waiter never stands more than 2 minutes (timeout), and no more than 5 people at the kebab counter at once (bulkhead).'
+      - type: refs
+        items:
+          - {to: 'resilience/circuit-breakers', label: 'The third wall: the circuit breaker'}
+    check:
+      q: 'At which two of the five steps can you build a wall, and with what?'
+      a: 'At step 2 with a timeout, so workers don''t wait forever. At step 3 with a bulkhead, so one dependency can''t take every worker and the other features survive.'
+
+  - slug: timeout-every-call
+    title: 'Put a timeout on every network call'
+    kind: howto
+    tldr: 'Give HttpClient both timeout (idle) and max_duration (total), set statement_timeout on the database, and write down in code what happens on failure.'
+    keywords: ['timeout', 'max_duration', 'HttpClient', 'statement_timeout', 'scoped client', 'request timeout']
+    blocks:
+      - type: text
+        body: |
+          The restaurant rule: a waiter never stands at the counter for more than 2 minutes, and if the kebab isn't ready, goes back and tells the customer. In code, make a separate **scoped client** (an HTTP client preconfigured for one service) for each dependency and give it two clocks. Set the values just above that service's normal slowest reply (p99, the time 99% of calls beat).
+      - type: code
+        lang: yaml
+        file: 'config/packages/framework.yaml'
+        variant: good
+        code: |
+          framework:
+              http_client:
+                  default_options:
+                      timeout: 3          # idle: give up if nothing arrives for this many seconds
+                      max_duration: 10    # maximum time for the whole call
+                  scoped_clients:
+                      courier.client:
+                          base_uri: 'https://api.courier.example'
+                          timeout: 2
+                          max_duration: 4
+        marks:
+          - {line: 4, tip: 'timeout is the idle timeout: no more than this much silence is tolerated between two chunks of data. If you don''t set it, the default is 60 seconds.'}
+          - {line: 5, tip: 'max_duration is the total limit for request plus response. If you don''t set it, there is no limit at all.'}
+          - {line: 7, tip: 'Each external service gets its own client with its own limits. A slow reporting API and a fast courier API should not share limits.'}
+      - type: code
+        lang: php
+        file: 'src/Shipping/CourierRateProvider.php'
+        variant: good
+        code: |
+          final class CourierRateProvider
+          {
+              public function __construct(
+                  private readonly HttpClientInterface $courierClient,
+                  private readonly LoggerInterface $logger,
+              ) {
+              }
+
+              public function chargeFor(string $district, int $weightGrams): ?int
+              {
+                  try {
+                      $data = $this->courierClient->request('GET', '/v1/rates', [
+                          'query' => ['district' => $district, 'weight' => $weightGrams],
+                      ])->toArray();
+
+                      return (int) $data['charge_paisa'];
+                  } catch (ExceptionInterface $e) {
+                      $this->logger->warning('Courier rate unavailable', ['exception' => $e]);
+
+                      return null;   // the caller decides: a default charge, or "we'll confirm later"
+                  }
+              }
+          }
+        marks:
+          - {line: 4, tip: 'Because the argument is named $courierClient, Symfony injects the scoped client called courier.client here.'}
+          - {line: 14, tip: 'HttpClient is lazy: the timeout exception is thrown not in request() but when you read the response (toArray). So the read must be inside the try too.'}
+          - {line: 17, tip: 'Symfony\Contracts\HttpClient\Exception\ExceptionInterface covers timeouts, failed connections, 4xx/5xx responses and broken JSON.'}
+      - type: visual
+        kind: table
+        caption: 'Which timeout goes where, and a starting value'
+        headers: ['Where', 'Which setting', 'Starting value']
+        rows:
+          - cells: ['External HTTP API', 'timeout + max_duration', '2 s / 4 s']
+            tip: 'The two clocks of Symfony HttpClient. Pick the values from that API''s p99 latency, not by guessing.'
+          - cells: ['PostgreSQL query', 'statement_timeout', '5 seconds']
+            tip: 'If a query runs longer than this, the database cancels it itself. Set it on the web app''s database user.'
+          - cells: ['Waiting for a row lock', 'lock_timeout', '2 seconds']
+            tip: 'How long to wait for another transaction to release its lock. Without it, the wait is unbounded.'
+          - cells: ['Redis / cache', 'connect and read timeout', '0.5-1 second']
+            tip: 'A cache is supposed to be fast. If it is slow, don''t wait for it: read from the database.'
+          - cells: ['The whole request', 'request_terminate_timeout', '30 seconds']
+            tip: 'PHP-FPM''s last line of defence: past this limit it kills the worker and starts a fresh one.'
+      - type: quote
+        body: 'Every network call gets a timeout. No exceptions.'
+    aside:
+      - type: commands
+        title: 'Time limits in PostgreSQL'
+        items:
+          - {cmd: 'ALTER ROLE app_web SET statement_timeout = ''5s'';', desc: 'No query from the web database user may run longer than 5 seconds'}
+          - {cmd: 'ALTER ROLE app_web SET lock_timeout = ''2s'';', desc: 'Wait at most 2 seconds for a lock'}
+          - {cmd: 'SHOW statement_timeout;', desc: 'See the current value (0 means no limit)'}
+      - type: tips
+        items:
+          - 'Inner timeouts are always shorter than the outer ones: HttpClient 4 s < PHP-FPM 30 s < nginx 35 s.'
+          - 'Keep a separate database user for reports or migrations, with longer limits.'
+      - type: refs
+        items:
+          - {to: 'time/expiry-timeouts', label: 'How to split a timeout budget'}
+          - {to: 'ledgers/third-party-integrations', label: 'Integrating with outside services'}
+    check:
+      q: 'If HttpClient only has timeout: 3, what kind of slow server can still hold a worker for minute after minute?'
+      a: 'One that dribbles out a little data every 1-2 seconds. The silence between two chunks never reaches 3 seconds, so the idle timeout never fires. You need max_duration to bound the total time.'
+
+  - slug: bulkheads
+    title: 'Bulkheads: a separate compartment for each job'
+    kind: howto
+    tldr: 'Stop one dependency from taking every worker or the whole queue: cap the number of simultaneous calls, and keep separate queues and workers per job type.'
+    keywords: ['bulkhead', 'semaphore', 'separate queue', 'messenger transport', 'isolation', 'separate pool']
+    blocks:
+      - type: text
+        body: |
+          Even with timeouts, 20 workers can each be stuck for 4 seconds. So the restaurant's second rule: at most 5 waiters at the kebab counter at once, and the sixth doesn't wait but tells the customer straight away. In code, Symfony's **Semaphore** does this: a counted set of tokens that limits how many can enter at the same time.
+      - type: visual
+        kind: compare
+        caption: 'The same 20 workers, unshared and shared'
+        columns:
+          - title: 'Everyone in one pool'
+            tone: bad
+            icon: cross
+            tip: 'The slow job gradually eats the whole pool, leaving nothing for the others.'
+            items:
+              - 'Courier slows and all 20 workers are stuck'
+              - 'Payment messages wait behind 5,000 reports'
+              - 'An admin''s heavy export eats customers'' workers'
+          - title: 'In separate compartments'
+            tone: good
+            icon: check
+            tip: 'Each job has its own limit. When one compartment floods, only that feature suffers.'
+            items:
+              - 'At most 5 workers for the courier, 15 always free'
+              - 'payments, emails, reports: three separate queues and workers'
+              - 'A separate PHP-FPM pool for admins'
+      - type: code
+        lang: php
+        file: 'src/Shipping/CourierRateProvider.php'
+        variant: good
+        code: |
+          public function __construct(
+              private readonly HttpClientInterface $courierClient,
+              private readonly SemaphoreFactory $semaphores,
+          ) {
+          }
+
+          public function chargeFor(string $district, int $weightGrams): ?int
+          {
+              // out of 20 workers, at most 5 may be talking to the courier at once
+              $slot = $this->semaphores->createSemaphore('courier-api', 5, ttlInSecond: 10);
+
+              if (!$slot->acquire()) {
+                  return null;   // compartment full: don't queue up, go back at once
+              }
+
+              try {
+                  return $this->fetchCharge($district, $weightGrams);
+              } finally {
+                  $slot->release();
+              }
+          }
+        marks:
+          - {line: 10, tip: 'limit 5: a semaphore with this name never admits more than 5 at once. ttl 10 seconds: even if a worker dies, the slot frees itself.'}
+          - {line: 12, tip: 'acquire() doesn''t wait. If there is no room it returns false immediately. That is exactly what we want: fail fast.'}
+          - {line: 19, tip: 'If you don''t release in finally, after an exception the slot stays taken until the ttl runs out.'}
+      - type: code
+        lang: yaml
+        file: 'config/packages/messenger.yaml'
+        variant: good
+        code: |
+          framework:
+              messenger:
+                  transports:
+                      payments:
+                          dsn: '%env(MESSENGER_TRANSPORT_DSN)%'
+                          options: { queue_name: payments }
+                      emails:
+                          dsn: '%env(MESSENGER_TRANSPORT_DSN)%'
+                          options: { queue_name: emails }
+                      reports:
+                          dsn: '%env(MESSENGER_TRANSPORT_DSN)%'
+                          options: { queue_name: reports }
+                  routing:
+                      App\Message\CapturePayment: payments
+                      App\Message\SendOrderEmail: emails
+                      App\Message\BuildSalesReport: reports
+        marks:
+          - {line: 6, tip: 'queue_name is an option of the Doctrine transport. On Redis you would use a stream, and on AMQP a separate queue name.'}
+          - {line: 14, tip: 'Payment messages go to their own queue. However long the report line grows, this one is unaffected.'}
+    aside:
+      - type: commands
+        title: 'Each queue gets its own workers'
+        items:
+          - {cmd: 'php bin/console messenger:consume payments --time-limit=3600', desc: 'Payment jobs only, for example 4 processes'}
+          - {cmd: 'php bin/console messenger:consume emails --time-limit=3600', desc: 'Separate 2 processes for email'}
+          - {cmd: 'php bin/console messenger:consume reports --time-limit=3600', desc: '1 process for the heavy reports'}
+      - type: tips
+        items:
+          - 'To enable Symfony Semaphore: composer require symfony/semaphore, then give framework.semaphore a Redis DSN.'
+          - 'Send admin and report URLs to a separate PHP-FPM pool (its own pm.max_children) so heavy exports can''t eat customers'' workers.'
+          - 'Size the compartments by arithmetic: the sum of all of them should stay below the total number of workers.'
+      - type: refs
+        items:
+          - {to: 'messaging/background-jobs', label: 'Background jobs and priorities'}
+    check:
+      q: 'A 4-second timeout is set. Why can the site still go down when the courier is slow, and how does a bulkhead prevent it?'
+      a: 'With 5 checkouts a second, all 20 workers are stuck within 4 seconds. A semaphore gives the courier at most 5 workers, so the other 15 stay free for everything else.'
+
+  - slug: default-timeouts-lie
+    title: 'Pitfall: "there is a default timeout anyway"'
+    kind: pitfall
+    tldr: 'The defaults are either 60 seconds or unlimited. And PHP''s max_execution_time doesn''t count time spent waiting on the network.'
+    keywords: ['default timeout', 'max_execution_time', 'default_socket_timeout', 'default values', 'idle timeout', 'pitfall']
+    blocks:
+      - type: text
+        body: |
+          This is how we call outside APIs in a CRUD app, and we assume PHP's 30-second limit will save us. But on Linux, `max_execution_time` counts only the time PHP code is actually running. Time spent waiting for a network or database reply is not counted. So the worker below can stay stuck for 60 seconds or even longer.
+      - type: code
+        lang: php
+        file: 'src/Shipping/CourierRateProvider.php'
+        variant: bad
+        code: |
+          public function chargeFor(string $district, int $weightGrams): int
+          {
+              // no timeout, no catch
+              $response = $this->client->request('GET', 'https://api.courier.example/v1/rates', [
+                  'query' => ['district' => $district, 'weight' => $weightGrams],
+              ]);
+
+              return (int) $response->toArray()['charge_paisa'];
+          }
+        marks:
+          - {line: 4, tip: 'Without a timeout, the idle limit is PHP''s default_socket_timeout = 60 seconds, and there is no limit on total time at all.'}
+          - {line: 8, tip: 'If the courier fails, the exception goes straight to the user as a 500. Nobody thought about what should happen on failure.'}
+      - type: visual
+        kind: table
+        caption: 'The limits you get if you change nothing'
+        headers: ['Setting', 'Default', 'What it means']
+        rows:
+          - cells: ['HttpClient timeout', '60 seconds', 'One call can hold a worker for a minute']
+            tip: 'The default comes from PHP''s default_socket_timeout. Twenty slow calls a minute are enough to jam 20 workers.'
+          - cells: ['HttpClient max_duration', 'Unlimited', 'A trickling reply never ends']
+            tip: 'A server that sends data bit by bit never trips the idle timeout.'
+          - cells: ['PHP max_execution_time', '30 seconds', 'Waiting time is not counted']
+            tip: 'On Linux only the script''s own running time counts. Time spent in streams, database queries or sleep is excluded.'
+          - cells: ['PostgreSQL statement_timeout', '0 (unlimited)', 'A slow query can run for hours']
+            tip: 'One bad query holds a database connection until someone kills it by hand.'
+          - cells: ['FPM request_terminate_timeout', '0 (off)', 'Nobody stops a stuck worker']
+            tip: 'This is the only limit that counts real wall-clock time and forcibly stops the worker.'
+      - type: points
+        title: 'Three fixes'
+        style: number
+        items:
+          - 'Set both `timeout` and `max_duration` on every scoped client, as in the previous slide.'
+          - 'Keep the whole call, including reading the response, inside try/catch, and decide what to return on failure.'
+          - 'Set `request_terminate_timeout = 30s` in PHP-FPM: it is the last net if everything else misses.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Too short a timeout makes a healthy service look failed; too long makes it useless. Measure p99 and choose from that.'
+          - 'A timeout doesn''t mean the work didn''t happen. For calls like payments, the outcome is unknown.'
+      - type: remember
+        body: 'Defaults are written so nothing breaks, not to protect your site. Write the limits yourself.'
+      - type: refs
+        items:
+          - {to: 'payments/unknown-outcomes', label: 'After a timeout: "did it happen or not?"'}
+    check:
+      q: 'php.ini has max_execution_time = 30, yet a worker stayed stuck on the courier API for 60 seconds. How?'
+      a: 'On Linux, max_execution_time doesn''t count time spent waiting on the network. With no timeout set on HttpClient, default_socket_timeout (60 seconds) was the only limit.'
+
+flashcards:
+  - q: 'What is a cascading failure?'
+    a: 'One part''s problem takes over a shared resource (workers, connections, a queue) and knocks the healthy parts down one by one.'
+    more: |
+      It starts small, like one slow API or one slow query. The worker that calls it gets stuck. Once every worker is stuck, even features with nothing to do with the problem go down. Then whoever calls you gets stuck too.
+    ref: how-failure-spreads
+  - q: 'Why is a slow service more dangerous than a dead one?'
+    a: 'A dead service returns an error at once and the worker is released. A slow service holds workers for a long time until the pool runs out.'
+    more: |
+      If the connection fails outright, you know within milliseconds that the call failed. But if it connects and the reply arrives 30 seconds later, the worker can do nothing meanwhile. With 2 such calls a second, 20 workers are gone in 10 seconds.
+    ref: one-slow-call-stops-all
+  - q: 'What is the difference between timeout and max_duration in Symfony HttpClient?'
+    a: 'timeout is the idle limit: how long to wait with no data before giving up. max_duration is the total time limit for the whole call.'
+    more: |
+      A server that sends a little data every second never trips the idle timeout, which is why you need the total limit too. Without timeout the default is 60 seconds (default_socket_timeout), and without max_duration there is no limit at all. So set both yourself.
+    ref: timeout-every-call
+  - q: 'What is the bulkhead pattern?'
+    a: 'Splitting resources into separate compartments so one job or dependency can''t take every worker, connection or queue.'
+    more: |
+      The name comes from the separate compartments in a ship's hull: if one floods, the ship doesn't sink. In software it takes the form of a per-dependency cap on simultaneous calls (a semaphore), separate queues and workers per job type, and a separate PHP-FPM pool for admins.
+    ref: bulkheads
+  - q: 'Why doesn''t PHP''s max_execution_time protect workers from a slow API?'
+    a: 'On Linux it counts only the time PHP code is running, not time spent waiting for a network or database reply.'
+    more: |
+      So even with max_execution_time = 30, a worker can sit waiting on an external API for minute after minute. What stops a worker by the real clock is PHP-FPM's request_terminate_timeout. But that is the last net; the real fix is a timeout on every call.
+    ref: default-timeouts-lie
+  - q: 'How do you choose the timeout for an external API?'
+    a: 'Just above that API''s normal slowest reply (p99), and always below your own request''s time limit.'
+    more: |
+      If p99 is 800 ms, 1.5-2 seconds is a good start. Too short and healthy calls fail; too long and workers stay stuck. Always keep inner timeouts shorter than outer ones: HttpClient < PHP-FPM < nginx.
+    ref: timeout-every-call
+  - q: 'Why keep payment and report messages on separate Messenger transports?'
+    a: 'So urgent payment messages don''t get stuck behind thousands of slow report jobs.'
+    more: |
+      With everything on one queue, urgent work waits until the slow jobs ahead of it finish. With separate transports, each with its own workers, payments keep moving at their own pace even when the reports queue is full. This is a bulkhead for queues.
+    ref: bulkheads
+  - q: 'What is the default statement_timeout in PostgreSQL, and what should a web app do?'
+    a: 'The default is 0, meaning unlimited. Put a limit of a few seconds on the web database user, for example 5 seconds.'
+    more: |
+      Without a limit, one bad query holds both a database connection and a worker. `ALTER ROLE app_web SET statement_timeout = '5s'` limits only that user's queries. Keep a separate user with higher limits for reports or migrations.
+    ref: timeout-every-call
+  - q: 'What should a new request do when the bulkhead compartment is full?'
+    a: 'Go back immediately instead of waiting (fail fast), and return a fallback answer.'
+    more: |
+      Queueing up in front of the compartment brings back the very problem of stuck workers. Symfony Semaphore's acquire() returns false at once when there is no room. Then you show a default value or drop the feature for now: [[resilience/graceful-degradation|graceful degradation]].
+    ref: bulkheads
+
+quiz:
+  - q: 'Rimi''s app calls an SMS gateway after each order. Today the gateway is slow. The monitor shows a healthy database and 8% server CPU, but the whole site returns 504. What is the most likely cause?'
+    hint: 'Low CPU means nobody is doing any work. So what are the workers doing?'
+    options:
+      - text: 'Every worker is stuck waiting for the SMS gateway''s reply'
+        correct: true
+        why: 'Waiting costs no CPU, but it holds the worker. Once all workers are held, nobody is left to handle any other request.'
+      - text: 'The server has run out of RAM'
+        correct: false
+        why: 'Out of RAM, processes would be killed, or swapping would make CPU and disk look busy. Here the symptoms are an idle CPU and timeouts.'
+      - text: 'The database has no index'
+        correct: false
+        why: 'The database is stated to be healthy. A slow query would show up in database CPU or locks.'
+      - text: 'nginx is misconfigured'
+        correct: false
+        why: 'nginx is working fine: it finds no free worker and correctly returns 504.'
+    ref: one-slow-call-stops-all
+  - q: 'The code below uses a client configured with timeout: 2. Yet on a timeout the user gets a 500. Why?'
+    lang: php
+    code: |
+      try {
+          $response = $this->courierClient->request('GET', '/v1/rates');
+      } catch (TransportExceptionInterface $e) {
+          return null;
+      }
+
+      return (int) $response->toArray()['charge_paisa'];
+    hint: 'Symfony HttpClient responses are lazy. On which line does the real wait happen?'
+    options:
+      - text: 'The timeout exception is thrown in toArray(), which is outside the try'
+        correct: true
+        why: 'request() returns immediately; the network wait and the exception happen when the response is read. So the read must be inside the try too.'
+      - text: 'TransportExceptionInterface can''t catch a timeout'
+        correct: false
+        why: 'It can: TimeoutException implements this very interface. The problem is not the exception type but the boundary of the try.'
+      - text: 'timeout: 2 is too small and must be raised'
+        correct: false
+        why: 'Raising it only keeps the worker stuck longer; the exception would still land outside the try.'
+      - text: 'timeout doesn''t work on GET requests'
+        correct: false
+        why: 'The timeout works the same for every HTTP method.'
+    ref: timeout-every-call
+  - q: 'Which of these are examples of a bulkhead?'
+    hint: 'Which ones split a resource into separate compartments, and which just add resources or attempts?'
+    options:
+      - text: 'A semaphore capping calls to the courier API at 5 at a time'
+        correct: true
+        why: 'However slow the courier gets, it can never hold more than 5 workers.'
+      - text: 'Separate Messenger transports and workers for payments and reports'
+        correct: true
+        why: 'Even if the report line gets long, the payment workers keep working from their own queue.'
+      - text: 'Raising pm.max_children from 20 to 200'
+        correct: false
+        why: 'This makes the pool bigger, not partitioned. The slow dependency will take all 200, just a little later, and you will run out of memory too.'
+      - text: 'A separate PHP-FPM pool for the admin panel'
+        correct: true
+        why: 'Then an admin''s heavy export can''t eat the customers'' workers.'
+      - text: 'Retrying a failed call 5 times'
+        correct: false
+        why: 'Retries don''t partition anything. They add load to the slow service and to your own workers.'
+    ref: bulkheads
+  - q: 'A payment API has a normal response time of p50 = 200 ms and p99 = 900 ms. Which HttpClient max_duration is the most reasonable?'
+    hint: 'The slowest healthy calls should still get through, but when the API is sick workers shouldn''t stay stuck long.'
+    options:
+      - text: 'Around 2 seconds'
+        correct: true
+        why: 'Just above p99: nearly all healthy calls get through, and when it is sick the worker is freed after 2 seconds.'
+      - text: '300 ms'
+        correct: false
+        why: 'Plenty of calls take longer than that even when healthy, so you would create failures for nothing.'
+      - text: '60 seconds'
+        correct: false
+        why: 'That is almost the default. When the API is sick each worker would be stuck for a minute and the pool would run dry.'
+      - text: 'Better to set no limit, payments are important'
+        correct: false
+        why: 'Precisely because it is important, it needs a limit. Without one, a slow payment API can drown the whole site.'
+    ref: timeout-every-call
+  - q: 'Every job goes into a single Messenger queue. At month end, 5,000 report jobs pile up and payment confirmation messages run 40 minutes late. What is the right fix?'
+    hint: 'What happens when urgent jobs and slow jobs wait in the same line?'
+    options:
+      - text: 'Use separate transports and separate workers for payments and reports'
+        correct: true
+        why: 'Then the report line can''t touch the payment line. This is the bulkhead for queues.'
+      - text: 'Reduce the timeout in the report handler'
+        correct: false
+        why: 'Reports would fail, but the 5,000 messages would still be standing in front of the payments.'
+      - text: 'Double the workers on the same queue'
+        correct: false
+        why: 'It helps for a while, but next month with 10,000 reports you get the same problem. The line was never split.'
+      - text: 'Stop generating reports'
+        correct: false
+        why: 'Reports are legitimate work. Move them to their own compartment rather than dropping them.'
+    ref: bulkheads
+  - q: 'In which of these places can a missing timeout leave a worker stuck indefinitely or for a very long time?'
+    hint: 'Anywhere your code waits for a reply from another process or machine.'
+    options:
+      - text: 'Calling an external HTTP API'
+        correct: true
+        why: 'The default idle timeout is 60 seconds, and total time has no limit at all.'
+      - text: 'Running a database query'
+        correct: true
+        why: 'In PostgreSQL statement_timeout defaults to 0: a slow query or lock wait can last as long as it likes.'
+      - text: 'Sorting an in-memory array'
+        correct: false
+        why: 'Nobody''s reply is awaited here. It is CPU work, which is exactly the time max_execution_time counts.'
+      - text: 'Reading a cache entry from Redis'
+        correct: true
+        why: 'Redis is across the network too. Without limits on connect and read, a slow Redis can jam the whole site.'
+    ref: default-timeouts-lie

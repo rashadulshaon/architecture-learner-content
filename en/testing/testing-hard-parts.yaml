@@ -1,0 +1,465 @@
+slides:
+  - slug: bugs-tests-never-see
+    title: 'The bugs that never show up when a test runs alone'
+    kind: story
+    tldr: 'Concurrency, idempotency and migration bugs slip past ordinary tests, because tests run one after another, alone. Yet these are exactly what breaks in production, so they need dedicated tests.'
+    keywords: ['concurrency test', 'race condition', 'idempotency test', 'migration test', 'overselling', 'parallel']
+    blocks:
+      - type: metaphor
+        icon: bank
+        title: 'Two brothers at two ATMs'
+        body: |
+          Two brothers share an account with 1,000 taka. At the same moment they walk up to two different ATMs and each tries to withdraw 1,000. Both machines check the balance first (1,000), and then both hand out the cash. Test either ATM alone and it works perfectly. The mistake only appears when both brothers come together. Code tests usually run "alone" in the same way.
+      - type: visual
+        kind: sequence
+        caption: 'One item left, two buyers, two orders'
+        actors:
+          - {id: rahim, label: 'Buyer Rahim', icon: user, tip: 'Placing an order, believing he is the only buyer.'}
+          - {id: karim, label: 'Buyer Karim', icon: user, tip: 'Buying the same product at exactly the same moment.'}
+          - {id: db, label: 'Database', icon: db, tip: 'The stock column says 1. Both of them read it.'}
+        messages:
+          - {from: rahim, to: db, label: 'Read the stock', tip: 'SELECT stock FROM product WHERE sku = ...'}
+          - {from: karim, to: db, label: 'Read the stock'}
+          - {from: db, to: rahim, label: 'stock = 1', dashed: true}
+          - {from: db, to: karim, label: 'stock = 1', dashed: true}
+          - {from: rahim, to: db, label: 'Write stock = 0, create order'}
+          - {from: karim, to: db, label: 'Write stock = 0, create order', tone: bad}
+          - {at: db, note: 'Two orders, but there was only one item', tone: bad}
+      - type: quote
+        body: 'A race condition never happens in tests that run one after another.'
+    aside:
+      - type: story
+        title: '120 orders too many in a flash sale'
+        body: |
+          A sale had 100 phones in stock and sold 220. The team's tests showed stock going down correctly, because they ran with a single buyer, one step at a time. The bug only appeared when thousands of buyers arrived together.
+      - type: terms
+        items:
+          - {term: 'Race condition', meaning: 'When two tasks run at the same time, the result depends on which one gets there first.'}
+          - {term: 'Idempotent', meaning: 'Doing the same thing several times has the same effect as doing it once.'}
+      - type: refs
+        items:
+          - {to: 'concurrency/race-conditions', label: 'How race conditions happen'}
+          - {to: 'payments/idempotency-keys', label: 'Idempotency keys'}
+    check:
+      q: 'The stock-reduction test always passes with a single buyer, yet production oversells. What is missing from the test?'
+      a: 'It runs one buyer at a time, in sequence. The situation where two buyers read the stock together, and things go wrong, is never created in the test.'
+
+  - slug: concurrency-test
+    title: '10 buyers at once: writing a concurrency test'
+    kind: howto
+    tldr: 'Launch many buyers in separate processes, start them all at the same instant, then check that stock never went negative and exactly one item sold. The right fix is a single atomic UPDATE.'
+    keywords: ['concurrency test', 'Symfony Process', 'atomic update', 'barrier', 'overselling', 'parallel']
+    blocks:
+      - type: text
+        body: |
+          To build a real crowd, launch 10 separate PHP processes at once. Each buys through its own database connection. To make them all start at the same instant, give everyone a start time (`--start-at`) and have each process wait until then. At the end, check the state of the database, not what each buyer did.
+      - type: code
+        lang: php
+        file: 'tests/Concurrency/StockConcurrencyTest.php'
+        variant: good
+        code: |
+          #[Group('concurrency')]
+          final class StockConcurrencyTest extends KernelTestCase
+          {
+              public function testTenBuyersSellExactlyOneItem(): void
+              {
+                  $this->seedProduct('SKU-1', stock: 1);
+                  $startAt = microtime(true) + 3;       // the same start moment for everyone
+
+                  $buyers = [];
+                  for ($i = 1; $i <= 10; ++$i) {
+                      $buyers[] = $p = new Process([
+                          PHP_BINARY, 'bin/console', 'app:buy', 'SKU-1',
+                          "--buyer=$i", "--start-at=$startAt", '--env=test',
+                      ]);
+                      $p->start();                      // launch without waiting
+                  }
+                  foreach ($buyers as $p) {
+                      $p->wait();
+                  }
+
+                  self::assertSame(0, $this->stockOf('SKU-1'));      // not negative
+                  self::assertSame(1, $this->ordersOf('SKU-1'));     // exactly one sale
+              }
+          }
+        marks:
+          - {line: 7, tip: 'Each process is separate, so each takes a different time to start. If they all wait until this moment, they run off together.'}
+          - {line: 15, tip: 'start() doesn''t wait, so all 10 processes run almost at once. With run() or mustRun() they would run one after another.'}
+          - {line: 21, tip: 'The question isn''t "who won" but "is the final state correct": whatever the buggy order of events, these two numbers will catch it.'}
+      - type: code
+        lang: php
+        file: 'src/Stock/StockService.php'
+        variant: good
+        code: |
+          public function buy(string $sku, int $buyerId): void
+          {
+              $this->connection->beginTransaction();
+              try {
+                  $updated = $this->connection->executeStatement(
+                      'UPDATE product SET stock = stock - 1 WHERE sku = :sku AND stock > 0',
+                      ['sku' => $sku],
+                  );
+                  if (0 === $updated) {
+                      throw new OutOfStock($sku);   // no stock: somebody got there first
+                  }
+
+                  $this->connection->insert('orders', ['sku' => $sku, 'buyer_id' => $buyerId]);
+                  $this->connection->commit();
+              } catch (\Throwable $e) {
+                  $this->connection->rollBack();
+                  throw $e;
+              }
+          }
+        marks:
+          - {line: 6, tip: 'Reading and writing in one SQL statement: the stock > 0 check and the decrement happen together, and nobody can slip in between. That is what atomic means.'}
+          - {line: 9, tip: '0 rows changed means the condition didn''t match, in other words there is no stock. That is how we know who lost the race.'}
+      - type: quote
+        body: 'In a concurrency test, check the final state: stock is never negative, and sales never exceed the items available.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'This test can''t run inside a transaction-wrapped test (DAMA): other processes can''t see uncommitted data. Keep a separate suite and TRUNCATE the tables yourself at the start.'
+          - 'Run this test against the old, broken code and check that it fails. If it doesn''t, the test itself is weak.'
+      - type: commands
+        items:
+          - {cmd: 'php bin/phpunit --group concurrency', desc: 'Run only the concurrency tests'}
+      - type: refs
+        items:
+          - {to: 'concurrency/atomic-operations', label: 'Atomic operations'}
+          - {to: 'concurrency/locking', label: 'Handling it with locks'}
+    check:
+      q: 'Why does the test launch each Process with `start()` and not `mustRun()`?'
+      a: '`mustRun()` waits for one process to finish, so the buyers arrive one after another and there is no race. `start()` launches them all at almost the same time.'
+
+  - slug: idempotency-test
+    title: 'Pressing the lift button again and again: idempotency tests'
+    kind: howto
+    tldr: 'Send the same Idempotency-Key twice: the response is the same and only one charge happens. Send different data with the same key and it must be rejected. That is how you test retries and double clicks.'
+    keywords: ['idempotency test', 'Idempotency-Key', 'WebTestCase', 'duplicate request', 'retry', 'double charge']
+    blocks:
+      - type: metaphor
+        icon: building
+        title: 'The lift button'
+        body: |
+          Press the lift button five times and one lift comes, not five. A payment API should behave like that button: the network drops and the client sends the same request again. With the same key, the server recognises "this is the request I already handled" and returns the earlier response, without charging again.
+      - type: visual
+        kind: sequence
+        caption: 'On a retry with the same key: the same response, no new charge'
+        actors:
+          - {id: client, label: 'Client', icon: browser, tip: 'When the network drops it tries again, with the same key.'}
+          - {id: api, label: 'Payment API', icon: api, tip: 'Remembers the key, and doesn''t charge again on the second request.'}
+          - {id: db, label: 'Database', icon: db, tip: 'Stores the key and its result.'}
+        messages:
+          - {from: client, to: api, label: 'POST /payments (key: K1)'}
+          - {from: api, to: db, label: 'K1 is new: charge, store the result'}
+          - {from: api, to: client, label: '500 taka charged, 201', dashed: true}
+          - {at: client, note: 'The response got lost on the way, the client doesn''t know', tone: warn}
+          - {from: client, to: api, label: 'retry: POST /payments (key: K1)'}
+          - {from: api, to: db, label: 'Do we already have K1?'}
+          - {from: db, to: api, label: 'Yes: here is the earlier result', dashed: true, tone: good}
+          - {from: api, to: client, label: 'Same response, no new charge', dashed: true, tone: good}
+      - type: code
+        lang: php
+        file: 'tests/Functional/PaymentIdempotencyTest.php'
+        variant: good
+        code: |
+          public function testSameKeyTwiceChargesOnce(): void
+          {
+              $client = static::createClient();
+              $key = ['HTTP_IDEMPOTENCY_KEY' => 'order-42-attempt-1'];
+              $payload = ['orderId' => 42, 'amount' => 50_000];
+
+              $client->jsonRequest('POST', '/api/payments', $payload, $key);
+              $first = $client->getResponse()->getContent();
+
+              $client->jsonRequest('POST', '/api/payments', $payload, $key);
+
+              self::assertSame($first, $client->getResponse()->getContent());   // same response
+              self::assertSame(1, $this->paymentCount(42));                     // only one charge
+          }
+
+          public function testSameKeyWithDifferentPayloadIsRejected(): void
+          {
+              $client = static::createClient();
+              $key = ['HTTP_IDEMPOTENCY_KEY' => 'order-42-attempt-1'];
+
+              $client->jsonRequest('POST', '/api/payments', ['orderId' => 42, 'amount' => 50_000], $key);
+              $client->jsonRequest('POST', '/api/payments', ['orderId' => 42, 'amount' => 99_000], $key);
+
+              self::assertResponseStatusCodeSame(422);   // our API's rule
+          }
+        marks:
+          - {line: 4, tip: 'The HTTP header Idempotency-Key becomes HTTP_IDEMPOTENCY_KEY in the test client (upper case, - turned into _, prefixed with HTTP_).'}
+          - {line: 12, tip: 'Counting charges isn''t enough; the response must be identical too, or the client gets confused the second time.'}
+          - {line: 24, tip: 'The same key with a different amount is a client mistake. Quietly returning the earlier result would hide the mistake, so reject it.'}
+      - type: quote
+        body: 'Test idempotency by sending twice: the same response, and the effect (the charge) only once.'
+    aside:
+      - type: tips
+        items:
+          - 'Also send two requests with the same key at the same time (using the Process technique from the previous slide). Most bugs live here: both see "new key" and charge twice.'
+          - 'The surest protection is a UNIQUE constraint on the key in the database, so one of the two loses the collision.'
+      - type: refs
+        items:
+          - {to: 'payments/idempotency-keys', label: 'How to build idempotency keys'}
+    check:
+      q: 'Why isn''t checking only "one charge" enough in an idempotency test?'
+      a: 'The second response must match the first exactly. Otherwise, even with one charge, the client gets a different response and gets confused or tries again.'
+
+  - slug: migration-test
+    title: 'Migration tests: run them on real-looking data'
+    kind: howto
+    tldr: 'Go back to the previous version, load old-shaped data (including corner cases), run the migration, then check that the data is intact and that the old code''s queries still work.'
+    keywords: ['migration test', 'Doctrine Migrations', 'backward compatible', 'expand', 'edge case data', 'schema migration']
+    blocks:
+      - type: text
+        body: |
+          A migration on an empty test database always passes. In production the trouble is the data: NULLs, duplicates, odd values. So the recipe for a migration test is: put real-shaped data in the earlier state, run the migration, then ask two questions. Did the data survive? Does the old code still run?
+      - type: visual
+        kind: steps
+        caption: 'Five steps of a migration test'
+        steps:
+          - {title: '1. Go to the old version', body: 'Bring the database to the state just before the migration.', tip: 'Use doctrine:migrations:migrate <previous version>, on a separate test database.'}
+          - {title: '2. Load old data', body: 'Normal rows, plus NULLs and corner cases.', tip: 'Whatever you suspect production data contains: empty strings, duplicates, very large values.'}
+          - {title: '3. Run the migration', body: 'Now migrate to the new version.', tip: 'If it fails, the error message will tell you which data caused the trouble.'}
+          - {title: '4. Data intact', body: 'Row counts and values are the same as before.', tone: good, tip: 'Lost or changed data is the scariest kind, because it happens silently.'}
+          - {title: '5. Old code works', body: 'An old-style INSERT still works.', tone: good, tip: 'During a deploy the old servers keep running. If their queries break, some users get errors.'}
+      - type: code
+        lang: php
+        file: 'tests/Migration/UserMobileMigrationTest.php'
+        variant: good
+        code: |
+          final class UserMobileMigrationTest extends KernelTestCase
+          {
+              private const BEFORE = 'DoctrineMigrations\Version20261120090000';
+              private const AFTER = 'DoctrineMigrations\Version20261120100000';
+
+              public function testExpandKeepsDataAndOldCodeWorking(): void
+              {
+                  $this->migrateTo(self::BEFORE);
+                  $db = self::getContainer()->get(Connection::class);
+                  $db->insert('"user"', ['id' => 1, 'phone' => '01711111111']);
+                  $db->insert('"user"', ['id' => 2, 'phone' => null]);   // corner case
+
+                  $this->migrateTo(self::AFTER);
+
+                  self::assertSame(2, (int) $db->fetchOne('SELECT COUNT(*) FROM "user"'));
+                  self::assertSame('01711111111', $db->fetchOne('SELECT phone FROM "user" WHERE id = 1'));
+
+                  // old code doesn't know about mobile: its INSERT must still work
+                  $db->insert('"user"', ['id' => 3, 'phone' => '01822222222']);
+                  self::assertNull($db->fetchOne('SELECT mobile FROM "user" WHERE id = 3'));
+              }
+
+              private function migrateTo(string $version): void
+              {
+                  (new Process([PHP_BINARY, 'bin/console', 'doctrine:migrations:migrate', $version,
+                      '--no-interaction', '--env=test']))->mustRun();
+              }
+          }
+        marks:
+          - {line: 11, tip: 'NULL, empty and oddly shaped values. If the migration adds NOT NULL or UNIQUE, this is where it breaks.'}
+          - {line: 19, tip: 'Imitating the old code: an INSERT without the new column. If this fails, the expand step isn''t really backward compatible.'}
+      - type: quote
+        body: 'Test migrations on messy, production-like data, not on an empty database.'
+    aside:
+      - type: tips
+        items:
+          - 'Measure how long the migration takes separately, on staging with production-sized data. Small test data hides both the duration and the locks.'
+          - 'In CI, run "migrate up, then down, then up again" to catch a broken down() early.'
+      - type: refs
+        items:
+          - {to: 'resilience/zero-downtime-deploys', label: 'Expand-contract'}
+          - {to: 'data/zero-downtime-migrations', label: 'Zero-downtime migrations'}
+    check:
+      q: 'Why does a migration test load old-shaped data first and migrate afterwards? What would be lost if you migrated first and loaded data after?'
+      a: 'The real risk is whether old data (NULLs, duplicates) breaks the migration. If you load data after migrating, that old data is never put to the test.'
+
+  - slug: flaky-race-tests
+    title: 'The trap: race tests built on sleep are always green'
+    kind: pitfall
+    tldr: 'A race test that lines things up with sleep() never actually causes the race, so it is always green. Use a start barrier, run it many times rather than once, and use real PostgreSQL.'
+    keywords: ['flaky test', 'sleep', 'barrier', 'repeat', 'DAMA', 'SQLite']
+    blocks:
+      - type: text
+        body: |
+          The easy way to write a race test: launch two processes with a small `usleep` between them. On a fast machine the first finishes before the second even starts, so the race never happens. The test is always green while the bug remains. That makes it the most dangerous kind of test: it gives you a false feeling of safety.
+      - type: code
+        lang: php
+        file: 'tests/Concurrency/StockConcurrencyTest.php'
+        variant: bad
+        code: |
+          $a = new Process([PHP_BINARY, 'bin/console', 'app:buy', 'SKU-1', '--buyer=1']);
+          $b = new Process([PHP_BINARY, 'bin/console', 'app:buy', 'SKU-1', '--buyer=2']);
+
+          $a->start();
+          usleep(50_000);        // "start the second one a bit later": a guess
+          $b->start();
+
+          $a->wait();
+          $b->wait();
+          // on a fast machine $a is already done: no race, test is green
+        marks:
+          - {line: 5, tip: 'The sleep is a guess. The right timing depends on the machine, the load and PHP warm-up: it works today and fails tomorrow.'}
+      - type: code
+        lang: php
+        file: 'tests/Concurrency/StockConcurrencyTest.php'
+        variant: good
+        code: |
+          public function testNeverOversellsAcrossManyRounds(): void
+          {
+              for ($round = 1; $round <= 20; ++$round) {
+                  $this->resetDatabase();                 // TRUNCATE it yourself
+                  $this->seedProduct('SKU-1', stock: 1);
+
+                  $this->runBuyersTogether(10);           // with the --start-at barrier
+
+                  self::assertSame(1, $this->ordersOf('SKU-1'), "round $round: oversell");
+              }
+          }
+        marks:
+          - {line: 3, tip: 'Green once means nothing. If 20 runs never produce a single mistake, your confidence grows.'}
+          - {line: 4, tip: 'Every round starts from a clean state. Data from the previous round doesn''t affect the next.'}
+      - type: points
+        title: 'Three more mistakes that weaken the test'
+        style: cross
+        items:
+          - 'Race tests on SQLite: the database''s own locking and isolation behave differently'
+          - 'Looking for another process''s data inside a transaction-wrapped test: other processes don''t see uncommitted data'
+          - 'Looking only at the final result and assuming "it ran once, so it''s fine"'
+    aside:
+      - type: remember
+        body: 'In race tests, line things up with a signal, not a guess about time. And run them again and again, not once.'
+      - type: pitfalls
+        items:
+          - 'After fixing the bug, run the test against the old buggy code and watch it fail. You can''t trust a test that has never failed.'
+      - type: refs
+        items:
+          - {to: 'testing/test-types', label: 'Integration tests on a real database'}
+    check:
+      q: 'In a race test, the buggy code still gets a green result. What do you conclude?'
+      a: 'The test is weak: it can''t cause the race. Start everyone at the same instant with a barrier, run many rounds, and check that it fails against the buggy code.'
+
+flashcards:
+  - q: 'Why do ordinary tests miss race conditions?'
+    a: 'They run one after another, alone. A race happens when two tasks touch the same data at the same instant, a situation tests never create.'
+    more: |
+      If two buyers read a stock of 1 together, both go ahead and buy. A single-buyer test can never produce that. So you need to run in separate processes or threads, truly in parallel.
+    ref: bugs-tests-never-see
+  - q: 'How do you make all processes start at the same instant in a concurrency test?'
+    a: 'Give everyone the same start time (--start-at) and have each wait until then. This is called a barrier.'
+    more: |
+      Processes take different times to boot, so starting each one as it is launched means no race. Compute one future time with `microtime(true) + 3` and hand it to everyone. When the time comes, they all run off together.
+    ref: concurrency-test
+  - q: 'What is the simplest atomic way to prevent overselling?'
+    a: 'One SQL statement with the condition and the decrement together: UPDATE product SET stock = stock - 1 WHERE sku = :sku AND stock > 0. 0 rows changed means no stock.'
+    more: |
+      Split the read from the write and someone else can slip in between. In one SQL statement the database keeps the order itself. And when the affected row count is 0, you know someone else got there first, so throw OutOfStock.
+    ref: concurrency-test
+  - q: 'What two things do you verify in an idempotency test?'
+    a: 'Sending the same key twice gives an identical response, and the effect (the charge) happens only once. Different data with the same key is rejected.'
+    more: |
+      On the first request the response is stored, and the second returns that stored response. The same key with a different amount is a client mistake, so a 422 is best. Also test by sending two requests with the same key at the same time.
+    ref: idempotency-test
+  - q: 'What is the standard shape of a migration test?'
+    a: 'Go to the previous version, load old-shaped data, migrate, then check that the data is intact and the old code still works.'
+    more: |
+      A migration on an empty database almost always passes; it breaks because of data. So load corner cases like NULLs, empty strings and duplicates beforehand. Also run the old code's INSERT, because old servers keep running during a deploy.
+    ref: migration-test
+  - q: 'Why is a race test that uses sleep to line things up a bad idea?'
+    a: 'It depends on machine speed: on a fast machine the race never actually happens, so even buggy code stays green.'
+    more: |
+      The fix: give everyone the same start time (a barrier), run 20 rounds rather than once, and run it once against the old buggy code to see the test fail. If it doesn't fail, the test can't cause the race.
+    ref: flaky-race-tests
+  - q: 'Why can''t a concurrency test run inside a transaction-wrapped test (DAMA)?'
+    a: 'DAMA wraps each test in a transaction, so other processes can''t see its uncommitted data.'
+    more: |
+      In a multi-process test the data really has to be committed. So keep concurrency tests in a separate suite without the DAMA extension, and clean the database yourself (TRUNCATE) at the start.
+    ref: concurrency-test
+
+quiz:
+  - q: 'Selim''s test launches two Processes with usleep(50_000) between them. The test is green even on buggy code. What is the most likely cause?'
+    hint: 'What happens if the first one finishes before the second starts?'
+    options:
+      - text: 'The first process finishes before the second starts, so no race happens'
+        correct: true
+        why: 'The sleep is a guess. On a fast machine the whole job finishes within 50ms, and the order becomes one after the other.'
+      - text: 'There really is no bug in the code'
+        correct: false
+        why: 'The test never causes a race, so it can''t tell you whether the bug exists.'
+      - text: 'Using Process is the mistake'
+        correct: false
+        why: 'Separate processes are the right way. The mistake is how the start times are lined up.'
+      - text: 'PHPUnit doesn''t support race tests'
+        correct: false
+        why: 'PHPUnit just runs tests; causing the race is your test''s job, and it can be done with Process.'
+    ref: flaky-race-tests
+  - q: 'Which of these are part of a good concurrency test?'
+    hint: 'Truly parallel events, and a check of the final state.'
+    options:
+      - text: 'Giving everyone the same start time (a barrier)'
+        correct: true
+        why: 'The processes boot at different times. Without a barrier they don''t run off together.'
+      - text: 'Checking the stock and the number of orders at the end'
+        correct: true
+        why: 'Whatever the buggy order of events, the final state (stock >= 0, sales <= items) catches it.'
+      - text: 'Waiting for each process to finish before launching the next'
+        correct: false
+        why: 'Then buyers come one after another, and the race never happens.'
+      - text: 'Using SQLite because it is fast'
+        correct: false
+        why: 'SQLite''s locking and isolation behave differently, so it won''t reproduce the production race.'
+    ref: concurrency-test
+  - q: 'A client sends the same payment twice with the same Idempotency-Key. What is the correct behaviour?'
+    hint: 'Press the lift button five times: how many lifts come?'
+    options:
+      - text: 'The second time, return the earlier response and don''t charge again'
+        correct: true
+        why: 'That is idempotency: no matter how many times the same request arrives, the effect happens once and the response is the same.'
+      - text: 'Charge twice, because two requests arrived'
+        correct: false
+        why: 'That charges the customer twice, which is exactly what the key exists to prevent.'
+      - text: 'Always return an error the second time'
+        correct: false
+        why: 'The client lost the response and wants it back. An error leaves it stuck.'
+      - text: 'Generate a new key and charge again'
+        correct: false
+        why: 'If the server makes up a new key itself, duplicate protection is gone.'
+    ref: idempotency-test
+  - q: 'The migration test below has one important gap. Which one?'
+    lang: php
+    code: |
+      $this->migrateTo(self::AFTER);
+      $db->insert('"user"', ['id' => 1, 'phone' => '01711111111']);
+      self::assertSame('01711111111', $db->fetchOne('SELECT phone FROM "user" WHERE id = 1'));
+    hint: 'When is the old data being loaded?'
+    options:
+      - text: 'The data is loaded after the migration, so how the migration treats old data is never tested'
+        correct: true
+        why: 'The risk is that old data breaks the migration. So you load data at the earlier version first, then migrate.'
+      - text: 'Using fetchOne is wrong'
+        correct: false
+        why: 'fetchOne is fine for reading one value. The problem is when the data is loaded.'
+      - text: 'The phone number isn''t realistic'
+        correct: false
+        why: 'The number is fine. The gap is in the order of the test.'
+      - text: 'Running a migration test on a separate database is wrong'
+        correct: false
+        why: 'It should run on a separate test database, never on production.'
+    ref: migration-test
+  - q: 'A team has written a race test. Which changes would make it more reliable?'
+    hint: 'Can the test itself catch the bug? How would you confirm it?'
+    options:
+      - text: 'Running 20 rounds, cleaning the data each time'
+        correct: true
+        why: 'A race doesn''t always happen. Running many times raises the chance of catching it.'
+      - text: 'Running the test against the old buggy code and watching it fail'
+        correct: true
+        why: 'You can''t know whether a test that has never failed catches anything. Failing on buggy code proves it works.'
+      - text: 'Increasing the usleep so the second process starts even later'
+        correct: false
+        why: 'Starting later makes the race even less likely.'
+      - text: 'Merging as soon as the test is green once'
+        correct: false
+        why: 'One green run proves nothing, because a race doesn''t always happen.'
+    ref: flaky-race-tests

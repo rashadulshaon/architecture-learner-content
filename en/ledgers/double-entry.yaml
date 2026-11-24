@@ -1,0 +1,367 @@
+slides:
+  - slug: one-balance-column
+    title: 'Just a balance column: "Where did my money go?"'
+    kind: story
+    tldr: 'With only a balance number there is no history. When something is wrong, you can''t tell who changed it, when, or why.'
+    keywords: ['balance column', 'audit trail', 'UPDATE balance', 'ledger', 'history', 'bookkeeping']
+    blocks:
+      - type: text
+        body: |
+          Rahima calls support: "My wallet is 500 taka short. Who took it?" All the database holds is `balance = 1200`. Who lowered it, why, and when? None of that is written down. You can't even tell whether two concurrent requests overwrote each other. Forget getting the right figure; you can't find where the mistake happened.
+      - type: code
+        lang: sql
+        file: 'What a CRUD app naturally writes'
+        variant: bad
+        code: |
+          UPDATE wallet
+             SET balance = balance - 500
+           WHERE id = 7;
+          -- The old amount? The reason? Who did it? All gone.
+        marks:
+          - {line: 2, tip: 'This line wipes the old number and writes the new one in its place. No history is left.'}
+      - type: visual
+        kind: compare
+        caption: 'A balance column alone vs a book of entries'
+        columns:
+          - title: 'Balance column only'
+            tone: bad
+            icon: cross
+            tip: 'Simple, but every change erases the information that came before it.'
+            items:
+              - 'You can''t tell who lowered it'
+              - 'After an error, you can''t work out the right amount'
+              - 'You have nothing to show an auditor'
+          - title: 'A book of entries (ledger)'
+            tone: good
+            icon: check
+            tip: 'Each transaction is a new line; the balance is the sum of those lines.'
+            items:
+              - 'Every change has its own line'
+              - 'You can recompute the balance for any day'
+              - 'An auditor can check it line by line'
+    aside:
+      - type: story
+        title: 'Two bugs that cancelled out'
+        body: |
+          In one app, a bug charged 200 taka too much and another charged 200 taka too little. Together they left the balance looking correct. With only a balance, nobody would ever have caught either one. Because entries existed, an auditor found both.
+      - type: remember
+        body: 'A balance is an answer, not history. Without history you can''t check the answer.'
+    check:
+      q: 'After `UPDATE ... SET balance = balance - 500` runs, what information is lost?'
+      a: 'The old amount, why it dropped, which transaction caused it and who did it. Only the new number remains, so nothing can be checked.'
+
+  - slug: two-sides-of-every-move
+    title: 'Money moves from one account to another'
+    kind: concept
+    tldr: 'Every transaction has at least two entries: total debits always equal total credits; entries never change; the balance is computed from entries.'
+    keywords: ['double-entry', 'debit', 'credit', 'immutable', 'derived balance', 'bookkeeping']
+    blocks:
+      - type: metaphor
+        icon: book
+        title: 'The bank passbook'
+        body: |
+          Every line in a passbook is written in ink; nobody crosses one out and writes a new number. Each deposit or withdrawal also has a line on the other side, in someone else's book: money comes from somewhere and goes somewhere, and it never just evaporates. The current balance isn't written anywhere separately. It is whatever you get by adding up all the lines.
+      - type: visual
+        kind: table
+        caption: 'Rahim sends Karim 500 taka with a 10 taka fee (all amounts in taka)'
+        headers: ['Account', 'Debit', 'Credit']
+        rows:
+          - cells: ['Rahim''s wallet', '510', '—']
+            tip: '510 taka leaves Rahim''s wallet (500 sent plus the 10 fee). A wallet is a liability for us, so a debit means the balance goes down.'
+          - cells: ['Karim''s wallet', '—', '500']
+            tip: '500 taka arrives in Karim''s wallet. The liability grows, so it is a credit.'
+          - cells: ['Fee income', '—', '10']
+            tip: '10 taka is added to our income book. Income also grows on the credit side.'
+          - cells: ['Total', '510', '510']
+            tip: 'If the two sides don''t add up to the same number, the transaction is not accepted at all.'
+      - type: quote
+        body: 'In every transaction, total debits = total credits. Entries are written, never edited or deleted.'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Entry', meaning: 'One line on one side of an account: the account, debit or credit, and an amount.'}
+          - {term: 'Debit / Credit', meaning: 'The two sides of the book. On liability-type accounts such as a wallet or income, credit increases and debit decreases.'}
+          - {term: 'Derived balance', meaning: 'Not a separate number but one computed from the sum of the entries.'}
+      - type: problem
+        body: 'Every amount has a source and a destination, so money that vanishes or appears from nowhere gets caught.'
+    check:
+      q: 'Rahim''s wallet loses 510 and Karim''s gains 500. Where is the other 10 taka, and why must it be written down?'
+      a: 'In the fee income account, as a 10 credit. Without it, debits are 510 and credits 500, which is unbalanced, and nothing explains where the 10 taka went.'
+
+  - slug: ledger-schema
+    title: 'Building the tables: account, transaction, entry'
+    kind: howto
+    tldr: 'Three tables: account, transaction, entry. CHECK and REVOKE block bad amounts and edits; balance = SUM of entries.'
+    keywords: ['ledger schema', 'SQL', 'CHECK constraint', 'REVOKE', 'SUM', 'ledger_entry']
+    blocks:
+      - type: text
+        body: |
+          Three tables are enough. An **account** is a page in the book, a **transaction** is one event (one transfer), and an **entry** is each line of that event. The amount is always a positive integer; the `side` column says which direction. And the app's database user is never granted UPDATE or DELETE at all.
+      - type: code
+        lang: sql
+        file: 'migrations — ledger schema'
+        variant: good
+        code: |
+          CREATE TABLE ledger_account (
+            id       bigserial PRIMARY KEY,
+            code     text UNIQUE NOT NULL,      -- 'wallet:rahim', 'income:fees'
+            currency char(3) NOT NULL
+          );
+          CREATE TABLE ledger_transaction (
+            id          uuid PRIMARY KEY,
+            memo        text NOT NULL,
+            reverses_id uuid UNIQUE REFERENCES ledger_transaction (id),
+            posted_at   timestamptz NOT NULL DEFAULT now()
+          );
+          CREATE TABLE ledger_entry (
+            id             bigserial PRIMARY KEY,
+            transaction_id uuid    NOT NULL REFERENCES ledger_transaction (id),
+            account_id     bigint  NOT NULL REFERENCES ledger_account (id),
+            side           char(1) NOT NULL CHECK (side IN ('D', 'C')),
+            amount_minor   bigint  NOT NULL CHECK (amount_minor > 0),
+            currency       char(3) NOT NULL
+          );
+          CREATE INDEX ON ledger_entry (account_id);
+
+          REVOKE UPDATE, DELETE
+            ON ledger_entry, ledger_transaction FROM app_user;
+        marks:
+          - {line: 9, tip: '`UNIQUE` means a transaction can be reversed at most once, which prevents a double reversal.'}
+          - {line: 17, tip: 'The amount is always above 0. The `side` decides whether the balance goes up or down, not a negative number.'}
+          - {line: 22, tip: 'The app''s user can''t change an entry, whether by mistake or through a bug. It''s like a page written in ink.'}
+      - type: code
+        lang: sql
+        file: 'Computing the balance'
+        variant: good
+        code: |
+          -- A wallet is our liability: credit increases it, debit decreases it
+          SELECT COALESCE(SUM(
+                   CASE side WHEN 'C' THEN amount_minor ELSE -amount_minor END
+                 ), 0) AS balance_minor
+            FROM ledger_entry
+           WHERE account_id = 7;
+        marks:
+          - {line: 3, tip: 'Credit adds, debit subtracts. The sum is the balance, and no separate number is stored anywhere.'}
+    aside:
+      - type: tips
+        items:
+          - 'If you need the balance fast, keep a cached column, but treat it as a figure computed from entries, not the source of truth. If they disagree, the entries are right.'
+          - 'To enforce the "both sides are equal" rule in the database, use a `DEFERRABLE INITIALLY DEFERRED` constraint trigger in PostgreSQL.'
+      - type: refs
+        items:
+          - {to: 'concurrency/atomic-operations', label: 'All entries in one transaction'}
+    check:
+      q: 'Why does ledger_entry have a `side` column instead of allowing a negative `amount_minor`?'
+      a: 'To avoid mistakes about direction (such as a negative debit). The amount is always a positive integer, and the direction is written explicitly as D or C.'
+
+  - slug: posting-service
+    title: 'The posting service: unbalanced means not written'
+    kind: howto
+    tldr: 'One service writes all entries in one transaction after checking debits = credits. A mistake is never deleted; you write a reversing transaction.'
+    keywords: ['posting service', 'reversing entry', 'Symfony', 'DBAL transactional', 'Uuid::v7', 'reversal']
+    blocks:
+      - type: text
+        body: |
+          Every write goes through one door: `LedgerService::post()`. It first checks that the two sides add up, then writes the transaction and its entries in a single DB transaction. A wrong transaction can't be deleted or edited. Instead you write a **reversing entry**: a new transaction with every line on the opposite side.
+      - type: code
+        lang: php
+        file: 'src/Ledger/LedgerService.php'
+        variant: good
+        code: |
+          /** @param list<Posting> $postings */
+          public function post(string $memo, array $postings, ?Uuid $reverses = null): Uuid
+          {
+              $sum = fn (Side $s) => array_sum(array_map(
+                  fn (Posting $p) => $p->side === $s ? $p->money->amount : 0, $postings));
+              if ($sum(Side::Debit) !== $sum(Side::Credit) || 0 === $sum(Side::Debit)) {
+                  throw new \DomainException('Debits and credits are not equal');
+              }
+
+              return $this->db->transactional(function () use ($memo, $postings, $reverses) {
+                  $id = Uuid::v7();
+                  $this->db->insert('ledger_transaction', [
+                      'id' => $id->toRfc4122(), 'memo' => $memo,
+                      'reverses_id' => $reverses?->toRfc4122(),
+                  ]);
+                  foreach ($postings as $p) {
+                      $this->db->insert('ledger_entry', [
+                          'transaction_id' => $id->toRfc4122(),
+                          'account_id' => $p->accountId,
+                          'side' => $p->side->value,
+                          'amount_minor' => $p->money->amount,
+                          'currency' => $p->money->currency,
+                      ]);
+                  }
+
+                  return $id;
+              });
+          }
+        marks:
+          - {line: 6, tip: 'If the two sides don''t match, it stops before touching the DB. An unbalanced transaction is never written.'}
+          - {line: 10, tip: 'The transaction and all its entries go in together. If it fails halfway, nothing is written and no half transaction is left behind.'}
+          - {line: 14, tip: 'For a reversal, the original transaction''s id goes here; the UNIQUE constraint prevents reversing it twice.'}
+      - type: code
+        lang: php
+        file: 'Reversing: an opposite entry, not a delete'
+        variant: good
+        code: |
+          public function reverse(Uuid $txId): Uuid
+          {
+              $original = $this->entries->forTransaction($txId);   // list<Posting>
+
+              return $this->post(
+                  memo: "Reversal of {$txId->toRfc4122()}",
+                  postings: array_map(fn (Posting $p) => $p->reversed(), $original),
+                  reverses: $txId,
+              );
+          }
+        marks:
+          - {line: 7, tip: '`reversed()` turns each line''s debit into a credit and its credit into a debit. The amounts stay the same.'}
+          - {line: 8, tip: 'The link to the original transaction is recorded, so an auditor can see the two as a pair.'}
+      - type: visual
+        kind: table
+        caption: 'Effect on Rahim''s wallet, Karim''s wallet and fee income (in taka)'
+        headers: ['Transaction', 'Rahim', 'Karim', 'Fee income']
+        rows:
+          - cells: ['#1 Transfer', '−510', '+500', '+10']
+            tip: 'The original transaction, which was a mistake. It stays in the book forever.'
+          - cells: ['#2 Reversal (of #1)', '+510', '−500', '−10']
+            tip: 'Every line is the opposite. #1 is not deleted; its effect is cancelled out.'
+          - cells: ['Total', '0', '0', '0']
+            tip: 'After both transactions everyone''s balance is as before, and history still shows both lines.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Never run UPDATE or DELETE on a wrong entry. Nobody will ever know what really happened.'
+          - 'After a reversal, write the corrected transaction separately; reversing and correcting are two steps, not one.'
+      - type: refs
+        items:
+          - {to: 'workflows/refunds-reversals', label: 'Refunds and reversals'}
+          - {to: 'recovery/corrective-actions', label: 'Correcting bad data'}
+    check:
+      q: 'What is the benefit of writing an opposite entry instead of deleting a wrong transaction?'
+      a: 'History stays intact: both the original mistake and its reversal are visible. An auditor can see what happened, when, and how it was corrected.'
+
+flashcards:
+  - q: 'What is the core rule of a double-entry ledger?'
+    a: 'Every transaction has at least two entries, and total debits always equal total credits.'
+    more: |
+      Money leaves one account and enters another; it never just disappears. If the two sides don't match, the transaction isn't written at all, so "lost money" gets caught.
+    ref: two-sides-of-every-move
+  - q: 'What exactly goes wrong if you keep only a balance column?'
+    a: 'Each UPDATE erases the old amount, so you can''t tell who changed it, when or why, and you can''t verify mistakes.'
+    more: |
+      In a book of entries, every change is a new line, so the balance for any date can be recomputed. That history is the real asset when auditing or hunting for a mismatch.
+    ref: one-balance-column
+  - q: 'Why are ledger entries never edited or deleted?'
+    a: 'To keep history intact. When something is wrong, you write a new reversing transaction instead of editing.'
+    more: |
+      You can't cross out an ink line in a passbook and write a new number. Using `REVOKE UPDATE, DELETE` in the database means nobody can change an entry, even through a bug or in a rush.
+    ref: ledger-schema
+  - q: 'How is the balance computed in a ledger?'
+    a: 'From the sum of all the account''s entries: credits added, debits subtracted (for liability-type accounts).'
+    more: |
+      The balance isn't a separate truth; it is the result of the entries. You can keep a cached column for speed, but if the two disagree, the entries are treated as correct, not the cache.
+    ref: ledger-schema
+  - q: 'Why does a ledger use a side (D/C) instead of a negative amount?'
+    a: 'The amount is always a positive integer (CHECK amount > 0), and the direction is written explicitly as D or C. No confusion over negative numbers.'
+    more: |
+      What does "-500 debit" mean: does the balance go down or up? Keeping amount and direction apart avoids that doubt. The CHECK constraint stops bad amounts right in the DB.
+    ref: ledger-schema
+  - q: 'What is the right way to fix a wrong transaction?'
+    a: 'Write a new transaction with every line of the original on the opposite side (a reversing entry). Never delete the old one.'
+    more: |
+      A UNIQUE constraint on `reverses_id` means the same transaction can't be reversed twice. After the reversal, write the corrected transaction separately.
+    ref: posting-service
+  - q: 'Why does LedgerService write all entries in one DB transaction?'
+    a: 'If it fails halfway, everything rolls back. So you never have a half-written transaction with a debit but no credit.'
+    more: |
+      Before writing, the service checks that the two sides add up. Then the transaction and all its entries go into one DB transaction: either everything is written or nothing is.
+    ref: posting-service
+
+quiz:
+  - q: 'Rahima sees her wallet is 500 taka short. With only a `wallet.balance` column, what can support do?'
+    hint: 'What information would support use to find what was deducted?'
+    options:
+      - text: 'Prove nothing; only the current amount exists, with no history'
+        correct: true
+        why: 'Each UPDATE erased the previous amount. Who lowered it, when and why can no longer be known.'
+      - text: 'Read the balance column''s log to reconstruct the full history'
+        correct: false
+        why: 'A column has no log. If you add a separate log, that log is a ledger.'
+      - text: 'Look at the database''s `updated_at` to learn the reason'
+        correct: false
+        why: 'It only tells you the time of the last change, not the reason or the amount.'
+      - text: 'Compare against the previous day''s backup and find everything'
+        correct: false
+        why: 'A backup is a once-a-day snapshot; it doesn''t contain what happened within the day.'
+    ref: one-balance-column
+  - q: 'Karim sends Rahim 500 taka with a 10 taka fee. Which set of entries is correct?'
+    hint: 'The two sides must add up to the same total.'
+    options:
+      - text: 'Karim D 510, Rahim C 500'
+        correct: false
+        why: 'Debit 510 and credit 500 don''t match. There is no place for the 10 taka.'
+      - text: 'Karim D 500, Rahim C 500, with the fee in a separate note'
+        correct: false
+        why: 'The fee is taken from Karim''s wallet but no entry is written for it, so the books won''t balance.'
+      - text: 'Karim D 510, Rahim C 500, fee income C 10'
+        correct: true
+        why: 'Debit 510 = credit 510. The 10 taka fee is credited to income.'
+      - text: 'Karim D 510, Rahim C 510'
+        correct: false
+        why: 'It balances, but Rahim would receive 10 taka too much and there is no place for the fee.'
+    ref: two-sides-of-every-move
+  - q: 'Why is the code below dangerous in a ledger?'
+    lang: php
+    code: |
+      $entry = $repo->find($entryId);
+      $entry->setAmountMinor(5000);   // it was wrong, so I fixed it
+      $em->flush();
+    hint: 'Will anyone later know what the amount was before?'
+    options:
+      - text: 'The old amount is erased, and the two sides may no longer add up'
+        correct: true
+        why: 'Editing an entry destroys history, and changing one side can break debit = credit.'
+      - text: '`flush()` is always slow'
+        correct: false
+        why: 'Speed isn''t the issue here; the problem is breaking the immutability rule.'
+      - text: 'It should use `findOneBy()` instead of `find()`'
+        correct: false
+        why: 'Which method does the lookup makes no difference.'
+      - text: 'It''s fine, because it put in the correct amount'
+        correct: false
+        why: 'Even with the right amount, editing entries is forbidden; you write a reversing entry and then a new correct transaction.'
+    ref: posting-service
+  - q: 'Which of these are sound ledger design choices?'
+    hint: 'Think about history, direction and the sum.'
+    options:
+      - text: 'The amount is always positive, with the direction in a separate `side` column'
+        correct: true
+        why: 'It avoids confusion over the direction of a negative amount.'
+      - text: 'The app''s DB user is not granted UPDATE/DELETE on the entry table'
+        correct: true
+        why: 'History can''t change, even through a bug or a rush.'
+      - text: 'The balance is checked against the entries regularly'
+        correct: true
+        why: 'If a cached balance and the sum of entries differ, the error is caught; the entries are the right ones.'
+      - text: 'The balance column is the source of truth and entries are just a log'
+        correct: false
+        why: 'The opposite. Entries are the source of truth; the balance is a figure computed from them.'
+    ref: ledger-schema
+  - q: 'To cancel a wrong transaction #1, reverse() is run twice. What happens?'
+    hint: 'What constraint does the reverses_id column have in the schema?'
+    options:
+      - text: 'The second run hits the UNIQUE constraint; the same transaction can''t be reversed twice'
+        correct: true
+        why: 'Because of `reverses_id UNIQUE`, a transaction can have only one reversal.'
+      - text: 'It is reversed twice, so the balance is correct again'
+        correct: false
+        why: 'Reversing twice would do the damage twice, which is why UNIQUE prevents it.'
+      - text: 'The first reversal is deleted and the new one takes its place'
+        correct: false
+        why: 'Nothing in a ledger is deleted or edited.'
+      - text: 'Nothing happens, because the service quietly ignores the second call'
+        correct: false
+        why: 'There is no code that ignores it silently; the DB constraint stops it with an error, which is exactly what you want.'
+    ref: posting-service

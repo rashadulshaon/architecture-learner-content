@@ -1,0 +1,419 @@
+slides:
+  - slug: same-file-again
+    title: 'Downloading the same file every time'
+    kind: story
+    tldr: 'Without Cache-Control, the browser and the CDN don''t know what to keep, so the same JS, images and API answers come from the origin server on every visit. HTTP caching stops this waste.'
+    keywords: ['HTTP caching', 'Cache-Control', 'browser cache', 'CDN', 'cache headers', 'bandwidth']
+    blocks:
+      - type: metaphor
+        icon: book
+        title: 'The newspaper hawker and the neighbourhood stall'
+        body: |
+          Newspapers are printed at the press. If every reader had to go to the press every day, nobody would get a paper. So the neighbourhood stall brings in many copies at once, and readers take theirs home and leave it on the table. The press is your server, the stall is the **CDN**, and the copy on the table is the browser's cache.
+      - type: text
+        body: |
+          On Rahim's site, `app.js` is 2.4MB and changes once a week. Yet every page load makes the browser download it again. At 50,000 visits a day, that is 120GB of bandwidth. The server keeps handing out the same file and users keep waiting.
+      - type: visual
+        kind: bars
+        caption: 'The same app.js in three situations: KB downloaded per visit'
+        items:
+          - {label: 'No rules', value: 2400, display: '2,400KB', tone: bad, tip: 'The browser doesn''t know what to do, so it downloads the whole file every time.'}
+          - {label: 'ETag + 304', value: 3, display: 'about 1KB', tone: warn, tip: 'The browser asks "has it changed?"; the server answers "no" with headers alone. No body is downloaded.'}
+          - {label: 'Within max-age', value: 1, display: '0KB', tone: good, tip: 'The browser asks the server nothing and simply uses its own copy.'}
+      - type: quote
+        body: 'The fastest and cheapest request is the one that never reaches the server.'
+    aside:
+      - type: terms
+        items:
+          - {term: 'CDN', meaning: 'A network of servers spread around the world that serve copies of your files from close to the user.'}
+          - {term: 'Origin', meaning: 'The real server, where the CDN fetches a file from the first time.'}
+      - type: problem
+        body: 'Not fetching the same copy from the server again and again, so pages open faster and server costs fall.'
+    check:
+      q: 'Between a file within its max-age and a file validated with an ETag, which one sends no request to the server at all?'
+      a: 'The file within its max-age. The browser uses its own copy directly. With an ETag, it still sends a small request to ask.'
+
+  - slug: cache-control-headers
+    title: 'Cache-Control: who keeps it, and for how long'
+    kind: concept
+    tldr: 'The Cache-Control header says who (the browser or the CDN) may keep an answer and for how long: max-age, s-maxage, public, private, no-cache, no-store, stale-while-revalidate.'
+    keywords: ['Cache-Control', 'max-age', 's-maxage', 'private', 'public', 'no-store', 'no-cache', 'stale-while-revalidate']
+    blocks:
+      - type: text
+        body: |
+          Along with the answer, the server sends an instruction: Cache-Control. In stall language: "Keep this paper at home, for 1 day", "Don't keep this at the stall, only the reader may", "Don't keep this anywhere". The most common mistake is mixing up `no-cache` and `no-store`.
+      - type: visual
+        kind: table
+        caption: 'The most useful Cache-Control directives'
+        headers: ['Directive', 'Meaning']
+        rows:
+          - cells: ['max-age=600', 'The browser may use it for 600 seconds without asking the server']
+            tip: 'While the lifetime lasts, the request never reaches the server.'
+          - cells: ['s-maxage=3600', 'A separate lifetime for shared caches (the CDN) only']
+            tip: 'Use this to give the browser a short lifetime and the CDN a long one.'
+          - cells: ['public / private', 'public: the CDN may keep it too. private: only the user''s browser']
+            tip: 'For personal answers, always use private (or no-store).'
+          - cells: ['no-cache', 'You may keep it, but check with the server every time']
+            tip: 'The name misleads: it doesn''t mean "don''t keep it", it means "don''t use it without asking".'
+          - cells: ['no-store', 'Don''t keep a copy anywhere']
+            tip: 'For sensitive answers such as bank details or tokens.'
+          - cells: ['stale-while-revalidate=60', 'After expiry, show the old copy for 60 more seconds and fetch a new one behind the scenes']
+            tip: 'The user doesn''t wait; the cache refreshes itself in the background.'
+      - type: quote
+        body: 'no-cache means "don''t use it without asking". If you want nothing kept, use no-store.'
+    aside:
+      - type: remember
+        body: 'private = only your own table, public = the stall may keep it too.'
+      - type: tips
+        items:
+          - 'Never put public on any answer for a logged-in user.'
+          - 'stale-while-revalidate isn''t only for HTTP; the same idea applies to a cache inside your server.'
+      - type: refs
+        items:
+          - {to: 'caching/cache-stampede', label: 'Stale-while-revalidate inside the server'}
+    check:
+      q: 'Which Cache-Control would you put on the JSON answer for a user''s own profile, public or private?'
+      a: 'private (and no-store if it is sensitive). With public, a CDN could show one user''s profile to other people.'
+
+  - slug: etag-304
+    title: 'ETag: has it changed? No, so no download'
+    kind: concept
+    tldr: 'An ETag is the fingerprint of an answer. The browser sends it back in If-None-Match; if it matches, the server replies 304 with no body and the browser uses its own copy.'
+    keywords: ['ETag', 'If-None-Match', '304 Not Modified', 'conditional request', 'revalidation', 'Last-Modified']
+    blocks:
+      - type: metaphor
+        icon: id
+        title: 'The issue number of a newspaper'
+        body: |
+          A reader goes to the stall and says, "I have issue number 741. Is that the latest?" The stallholder checks and says, "Yes, keep it." The reader doesn't need a new paper. The issue number is the ETag, and "Yes, keep it" is the 304.
+      - type: visual
+        kind: sequence
+        caption: 'A conditional request with an ETag'
+        actors:
+          - {id: browser, label: 'Browser', icon: browser, tip: 'Has kept the earlier answer and its ETag.'}
+          - {id: server, label: 'Server', icon: server, tip: 'Compares fingerprints and sends the body only if needed.'}
+        messages:
+          - {from: browser, to: server, label: 'GET /api/products/42'}
+          - {from: server, to: browser, label: '200 + ETag: "v7a1" + body', dashed: true, tip: 'The first time, the whole answer goes out along with its fingerprint.'}
+          - {at: browser, note: 'Stores the answer and the ETag'}
+          - {from: browser, to: server, label: 'GET + If-None-Match: "v7a1"', tip: 'The browser is saying "I have v7a1, has it changed?"'}
+          - {from: server, to: browser, label: '304 Not Modified (no body)', dashed: true, tone: good, tip: 'The fingerprint matches. The server sends only headers, a few hundred bytes.'}
+          - {at: browser, note: 'Uses its own copy', tone: good}
+          - {from: browser, to: server, label: 'If-None-Match again, after the product changed'}
+          - {from: server, to: browser, label: '200 + new ETag: "v7b2" + body', dashed: true, tip: 'The fingerprint doesn''t match, so the whole new answer goes out.'}
+      - type: quote
+        body: 'An ETag saves the cost of the body, not the cost of the request. To save the request itself, use max-age.'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Conditional request', meaning: 'A request with a condition: "send it only if it has changed" (If-None-Match or If-Modified-Since).'}
+          - {term: 'Weak ETag', meaning: 'Starts with W/"..."; it is enough for the meaning to be the same, even if it isn''t byte-for-byte identical.'}
+      - type: tips
+        items:
+          - 'Last-Modified and If-Modified-Since do the same job with dates. ETag is more reliable, because it catches changes within a second too.'
+    check:
+      q: 'When the ETag matches, what does the server send, and what does that save?'
+      a: '304 Not Modified, with no body. It saves downloading the body, and if the ETag can be checked cheaply, it saves the work of building the body too.'
+
+  - slug: symfony-http-cache
+    title: 'Headers and 304 in Symfony'
+    kind: howto
+    tldr: 'Use the #[Cache] attribute to set max-age, public and stale-while-revalidate; build an ETag and call response->isNotModified() to return 304 before any heavy work.'
+    keywords: ['#[Cache]', 'isNotModified', 'setEtag', 'Symfony Response', 'smaxage', 'HttpKernel']
+    blocks:
+      - type: text
+        body: |
+          In Symfony, the `Response` object builds the cache headers. For an ordinary lifetime, the `#[Cache]` attribute is enough. For ETags the trick is to build the ETag from something cheap to get, such as `updatedAt`. That way you can compare and return a 304 before building the heavy JSON.
+      - type: code
+        lang: php
+        file: 'src/Controller/ProductController.php'
+        variant: good
+        code: |
+          #[Route('/api/products/{id}', methods: ['GET'])]
+          #[Cache(maxage: 60, smaxage: 600, public: true, staleWhileRevalidate: 120)]
+          public function show(Product $product, Request $request): JsonResponse
+          {
+              $response = new JsonResponse();
+              $response->setEtag(md5($product->getId().'|'.$product->getUpdatedAt()->format('U.u')));
+
+              if ($response->isNotModified($request)) {
+                  return $response;            // 304: returned without doing the heavy work
+              }
+
+              return $response->setData(ProductView::from($product)->toArray());
+          }
+        marks:
+          - {line: 2, tip: 'The browser keeps it for 1 minute and the CDN for 10. Even after expiry, a copy up to 2 minutes old is still allowed.'}
+          - {line: 6, tip: 'The ETag is built from the ID and the time of the last change. No need to build the body.'}
+          - {line: 8, tip: 'isNotModified() compares the request''s If-None-Match, and if it matches, sets the 304 for you.'}
+      - type: code
+        lang: php
+        file: 'src/Controller/ProfileController.php'
+        variant: good
+        code: |
+          #[Route('/api/me', methods: ['GET'])]
+          public function me(): JsonResponse
+          {
+              $response = $this->json(ProfileView::from($this->getUser()));
+              $response->setPrivate();                                   // the CDN won't keep it
+              $response->headers->addCacheControlDirective('no-store');  // nobody will
+
+              return $response;
+          }
+        marks:
+          - {line: 5, tip: 'A personal answer: saying private is the shortest form of protection.'}
+          - {line: 6, tip: 'If you don''t want even the browser to store it, no-store.'}
+    aside:
+      - type: tips
+        items:
+          - 'When a session is used, Symfony makes the response private by itself; still, state it explicitly on a personal API.'
+          - 'Can an answer change in many ways? Put every ingredient (ID, updatedAt, language) into the ETag.'
+      - type: commands
+        title: 'Check it yourself'
+        items:
+          - {cmd: 'curl -I https://shop.test/api/products/42', desc: 'See the response headers'}
+          - {cmd: 'curl -I -H ''If-None-Match: "<etag>"'' https://shop.test/api/products/42', desc: 'Test whether you get a 304'}
+    check:
+      q: 'Why is the ETag built from the ID and updatedAt, and not from a hash of the whole JSON?'
+      a: 'To hash the JSON you must build the whole JSON first, which wipes out the gain from a 304. updatedAt is cheap to get, so you can compare and return before the heavy work.'
+
+  - slug: cdn-keys-busting
+    title: 'CDN, cache keys and cache busting'
+    kind: concept
+    tldr: 'A CDN builds its cache key from the URL (and any Vary headers); a hash in the file name plus a one-year immutable lifetime means a new deploy bypasses the old file''s cache by itself.'
+    keywords: ['CDN', 'cache key', 'Vary', 'cache busting', 'immutable', 'fingerprinted assets', 'hashed filename']
+    blocks:
+      - type: visual
+        kind: flow
+        caption: 'How a CDN serves the same file to many people'
+        nodes:
+          - {id: user, label: 'User', sub: 'in Dhaka', icon: user, col: 0, row: 1, tip: 'Sends the request to a nearby CDN server.'}
+          - {id: cdn, label: 'CDN', sub: 'nearby edge', icon: cdn, tone: accent, col: 1.5, row: 1, tip: 'Builds a cache key from the URL and the Vary headers, then looks up a copy with that key.'}
+          - {id: origin, label: 'Origin server', sub: 'origin', icon: server, col: 3, row: 1, tip: 'Called only on a miss. It tells the CDN how long to keep the file, using Cache-Control.'}
+        edges:
+          - {from: user, to: cdn, label: 'The user asks the nearby CDN for the file'}
+          - {from: cdn, to: origin, label: 'The CDN doesn''t have it (miss), so it goes to the origin'}
+          - {from: origin, to: cdn, label: 'The server sends the file and Cache-Control', dashed: true}
+          - {from: cdn, to: user, label: 'The CDN keeps a copy and gives the file to the user', dashed: true}
+          - {from: user, to: cdn, label: 'When the next person asks for the same file, the CDN serves it directly (hit)', tone: good}
+      - type: text
+        body: |
+          A CDN's cache key is usually the URL. `/app.js?v=1` and `/app.js?v=2` are different keys. And with `Vary: Accept-Language`, it keeps a separate copy per language. Cache busting means putting a hash of the file's contents in its name (`app-3f9a1c.js`). When the contents change, the name changes, so the old cache simply drops out of use.
+      - type: code
+        lang: nginx
+        file: 'nginx.conf'
+        code: |
+          # hashed files: a changed file gets a new URL, so a year is safe
+          location /assets/ {
+              add_header Cache-Control "public, max-age=31536000, immutable";
+          }
+
+          # HTML pages: always check, because they link to the new hashes
+          location / {
+              add_header Cache-Control "no-cache";
+          }
+        marks:
+          - {line: 3, tip: 'immutable says this file will never change, so don''t ask even on a reload.'}
+          - {line: 8, tip: 'If you give HTML a long lifetime, users will keep seeing links to the old files even after a new deploy.'}
+      - type: quote
+        body: 'Put a hash in the file name and give it a year. Always keep HTML on a short lifetime.'
+    aside:
+      - type: tips
+        items:
+          - 'Symfony AssetMapper, Webpack Encore and Vite all add a hash to file names in production. You don''t have to do it yourself.'
+          - 'If a file gets stuck in the CDN by mistake and it is urgent, delete it with the CDN''s purge/invalidate feature.'
+      - type: pitfalls
+        items:
+          - '`Vary: Cookie`, or a different query string on every request, gives every request its own key, and the hit rate drops to almost zero.'
+    check:
+      q: 'If you deploy new code to an app.js with a one-year lifetime, how will users get the new file?'
+      a: 'The new file''s name gets a new hash (app-9b2e7d.js), and the HTML links to that new name. A new URL means a new cache key, so the old copy never comes into it.'
+
+  - slug: public-cache-leak
+    title: 'The wrong public: one person''s page for everyone'
+    kind: pitfall
+    tldr: 'Putting public or s-maxage on a personal or cookie-dependent answer lets the CDN serve one user''s page to others; that is a direct data leak.'
+    keywords: ['cache leak', 'private data', 'public cache', 'Vary Cookie', 'CDN leak', 'data leak']
+    blocks:
+      - type: text
+        body: |
+          At the neighbourhood stall, if a paper brought in for Rahim, with his name on it, is put out "for everyone", Karim will walk away with it. In the code below, the dashboard has `public` and `smaxage`. The CDN will show the first user's dashboard to everybody for 10 minutes.
+      - type: code
+        lang: php
+        file: 'src/Controller/DashboardController.php'
+        variant: bad
+        code: |
+          #[Route('/api/dashboard')]
+          #[Cache(public: true, smaxage: 600)]     // danger: the CDN will give everyone the same answer
+          public function dashboard(): JsonResponse
+          {
+              return $this->json($this->dashboards->forUser($this->getUser()));
+          }
+        marks:
+          - {line: 2, tip: 'public + smaxage = the CDN keeps a copy for 10 minutes, for whoever asks the same URL.'}
+          - {line: 5, tip: 'The answer depends on getUser(), yet the cache key has no user in it.'}
+      - type: code
+        lang: php
+        file: 'src/Controller/DashboardController.php'
+        variant: good
+        code: |
+          #[Route('/api/dashboard')]
+          #[Cache(maxage: 0, private: true, mustRevalidate: true)]
+          public function dashboard(): JsonResponse
+          {
+              return $this->json($this->dashboards->forUser($this->getUser()));
+          }
+        marks:
+          - {line: 2, tip: 'private: only the user''s own browser may keep it. The CDN won''t.'}
+      - type: points
+        title: 'Three questions before you make something public'
+        style: check
+        items:
+          - 'Is the answer exactly the same for every user?'
+          - 'Does the request carry a cookie or Authorization header that changes the answer?'
+          - 'If something like language or country changes the answer, is there a Vary header?'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Resist the temptation to make everything public to raise the CDN hit rate; one wrong public header is one data leak.'
+          - 'Testing only in the app won''t catch this mistake; check the headers and the answer from in front of the CDN.'
+      - type: remember
+        body: 'A personal answer = private (or no-store). public means "everyone gets the same thing".'
+    check:
+      q: 'What is the risk of putting Cache-Control: public, s-maxage=600 on an API answer that comes with an Authorization header?'
+      a: 'The CDN stores the answer by URL and may give it to another user, so one person''s private data is seen by someone else.'
+
+flashcards:
+  - q: 'Why do we need HTTP caching?'
+    a: 'To use a copy in the browser or CDN instead of fetching the same file or answer from the server again and again, so pages open faster and server costs fall.'
+    more: |
+      A request that never reaches the server is the fastest one. The server then builds only what has actually changed. Bandwidth drops too, and that lands directly on a CDN or cloud bill.
+    ref: same-file-again
+  - q: 'What is the difference between Cache-Control: no-cache and no-store?'
+    a: 'no-cache: a copy may be kept, but you must ask the server before using it. no-store: no copy may be kept anywhere.'
+    more: |
+      The name makes no-cache widely misunderstood. For sensitive answers (tokens, bank details) use no-store. For HTML pages, no-cache usually works: the browser validates with an ETag and gets a 304 if nothing changed.
+    ref: cache-control-headers
+  - q: 'What is the difference between a public and a private cache?'
+    a: 'private: only the user''s own browser may keep it. public: a CDN or proxy may keep it too.'
+    more: |
+      Personal answers, such as a dashboard or profile, must be private. A public cache hands everyone the same copy, so it is safe only for answers that are identical for everybody. `s-maxage` applies only to shared caches.
+    ref: cache-control-headers
+  - q: 'How do ETag and If-None-Match work?'
+    a: 'The server sends an ETag with the answer. The browser later sends it back in If-None-Match; if it matches, the server replies 304 with no body.'
+    more: |
+      304 Not Modified means "your copy is right, nothing new". No body is downloaded, which saves the download. The request still goes to the server, so to save that cost you need max-age.
+    ref: etag-304
+  - q: 'What does stale-while-revalidate=60 do?'
+    a: 'After expiry, the old copy may still be shown for 60 seconds, while the cache fetches a new one behind the scenes.'
+    more: |
+      The user doesn't wait, because the old copy comes back immediately. The next request gets the new copy. The same idea works in a cache inside your server; the price is slightly old data for a short time.
+    ref: cache-control-headers
+  - q: 'What is cache busting?'
+    a: 'Putting a hash of a file''s contents in its name (app-3f9a1c.js), so that a change gives it a new name and the old cache is bypassed.'
+    more: |
+      A new hashed file name is a new URL, which means a new cache key. That makes it safe to give the file a one-year `immutable` lifetime. HTML pages must stay on a short lifetime, because the links to the new names live in the HTML.
+    ref: cdn-keys-busting
+  - q: 'What decides the cache key in a CDN?'
+    a: 'Usually the URL (query string included), plus the request headers named in the Vary header (such as Accept-Language).'
+    more: |
+      If the same URL gives different answers (language, device), you need Vary, or the wrong copy gets served. But with `Vary: Cookie`, every user gets their own key and hits drop to zero. So use Vary sparingly.
+    ref: cdn-keys-busting
+  - q: 'Which answers are dangerous to mark Cache-Control: public?'
+    a: 'Answers that differ by user or cookie, such as a dashboard, a profile or a cart.'
+    more: |
+      A CDN keeps copies by URL. If the answer depends on the user, the first person's copy reaches the others, and that is a data leak. Give such answers private or no-store.
+    ref: public-cache-leak
+
+quiz:
+  - q: 'What does the header below mean?'
+    lang: http
+    code: |
+      Cache-Control: public, max-age=60, s-maxage=600, stale-while-revalidate=120
+    hint: 'The browser and the CDN get different lifetimes.'
+    options:
+      - text: 'The browser may keep it for 60 seconds and the CDN for 600; after expiry, a copy up to 120 seconds old may be used'
+        correct: true
+        why: 's-maxage is for shared caches only, max-age is for the browser; SWR permits the old copy.'
+      - text: 'No cache will keep anything'
+        correct: false
+        why: 'That is what no-store means.'
+      - text: 'Only the user''s browser will keep it, for 600 seconds'
+        correct: false
+        why: 'public says the CDN may keep it too, and 600 is the s-maxage, which is the CDN''s.'
+      - text: 'It must ask the server every time'
+        correct: false
+        why: 'That is no-cache; here there is no need to ask within the lifetime.'
+    ref: cache-control-headers
+  - q: 'A client holds the ETag "v7a1". The product hasn''t changed on the server. What happens when the client sends a request with If-None-Match?'
+    hint: 'It hasn''t changed, so is there any need to send the body?'
+    options:
+      - text: 'The server replies 304 Not Modified with no body, and the client uses its own copy'
+        correct: true
+        why: 'The fingerprint matches, so the download is saved.'
+      - text: 'The server replies 200 and sends the whole body again'
+        correct: false
+        why: 'That happens when the fingerprint doesn''t match, meaning the product has changed.'
+      - text: 'The server replies 404'
+        correct: false
+        why: '404 means the resource doesn''t exist; here it exists, it just hasn''t changed.'
+      - text: 'The client sends no request at all'
+        correct: false
+        why: 'It does, to validate after the lifetime ends. Sending no request is max-age''s job.'
+    ref: etag-304
+  - q: 'On which answers is it safe to put Cache-Control: public, s-maxage=600?'
+    hint: 'Is it the same for everyone?'
+    options:
+      - text: 'A product list that is the same for everyone and holds no personal data'
+        correct: true
+        why: 'Every user gets the same answer, so the CDN''s copy is correct for all.'
+      - text: 'A hashed app-3f9a1c.js'
+        correct: true
+        why: 'When the contents change, the name changes, so the copy never goes stale.'
+      - text: 'A logged-in user''s cart'
+        correct: false
+        why: 'It differs per user; the CDN would show the first person''s cart to everyone.'
+      - text: '/api/me, reached with an Authorization header'
+        correct: false
+        why: 'A personal answer; making it public leaks data.'
+    ref: public-cache-leak
+  - q: 'After a new deploy, Rahim says, "Some users still see the old JS." app.js has a max-age of 1 year and no hash in its name. What is the best fix?'
+    hint: 'How would a browser know the file has changed?'
+    options:
+      - text: 'Add a hash of the contents to the file name (app-<hash>.js) and link the new name in the HTML'
+        correct: true
+        why: 'A new name is a new URL and so a new cache key; the old copy has no effect.'
+      - text: 'Set the max-age to 5 seconds'
+        correct: false
+        why: 'It kills the benefit of caching; the file would be downloaded every time.'
+      - text: 'Ask users to press Ctrl+F5'
+        correct: false
+        why: 'Putting the burden on users is not a fix.'
+      - text: 'Use no-store'
+        correct: false
+        why: 'Then 2.4MB would be downloaded every time, creating waste right where the problem is.'
+    ref: cdn-keys-busting
+  - q: 'What is wrong with the Symfony code below?'
+    lang: php
+    code: |
+      #[Route('/api/me/orders')]
+      #[Cache(public: true, smaxage: 300)]
+      public function orders(): JsonResponse
+      {
+          return $this->json($this->orders->forUser($this->getUser()));
+      }
+    hint: 'Who is the CDN keeping a copy for?'
+    options:
+      - text: 'With public and smaxage, the CDN can show one user''s orders to others'
+        correct: true
+        why: 'The answer depends on getUser(), but the CDN''s key is just the URL.'
+      - text: 'The smaxage value is too large; 30 seconds would be safe'
+        correct: false
+        why: 'The leak happens with a short lifetime too, just for less time.'
+      - text: 'You can''t put cache headers on a JsonResponse'
+        correct: false
+        why: 'You can; they go on every Response.'
+      - text: 'There is no problem, because Symfony handles everything itself'
+        correct: false
+        why: 'When you write public explicitly, Symfony obeys; the responsibility is yours.'
+    ref: public-cache-leak

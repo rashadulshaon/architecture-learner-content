@@ -1,0 +1,307 @@
+slides:
+  - slug: tea-stall-to-restaurant
+    title: 'From a tea stall to a big restaurant'
+    kind: story
+    tldr: 'Code that runs fine for 10 users breaks at 10,000 — not because the code was wrong, but because the pressure changed.'
+    keywords: ['scale', 'CRUD', 'production', 'why apps break', 'growth']
+    blocks:
+      - type: metaphor
+        icon: shop
+        title: 'Uncle''s tea stall'
+        body: |
+          Uncle makes the tea, takes the money and keeps the credit tab in his head, all by himself. With 50 customers a day, that works beautifully. Now turn the stall into a 500-seat restaurant. One person, one stove and a notebook in his head won't cut it any more. Your CRUD app is that tea stall.
+      - type: visual
+        kind: compare
+        caption: 'The same app under two kinds of pressure'
+        columns:
+          - title: '10 users'
+            tone: good
+            icon: user
+            tip: 'At small scale you almost never notice a problem, so the code looks flawless.'
+            items:
+              - 'Everything on one server, no fuss'
+              - 'Two people never press the same button at once'
+              - 'A short outage goes unnoticed'
+              - 'Even a slow query doesn''t show'
+          - title: '10,000 users'
+            tone: bad
+            icon: users
+            tip: 'Under load, the weaknesses that were hiding all come out at the same time.'
+            items:
+              - 'One server can''t carry the load any more'
+              - 'The same seat gets sold to two people'
+              - 'A 5-minute outage means lost money'
+              - 'One slow query stalls the whole site'
+      - type: quote
+        body: 'The code stays the same; the pressure changes. And when the pressure changes, the rules change too.'
+    aside:
+      - type: story
+        title: 'The night of the Eid sale'
+        body: |
+          On the night of an Eid offer, a small e-commerce site suddenly got ten times its usual shoppers. There were 20 phones in stock, and 35 orders came in. The code had no bug as such. Nobody had asked what happens when two people press "Buy" at the same instant.
+      - type: refs
+        items:
+          - {to: 'concurrency/race-conditions', label: 'Spotting race conditions'}
+    check:
+      q: 'Why do small apps break when they grow — is the code just bad?'
+      a: 'No. More users, more data and more simultaneous requests create situations that never occurred at small scale.'
+
+  - slug: the-last-ticket
+    title: 'The last ticket sold twice'
+    kind: pitfall
+    tldr: '"Check first, then change" code goes wrong when two requests arrive together — the best-known trap in CRUD apps.'
+    keywords: ['race condition', 'check then act', 'double booking', 'ticket', 'concurrency']
+    blocks:
+      - type: text
+        body: |
+          The code below looks completely harmless: if the seat is free, book it. Test it alone and it works every time. But when Rahim and Karim press the button at **the same moment**, both see "free" and both book the seat.
+      - type: code
+        lang: php
+        file: 'src/Controller/BookingController.php'
+        variant: bad
+        code: |
+          #[Route('/seats/{id}/book', methods: ['POST'])]
+          public function book(Seat $seat, EntityManagerInterface $em): JsonResponse
+          {
+              if ($seat->isBooked()) {            // 1. check first
+                  return $this->json(['error' => 'Seat taken'], 409);
+              }
+
+              $seat->bookFor($this->getUser());   // 2. then change
+              $em->flush();
+
+              return $this->json(['ok' => true]);
+          }
+        marks:
+          - {line: 4, tip: 'Both requests see "free" here, because nobody has saved anything yet.'}
+          - {line: 8, tip: 'The gap between checking and changing is where the trouble gets in.'}
+      - type: visual
+        kind: sequence
+        caption: 'One seat, two requests — who saw what, and when'
+        actors:
+          - {id: rahim, label: 'Rahim', icon: user, tip: 'Wants to book seat 12.'}
+          - {id: db, label: 'Database', icon: db, tip: 'Holds the true state of every seat.'}
+          - {id: karim, label: 'Karim', icon: user, tip: 'Wants the very same seat at the very same moment.'}
+        messages:
+          - {from: rahim, to: db, label: 'Is seat 12 free?'}
+          - {from: karim, to: db, label: 'Is seat 12 free?'}
+          - {from: db, to: rahim, label: 'Yes, free', dashed: true}
+          - {from: db, to: karim, label: 'Yes, free', dashed: true, tip: 'Rahim hasn''t saved yet, so Karim sees it as free too.'}
+          - {from: rahim, to: db, label: 'Book it for me'}
+          - {from: karim, to: db, label: 'Book it for me', tone: bad, tip: 'The database doesn''t object. It just keeps whichever write comes last.'}
+          - {at: db, note: 'One seat, two owners', tone: bad, tip: 'Both got a "booking confirmed" message. Cue the argument at the station.'}
+    aside:
+      - type: problem
+        body: 'This slide doesn''t fix anything — it only helps you recognise the trap. The fixes (locks, atomic updates, unique constraints) are covered in the transactions and concurrency topic.'
+      - type: remember
+        body: 'If there''s a gap between checking and changing, someone else will walk through it.'
+      - type: refs
+        items:
+          - {to: 'concurrency/atomic-operations', label: 'Fixing it with atomic operations'}
+    check:
+      q: 'The code works when tested alone, so why does it fail in production?'
+      a: 'Alone, requests arrive one after another. In production two arrive together, and both decide based on the old state.'
+
+  - slug: what-is-architecture
+    title: 'So what is architecture?'
+    kind: concept
+    tldr: 'Architecture is the set of decisions that cost the most to change later.'
+    keywords: ['architecture', 'system design', 'decisions', 'hard to change', 'cost of change']
+    blocks:
+      - type: metaphor
+        icon: home
+        title: 'The pillars and the paint'
+        body: |
+          If you dislike the wall colour, you can repaint it in one afternoon. If a pillar is in the wrong place, you have to knock the house down. Some software decisions are like paint and some are like pillars. Spotting the pillars and thinking them through up front is what architecture is.
+      - type: visual
+        kind: layers
+        caption: 'The upper layers change easily; the lower ones are the hardest to change'
+        layers:
+          - {label: 'Paint and furniture', sub: 'Button colour, variable names', tone: muted, tip: 'Change them whenever you like. A long meeting about these is wasted time.'}
+          - {label: 'The walls', sub: 'Which library, how code is split', tip: 'Changeable, but it takes effort: a few days to a few weeks of work.'}
+          - {label: 'Pillars and foundation', sub: 'Data model, service boundaries, API contract', tone: accent, tip: 'Everything else stands on these. Changing them takes months and carries huge risk.'}
+      - type: quote
+        body: 'Not all decisions are equal. Spend your time on the ones that are hard to change.'
+    aside:
+      - type: tips
+        items:
+          - 'Before any new decision, ask yourself: "How many days would it take to change this in six months?"'
+          - 'If the answer is "one afternoon", decide fast. If it''s "a few months", stop, think, and ask others.'
+      - type: refs
+        items:
+          - {to: 'thinking/what-is-architectural', label: 'Which decisions are architectural?'}
+          - {to: 'thinking/reversible-decisions', label: 'Is there a door back, or not?'}
+    check:
+      q: 'A variable name and a database table design: which is the architectural decision, and why?'
+      a: 'The table design. A name changes in a minute, but changing the shape of a table full of data means touching the whole system.'
+
+  - slug: the-map
+    title: 'A map of the whole course'
+    kind: recap
+    tldr: 'A request travels from the user to the database along one path, and each topic in the course covers one stop on that path.'
+    keywords: ['roadmap', 'overview', 'course map', 'syllabus', 'where to start']
+    blocks:
+      - type: text
+        body: |
+          Don't worry — you don't have to learn it all at once. The picture below shows a typical system; hover over each box to see which topic teaches it. Going in order from A to U works fine, and when work demands it you can jump straight into any topic.
+      - type: visual
+        kind: flow
+        caption: 'A typical system — and which topic covers each part'
+        nodes:
+          - {id: user, label: 'User', sub: 'Browser or mobile', icon: user, col: 0, row: 1, tip: 'Where everything starts. How a Vue app talks to the API is covered in topics B and Q.'}
+          - {id: api, label: 'API', sub: 'Symfony controller', icon: api, tone: accent, col: 1.5, row: 1, tip: 'The door every request comes through. API design (B) and security (J) live here.'}
+          - {id: cache, label: 'Cache', sub: 'Saved answers', icon: cache, col: 3, row: 0, tip: 'Keeping an answer instead of building it again each time — topic D.'}
+          - {id: db, label: 'Database', sub: 'The source of truth', icon: db, col: 3, row: 1, tip: 'Data (C), transactions (F) and money handling (K) — the biggest part of the course.'}
+          - {id: queue, label: 'Queue', sub: 'Work for later', icon: queue, col: 3, row: 2, tip: 'A line that holds slow jobs such as emails and reports — topics G and L.'}
+          - {id: worker, label: 'Worker', sub: 'Background hand', icon: worker, col: 4, row: 2, tip: 'Picks jobs off the queue and does them in the background, so the user never waits.'}
+        edges:
+          - {from: user, to: api, label: 'The user sends a request'}
+          - {from: api, to: cache, label: 'It checks the cache first — on a hit, it answers immediately'}
+          - {from: api, to: db, label: 'On a miss, it reads from or writes to the database'}
+          - {from: api, to: queue, label: 'It drops the slow jobs into a queue'}
+          - {from: queue, to: worker, label: 'A worker works through them one by one, later'}
+          - {from: api, to: user, label: 'The user gets a fast response', tone: good}
+      - type: points
+        title: 'Your path through the course'
+        style: number
+        items:
+          - 'Start with A (ways of thinking) and B (APIs) — they lay the foundation.'
+          - 'Then C, D, F and G — the ones you''ll use most in daily work.'
+          - 'The rest whenever your work calls for them.'
+    aside:
+      - type: remember
+        body: 'In front of every box, ask the same question: "What happens if this breaks?" The whole course is the answer to that one question.'
+      - type: refs
+        items:
+          - {to: 'api/request-path', label: 'The full journey of one request'}
+          - {to: 'thinking/what-is-architectural', label: 'Start thinking like an architect'}
+    check:
+      q: 'Where does a slow job like sending an email go, instead of running inside the request?'
+      a: 'Into a queue. The API responds right away, and a worker does the job in the background.'
+
+flashcards:
+  - q: 'What is architecture in one line?'
+    a: 'The decisions that are hardest and most expensive to change later.'
+    more: |
+      Repainting a house is easy; moving a pillar is almost impossible. In software, the data model, service boundaries and public API are the pillars. Deciding them carefully up front is the architect's job.
+    ref: what-is-architecture
+  - q: 'What is the main reason small apps break as they grow?'
+    a: 'The code doesn''t change; the pressure does: more users, more data, more simultaneous requests.'
+    more: |
+      With 10 users, two people never press the same button at the same moment, so problems stay hidden. With 10,000, it happens every second. The hidden weaknesses then all come out at once.
+    ref: tea-stall-to-restaurant
+  - q: 'What is check-then-act?'
+    a: 'Checking the state first and changing it in a separate step — another request can slip in between.'
+    more: |
+      For example: "Is the seat free? Then book it." Because checking and changing are two separate steps, two requests can both see "free". The fix is to turn the two steps into one indivisible step. More in [[concurrency/atomic-operations|atomic operations]].
+    ref: the-last-ticket
+  - q: 'When does a race condition happen?'
+    a: 'When several requests read and change the same data at once, and the result depends on who gets there first.'
+    more: |
+      You'll never catch it by testing alone, because requests then arrive one after another. It shows up in production once the load rises, and the result is double sales or a wrong balance.
+    ref: the-last-ticket
+  - q: 'Where do slow jobs (emails, reports) get moved to?'
+    a: 'Into a queue; a worker does them later in the background.'
+    more: |
+      There's no need to keep the user waiting 4 seconds while an email goes out. The API just writes "this job needs doing" into the queue and responds immediately. The worker picks the job up in its own time.
+    ref: the-map
+  - q: 'Button colour or data model: which deserves more thought?'
+    a: 'The data model. A colour changes in an afternoon; a data model takes months.'
+    more: |
+      One question decides how much time a decision deserves: "What will it cost to change later?" Make cheap decisions fast and slow down for expensive ones. Giving every decision equal time is the biggest beginner mistake.
+    ref: what-is-architecture
+  - q: 'What does a cache do?'
+    a: 'It keeps an answer so it can be served quickly instead of being built again each time.'
+    more: |
+      Computing something from the database is slow; reading it from memory is far faster. So answers that are needed again and again get stored in a cache. The hard part is deciding when a stored answer has gone stale.
+    ref: the-map
+
+quiz:
+  - q: 'Where is the problem in the code below?'
+    lang: php
+    code: |
+      $product = $products->find($id);
+
+      if ($product->getStock() > 0) {
+          $product->setStock($product->getStock() - 1);
+          $em->flush();
+      }
+    hint: 'If two customers enter this code in the same millisecond, what stock value does each one see?'
+    options:
+      - text: 'When two requests arrive together, both see stock > 0, so more gets sold than exists'
+        correct: true
+        why: 'Checking and decrementing are separate steps, and in the gap a second request sees the old stock.'
+      - text: 'flush() should have been called twice'
+        correct: false
+        why: 'No matter how often you call flush(), two requests can still read the old value together.'
+      - text: 'find() is slow; findOneBy() should be used'
+        correct: false
+        why: 'Speed isn''t the problem here; the gap between the two steps is.'
+      - text: 'There''s no problem — it works fine when tested alone'
+        correct: false
+        why: 'Alone, requests arrive one after another, so this trap is never caught that way.'
+    ref: the-last-ticket
+  - q: 'Which of these are architectural decisions?'
+    hint: 'Which ones would take weeks or months to change six months from now?'
+    options:
+      - text: 'Which database to use'
+        correct: true
+        why: 'Switching databases in a system full of data is a huge, risky job.'
+      - text: 'Where to split the services'
+        correct: true
+        why: 'If the boundaries are wrong, you have to re-split the code, the data and the teams — all three.'
+      - text: 'The name of a private method'
+        correct: false
+        why: 'It changes in a minute and nobody else''s code breaks.'
+      - text: 'The shape of a public API response'
+        correct: true
+        why: 'Mobile apps and partners depend on it; changing it breaks everything of theirs.'
+    ref: what-is-architecture
+  - q: 'What is the best question for deciding how much time a decision deserves?'
+    hint: 'Think of the difference between wall paint and a pillar.'
+    options:
+      - text: 'How much will it cost to change this later?'
+        correct: true
+        why: 'The cost of changing it tells you whether the decision is paint or a pillar.'
+      - text: 'Is this the newest technology?'
+        correct: false
+        why: 'New doesn''t mean better; new technology brings more unknown problems.'
+      - text: 'What do the big companies use?'
+        correct: false
+        why: 'Their problems aren''t yours; their solution can be extra weight for you.'
+      - text: 'Which option needs the fewest lines of code?'
+        correct: false
+        why: 'Fewer lines doesn''t mean the right decision; what matters is the consequences.'
+    ref: what-is-architecture
+  - q: 'On Eid night, 35 orders came in for 20 phones. What kind of problem is this?'
+    hint: 'Many people pressed "Buy" at the same instant.'
+    options:
+      - text: 'A race condition — simultaneous requests decided based on stale stock'
+        correct: true
+        why: 'Each request saw stock available, then decremented it separately, so the numbers didn''t add up.'
+      - text: 'The server was short of RAM'
+        correct: false
+        why: 'Low RAM makes a site slow or down; it doesn''t cause wrong sales numbers.'
+      - text: 'The database was too slow'
+        correct: false
+        why: 'Slowness means longer waits; the wrong count comes from the gap between the two steps.'
+      - text: 'The button in the Vue app had a bug'
+        correct: false
+        why: 'Each customer pressed once; the problem is in the server''s bookkeeping.'
+    ref: tea-stall-to-restaurant
+  - q: 'After "Place order", sending the email takes 4 seconds and the user just waits. What is the best fix?'
+    hint: 'Does the email really have to arrive this very instant?'
+    options:
+      - text: 'Hand the email job to a queue and respond immediately'
+        correct: true
+        why: 'The order is confirmed at once, and a worker sends the email in the background.'
+      - text: 'Buy a more powerful server'
+        correct: false
+        why: 'The delay is waiting for the email service to answer; no server, however strong, shortens that.'
+      - text: 'Stop sending the email'
+        correct: false
+        why: 'The customer needs the email; the job isn''t dropped, just done later.'
+      - text: 'Show a loading spinner'
+        correct: false
+        why: 'A spinner makes the wait prettier, not shorter.'
+    ref: the-map

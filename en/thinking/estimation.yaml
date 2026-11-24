@@ -1,0 +1,358 @@
+slides:
+  - slug: wedding-rice
+    title: 'How much rice for a 500-guest wedding?'
+    kind: story
+    tldr: 'You don''t need an exact answer; two minutes of rough maths on a scrap of paper catches a 10x mistake, and that is enough to decide.'
+    keywords: ['back of envelope', 'estimation', 'capacity planning', 'order of magnitude', 'rough calculation', 'capacity']
+    blocks:
+      - type: text
+        body: |
+          The client asked Rahim, "A million users are coming. How many servers do we need?" Rahim guessed "50." Someone else said "just one." Neither had done any maths. Five minutes with pen and paper would have shown that both were wrong.
+      - type: metaphor
+        icon: pencil
+        title: 'The wedding cook''s rice sum'
+        body: |
+          For a 500-guest wedding the cook writes: 500 guests x 200 g each = 100 kg, plus 15 kg extra. It isn't exact, but it stops him buying 10 kg or 1,000 kg. Estimating system capacity works the same way: round the numbers, multiply them, and catch the 10x mistake.
+      - type: visual
+        kind: compare
+        caption: 'Deciding by guesswork vs a sum on paper'
+        columns:
+          - title: 'Deciding by guess'
+            tone: bad
+            icon: cross
+            tip: 'A number with no calculation behind it is a stone thrown in the dark. It could be 10x too high or 10x too low.'
+            items:
+              - 'Saying "50 servers" wastes money'
+              - 'Saying "one is enough" takes the site down on sale day'
+              - 'Nobody knows where the number came from'
+          - title: 'A sum on paper'
+            tone: good
+            icon: check
+            tip: 'Five minutes of rough maths tells you how many servers you need, and which assumption would change the answer.'
+            items:
+              - 'Step-by-step multiplication and division, every assumption written down'
+              - 'Answer: about 3, not 50 and not 1'
+              - 'Change any assumption and the sum is easy to redo'
+    aside:
+      - type: problem
+        body: 'Before you decide what the system looks like, you must know whether the number is 10, 10 thousand or 10 million. An estimate gives you that order of magnitude.'
+      - type: terms
+        items:
+          - {term: 'QPS', meaning: 'Queries (requests) per second: how many requests arrive each second.'}
+          - {term: 'DAU', meaning: 'Daily active users: how many people actually use the app on a given day.'}
+    check:
+      q: 'Why is an estimate useful even when it isn''t exact?'
+      a: 'Its job is to catch 10x mistakes: to tell whether you need 1 server, 10 or 100. You can measure the exact figure later.'
+
+  - slug: qps-chain
+    title: 'From users to servers: a chain of multiplications'
+    kind: concept
+    tldr: 'Multiply users by requests each, divide by 86,400 to get QPS, apply a peak factor, then divide by what one server can handle.'
+    keywords: ['QPS', 'peak load', 'requests per day', 'server count', 'DAU', 'requests per second']
+    blocks:
+      - type: visual
+        kind: flow
+        caption: 'The chain of sums for a courier-tracking app'
+        nodes:
+          - {id: dau, label: '1M DAU', sub: 'daily active users', icon: users, col: 0, row: 1, tip: 'The starting assumption. Not total users, but how many actually open the app on a given day.'}
+          - {id: perday, label: '5M/day', sub: 'total requests', icon: calendar, col: 1, row: 1, tip: 'Assuming each person checks tracking 5 times a day: 1 million times 5.'}
+          - {id: qps, label: '≈ 60 QPS', sub: 'average per second', icon: clock, col: 2, row: 1, tip: '5 million divided by 86,400 seconds is about 58. Rounded to 60.'}
+          - {id: peak, label: '≈ 300 QPS', sub: 'busy hour', icon: bolt, tone: accent, col: 3, row: 1, tip: '5 times the average. You build servers for the busy hour, not for the average.'}
+          - {id: servers, label: '3 servers', sub: '2 + 1 spare', icon: server, tone: good, col: 4, row: 1, tip: '300 divided by 150 (the assumed capacity of one server) is 2, plus one spare in case one dies.'}
+        edges:
+          - {from: dau, to: perday, label: 'At 5 requests per person per day, that makes 5 million'}
+          - {from: perday, to: qps, label: 'Divide by the 86,400 seconds in a day to get the average QPS'}
+          - {from: qps, to: peak, label: 'Multiply the average by 5 to cover the busy hour'}
+          - {from: peak, to: servers, label: 'Divide by one server''s capacity, then add a spare'}
+      - type: code
+        lang: text
+        file: 'The formulas'
+        code: |
+          requests/day = DAU x requests per user
+          QPS (avg)    = requests/day / 86,400       (quick: / 100,000)
+          QPS (peak)   = avg x 3 to 10               (usually 5)
+          servers      = peak / one server's capacity + 1 spare
+        marks:
+          - {line: 2, tip: 'Dividing by 100,000 is easy and only about 15% off. That is good enough for an estimate.'}
+          - {line: 3, tip: 'The factor depends on the business. On sale days or match nights it can reach 10, so check your own history.'}
+      - type: quote
+        body: 'Round your numbers. Catching a 10x error matters; a 10% error does not.'
+    aside:
+      - type: tips
+        items:
+          - 'Don''t assume one server''s capacity; measure it with a small load test and use the measured figure.'
+          - 'To find your peak factor, look in the access log at the busiest hour''s requests.'
+      - type: refs
+        items:
+          - {to: 'scaling/load-latency', label: 'Measuring load and latency'}
+    check:
+      q: 'If 8.6 million requests arrive per day, what is the average QPS, and why is it wrong to size servers on it?'
+      a: 'About 100 QPS. But the busy hour brings several times that, so you size servers for peak QPS, not the average.'
+
+  - slug: numbers-to-memorise
+    title: 'The few numbers worth memorising'
+    kind: concept
+    tldr: 'Knowing the time conversions (1 day is about 100,000 seconds), size units and a few latency magnitudes lets you do the maths in your head.'
+    keywords: ['latency numbers', 'powers of two', 'seconds in a day', 'bytes', 'KB MB GB', 'numbers to memorise']
+    blocks:
+      - type: visual
+        kind: table
+        caption: 'Time and size conversions'
+        headers: ['Thing', 'Approximate value']
+        rows:
+          - cells: ['1 day', '86,400 seconds ≈ 100,000']
+            tip: 'You need this number to turn requests per day into QPS.'
+          - cells: ['1 month / 1 year', '≈ 2.5 million / ≈ 30 million seconds']
+            tip: 'Handy for monthly or yearly sums in your head.'
+          - cells: ['1 million requests/day', '≈ 12 QPS']
+            tip: 'So 10 million requests a day is only about 120 QPS, which one good server handles.'
+          - cells: ['1 KB / 1 MB / 1 GB', '10^3 / 10^6 / 10^9 bytes']
+            tip: 'For estimates, steps of a thousand are enough; you don''t need 1,024.'
+          - cells: ['One table row', '≈ 1 KB (more with indexes)']
+            tip: 'Most ordinary rows are about this size. 100 million rows is roughly 100 GB.'
+          - cells: ['One image (compressed)', '≈ 200 KB to 2 MB']
+            tip: 'Phone photos are bigger still. For an estimate, assume 1 MB.'
+      - type: visual
+        kind: table
+        caption: 'How long some operations take'
+        headers: ['Operation', 'Approximate time']
+        rows:
+          - cells: ['Read from RAM', '≈ 100 nanoseconds']
+            tip: 'The fastest of all, which is why caches live in RAM.'
+          - cells: ['Random read from SSD', '≈ 0.1 millisecond']
+            tip: 'About a thousand times slower than RAM, but far faster than the old HDD.'
+          - cells: ['Network round trip in one data centre', '≈ 0.5 millisecond']
+            tip: 'The minimum price of every service call. Chain enough calls and this becomes the big cost.'
+          - cells: ['HDD seek', '≈ 10 milliseconds']
+            tip: 'A spinning disk. Today it is mostly used for backups.'
+          - cells: ['Round trip between continents', '≈ 150 milliseconds']
+            tip: 'The speed of light is the limit. This is why CDNs and nearby data centres exist.'
+    aside:
+      - type: remember
+        body: 'RAM is nanoseconds, SSD is microseconds, network is milliseconds: roughly a thousand times per step.'
+      - type: tips
+        items:
+          - 'These numbers drift over time. What matters is the magnitude, not the exact figure.'
+    check:
+      q: 'Using the numbers you''ve memorised, what is the average QPS of 10 million requests a day?'
+      a: 'About 120. 1 million requests/day is roughly 12 QPS, so 10 million is 10 times that, around 120.'
+
+  - slug: worked-example
+    title: 'The whole sum once: a courier tracking app'
+    kind: howto
+    tldr: 'For one app: QPS, servers, storage, bandwidth, memory and cost on one sheet. The answer is modest: about 3 servers, not 50 and not 1.'
+    keywords: ['capacity example', 'storage estimate', 'bandwidth', 'cache memory', 'cost estimate', 'courier app', 'worked example']
+    blocks:
+      - type: text
+        body: |
+          Assumptions: 1 million DAU, each person views parcels 5 times a day. There are 200,000 new parcels a day, each with 8 status events of 200 bytes. A Symfony server handles about 150 QPS in the busy hour (you would confirm this later with a load test). Now work out each step separately.
+      - type: visual
+        kind: table
+        caption: 'The full estimate for the courier tracking app'
+        headers: ['Quantity', 'Working', 'Result']
+        rows:
+          - cells: ['Average QPS', '5M / 86,400', '≈ 60/second']
+            tip: '1 million x 5 = 5 million requests a day, divided by the seconds in a day.'
+          - cells: ['Peak QPS', '60 x 5 (busy-hour factor)', '≈ 300/second']
+            tip: 'Load climbs on delivery mornings and before holidays. A factor of 5 is assumed.'
+          - cells: ['Servers', '300 / 150 + 1 spare', '3']
+            tip: '2 for the capacity and 1 spare, so the other two can carry the load if one dies.'
+          - cells: ['Storage', '200,000 x 8 events x 200 bytes', '≈ 320 MB/day, ≈ 120 GB/year']
+            tip: 'This ignores indexes and replicas. Allow 2-3x in practice; it still fits in one database.'
+          - cells: ['Bandwidth', '300 QPS x 2 KB', '≈ 600 KB/s ≈ 5 Mbps']
+            tip: 'Tiny. For this app the network is no problem, since we left images out.'
+          - cells: ['Cache memory', '200,000 active parcels x 2 KB', '≈ 400 MB']
+            tip: 'You only cache parcels that are in transit right now. A small Redis holds it.'
+          - cells: ['Monthly cost', '5 machines x 8,000 taka (assumed)', '≈ 40,000 taka']
+            tip: '3 app servers, 1 database, 1 Redis. The per-machine price is an assumption; plug in the real one.'
+      - type: quote
+        body: 'End with one question: "Does the answer match reality?" 5 Mbps and 3 servers? Yes, it does.'
+    aside:
+      - type: story
+        title: 'The sum that changed the decision'
+        body: |
+          One team assumed they would need sharding for their data. The calculation showed 120 GB a year, which an ordinary database handles easily. They saved months of extra complexity.
+      - type: refs
+        items:
+          - {to: 'data/sharding', label: 'When you need sharding'}
+    check:
+      q: 'With bandwidth at 5 Mbps, what does this estimate tell you?'
+      a: 'Don''t worry about the network. Spend your time on the number of servers and the database, which are this app''s real limits.'
+
+  - slug: estimation-pitfalls
+    title: 'Four traps in estimation'
+    kind: pitfall
+    tldr: 'Forgetting peak load, forgetting replicas and indexes, treating assumptions as facts, and showing false precision are what ruin estimates.'
+    keywords: ['estimation mistakes', 'peak', 'assumptions', 'false precision', 'overhead', 'wrong estimate']
+    blocks:
+      - type: visual
+        kind: compare
+        caption: 'The bad habits and their fixes'
+        columns:
+          - title: 'Bad habit'
+            tone: bad
+            icon: cross
+            tip: 'These four mistakes either make the numbers look too small or create blind trust.'
+            items:
+              - 'Using only average QPS, ignoring peak'
+              - 'Forgetting indexes and replicas in storage'
+              - 'Presenting an estimate as an exact fact'
+              - 'Writing "57.3 servers"'
+          - title: 'Good habit'
+            tone: good
+            icon: check
+            tip: 'The opposite habit blocks each trap.'
+            items:
+              - 'Average x peak factor, with the source of the factor noted'
+              - 'Storage x indexes (2) x replicas (2-3)'
+              - 'Writing down each assumption separately'
+              - '"About 3", a rounded answer'
+      - type: points
+        title: 'Three things to do after the sum'
+        style: check
+        items:
+          - 'List the assumptions and mark the one that changes the answer the most.'
+          - 'Measure that one first: run a load test or open the access log.'
+          - 'Give a range: "2 to 5 servers". It is more honest than a single number.'
+      - type: quote
+        body: 'An estimate gives the scale of a question, not the answer. When it turns out wrong, change the numbers, not the method.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'If you have real data, use it instead of guessing. Estimate only where you have no data.'
+          - 'Write the assumptions down. Otherwise in six months nobody knows what the system was built on.'
+      - type: refs
+        items:
+          - {to: 'thinking/design-review', label: 'Checking assumptions in a design review'}
+    check:
+      q: 'Which two habits make an estimate most trustworthy?'
+      a: 'Writing down each assumption separately, and measuring first whichever one changes the answer most. And give the result as a range.'
+
+flashcards:
+  - q: 'What is back-of-envelope estimation?'
+    a: 'A quick calculation with rounded numbers that tells you the scale of a system: 10, 10 thousand or 10 million.'
+    more: |
+      The goal is not precision but catching 10x errors. A few minutes of maths shows whether one server is enough, whether you need sharding, and which part deserves the most thought.
+    ref: wedding-rice
+  - q: 'How do you work out average QPS?'
+    a: 'Total requests per day divided by 86,400 (quickly, divide by 100,000).'
+    more: |
+      For example, 5 million requests a day / 100,000 is about 50 QPS. This is only an average, so you must apply a peak factor before sizing servers.
+    ref: qps-chain
+  - q: 'Why size servers for peak QPS instead of the average?'
+    a: 'Because systems break in the busiest hour. Build for the average and the site goes down on sale day or holiday night.'
+    more: |
+      The factor is usually 3 to 10x, depending on the business. Look at the busiest hour in your own access log to find the real figure.
+    ref: qps-chain
+  - q: 'Roughly what QPS is 1 million requests a day?'
+    a: 'About 12 QPS. So 10 million requests a day is only around 120 QPS.'
+    more: |
+      Many people assume millions of requests means a huge server fleet. But spread over a whole day, the number is much smaller. Divide before you panic.
+    ref: numbers-to-memorise
+  - q: 'Roughly how long do a RAM read, an SSD read and a network round trip take?'
+    a: 'RAM ≈ 100 nanoseconds, random SSD read ≈ 0.1 ms, round trip within one data centre ≈ 0.5 ms.'
+    more: |
+      Each step is about a thousand times slower. That is why caches live in RAM, and why many small service calls add up to a lot of network time.
+    ref: numbers-to-memorise
+  - q: 'What else must a storage estimate include beyond the raw data?'
+    a: 'Indexes and replicas. In practice you need 2-3x the raw data.'
+    more: |
+      Even if the raw data is 120 GB, indexes take extra space and replicas multiply the copies. Forget them and a full-disk alarm arrives out of nowhere.
+    ref: estimation-pitfalls
+  - q: 'How should you report an estimate?'
+    a: 'As a rounded number or a range, such as "about 3" or "2 to 5", with the assumptions written next to it.'
+    more: |
+      Writing "57.3 servers" is false precision. A range plus a list of assumptions lets anyone see how much the answer moves if an assumption changes. That makes the discussion easier.
+    ref: estimation-pitfalls
+  - q: 'After the estimate, what comes next: guess more or measure?'
+    a: 'Measure whichever assumption changes the answer most, for example with a load test or the access log.'
+    more: |
+      Start with an estimate, but measure wherever you can. You can assume a server handles 150 QPS, but a 30-minute load test gives you the real number.
+    ref: estimation-pitfalls
+
+quiz:
+  - q: 'An app has 2 million DAU, and each person makes 10 requests a day. The busy-hour factor is 5. Roughly what is the peak QPS?'
+    hint: 'First requests per day, then divide by 100,000, then apply the factor.'
+    options:
+      - text: 'About 1,000 QPS'
+        correct: true
+        why: '2 million x 10 = 20 million a day. Divided by 100,000 that is 200 average QPS. Times 5 is 1,000 at peak.'
+      - text: 'About 200 QPS'
+        correct: false
+        why: 'That is the average QPS. You forgot the peak factor.'
+      - text: 'About 200,000 QPS'
+        correct: false
+        why: 'You forgot to divide the daily requests by the seconds in a day.'
+      - text: 'About 10 QPS'
+        correct: false
+        why: 'That is 100 times too small; you cancelled too many zeros when dividing.'
+    ref: qps-chain
+  - q: 'What is the mistake in this calculation?'
+    lang: text
+    code: |
+      200,000 parcels x 8 events x 200 bytes = 320 MB/day
+      1 year = 120 GB
+      Decision: a 200 GB disk is enough, with a year to spare.
+    hint: 'Is raw data all that goes on the disk?'
+    options:
+      - text: 'It ignores indexes and replicas, so the real space needed is much larger'
+        correct: true
+        why: 'Indexes and replicas take 2-3x the raw data. 120 GB could become 240-360 GB.'
+      - text: 'The bytes-to-MB conversion is wrong'
+        correct: false
+        why: '320 MB is right: 200,000 x 8 x 200 = 320 million bytes.'
+      - text: 'A year is not 365 days'
+        correct: false
+        why: '320 MB x 365 is about 120 GB, which is correct.'
+      - text: 'There is no mistake'
+        correct: false
+        why: 'The real mistake is counting only the raw data.'
+    ref: worked-example
+  - q: 'Rahim says, "5 million requests a day is enormous load, we need 10 servers." What''s right about that?'
+    hint: 'What is 5 million divided by 100,000?'
+    options:
+      - text: 'It''s about 60 QPS on average and 300 at peak, so a few servers are enough and 10 is wasteful'
+        correct: true
+        why: 'Spread across the day the number is small. Without the sum, you waste money.'
+      - text: 'He is right, 10 are needed'
+        correct: false
+        why: 'The sum gives 300 QPS / 150 = 2, plus 1 spare.'
+      - text: 'No calculation is possible'
+        correct: false
+        why: 'A rounded calculation is possible, and easy.'
+      - text: 'A single server is enough'
+        correct: false
+        why: 'At a 300 QPS peak one server isn''t enough, and if it dies the site goes down.'
+    ref: qps-chain
+  - q: 'Which of these are true?'
+    hint: 'By how much does each step slow things down?'
+    options:
+      - text: 'Reading from RAM is far faster than reading from SSD'
+        correct: true
+        why: 'RAM is nanoseconds, SSD is microseconds. That is why caches live in RAM.'
+      - text: 'A network call inside the same data centre is practically free'
+        correct: false
+        why: 'It takes about 0.5 ms, which becomes a large cost when you chain many calls.'
+      - text: '1 million requests a day is about 12 QPS'
+        correct: true
+        why: '1 million / 86,400 is about 12.'
+      - text: 'A round trip between continents takes about 1 ms'
+        correct: false
+        why: 'The speed of light limit makes it about 150 ms.'
+    ref: numbers-to-memorise
+  - q: 'What is the best way to present the result of an estimate?'
+    hint: 'Should an estimate look exact?'
+    options:
+      - text: '"2 to 5 servers, assuming a 5x peak and 150 QPS per server"'
+        correct: true
+        why: 'The range and the assumptions are both out in the open, so anyone can check or change them.'
+      - text: '"We need exactly 3.42 servers"'
+        correct: false
+        why: 'Making an estimate look exact is false precision.'
+      - text: '"We''ll need a lot of servers"'
+        correct: false
+        why: 'Too vague to act on.'
+      - text: '"It can''t be calculated, so let''s skip it"'
+        correct: false
+        why: 'A rough sum is possible and enough; skip it and you won''t catch a 10x error.'
+    ref: estimation-pitfalls

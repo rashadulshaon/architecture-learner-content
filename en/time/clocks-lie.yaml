@@ -1,0 +1,480 @@
+slides:
+  - slug: negative-latency
+    title: 'The courier API answered in −2.7 seconds'
+    kind: story
+    tldr: 'If the server clock is set back midway, "end − start" comes out negative. The assumption that a clock only moves forward is wrong.'
+    keywords: ['clock', 'negative duration', 'NTP', 'microtime', 'measuring time', 'wall clock']
+    blocks:
+      - type: text
+        body: |
+          Tania's dashboard shows the courier API's response time. One morning a row reads **−2.7 seconds**. In her code she simply subtracts the start time from the end time. But between those two lines, someone corrected the server's clock by turning it backwards.
+      - type: code
+        lang: php
+        file: 'src/Courier/CourierClient.php'
+        variant: bad
+        code: |
+          $start = microtime(true);                    // read the wall clock
+
+          $response = $this->courier->request('POST', '/parcels', ['json' => $parcel]);
+          $status = $response->getStatusCode();        // wait until the reply arrives
+
+          $elapsed = microtime(true) - $start;         // read the wall clock again
+          $this->logger->info('courier call', ['seconds' => round($elapsed, 3)]);
+
+          // the same mistake, in a more dangerous form
+          $deadline = time() + 5;
+          while (time() < $deadline && !$this->parcelIsReady($id)) {
+              usleep(200_000);
+          }
+        marks:
+          - {line: 1, tip: 'microtime() reads the server''s wall clock, which can jump forward or backward at any moment.'}
+          - {line: 6, tip: 'If the clock goes back 3 seconds in between, you get 0.3 − 3 = −2.7 here.'}
+          - {line: 10, tip: 'The deadline is tied to the wall clock. If the clock goes back an hour, this 5-second loop runs for an hour; if it jumps ahead, it stops at once.'}
+      - type: visual
+        kind: sequence
+        caption: 'The real work took 0.3 seconds, yet the result is −2.7 seconds'
+        actors:
+          - {id: code, label: 'Tania''s code', icon: code, tip: 'Reads the clock before and after the work, then subtracts.'}
+          - {id: wall, label: 'Server clock', icon: clock, tip: 'The server''s wall clock, which is right now 3 seconds ahead of real time.'}
+          - {id: ntp, label: 'NTP', icon: globe, tip: 'Corrects the server''s clock by comparing it with a precise clock on the internet.'}
+        messages:
+          - {from: code, to: wall, label: 'Start: what time is it?'}
+          - {from: wall, to: code, label: '10:00:03.0', dashed: true}
+          - {from: ntp, to: wall, label: 'You''re 3 seconds ahead. Go back.', tip: 'When the error is big, NTP fixes it in one jump rather than gradually.'}
+          - {at: wall, note: 'The clock jumps back 3 seconds', tone: warn}
+          - {from: code, to: wall, label: 'End: what time is it?'}
+          - {from: wall, to: code, label: '10:00:00.3', dashed: true, tip: 'Only 0.3 seconds really passed, but the reading is smaller than the earlier one.'}
+          - {at: code, note: 'end − start = −2.7 seconds', tone: bad, tip: 'A wrong number on a dashboard is a small loss. If someone feeds it into a sleep or a timeout, the program crashes or hangs.'}
+      - type: quote
+        body: 'A wall clock is for telling the time, not for measuring it.'
+    aside:
+      - type: story
+        title: 'Cloudflare on New Year''s night'
+        body: |
+          At midnight UTC on 1 January 2017, an extra second was added to the world's clocks. Cloudflare's DNS software assumed that subtracting two times could never give a number below zero. That night it did, the code crashed, and some customers' sites failed to load properly for hours.
+      - type: terms
+        items:
+          - {term: 'Wall clock', meaning: 'The server''s clock for date and time. When it gets corrected, it can jump.'}
+          - {term: 'NTP', meaning: 'Network Time Protocol: how a server keeps its clock in line with a precise one.'}
+    check:
+      q: 'The real work took 0.3 seconds. How did the result come out as −2.7 seconds?'
+      a: 'Between the two readings, the server''s wall clock was set back 3 seconds. The second reading is smaller than the first, so the difference is 0.3 − 3 = −2.7.'
+
+  - slug: four-lies
+    title: 'Four ways a clock lies'
+    kind: concept
+    tldr: 'Skew, drift, NTP jumps and leap seconds: for these four reasons two machines'' clocks never match exactly, and even a single clock doesn''t run in a straight line.'
+    keywords: ['clock skew', 'clock drift', 'NTP', 'leap second', 'clock difference', 'time sync']
+    blocks:
+      - type: metaphor
+        icon: school
+        title: 'The clocks in a school''s classrooms'
+        body: |
+          Every classroom in a school has its own wall clock. One is two minutes fast, another a minute slow, because each clock runs a little quick or a little slow. Now and then the caretaker listens to the radio's time signal and turns the hands to match, so the clock suddenly jumps. Each of your servers is one of those classroom clocks.
+      - type: visual
+        kind: table
+        caption: 'Four kinds of clock error, at school and on servers'
+        headers: ['Error', 'On a school clock', 'On a server']
+        rows:
+          - cells: ['Skew', 'Two rooms show two different times', 'Two servers differ by a few ms up to a few seconds']
+            tip: 'The difference between two machines'' readings at the same moment. A few milliseconds when NTP is healthy; it can reach minutes when NTP is off.'
+          - cells: ['Drift', 'The clock creeps a little ahead every day', 'Left uncorrected, it wanders by seconds per day']
+            tip: 'A computer''s clock counts the vibrations of a quartz crystal. They change with temperature and age, so every machine runs at its own pace.'
+          - cells: ['NTP jump', 'The caretaker turns the hands to match', 'The clock suddenly jumps forward or back']
+            tip: 'For small errors NTP nudges the clock''s speed up or down (slew). For big ones it corrects in one jump (step), and time can go backwards.'
+          - cells: ['Leap second', 'A 61-second minute at the end of the year', '23:59:60 appears, or the same second occurs twice']
+            tip: 'To keep UTC in step with the Earth''s rotation, an extra second is occasionally added. The last one was at the end of 2016, and it has been decided to retire the leap second by 2035.'
+      - type: points
+        title: 'What this means in practice'
+        items:
+          - 'Comparing timestamps from two servers to say "which came first" isn''t safe.'
+          - 'On one server, a later reading can be smaller than an earlier one.'
+          - 'A user''s phone or laptop clock can be wrong by hours.'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Skew', meaning: 'The difference between two machines'' clock readings at the same moment.'}
+          - {term: 'Drift', meaning: 'A single clock gradually running ahead of or behind real time.'}
+          - {term: 'Slew and step', meaning: 'NTP corrects small errors gradually (slew) and large ones in one jump (step).'}
+          - {term: 'Leap smear', meaning: 'Spreading the extra second over the whole day instead of adding it in one go. The big clouds do this.'}
+      - type: commands
+        title: 'Is the server clock OK?'
+        items:
+          - {cmd: 'timedatectl status', desc: 'Check whether the clock is synced with NTP'}
+          - {cmd: 'chronyc tracking', desc: 'See how far this server is from real time'}
+      - type: tips
+        items:
+          - 'Run NTP (chrony) on every server and alert on clock offset. That reduces the error but never makes it zero.'
+          - 'If a VM is paused for a while (pause or live migration), its clock can jump a long way when it wakes up.'
+    check:
+      q: 'What is the difference between skew and drift?'
+      a: 'Skew is the difference between two clocks'' readings at the same moment. Drift is one clock slowly wandering away from real time. Drift builds up into skew, and when NTP corrects it, the clock jumps.'
+
+  - slug: wall-vs-monotonic
+    title: 'The wall clock vs the stopwatch'
+    kind: concept
+    tldr: 'A wall clock tells you what time it is and can jump. A monotonic clock only moves forward and tells you how long something took. Always use the second one to measure time.'
+    keywords: ['monotonic clock', 'wall clock', 'hrtime', 'duration', 'stopwatch', 'measuring time']
+    blocks:
+      - type: metaphor
+        icon: stopwatch
+        title: 'The school sports-day sprint'
+        body: |
+          In the 100-metre race, the teacher doesn't note the time from the wall clock; he holds a stopwatch. If the caretaker turns the wall clock's hands mid-race, the stopwatch doesn't care. But a stopwatch can't tell you what time of day it is; it only says how long has passed. Computers have exactly these two kinds of clock.
+      - type: visual
+        kind: compare
+        caption: 'Two clocks, two jobs'
+        columns:
+          - title: 'Wall clock'
+            tone: warn
+            icon: clock
+            tip: 'The clock for knowing the date and time. NTP can correct it whenever it likes, so you can''t trust the difference between two readings.'
+            items:
+              - 'Question: what time is it?'
+              - 'PHP: time(), microtime(), new DateTimeImmutable()'
+              - 'Can jump forward or backward'
+              - 'Use: created_at, logs, showing people'
+          - title: 'Monotonic (stopwatch)'
+            tone: good
+            icon: stopwatch
+            tip: 'Time counted from some fixed point on the machine. It never goes backwards, so the difference between two readings is always right.'
+            items:
+              - 'Question: how long did it take?'
+              - 'PHP: hrtime(true), in nanoseconds'
+              - 'Only moves forward, never back'
+              - 'Use: latency, timeouts, waits between retries'
+      - type: code
+        lang: php
+        file: 'src/Courier/CourierClient.php'
+        variant: good
+        code: |
+          $start = hrtime(true);                       // stopwatch on (nanoseconds)
+
+          $response = $this->courier->request('POST', '/parcels', ['json' => $parcel]);
+          $status = $response->getStatusCode();
+
+          $elapsedMs = (hrtime(true) - $start) / 1_000_000;
+          $this->logger->info('courier call', ['ms' => round($elapsedMs, 1)]);
+
+          // tie the deadline to the stopwatch too
+          $deadline = hrtime(true) + 5 * 1_000_000_000;
+          while (hrtime(true) < $deadline && !$this->parcelIsReady($id)) {
+              usleep(200_000);
+          }
+        marks:
+          - {line: 1, tip: 'hrtime(true) returns an integer: how many nanoseconds have passed since some starting point. The number itself is not a date.'}
+          - {line: 6, tip: 'The difference between two readings can never be negative, even if NTP turns the clock.'}
+          - {line: 10, tip: 'This loop now runs for exactly 5 seconds, whatever happens to the wall clock.'}
+      - type: quote
+        body: 'When did it happen? Ask the wall clock. How long did it take? Ask the stopwatch.'
+    aside:
+      - type: remember
+        body: 'About to subtract two time readings? Both must come from hrtime().'
+      - type: pitfalls
+        items:
+          - 'Don''t store an hrtime() value in the database or send it to another server. The number means something only on that one machine, during that one run.'
+          - 'The browser has the same split: `Date.now()` is the wall clock, `performance.now()` is the stopwatch.'
+      - type: terms
+        items:
+          - {term: 'Monotonic', meaning: 'Moving in only one direction. Here: a clock whose reading never decreases.'}
+    check:
+      q: 'Why can''t you fill created_at with an hrtime(true) value?'
+      a: 'The number isn''t a date. It is nanoseconds counted from an arbitrary point on that machine, and only the difference between two readings means anything. For a date and time you need the wall clock.'
+
+  - slug: symfony-clock
+    title: 'Symfony Clock: handing time to your tests'
+    kind: howto
+    tldr: 'Instead of calling new DateTimeImmutable() directly, inject a ClockInterface. In tests, use MockClock to freeze time and move it forward as you like.'
+    keywords: ['Symfony Clock', 'ClockInterface', 'MockClock', 'testable time', 'DatePoint', 'testing time']
+    blocks:
+      - type: text
+        body: |
+          An OTP is valid for 5 minutes. To test that, do you sit in the test for 5 minutes? If your code calls `new DateTimeImmutable()` itself, time is out of your control. The fix: make the clock a service and inject it from outside. In the real app Symfony supplies the real clock; in tests you supply a fake one.
+      - type: code
+        lang: php
+        file: 'src/Security/OtpVerifier.php'
+        variant: good
+        code: |
+          use Psr\Clock\ClockInterface;
+
+          final class OtpVerifier
+          {
+              private const TTL_SECONDS = 300;
+
+              public function __construct(private readonly ClockInterface $clock)
+              {
+              }
+
+              public function issue(string $phone): Otp
+              {
+                  $now = $this->clock->now();          // not new DateTimeImmutable()
+
+                  return new Otp(
+                      phone: $phone,
+                      code: (string) random_int(100_000, 999_999),
+                      expiresAt: $now->modify('+'.self::TTL_SECONDS.' seconds'),
+                  );
+              }
+
+              public function isExpired(Otp $otp): bool
+              {
+                  return $this->clock->now() >= $otp->expiresAt;
+              }
+          }
+        marks:
+          - {line: 7, tip: 'Symfony autowires the real clock here by itself. You don''t write any config.'}
+          - {line: 13, tip: 'There is only one way to learn the time: the injected clock. So changing the clock in a test changes time for the whole class.'}
+      - type: code
+        lang: php
+        file: 'tests/Security/OtpVerifierTest.php'
+        variant: good
+        code: |
+          use Symfony\Component\Clock\MockClock;
+
+          public function testOtpExpiresAfterFiveMinutes(): void
+          {
+              $clock = new MockClock('2027-03-01 10:00:00', 'UTC');
+              $verifier = new OtpVerifier($clock);
+              $otp = $verifier->issue('01700000000');
+
+              $clock->sleep(299);                  // doesn't really sleep: the clock moves 299s
+              self::assertFalse($verifier->isExpired($otp));
+
+              $clock->sleep(1);                    // exactly 300 seconds have now passed
+              self::assertTrue($verifier->isExpired($otp));
+          }
+        marks:
+          - {line: 5, tip: 'MockClock is a frozen clock. Unless you say so, its time doesn''t move by a single microsecond, so the test gives the same result every run.'}
+          - {line: 9, tip: 'sleep() and modify() only change the internal time. A 5-minute expiry gets tested in a few milliseconds.'}
+      - type: quote
+        body: 'Code that looks at the clock itself can''t be tested. Hand it the clock from outside.'
+    aside:
+      - type: commands
+        title: 'Getting started'
+        items:
+          - {cmd: 'composer require symfony/clock', desc: 'Add the Clock component'}
+          - {cmd: 'php bin/console debug:autowiring Clock', desc: 'See which ClockInterface will be autowired'}
+      - type: tips
+        items:
+          - 'In a WebTestCase or KernelTestCase, use `ClockSensitiveTrait` and call `static::mockTime()` to fake the clock for the whole app.'
+          - 'Don''t write `new DateTimeImmutable()` in an entity''s constructor. Pass in `$clock->now()` from a service.'
+          - 'Symfony''s `MonotonicClock` runs on `hrtime()` inside, so its `now()` never goes backwards within one process.'
+      - type: terms
+        items:
+          - {term: 'DatePoint', meaning: 'Symfony''s own DateTimeImmutable; `$clock->now()` returns one.'}
+    check:
+      q: 'When you call MockClock''s sleep(299), does the test actually pause for 299 seconds?'
+      a: 'No. MockClock just moves its internal time forward by 299 seconds. So a 5-minute expiry gets tested in a few milliseconds.'
+
+  - slug: two-servers-one-timeline
+    title: 'Ordering events by comparing two servers'' timestamps'
+    kind: pitfall
+    tldr: 'If server A''s clock runs 80 ms ahead, a cancel that happens later gets a smaller timestamp than the create that happened earlier. For ordering, you need numbers, not timestamps.'
+    keywords: ['clock skew', 'event ordering', 'timestamp', 'created_at', 'client clock', 'order of events']
+    blocks:
+      - type: text
+        body: |
+          An order is created on server A and cancelled 50 milliseconds later on server B. A's clock is 80 ms ahead. Sort the report by timestamp and it shows the order was **cancelled before it was created**. Just as you can't tell who walked in first by comparing two classroom clocks, you can't do it by comparing two servers' clocks.
+      - type: visual
+        kind: sequence
+        caption: 'Create really came first, cancel second, but the timestamps say the opposite'
+        actors:
+          - {id: a, label: 'Server A', icon: server, tone: warn, tip: 'Its clock is 80 ms ahead of real time.'}
+          - {id: events, label: 'Events table', icon: db, tip: 'Both servers write rows here, each stamping its own clock''s time.'}
+          - {id: b, label: 'Server B', icon: server, tip: 'Its clock is correct.'}
+        messages:
+          - {from: a, to: events, label: 'created — 10:00:00.080', tip: 'Real time is 10:00:00.000. A wrote the time from its own clock, which runs ahead.'}
+          - {from: b, to: events, label: 'cancelled — 10:00:00.050', tip: 'Real time is 10:00:00.050, which is 50 ms after the create.'}
+          - {at: events, note: 'Sorted: cancel first, then create', tone: bad, tip: 'The cancel''s timestamp is 30 ms smaller than the create''s. Code that trusts this order will make the wrong decision.'}
+      - type: points
+        title: 'Which clock for which job'
+        style: check
+        items:
+          - 'How long did it take (latency, timeouts): `hrtime()`, the stopwatch.'
+          - 'When did it happen (created_at, logs): UTC time taken from `ClockInterface`.'
+          - 'Which came first: a version or sequence number, not a timestamp.'
+          - 'Has it expired: only the server''s clock, never the user''s phone.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Don''t make decisions based on a `createdAt` sent from a mobile app. Users can change their phone''s clock themselves.'
+          - 'Even on one server, two rows can have exactly the same `created_at`. Add `id` when you sort.'
+      - type: refs
+        items:
+          - {to: 'time/ordering-events', label: 'Which came first: the right way'}
+          - {to: 'time/expiry-timeouts', label: 'Expiry and timeouts, safely'}
+    check:
+      q: 'A''s clock is 80 ms ahead. An event happens on A, and another on B 50 ms later. Sorted by timestamp, which one appears first?'
+      a: 'B''s event. A''s event carries a time 80 ms too high, so B''s event, which happened 50 ms later, gets a timestamp 30 ms smaller.'
+
+flashcards:
+  - q: 'What is clock skew?'
+    a: 'The difference between two machines'' clock readings at the same moment.'
+    more: |
+      When NTP is healthy the difference is usually a few milliseconds, but never zero. If NTP is off or a VM has been paused, it can reach seconds or even minutes. So you can't make fine-grained decisions by comparing timestamps from two servers.
+    ref: four-lies
+  - q: 'What is clock drift?'
+    a: 'One clock slowly running ahead of or behind real time.'
+    more: |
+      A computer's clock counts the vibrations of a quartz crystal, and those change a little with temperature and age. Left uncorrected, a server can wander by several seconds a day. Drift builds up into skew between machines.
+    ref: four-lies
+  - q: 'What danger does NTP create for your code when it corrects a clock?'
+    a: 'The clock can suddenly jump forward or back, so the difference between two wall-clock readings can be wrong, even negative.'
+    more: |
+      For small errors NTP nudges the clock's speed up or down; this is called slew. For big errors it corrects in one jump, called a step. A backward step makes the same time occur twice, and code that assumed "time only moves forward" breaks.
+    ref: negative-latency
+  - q: 'What is the difference between a wall clock and a monotonic clock?'
+    a: 'A wall clock tells the date and time and can jump. A monotonic clock only moves forward and measures how long something took.'
+    more: |
+      The wall clock is for showing people the time and stamping dates on records. The monotonic clock is the stopwatch: its reading is not a date, but the difference between two readings is always right. So use a monotonic clock for latency, timeouts and waits between retries.
+    ref: wall-vs-monotonic
+  - q: 'Which PHP function should you use to measure how long a task took?'
+    a: '`hrtime(true)`: monotonic, with readings in nanoseconds. Not `time()` or `microtime()`.'
+    more: |
+      `time()`, `microtime()` and `new DateTimeImmutable()` all read the wall clock, so a difference between them is wrong when NTP corrects the clock. `hrtime(true)` never goes backwards. To get milliseconds, divide the difference by a million.
+    ref: wall-vs-monotonic
+  - q: 'What is a leap second, and what problem does it cause in code?'
+    a: 'An extra second occasionally added to UTC to keep it in step with the Earth''s rotation. The same second can appear twice on a clock.'
+    more: |
+      The extra second is written as 23:59:60, but most systems can't represent that time, so they step back a second. This is exactly why negative time crashed Cloudflare's DNS on New Year 2017. The big clouds now spread the second over the whole day, which is called a leap smear.
+    ref: four-lies
+  - q: 'What is the right way to get the current time in Symfony?'
+    a: 'Inject `ClockInterface` and call `$clock->now()`, instead of calling `new DateTimeImmutable()` directly.'
+    more: |
+      Calling `new DateTimeImmutable()` directly ties the code tightly to the system clock, and you can't change time in tests. With `ClockInterface`, Symfony supplies the real clock in the app, and in tests you put in a `MockClock`.
+    ref: symfony-clock
+  - q: 'What is MockClock useful for?'
+    a: 'Freezing time in tests, and moving it forward with `sleep()` or `modify()` without really waiting.'
+    more: |
+      MockClock is a frozen clock: its time doesn't move unless you move it. So a rule like "expires after 30 days" can be tested in a few milliseconds, and the test gives the same result every run.
+    ref: symfony-clock
+  - q: 'Why can''t you compare two servers'' created_at values to say which event happened first?'
+    a: 'The two servers'' clocks have skew. If the gap between the events is smaller than the skew, the timestamps can come out in the wrong order.'
+    more: |
+      For example, if A's clock is 80 ms ahead, an event on B 50 ms after one on A gets a smaller timestamp. To keep the order right you need a number issued by a single authority: a version or a sequence. More here: [[time/ordering-events|Which came first?]]
+    ref: two-servers-one-timeline
+
+quiz:
+  - q: 'What is the problem in this code?'
+    lang: php
+    code: |
+      $start = new \DateTimeImmutable();
+      $this->importer->run($file);
+      $end = new \DateTimeImmutable();
+
+      $seconds = $end->getTimestamp() - $start->getTimestamp();
+      $this->metrics->timing('import.seconds', $seconds);
+    hint: 'What happens if NTP turns the clock between the two readings?'
+    options:
+      - text: 'DateTimeImmutable is slow; you should use DateTime instead'
+        correct: false
+        why: 'Speed isn''t the issue. Both classes read the same wall clock, so the problem stays.'
+      - text: 'It subtracts two wall-clock readings; if the clock is corrected in between, the result is wrong or negative. You need hrtime(true)'
+        correct: true
+        why: 'Measuring how long something took is a job for a monotonic clock. hrtime(true) never goes backwards.'
+      - text: 'getTimestamp() gives only whole seconds; using microtime(true) would fix it'
+        correct: false
+        why: 'microtime() does give a finer reading, but it is still the wall clock. The jump problem remains exactly as before.'
+      - text: 'Nothing is wrong; with NTP on, the clock is always right'
+        correct: false
+        why: 'NTP is what makes the clock jump. Correcting a clock means its reading changes suddenly.'
+    ref: wall-vs-monotonic
+  - q: 'A report shows an order cancelled 30 ms before it was created. The create and the cancel happened on two different servers. What is the most likely cause?'
+    hint: 'Do the wall clocks of two classrooms show exactly the same time?'
+    options:
+      - text: 'The customer really did cancel before ordering'
+        correct: false
+        why: 'You can''t cancel an order that doesn''t exist yet. The real order of events was fine; only the timestamps are wrong.'
+      - text: 'The two servers'' clocks have skew, so the timestamps came out in the wrong order'
+        correct: true
+        why: 'If the server that created the order has a clock running ahead, the later cancel gets a smaller timestamp.'
+      - text: 'The two servers are set to different time zones'
+        correct: false
+        why: 'A time zone mistake would give a difference of whole or half hours, not 30 milliseconds.'
+      - text: 'The database wrote the rows in the reverse order'
+        correct: false
+        why: 'The order rows were written in doesn''t change a timestamp''s value. Each server stamped its own clock''s time.'
+    ref: two-servers-one-timeline
+  - q: 'In which of these jobs should you use the monotonic clock (hrtime)?'
+    hint: 'Which ask "how long", and which ask "when"?'
+    options:
+      - text: 'Measuring how many milliseconds an API call took'
+        correct: true
+        why: 'This is a "how long" question, a job for the stopwatch.'
+      - text: 'Filling an order''s created_at column'
+        correct: false
+        why: 'This is a "when" question. An hrtime() value is not a date; you need the wall clock''s UTC time.'
+      - text: 'Running a polling loop for at most 5 seconds'
+        correct: true
+        why: 'With a wall clock, a clock jump could make the loop run for ages or stop immediately.'
+      - text: 'Printing the date on an invoice'
+        correct: false
+        why: 'A date shown to people comes from the wall clock.'
+      - text: 'Checking whether 2 seconds have passed since the last retry'
+        correct: true
+        why: 'You are measuring the gap between two moments, so use the monotonic clock.'
+    ref: wall-vs-monotonic
+  - q: 'A subscription expires after 30 days, and Rina wants to test that. What is the best way?'
+    hint: 'Who decides what "now" is inside the test?'
+    options:
+      - text: 'Wait with sleep() in the test'
+        correct: false
+        why: 'Waiting 30 days is impossible. Even for short expiries, sleep makes tests slow and unreliable.'
+      - text: 'Manually put an old date into expires_at in the database'
+        correct: false
+        why: 'That doesn''t test the code that calculates the expiry, and "now" is still outside your control.'
+      - text: 'Inject ClockInterface and use MockClock in the test to move time forward 30 days'
+        correct: true
+        why: 'Once you own the clock, you can check both sides of the boundary, just before and just after, in an instant.'
+      - text: 'Change the server''s clock before running the tests'
+        correct: false
+        why: 'That upsets everything else on the machine, and on a CI server you often can''t do it at all.'
+    ref: symfony-clock
+  - q: 'NTP is on for every server. Can you assume two servers'' clocks are exactly the same?'
+    hint: 'The caretaker sets the clocks once a day. What do they do in between?'
+    options:
+      - text: 'Yes. Making all the clocks the same is NTP''s whole job'
+        correct: false
+        why: 'NTP reduces the difference; it doesn''t remove it. Network delay and drift always leave some.'
+      - text: 'No. NTP reduces skew but doesn''t make it zero, and when correcting it can make the clock jump'
+        correct: true
+        why: 'In good conditions the difference is a few milliseconds. So the order of events close together in time can''t be told by timestamps.'
+      - text: 'Yes, if the two servers are in the same data centre'
+        correct: false
+        why: 'Being in one place makes the difference smaller, but not zero. Each machine''s crystal runs at its own pace.'
+      - text: 'No, so it''s better to turn NTP off'
+        correct: false
+        why: 'Without NTP, drift builds up and the difference grows from seconds to minutes. You need NTP; you just shouldn''t trust it blindly.'
+    ref: four-lies
+  - q: 'A mobile app sends the phone''s time (clientTime) with every request. Which of these uses are safe?'
+    hint: 'Who sets the phone''s clock, and can they change it?'
+    options:
+      - text: 'Keeping it in the logs for debugging'
+        correct: true
+        why: 'It does no harm as information, and it even shows how wrong phone clocks are.'
+      - text: 'Using it to decide whether a coupon has expired'
+        correct: false
+        why: 'A user can set their phone''s date back and use an expired coupon. The server''s clock decides expiry.'
+      - text: 'Using it to decide which of two edits came later'
+        correct: false
+        why: 'Two phones'' clocks can differ by minutes. Whoever''s clock is ahead wins, even with an older edit.'
+      - text: 'Comparing it with the server''s time to measure how wrong the phone''s clock is'
+        correct: true
+        why: 'Here you aren''t trusting the phone''s time; you are checking it.'
+    ref: two-servers-one-timeline
+  - q: 'A loop is written like this: `$deadline = time() + 5; while (time() < $deadline) { ... }`. While it runs, NTP sets the server''s clock back 1 hour. What happens?'
+    hint: 'If the clock reading suddenly gets smaller, how long until it reaches $deadline?'
+    options:
+      - text: 'The loop stops immediately'
+        correct: false
+        why: 'It would stop immediately if the clock jumped forward. Going back moves time() further away from $deadline.'
+      - text: 'Nothing changes; PHP uses its own internal clock'
+        correct: false
+        why: 'time() reads the system wall clock every time. PHP has no separate clock.'
+      - text: 'The loop keeps running for about 1 hour'
+        correct: true
+        why: 'time() dropped by an hour, so it takes over an hour to reach $deadline again. Written with hrtime(), this wouldn''t happen.'
+      - text: 'PHP throws an exception'
+        correct: false
+        why: 'To PHP, a clock change is not an error; it doesn''t even notice. That is why this kind of bug strikes silently.'
+    ref: negative-latency

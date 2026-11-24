@@ -1,0 +1,375 @@
+slides:
+  - slug: newer-edit-lost
+    title: 'The newer edit vanished'
+    kind: story
+    tldr: 'If you pick the "latest" write by comparing two machines'' clock times, the stale write from the clock that runs ahead wins, and the genuinely newer write is silently lost.'
+    keywords: ['last write wins', 'LWW', 'timestamp', 'clock skew', 'ordering', 'which came first']
+    blocks:
+      - type: metaphor
+        icon: building
+        title: 'Two branches, two wall clocks'
+        body: |
+          Two bank branches each have a wall clock, and one runs 5 minutes fast. Both branches update the same customer's address, and head office rules: "the later time wins". The older update from the fast clock wins. You simply can't tell by looking at clocks which change really happened last.
+      - type: visual
+        kind: sequence
+        caption: 'Phone A''s clock is 5 minutes fast: the older edit wins'
+        actors:
+          - {id: a, label: 'Phone A', icon: phone, tip: 'Its clock is 5 minutes fast. It changes the name at 10:00 real time.'}
+          - {id: b, label: 'Phone B', icon: phone, tip: 'Its clock is correct. It changes the name at 10:02 real time, which is after A.'}
+          - {id: db, label: 'Database', icon: db, tip: 'Decides which write is "latest" by the timestamp that comes with each one.'}
+        messages:
+          - {from: a, to: db, label: 'name = Rahim, time 10:05', tip: 'Real time is 10:00, but A''s fast clock wrote 10:05.'}
+          - {from: b, to: db, label: 'name = Rahim Ahmed, time 10:02', tip: 'This is really the newer change, but its timestamp is smaller.'}
+          - {at: db, note: '10:05 > 10:02, so "Rahim" stays', tone: bad, tip: 'The database threw away the newer change without any error. Nobody ever finds out.'}
+    aside:
+      - type: story
+        title: 'The story of the synced notes'
+        body: |
+          A notes app synced a phone and a laptop by looking at clock times. One user's laptop clock was wrong, so the notes they had just written kept being overwritten by older versions.
+      - type: terms
+        items:
+          - {term: 'Last-write-wins (LWW)', meaning: 'Of two changes, keep the one with the larger timestamp and drop the other.'}
+          - {term: 'Happened-before', meaning: 'The relationship of knowing that one event caused, or came before, another. It is not clock time.'}
+    check:
+      q: 'Phone A''s clock is 5 minutes fast. A wrote first, B wrote later. Whose write does LWW keep, and why is that wrong?'
+      a: 'A''s, because its timestamp, 10:05, is larger. But B''s write is the genuinely newer one, and it is lost without any error.'
+
+  - slug: lamport-clock
+    title: 'Logical clocks: counting cause and effect, not time'
+    kind: concept
+    tldr: 'Each machine keeps its own counter. It travels with every message, and on receipt the receiver sets its counter to max(own, received) + 1. So causes come first and effects after.'
+    keywords: ['Lamport clock', 'logical clock', 'happened-before', 'counter', 'causality', 'ordering']
+    blocks:
+      - type: text
+        body: |
+          If clock time can't be trusted, how do you order events? Lamport's answer: drop the clock and keep a plain **counter**. There are two rules. When you do something yourself, add 1 to the counter. When you receive a message from someone else, set the counter to `max(your own, the message's) + 1`. So anything known to have happened earlier always has a smaller number.
+      - type: visual
+        kind: sequence
+        caption: 'Lamport clock: the counter travels with messages and pulls the receiver forward'
+        actors:
+          - {id: a, label: 'Server A', icon: server, tip: 'Keeps its own counter, starting at 0.'}
+          - {id: b, label: 'Server B', icon: server, tip: 'Keeps its own separate counter, starting at 0.'}
+          - {id: c, label: 'Server C', icon: server, tip: 'The third server, starting at 0.'}
+        messages:
+          - {at: a, note: 'Event X: counter = 1', tone: accent, tip: 'When it does something itself, the counter goes up by 1.'}
+          - {from: a, to: b, label: 'Message, counter 1', tip: 'When sending, it attaches its own counter.'}
+          - {at: b, note: 'max(0, 1) + 1 = 2', tone: good, tip: 'On receipt, B''s counter becomes 2. That is larger than event X''s 1, which proves X came first.'}
+          - {from: b, to: c, label: 'Message, counter 2'}
+          - {at: c, note: 'max(0, 2) + 1 = 3', tone: good, tip: 'C''s counter is 3, later than both X (1) and B''s event (2).'}
+      - type: quote
+        body: 'If X happens before Y, then counter(X) < counter(Y). The reverse is not always true.'
+        by: 'Lamport clock'
+    aside:
+      - type: problem
+        body: 'For two events with no message path between them (concurrent), a smaller or larger counter does not mean "earlier" or "later". A Lamport clock can''t tell them apart.'
+      - type: tips
+        items:
+          - 'If you want a single total order of all events, break ties on equal counters with the node id: (counter, node id).'
+          - 'To detect concurrent events you need a vector clock. It is heavier, and is used for conflict detection in databases.'
+    check:
+      q: 'Server B''s counter is 0 and it receives a message with counter 5 from A. What is B''s new counter, and why?'
+      a: '6. The rule is max(own 0, received 5) + 1 = 6. That shows the receipt happened after the send.'
+
+  - slug: version-numbers
+    title: 'Ordering work: version numbers and sequences'
+    kind: howto
+    tldr: 'Give every entity its own version number and increment it atomically with each change. Drop any event whose version is smaller than what you already have. No clock needed.'
+    keywords: ['version number', 'sequence', 'stale event', 'out of order', 'UUIDv7', 'atomic increment']
+    blocks:
+      - type: text
+        body: |
+          In real systems the simple way is to create the order in one place: the database. Each change increments `version` by one, and the change event carries that number. A consumer accepts only a number larger than the latest version it knows. A stale event that arrives late does no harm.
+      - type: code
+        lang: sql
+        file: 'Source: the database'
+        code: |
+          -- the change and the new version together, atomically; PostgreSQL
+          UPDATE customer
+          SET name = :name, version = version + 1
+          WHERE id = :id
+          RETURNING version;
+        marks:
+          - {line: 3, tip: 'Bumping the version and changing the name happen in one statement. If two requests arrive together, each gets a different number.'}
+          - {line: 5, tip: 'The new version comes back. This is what goes into the event.'}
+      - type: code
+        lang: php
+        file: 'src/MessageHandler/CustomerProjectionHandler.php'
+        code: |
+          #[AsMessageHandler]
+          final readonly class CustomerProjectionHandler
+          {
+              public function __invoke(CustomerRenamed $e): void
+              {
+                  $applied = $this->connection->executeStatement(
+                      'UPDATE customer_view SET name = :name, version = :v
+                       WHERE id = :id AND version < :v',
+                      ['name' => $e->name, 'v' => $e->version, 'id' => $e->customerId],
+                  );
+                  // 0 means I already know something newer; this event is stale, drop it
+              }
+          }
+        marks:
+          - {line: 8, tip: 'It writes only if the version is higher. Events arriving in the wrong order still end up with the right result.'}
+          - {line: 11, tip: 'A result of 0 means the event is stale and nothing changed. It is not an error, so it is safe to ignore.'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'PostgreSQL sequence numbers are handed out in the order transactions ask for them, not in COMMIT order. So if you read "everything after N" with a cursor, a smaller number that commits after a bigger one can be missed.'
+          - 'UUIDv7 and ULID sort by time, but across machines they depend on the clocks. They give an approximate order, not proof of cause and effect.'
+      - type: refs
+        items:
+          - {to: 'concurrency/locking', label: 'The version column in optimistic locking'}
+          - {to: 'data/id-generation', label: 'Ways to generate IDs'}
+    check:
+      q: 'The version 7 event arrives first, then version 6 arrives late. What should the result be, and how?'
+      a: 'The state stays at version 7. `WHERE version < 6` doesn''t match (the row has 7), so 0 rows change and the stale event is dropped.'
+
+  - slug: choose-ordering
+    title: 'Four ways to order events, and when to use each'
+    kind: compare
+    tldr: 'Clocks are approximate; Lamport gives cause and effect; version numbers create order in one place; a hybrid logical clock reads like a clock and also respects cause and effect.'
+    keywords: ['hybrid logical clock', 'HLC', 'vector clock', 'wall clock', 'comparison']
+    blocks:
+      - type: text
+        body: |
+          Each of the four answers a different question. A **hybrid logical clock (HLC)** keeps the wall-clock time and adds a small counter to preserve cause and effect: (clock time, counter). If the clock goes backwards, it increments the counter and moves on. Most apps write to a single database, and there version numbers are enough.
+      - type: visual
+        kind: table
+        caption: 'Four ways to establish order, side by side'
+        headers: ['Method', 'What it gives', 'Weakness']
+        rows:
+          - cells: ['Wall-clock timestamp', 'A time people can read', 'The clock can be wrong; order isn''t certain']
+            tip: 'Great for showing time in logs or reports. Not reliable for deciding what came first.'
+          - cells: ['Lamport clock', 'Causes first, effects after', 'Can''t separate concurrent events']
+            tip: 'Just a counter: cheap and simple. But you can''t read real time from the counter.'
+          - cells: ['Version number / sequence', 'Exact order for one entity', 'Needs one authority']
+            tip: 'One database or one leader hands out the numbers. The simplest option, and enough for most apps.'
+          - cells: ['Hybrid logical clock', 'Near-clock time plus order', 'Complex; needs a library']
+            tip: 'Multi-region databases use it. App developers don''t usually build it; they get it inside the database.'
+      - type: quote
+        body: 'Which came first is a job for numbers, not clocks. Clocks are only for showing people the time.'
+    aside:
+      - type: when
+        use: ['One database, one entity''s history: version numbers', 'Many regions, local writes: HLC or the database''s built-in support']
+        avoid: ['Using a client-sent time to decide order']
+      - type: refs
+        items:
+          - {to: 'data/consistency-models', label: 'Consistency models'}
+          - {to: 'time/clocks-lie', label: 'Why clocks lie'}
+    check:
+      q: 'Which clock can be read like clock time and also respects cause-and-effect order?'
+      a: 'The hybrid logical clock (HLC). It keeps a (clock time, counter) pair, and if the clock goes backwards it bumps the counter to preserve the order.'
+
+  - slug: lww-danger
+    title: 'How to get rid of last-write-wins'
+    kind: pitfall
+    tldr: 'Choosing the "newer" write by the client''s updatedAt lets stale writes overwrite newer ones. Detect conflicts by comparing versions, and merge fields one at a time.'
+    keywords: ['last write wins', 'updatedAt', 'sync', 'conflict detection', 'merge', 'ETag']
+    blocks:
+      - type: code
+        lang: php
+        file: 'src/Controller/ProfileSyncController.php'
+        variant: bad
+        code: |
+          #[Route('/api/profile/sync', methods: ['PUT'])]
+          public function sync(#[MapRequestPayload] ProfileDto $dto): JsonResponse
+          {
+              $profile = $this->profiles->find($dto->id);
+
+              // picking the "newer" by the client's clock: risky
+              if ($dto->updatedAt > $profile->getUpdatedAt()) {
+                  $profile->replaceWith($dto);        // overwrites the whole row
+                  $this->em->flush();
+              }
+
+              return $this->json(['ok' => true]);
+          }
+        marks:
+          - {line: 7, tip: 'The client''s updatedAt is the client''s clock time. A clock that runs ahead always wins.'}
+          - {line: 8, tip: 'The whole row is replaced, so changes someone else made to other fields are silently wiped out.'}
+      - type: code
+        lang: php
+        file: 'src/Controller/ProfileSyncController.php'
+        variant: good
+        code: |
+          #[Route('/api/profile/{id}', methods: ['PATCH'])]
+          public function update(int $id, #[MapRequestPayload] ProfilePatch $dto): JsonResponse
+          {
+              try {
+                  $this->em->wrapInTransaction(function () use ($id, $dto): void {
+                      $p = $this->em->find(Profile::class, $id, LockMode::OPTIMISTIC, $dto->version);
+                      $p->apply($dto->changedFields());   // only the fields that changed
+                  });
+              } catch (OptimisticLockException) {
+                  return $this->json(['error' => 'A newer version exists'], 409);
+              }
+
+              return $this->json(['ok' => true]);
+          }
+        marks:
+          - {line: 6, tip: 'Checks that the version the client saw when it made its change still equals the row''s version. No clock needed.'}
+          - {line: 7, tip: 'Write only the changed fields and leave the rest as they are. Unrelated changes then don''t erase each other.'}
+          - {line: 10, tip: 'On a conflict, tell the client. Have it fetch the new data and merge, or ask the user to choose.'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'LWW is fine where losing a write costs nothing: a cache, a "last seen" time. Not for money, addresses or documents.'
+          - 'Never base a decision on the client''s time. If you need a time, use the server''s time or a server-assigned version.'
+      - type: refs
+        items:
+          - {to: 'concurrency/locking', label: 'Optimistic locking in depth'}
+          - {to: 'interaction/offline-sync', label: 'Conflicts in offline sync'}
+    check:
+      q: 'Instead of picking the "newer" write by the client''s updatedAt, what do you use to detect a conflict, and what do you do when one happens?'
+      a: 'A server-assigned version. If it doesn''t match, return 409 so the client can fetch the new data and merge, or let the user choose.'
+
+flashcards:
+  - q: 'Why can''t you order events from two machines by their clock timestamps?'
+    a: 'Every machine''s clock differs (skew, drift, NTP jumps), so a larger timestamp doesn''t mean it happened later.'
+    more: |
+      Two machines' clocks can differ by anything from a few milliseconds to several minutes. Even when one event caused the other, the timestamps can show the opposite order. So for cause-and-effect order you need something other than clocks.
+    ref: newer-edit-lost
+  - q: 'What is last-write-wins (LWW)?'
+    a: 'Of two changes, keeping the one with the larger timestamp and dropping the other. If clocks are wrong, the newer change is silently lost.'
+    more: |
+      It is simple, so many databases and sync systems use it. But a clock running ahead always wins, and the losing write disappears with no error. That is why it needs care.
+    ref: newer-edit-lost
+  - q: 'How does a Lamport clock work?'
+    a: 'Each machine keeps a counter. It goes up by 1 on every event, and on receiving a message it becomes max(own, received) + 1. The counter travels with messages.'
+    more: |
+      So anything known to have happened earlier always has a smaller number. For a total order, break ties on equal counters with the node id. It doesn't give real time; it only preserves cause-and-effect order.
+    ref: lamport-clock
+  - q: 'What is the limitation of a Lamport clock?'
+    a: 'If X happens before Y then counter(X) < counter(Y), but a smaller counter doesn''t mean it happened first. Concurrent events can''t be told apart.'
+    more: |
+      Two events with no message relationship between them are concurrent. Their counters can come out in either order. Detecting concurrency takes a vector clock, which uses more space.
+    ref: lamport-clock
+  - q: 'How do you keep order with version numbers?'
+    a: 'Increment `version = version + 1` atomically with each change. A consumer accepts only numbers higher than the one it knows and drops lower ones.'
+    more: |
+      On the database side, UPDATE … RETURNING version gives the order. On the consumer side, `UPDATE … WHERE version < :v`. Events arriving out of order still end up with the right result, because the smaller version is caught and dropped.
+    ref: version-numbers
+  - q: 'Does a PostgreSQL sequence give COMMIT order?'
+    a: 'No. Sequence numbers rise in the order they are handed out. If a transaction with a larger number commits first, the smaller one can show up later.'
+    more: |
+      So reading events with a cursor like "I've read up to 100, now from 101" can miss some. Safe options: a per-entity version, or an outbox plus a separate progress marker.
+    ref: version-numbers
+  - q: 'What is a hybrid logical clock (HLC)?'
+    a: 'A pair of clock time and a small counter: (time, counter). It reads like a clock and still preserves cause-and-effect order.'
+    more: |
+      If the clock goes backwards or stays equal, it bumps the counter to keep the order intact. Some multi-region databases use it internally. App developers usually don't have to build it.
+    ref: choose-ordering
+  - q: 'Do UUIDv7 or ULID give an exact event order?'
+    a: 'No. They sort by time, but across machines they depend on the clocks. The order is approximate, not proof of cause and effect.'
+    more: |
+      IDs created on one machine in the same millisecond are usually increasing. But if two servers' clocks differ, the order won't match. They are good for indexes, not for the true order of events.
+    ref: version-numbers
+  - q: 'What is wrong with settling sync conflicts by the client''s updatedAt?'
+    a: 'A client clock that is wrong or deliberately ahead always wins. And replacing the whole row loses other fields'' changes.'
+    more: |
+      The client's time is never a basis for a decision. Detect conflicts with a server-assigned version, return 409 on a mismatch, and write only the fields that changed.
+    ref: lww-danger
+
+quiz:
+  - q: 'What is the problem in this code?'
+    lang: php
+    code: |
+      if ($incoming->updatedAt > $row->updatedAt) {
+          $row->replaceWith($incoming);
+      }
+    hint: 'Who creates updatedAt, and from whose clock?'
+    options:
+      - text: 'Two machines have different clocks, so a newer change can be lost'
+        correct: true
+        why: 'Comparing timestamps doesn''t give cause-and-effect order; the stale write from the clock that runs ahead wins.'
+      - text: 'replaceWith() is very slow'
+        correct: false
+        why: 'Speed isn''t the issue here. Correctness is.'
+      - text: 'It should be `>=` instead of `>`'
+        correct: false
+        why: 'Changing the operator doesn''t fix the underlying problem, the wrong clock.'
+      - text: 'There is no problem; the clocks are synced with NTP'
+        correct: false
+        why: 'NTP still leaves differences of milliseconds to seconds, and the client''s clock is outside your control.'
+    ref: newer-edit-lost
+  - q: 'Server A''s counter is 4 and it sends a message. Server B''s counter is 9. What is B''s new counter when it receives the message?'
+    hint: 'max(own, received) + 1.'
+    options:
+      - text: '5'
+        correct: false
+        why: 'That is the number after A''s counter. B can''t ignore its own 9.'
+      - text: '10'
+        correct: true
+        why: 'max(9, 4) + 1 = 10. A counter never goes backwards.'
+      - text: '13'
+        correct: false
+        why: 'Adding the two counters is not the rule. The rule is the larger one + 1.'
+      - text: '9'
+        correct: false
+        why: 'Receiving a message is an event too, so the counter goes up by at least 1.'
+    ref: lamport-clock
+  - q: 'Which statements about a Lamport clock are true?'
+    hint: 'Think about the difference between cause-and-effect and concurrent.'
+    options:
+      - text: 'If X causes Y, then counter(X) < counter(Y)'
+        correct: true
+        why: 'The counter travels with messages, so the receiver always gets a larger number.'
+      - text: 'A smaller counter always means the event happened earlier'
+        correct: false
+        why: 'For concurrent events the counters can go either way. That doesn''t mean earlier or later.'
+      - text: 'Ties on equal counters can be broken with the node id to make a total order'
+        correct: true
+        why: 'The (counter, node id) pair gives everyone the same total order, though the order among concurrent events is arbitrary.'
+      - text: 'It stores the real clock time'
+        correct: false
+        why: 'It is only a counter and says nothing about time.'
+    ref: lamport-clock
+  - q: 'Version 7 is already stored. Now a late event for version 6 arrives. What does the handler below do?'
+    lang: sql
+    code: |
+      UPDATE customer_view SET name = :name, version = :v
+      WHERE id = :id AND version < :v;
+    hint: 'Does the WHERE condition match?'
+    options:
+      - text: 'The condition doesn''t match and 0 rows change; the stale event can safely be dropped'
+        correct: true
+        why: 'The row has version 7, and 7 < 6 is false. The state stays correct.'
+      - text: 'It writes version 6 and puts the row back to its old state'
+        correct: false
+        why: 'That is exactly what the condition prevents. A smaller version is never written.'
+      - text: 'It throws an exception and the message is retried'
+        correct: false
+        why: 'An UPDATE that matches no rows is not an error; it just returns 0.'
+    ref: version-numbers
+  - q: 'A multi-region database needs near-clock time and also has to preserve cause-and-effect order. Which approach fits?'
+    hint: 'Time plus a small counter.'
+    options:
+      - text: 'Wall-clock timestamps alone'
+        correct: false
+        why: 'Clock errors break the order.'
+      - text: 'A hybrid logical clock'
+        correct: true
+        why: 'The (clock time, counter) pair gives the benefits of both.'
+      - text: 'A separate running number on each server'
+        correct: false
+        why: 'Numbers from different servers can''t be compared, so there is no global order.'
+      - text: 'The time sent by the client'
+        correct: false
+        why: 'The client''s clock is outside your control and untrustworthy.'
+    ref: choose-ordering
+  - q: 'In which cases is it acceptable to live with last-write-wins?'
+    hint: 'How much do you lose if a write is lost?'
+    options:
+      - text: 'A "last seen" field'
+        correct: true
+        why: 'Even if it is wrong, nothing is lost; it corrects itself next time.'
+      - text: 'A temporary value held in a cache'
+        correct: true
+        why: 'A wrong value expires with its TTL and comes back from the source.'
+      - text: 'A user''s saved address'
+        correct: false
+        why: 'If the address is lost, deliveries go to the wrong place. You need to detect the conflict.'
+      - text: 'The content of a shared document'
+        correct: false
+        why: 'Silently erasing someone''s work is direct harm. Here you need a merge or conflict handling.'
+    ref: lww-danger

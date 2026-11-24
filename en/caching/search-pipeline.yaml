@@ -1,0 +1,576 @@
+slides:
+  - slug: dual-write-drift
+    title: 'In the database, missing from search'
+    kind: story
+    tldr: 'Write to the database and the search index separately from a controller and one failure leaves them disagreeing; this trap is called a dual write.'
+    keywords: ['dual write', 'drift', 'search index', 'out of sync', 'database and index', 'sync']
+    blocks:
+      - type: text
+        body: |
+          Right after saving a product, Rahim's controller writes straight to Elasticsearch. In library terms: putting the book on the shelf and writing its name in the catalogue notebook are two jobs in two places. One day Elasticsearch was down for half a minute. In that gap, 40 products landed in the database but never reached the index. Sellers phone in: "I listed my product and I can't find it." This trap of writing to two places separately is called a **dual write**.
+      - type: code
+        lang: php
+        file: 'src/Controller/ProductController.php'
+        variant: bad
+        code: |
+          #[Route('/api/products', methods: ['POST'])]
+          public function create(#[MapRequestPayload] ProductInput $input): JsonResponse
+          {
+              $product = Product::fromInput($input);
+              $this->em->persist($product);
+              $this->em->flush();                          // 1. write to the database
+
+              $this->searchClient->request('PUT', '/products/_doc/'.$product->getId(), [
+                  'json' => $product->toSearchDocument(),  // 2. write to the search index
+              ])->getContent();
+
+              return $this->json(['id' => $product->getId()], 201);
+          }
+        marks:
+          - {line: 6, tip: 'Committed right here. Whatever happens next, the product stays in the database.'}
+          - {line: 8, tip: 'If this request fails, or the process dies halfway, the product never reaches the index, and nobody retries it later.'}
+          - {line: 10, tip: 'The customer waits until Elasticsearch answers. If search is slow, saving a product is slow too.'}
+      - type: visual
+        kind: sequence
+        caption: 'One request, two writes, and the second one fails'
+        actors:
+          - {id: api, label: 'Controller', icon: api, tip: 'It has taken on the job of writing to both places itself.'}
+          - {id: db, label: 'Database', icon: db, tip: 'The source of truth lives here. Its commit can''t be taken back.'}
+          - {id: es, label: 'Elasticsearch', icon: search, tip: 'The search index: a copy of the database, running on a separate server.'}
+        messages:
+          - {from: api, to: db, label: 'Save product 42'}
+          - {from: db, to: api, label: 'Committed', dashed: true}
+          - {at: es, note: 'Elasticsearch down for 30 s', tone: bad}
+          - {from: api, to: es, label: 'Index product 42', tone: bad}
+          - {from: es, to: api, label: 'No answer: timeout', dashed: true, tone: bad}
+          - {at: api, note: 'Customer gets a 500 error', tone: bad, tip: 'The customer thinks the product wasn''t saved and tries again, so the database now holds the same product twice.'}
+          - {at: db, note: 'Product 42 exists, not in search', tone: bad, tip: 'This mismatch between the two places will never heal on its own.'}
+    aside:
+      - type: problem
+        body: 'You can''t write "both or neither" across two separate systems. So one of them must be the source of truth, and the other must follow behind it.'
+      - type: terms
+        items:
+          - {term: 'Dual write', meaning: 'Writing the same data to two separate systems independently; if one fails, they disagree.'}
+          - {term: 'Drift', meaning: 'The mismatch that builds up between a copy and its source over time.'}
+      - type: refs
+        items:
+          - {to: 'concurrency/distributed-transactions', label: 'The dual write problem and 2PC'}
+    check:
+      q: 'If the Elasticsearch request fails after flush() succeeds, what state are the database and the index left in?'
+      a: 'The product is in the database but not in the index. The database commit can''t be undone and nobody retries the index write, so the mismatch stays.'
+
+  - slug: index-pipeline
+    title: 'The database is the original, the index is its copy, with a pipeline in between'
+    kind: concept
+    tldr: 'Write to the database first, then put a message with just the ID on a queue; a worker reads the fresh state from the database and updates the index.'
+    keywords: ['source of truth', 'indexing pipeline', 'queue', 'worker', 'derived data', 'copy']
+    blocks:
+      - type: metaphor
+        icon: book
+        title: 'The books on the shelf and the catalogue notebook'
+        body: |
+          In a library, the books on the shelves are the original and the catalogue notebook is the copy. When a new book arrives, the librarian puts it on the shelf and drops a slip into a basket: "Book 42 changed." Later an assistant picks up the slip, **goes to the shelf and looks at the book himself**, and only then updates the notebook. The slip carries no description of the book, just the number. So even if a slip arrives twice, or out of order, the notebook still gets the shelf's latest state.
+      - type: visual
+        kind: flow
+        caption: 'The pipeline from the database to the search index'
+        nodes:
+          - {id: api, label: 'API', sub: 'Symfony', icon: api, col: 0, row: 1, tip: 'The librarian. It writes only to the database and sends one small message; it never talks to Elasticsearch.'}
+          - {id: db, label: 'Database', sub: 'source of truth', icon: db, tone: accent, col: 1.5, row: 0, tip: 'The books on the shelf. Every write happens here first, and every final answer comes from here.'}
+          - {id: queue, label: 'Queue', sub: 'product 42 changed', icon: queue, col: 1.5, row: 2, tip: 'The basket of slips. Even if Elasticsearch is down, the message waits here safely.'}
+          - {id: worker, label: 'Worker', sub: 'index handler', icon: worker, col: 3, row: 2, tip: 'The assistant. It picks up a message, re-reads the product from the database, then writes to the index. If that fails, it tries again.'}
+          - {id: es, label: 'Search index', sub: 'copy', icon: search, col: 4, row: 1, tip: 'The catalogue notebook. If it is lost, the whole thing can be rebuilt from the database.'}
+        edges:
+          - {from: api, to: db, label: 'The database is written first: this is the source of truth'}
+          - {from: api, to: queue, label: 'Then just a "product 42 changed" message goes on the queue'}
+          - {from: queue, to: worker, label: 'The worker picks the message up in its own time'}
+          - {from: worker, to: db, label: 'It reads the latest state of product 42 from the database', dashed: true}
+          - {from: worker, to: es, label: 'It overwrites the index document with that state', tone: good}
+      - type: points
+        title: 'This design removes three dangers'
+        style: check
+        items:
+          - 'Elasticsearch down? The message waits in the queue and the worker retries later.'
+          - 'The same message arrives twice? The same document is written again, and no harm is done.'
+          - 'Messages arrive out of order? The worker always reads the database''s latest state anyway.'
+      - type: quote
+        body: 'Put an ID in the message, not the data. Before writing, the worker always reads fresh state from the database.'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Source of truth', meaning: 'The place whose data counts as final; everything else is a copy.'}
+          - {term: 'Derived data', meaning: 'A copy built from the original data that can be deleted and rebuilt: a search index, a cache, a report.'}
+      - type: tips
+        items:
+          - 'Bigger systems skip the message and read the database''s change log to update the index (CDC). The principle is the same: database first, index behind it.'
+      - type: refs
+        items:
+          - {to: 'messaging/events-vs-commands', label: 'Messenger and queue basics'}
+          - {to: 'data/oltp-olap', label: 'Derived data and CDC'}
+    check:
+      q: 'If the message carries only the ID instead of the product''s new price, which two problems go away on their own?'
+      a: 'The same message arriving twice and messages arriving out of order. Either way the worker reads the latest state from the database, so an old price can''t reach the index.'
+
+  - slug: dispatch-index-message
+    title: 'The write side: flush, then one small message'
+    kind: howto
+    tldr: 'The write code only flushes to the database and dispatches an IndexProduct message; the message goes to its own transport, with retries.'
+    keywords: ['Symfony Messenger', 'dispatch', 'transport', 'retry strategy', 'routing', 'sending a message']
+    blocks:
+      - type: text
+        body: |
+          The write code now has just two jobs: flush to the database, then send a small message through Symfony Messenger. It doesn't even know Elasticsearch exists. The message goes to its own transport, which is a lane of its own, so search work can't hold up the lane that carries emails or payment messages.
+      - type: code
+        lang: php
+        file: 'src/Catalog/ProductCatalog.php'
+        variant: good
+        code: |
+          // src/Message/IndexProduct.php
+          final readonly class IndexProduct
+          {
+              public function __construct(public int $productId)
+              {
+              }
+          }
+
+          // src/Catalog/ProductCatalog.php
+          final readonly class ProductCatalog
+          {
+              public function __construct(
+                  private EntityManagerInterface $em,
+                  private MessageBusInterface $bus,
+              ) {
+              }
+
+              public function changePrice(Product $product, int $priceInPaisa): void
+              {
+                  $product->changePrice($priceInPaisa);
+                  $this->em->flush();                                         // 1. truth first
+
+                  $this->bus->dispatch(new IndexProduct($product->getId()));  // 2. then the news
+              }
+          }
+        marks:
+          - {line: 4, tip: 'The message holds only the ID: no name, no price. That way a message can never go stale.'}
+          - {line: 21, tip: 'Don''t send the message until the database has committed; otherwise the worker will read the old state.'}
+          - {line: 23, tip: 'dispatch just writes one row to a queue, a few milliseconds of work. The customer never waits for Elasticsearch.'}
+      - type: code
+        lang: yaml
+        file: 'config/packages/messenger.yaml'
+        code: |
+          framework:
+              messenger:
+                  failure_transport: failed
+                  transports:
+                      search_index:
+                          dsn: 'doctrine://default?queue_name=search_index'
+                          retry_strategy:
+                              max_retries: 5
+                              delay: 2000      # first retry after 2 seconds
+                              multiplier: 3    # then 6, 18, 54, 162 seconds
+                      failed: 'doctrine://default?queue_name=failed'
+                  routing:
+                      App\Message\IndexProduct: search_index
+        marks:
+          - {line: 6, tip: 'A separate queue. If you switch to RabbitMQ or Redis, only this dsn changes and the rest of the code stays the same.'}
+          - {line: 8, tip: 'If it still fails after five tries, the message is parked in the failed transport. It isn''t lost, and you can rerun it by hand later.'}
+    aside:
+      - type: commands
+        title: 'Messenger commands'
+        items:
+          - {cmd: 'php bin/console messenger:consume search_index', desc: 'Start the search worker'}
+          - {cmd: 'php bin/console messenger:stats', desc: 'How many messages are waiting in each queue'}
+          - {cmd: 'php bin/console messenger:failed:retry', desc: 'Run the failed messages again'}
+      - type: pitfalls
+        items:
+          - 'If the process dies between flush and dispatch, the message is lost. The robust fix is to write the data and the message in the same transaction: the outbox pattern.'
+      - type: refs
+        items:
+          - {to: 'workflows/outbox-inbox', label: 'Outbox: data and message together'}
+          - {to: 'messaging/dlq-retries', label: 'Retries and the failure transport'}
+    check:
+      q: 'What could go wrong if you dispatch the IndexProduct message before flush()?'
+      a: 'The worker might pick up the message before the commit and read the database too early. It would get the old state and write that to the index. So the order is always: flush first, dispatch after.'
+
+  - slug: index-handler
+    title: 'The read side: a handler that is safe to run again and again'
+    kind: howto
+    tldr: 'The handler reads the product from the database: PUT it under its own ID if it exists, DELETE if not, and throw on failure so Messenger retries.'
+    keywords: ['AsMessageHandler', 'idempotent', 'upsert', 'HttpClient', 'retry', 'handler', 'repeatable']
+    blocks:
+      - type: text
+        body: |
+          The assistant's job must work in such a way that even if the same slip arrives ten times, the notebook stays correct. This property is called being **idempotent**: doing it once or many times gives the same result. The trick is simple: use the product's ID as the document's ID, and `PUT` to replace the whole document. A second write then creates nothing new; it just puts the same document in place again.
+      - type: code
+        lang: php
+        file: 'src/MessageHandler/IndexProductHandler.php'
+        variant: good
+        code: |
+          #[AsMessageHandler]
+          final readonly class IndexProductHandler
+          {
+              public function __construct(
+                  private ProductRepository $products,
+                  private HttpClientInterface $searchClient,
+              ) {
+              }
+
+              public function __invoke(IndexProduct $message): void
+              {
+                  $url = '/products/_doc/'.$message->productId;
+                  $product = $this->products->find($message->productId);
+
+                  if (null === $product || !$product->isPublished()) {
+                      $status = $this->searchClient->request('DELETE', $url)->getStatusCode();
+                      if (!\in_array($status, [200, 404], true)) {
+                          throw new \RuntimeException('Search delete failed: '.$status);
+                      }
+
+                      return;
+                  }
+
+                  $this->searchClient->request('PUT', $url, [
+                      'json' => [
+                          'name' => $product->getName(),
+                          'brand' => $product->getBrand(),
+                          'price' => $product->getPrice(),
+                          'updated_at' => $product->getUpdatedAt()->format(\DATE_ATOM),
+                      ],
+                  ])->getContent();
+              }
+          }
+        marks:
+          - {line: 13, tip: 'Whatever the message says, the truth is always re-read from the database.'}
+          - {line: 15, tip: 'Product deleted or hidden? Then remove it from the index too. No separate message is needed for deletes.'}
+          - {line: 17, tip: '404 means it was already gone, which counts as success. Anything else throws, so Messenger retries.'}
+          - {line: 24, tip: 'A PUT with an ID replaces the whole document. Run it ten times and the index still holds one document.'}
+          - {line: 31, tip: 'getContent() throws on a 4xx/5xx or a failed connection, and that one line is what switches retries on.'}
+      - type: visual
+        kind: table
+        caption: 'What the handler does in four situations'
+        headers: ['Situation', 'What the handler does', 'Result']
+        rows:
+          - cells: ['Product exists, published', 'PUT /products/_doc/42', 'Latest state in the index']
+            tip: 'A new product creates the document and an existing one replaces it, with the very same request.'
+          - cells: ['Product deleted or hidden', 'DELETE /products/_doc/42', 'Disappears from search']
+            tip: 'If the document is already gone you get a 404, which is treated as success.'
+          - cells: ['Same message arrives twice', 'Sends the same PUT again', 'No harm done']
+            tip: 'A queue delivers a message at least once, and sometimes twice. Because the handler is idempotent, that is fine.'
+          - cells: ['Elasticsearch is down', 'Throws an exception', 'Messenger runs it again later']
+            tip: 'Per retry_strategy it tries again after 2, 6, 18... seconds, and finally parks the message in the failed transport.'
+    aside:
+      - type: remember
+        body: 'Same ID, PUT the whole thing, read the truth from the database: these three make a handler idempotent.'
+      - type: pitfalls
+        items:
+          - 'A `POST /products/_doc` without an ID creates a new document every time, so the same product shows up twice in search.'
+          - 'If two workers write the same product at once, the older state can land last. Adding `?version=…&version_type=external` makes Elasticsearch reject the older one.'
+      - type: refs
+        items:
+          - {to: 'messaging/delivery-guarantees', label: 'Why a message can arrive twice'}
+    check:
+      q: 'If the same IndexProduct message reaches the handler three times, how many documents end up in the index, and why?'
+      a: 'Just one. The product ID is the document ID, and each PUT replaces that same document in full, so nothing new is created.'
+
+  - slug: eventual-consistency
+    title: 'The gap of a few seconds: eventual consistency'
+    kind: concept
+    tldr: 'There will always be a gap of a second or two between a database write and its appearing in search; serve the page right after a write, and every decision, from the database.'
+    keywords: ['eventual consistency', 'lag', 'refresh interval', 'read your writes', 'stale search', 'delay']
+    blocks:
+      - type: text
+        body: |
+          Between a slip landing in the basket and the notebook being updated, a little time passes. During that time the shelf and the notebook tell different stories, and then they agree again on their own. This is called **eventual consistency**. The gap comes from three places: waiting in the queue, the worker's own work, and Elasticsearch itself, which only makes new writes searchable once every second. This isn't a bug. It is the price of this design.
+      - type: visual
+        kind: sequence
+        caption: 'A seller lists a product and immediately searches for it'
+        actors:
+          - {id: seller, label: 'Seller', icon: user, tip: 'Lists a product and wants to see at once whether it is up.'}
+          - {id: api, label: 'API', icon: api, tip: 'It has written to the database and sent the message; its job is done.'}
+          - {id: es, label: 'Search index', icon: search, tip: 'The worker hasn''t written here yet, so it knows nothing so far.'}
+        messages:
+          - {from: seller, to: api, label: 'Save a new product'}
+          - {from: api, to: seller, label: 'Done (201)', dashed: true, tone: good}
+          - {from: seller, to: api, label: 'Search for my product'}
+          - {from: api, to: es, label: 'search'}
+          - {from: es, to: api, label: 'Not found', dashed: true, tone: warn, tip: 'The product is in the database, but the index is still a second or two behind.'}
+          - {at: es, note: 'Worker writes 2 s later', tone: good}
+          - {from: seller, to: api, label: 'Search again'}
+          - {from: es, to: api, label: 'Found', dashed: true, tone: good}
+      - type: points
+        title: 'Four rules for living with the gap'
+        style: check
+        items:
+          - 'Show the page right after a write from the database, such as "My products" or the edit page.'
+          - 'Decide about money, stock and permissions from the database; search is only for finding things.'
+          - 'Tell users: "It may take a few seconds to show up in search."'
+          - 'Measure the gap: how many messages are waiting in the queue, and how old the oldest one is.'
+      - type: quote
+        body: 'A copy always runs a little behind. Design by accepting that, not by denying it.'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Eventual consistency', meaning: 'Once writes stop, all copies end up in the same state eventually, though not instantly.'}
+          - {term: 'Refresh interval', meaning: 'How often Elasticsearch makes new writes searchable; usually 1 second.'}
+      - type: pitfalls
+        items:
+          - 'Adding `?refresh=true` to every write shrinks the gap, but indexing becomes much slower. Don''t use it outside tests.'
+          - 'Don''t put `sleep(2)` in a controller to hide the gap; on a busy day the gap will exceed 2 seconds, and every request is slowed for nothing.'
+      - type: refs
+        items:
+          - {to: 'data/consistency-models', label: 'Consistency models: who sees what, and when'}
+    check:
+      q: 'A seller saves a product but doesn''t see it on the "My products" page. Where should that page read its data from to avoid the problem?'
+      a: 'From the database. A page shown right after a write that reads from the search index exposes the gap to the user; reading from the database lets them see their own write at once.'
+
+  - slug: reindex-with-alias
+    title: 'Rebuilding the whole index with zero downtime'
+    kind: howto
+    tldr: 'Build a new index and fill it from the database in batches, then flip an alias in one step; the app always knows the alias, never the real index.'
+    keywords: ['reindex', 'alias', 'bulk API', 'zero downtime', 'mapping change', 'rebuild index', 'backfill']
+    blocks:
+      - type: text
+        body: |
+          When the analyzer or mapping changes, you can't patch the old catalogue notebook; you have to start a new one and copy every book from the shelves again. To keep readers from noticing, they always look at "the notebook on the table", and they never know which notebook is actually there. In Elasticsearch this table is called an **alias**: a nickname that points at a real index.
+      - type: visual
+        kind: steps
+        caption: 'Moving the products alias from v1 to v2'
+        steps:
+          - {title: '1. Create the new index', body: 'products_v2 with the new mapping. The app still reads v1 through the alias.', tip: 'The old index isn''t touched, so search works normally the whole time.'}
+          - {title: '2. Stop the worker', body: 'Stop the search_index worker; new messages pile up in the queue.', tip: 'This way no write is lost and no old state overwrites a new one while filling. The cost: search is a little stale for these few minutes.'}
+          - {title: '3. Fill from the database', body: 'Load every product into v2, 500 at a time, with _bulk.', tip: 'Sending one by one takes hours; bulk sends hundreds of documents in one request.'}
+          - {title: '4. Verify', body: 'Compare the database count with v2 and run a few familiar searches.', tip: 'This is the last chance before the flip. If you find a mistake, delete v2 and start over, and no customer will have noticed.'}
+          - {title: '5. Flip the alias', body: 'In one atomic step, products → v2.', tone: accent, tip: 'The very next search request uses the new index. There is no moment in between when the alias is empty.'}
+          - {title: '6. Start the worker', body: 'Queued messages now go to v2. Delete v1 a few days later.', tip: 'The worker reads fresh state from the database, so replaying the queued messages brings v2 up to date. While v1 exists, a rollback is just flipping the alias back.'}
+      - type: code
+        lang: php
+        file: 'src/Search/ProductReindexer.php'
+        variant: good
+        code: |
+          final readonly class ProductReindexer
+          {
+              public function __construct(
+                  private EntityManagerInterface $em,
+                  private HttpClientInterface $searchClient,
+              ) {
+              }
+              public function fill(string $index): void          // e.g. products_v2
+              {
+                  $query = $this->em->createQuery(
+                      'SELECT p FROM App\Entity\Product p WHERE p.published = true ORDER BY p.id'
+                  );
+                  $lines = '';
+                  foreach ($query->toIterable() as $i => $product) {
+                      $lines .= json_encode(['index' => ['_id' => $product->getId()]])."\n"
+                          .json_encode($product->toSearchDocument())."\n";
+                      if (0 === ($i + 1) % 500) {
+                          $this->send($index, $lines);
+                          $lines = '';
+                          $this->em->clear();
+                      }
+                  }
+                  if ('' !== $lines) {
+                      $this->send($index, $lines);
+                  }
+              }
+
+              private function send(string $index, string $lines): void
+              {
+                  $result = $this->searchClient->request('POST', "/$index/_bulk", [
+                      'headers' => ['Content-Type' => 'application/x-ndjson'],
+                      'body' => $lines,
+                  ])->toArray();
+                  $result['errors'] && throw new \RuntimeException('Bulk indexing failed.');
+              }
+          }
+        marks:
+          - {line: 14, tip: 'toIterable() fetches one row at a time; even a million products never sit in memory together.'}
+          - {line: 15, tip: 'Each bulk document takes two lines: first what to do (index, with the ID), then the document itself.'}
+          - {line: 20, tip: 'Clear Doctrine''s memory after every batch, or a long job will run out of memory.'}
+          - {line: 34, tip: 'The bulk request itself returns 200 even when some documents fail, so you must check the errors field of the response.'}
+      - type: code
+        lang: http
+        file: 'Elasticsearch: flipping the alias'
+        code: |
+          POST /_aliases
+          {
+            "actions": [
+              { "remove": { "index": "products_v1", "alias": "products" } },
+              { "add":    { "index": "products_v2", "alias": "products" } }
+            ]
+          }
+        marks:
+          - {line: 3, tip: 'Every action in the list happens together or not at all, so no search request ever finds an empty alias.'}
+      - type: quote
+        body: 'The app never knows the real index name, only the alias.'
+    aside:
+      - type: when
+        use:
+          - 'An analyzer or a field type has changed.'
+          - 'The index has drifted from the database, or the cluster itself was lost.'
+        avoid:
+          - 'You only added a new field: add it to the existing mapping and reindex the products.'
+      - type: tips
+        items:
+          - 'If filling takes hours, don''t stop the worker; have the handler write to both indexes and use external versions.'
+          - 'Run a nightly job that sends IndexProduct again for every product changed in the last 24 hours. It heals the scars of lost messages on its own.'
+      - type: refs
+        items:
+          - {to: 'recovery/bulk-reprocessing', label: 'Safe bulk reprocessing'}
+    check:
+      q: 'What would be the problem in moving to a new index if the app''s code had products_v1 written into it directly?'
+      a: 'Changing the name would need a code deploy, and during the deploy some servers would read the old index and some the new one. With an alias, everyone switches to the new index together in one request.'
+
+flashcards:
+  - q: 'What is the dual write problem?'
+    a: 'Writing the same data to two separate systems independently; if one succeeds and the other fails, they disagree.'
+    more: |
+      For example, a controller flushes to the database and then writes straight to Elasticsearch. If the second write fails, the product is in the database but not in search, and nobody retries. You can't write "all or nothing" across two systems, so you treat one as the original and run the other behind it through a queue.
+    ref: dual-write-drift
+  - q: 'Which is the source of truth, the search index or the database?'
+    a: 'The database. The search index is its copy, and can be deleted and rebuilt on any day.'
+    more: |
+      Every write goes to the database first, and the index follows behind it. So decisions about price, stock or permissions always check the database. Losing the index costs you time; losing the database costs you the business.
+    ref: index-pipeline
+  - q: 'Why does an indexing message carry only the ID, not the full data?'
+    a: 'The worker then reads the latest state from the database, so the index never gets old data even if a message arrives twice or out of order.'
+    more: |
+      If the message carried the price, two price-change messages arriving out of order would leave the old price in the index. With just an ID, the message means "look at this product again", and the result is correct whenever you run it. The messages stay small too.
+    ref: index-pipeline
+  - q: 'What is the simple way to make an index handler idempotent?'
+    a: 'Use the product ID as the document ID and PUT the whole document.'
+    more: |
+      Idempotent means doing it once or many times gives the same result. A queue sometimes delivers a message twice, so without this property the same product would show up twice in search. A POST without an ID does exactly that: it creates a new document every time.
+    ref: index-handler
+  - q: 'What happens to indexing messages while Elasticsearch is down?'
+    a: 'The handler throws, Messenger retries with growing delays, and if every try fails the message is parked in the failed transport.'
+    more: |
+      The database write still succeeds and customers notice nothing. Only search stays stale for a while. When Elasticsearch is back, the retries bring the index up to date, and messages parked in the failed transport can be rerun with `messenger:failed:retry`.
+    ref: dispatch-index-message
+  - q: 'What does eventual consistency mean for search?'
+    a: 'After a database write, the index runs a second or two behind, then catches up on its own.'
+    more: |
+      The gap comes from queue waiting, the worker's work and Elasticsearch's refresh interval (usually 1 second). It isn't a bug but the normal price of this design. When load rises, the gap grows, so measure the number and age of the messages waiting in the queue.
+    ref: eventual-consistency
+  - q: 'Where should the page a user sees right after writing something read its data from?'
+    a: 'From the database, not from the search index.'
+    more: |
+      The index runs behind, so reading from it means users can't find what they just wrote and think the save failed. Let the "My products" list, the edit page and order details come from the database. Keep search only for finding other people's things.
+    ref: eventual-consistency
+  - q: 'What is an alias in Elasticsearch, and why does the app always use one?'
+    a: 'An alias is a nickname for an index. It can be flipped to a new index in one atomic step, so a reindex needs no code change and no downtime.'
+    more: |
+      The app only knows `products`; whether that means products_v1 or products_v2 is decided by the alias. You flip it after the new index is completely filled and verified. If you keep the old index for a few days, a rollback is just flipping the alias back.
+    ref: reindex-with-alias
+  - q: 'When do you have to rebuild the whole search index?'
+    a: 'When an analyzer or a field type changes, when drift from the database has built up, or when the index is lost.'
+    more: |
+      You can't change the analyzer or type of an existing field, because the old documents are already stored as terms under the old rules. So you build a new index with the new mapping and fill it from the database in batches (`_bulk`). Being able to do this at any time is the proof that the index really is a copy.
+    ref: reindex-with-alias
+
+quiz:
+  - q: 'What problems does the code below have?'
+    lang: php
+    code: |
+      $this->em->persist($product);
+      $this->em->flush();
+
+      $this->searchClient->request('PUT', '/products/_doc/'.$product->getId(), [
+          'json' => $product->toSearchDocument(),
+      ])->getContent();
+
+      return $this->json(['id' => $product->getId()], 201);
+    hint: 'Think separately about what happens if Elasticsearch is slow and what happens if it is completely down.'
+    options:
+      - text: 'If the Elasticsearch request fails, the product stays in the database but never reaches the index, and nobody retries'
+        correct: true
+        why: 'This is the dual write: the first write is committed, the second is lost, and the mismatch stays.'
+      - text: 'The customer has to wait for Elasticsearch to answer'
+        correct: true
+        why: 'The search work sits inside the request, so if search is slow, saving a product is slow too.'
+      - text: 'flush() should have been called after writing to Elasticsearch'
+        correct: false
+        why: 'That makes the opposite danger: the index could hold a product that isn''t in the database. And an auto-increment ID isn''t available before flush anyway.'
+      - text: 'It should use POST instead of PUT'
+        correct: false
+        why: 'PUT with an ID is right, because it is idempotent. The problem isn''t the method, it is writing to two places separately.'
+    ref: dual-write-drift
+  - q: 'In Sumi''s system the message carries the new price: {id: 7, price: 500}, then {id: 7, price: 450}. Two workers finished the messages in reverse order, and the index was left with 500. What is the best fix?'
+    hint: 'If the message just said "look at product 7 again", would the order still matter?'
+    options:
+      - text: 'Send only the ID in the message; the handler reads the latest price from the database and writes that'
+        correct: true
+        why: 'Then whatever order the messages run in, each run puts the database''s latest price (450) in the index.'
+      - text: 'Add more workers'
+        correct: false
+        why: 'More workers make out-of-order completion more likely, not less.'
+      - text: 'Raise the retry count from 5 to 20'
+        correct: false
+        why: 'Nothing failed here. Both messages succeeded, just in the wrong order.'
+      - text: 'Add ?refresh=true to every write'
+        correct: false
+        why: 'Refresh controls how soon a write becomes searchable; it doesn''t change which write lands last.'
+    ref: index-pipeline
+  - q: 'A seller lists a product and goes straight to the "My products" page, but doesn''t see it; 3 seconds later it appears. The page reads from the search index. What is the right fix?'
+    hint: 'Which place never runs behind when you want to see your own write at once?'
+    options:
+      - text: 'Make the "My products" page read from the database'
+        correct: true
+        why: 'The database is the source of truth; reading from it lets users see their own write immediately.'
+      - text: 'Put sleep(3) in the controller after the save'
+        correct: false
+        why: 'Every request gets 3 seconds slower, and on a busy day the gap will exceed 3 seconds and the problem returns.'
+      - text: 'Drop the queue and write to the index straight from the controller'
+        correct: false
+        why: 'That brings back the dual write: if Elasticsearch fails, the product never reaches the index.'
+      - text: 'Add ?refresh=true to every index request'
+        correct: false
+        why: 'It doesn''t shorten the wait in the queue, and forcing a refresh on every write makes indexing much slower.'
+    ref: eventual-consistency
+  - q: 'Why does IndexProductHandler stay correct even if it receives the same message twice?'
+    hint: 'On the second run, does anything new get created, or does the same thing just get put in place again?'
+    options:
+      - text: 'The product ID is the document ID, and PUT replaces the whole document'
+        correct: true
+        why: 'Writing again under the same ID creates no new document; it replaces the existing one.'
+      - text: 'The handler reads the latest state from the database every time'
+        correct: true
+        why: 'So even on a second run, what lands in the index is correct and fresh.'
+      - text: 'A 404 from DELETE is treated as success'
+        correct: true
+        why: 'If the document was already removed on an earlier try, the second try gets a 404; counting that as a failure would cause pointless retries.'
+      - text: 'Messenger never delivers the same message twice'
+        correct: false
+        why: 'It does, for example when a worker dies after finishing the work but before acknowledging it. That is exactly why the handler must be idempotent.'
+    ref: index-handler
+  - q: 'You need to change the analyzer for product names. The catalogue has 2 million products, and search can''t go down for even a minute. Which path is right?'
+    hint: 'Can you keep the old index running and build a new one beside it?'
+    options:
+      - text: 'Create a new index, fill it from the database with bulk, verify it, then flip the alias'
+        correct: true
+        why: 'The old index serves search the whole time, and the alias moves to the new one in one atomic step.'
+      - text: 'Change the analyzer in the existing index''s mapping'
+        correct: false
+        why: 'You can''t change an existing field''s analyzer; the old documents are already stored as terms under the old rules.'
+      - text: 'Delete the index and rebuild it under the same name'
+        correct: false
+        why: 'Until the fill finishes, search shows nothing or half the results, and that is downtime.'
+      - text: 'Restart Elasticsearch'
+        correct: false
+        why: 'A restart doesn''t change the stored terms; an analyzer only runs at index time.'
+    ref: reindex-with-alias
+  - q: 'The indexing pipeline is running. Elasticsearch went down for 10 minutes, then came back. What happened to customers saving products during that time?'
+    hint: 'Does the write code talk to Elasticsearch at all?'
+    options:
+      - text: 'Saves succeeded as normal; the messages waited in retries, and the index caught up afterwards'
+        correct: true
+        why: 'The write side only touches the database and the queue. Search was stale for a while, but no data was lost.'
+      - text: 'Every save returned a 500 error'
+        correct: false
+        why: 'That would happen if the controller wrote to Elasticsearch directly. In the pipeline, the write path doesn''t depend on search.'
+      - text: 'Products from those 10 minutes will never appear in search'
+        correct: false
+        why: 'The messages weren''t lost. Even once the retries run out, they sit in the failed transport and can be rerun.'
+      - text: 'The database transactions were rolled back'
+        correct: false
+        why: 'The database commit had already finished; a worker failure can''t touch it.'
+    ref: dispatch-index-message

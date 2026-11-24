@@ -1,0 +1,400 @@
+slides:
+  - slug: roll-number-problem
+    title: 'IDs like roll numbers: simple, but limited'
+    kind: story
+    tldr: 'Auto-increment IDs are simple and small, but they can be guessed, they leak the size of your business, and they collide when several databases or servers generate them.'
+    keywords: ['auto increment', 'sequence', 'ID generation', 'guessable ID', 'IDOR', 'generating IDs']
+    blocks:
+      - type: metaphor
+        icon: school
+        title: 'School roll numbers'
+        body: |
+          In a class, roll numbers go 1, 2, 3: short, in order, one after another. But if the class is split into two sections, both have a "roll 1", and a roll number alone no longer identifies anyone. And anyone who sees roll 43 knows there are at least 43 students and can guess that number 44 exists. A database's auto-increment ID has exactly these three problems.
+      - type: visual
+        kind: compare
+        caption: 'The strengths of auto-increment, and its three limits'
+        columns:
+          - title: 'What is good'
+            tone: good
+            icon: check
+            tip: 'This is why it is the default in most apps, and used properly it is a good choice.'
+            items:
+              - 'Small: a bigint is only 8 bytes'
+              - 'Always appended at the end of the index, so fast'
+              - 'The database makes it, no code needed'
+          - title: 'What is a problem'
+            tone: bad
+            icon: warning
+            tip: 'These problems go unnoticed in a small app. They appear when the app grows or when outsiders can see the IDs.'
+            items:
+              - 'Guessable: /invoices/1042 -> /invoices/1043'
+              - 'Leaks business size: 1042 today and 1100 tomorrow means 58 orders'
+              - 'IDs collide across two databases'
+              - 'You must insert first to learn the ID'
+      - type: quote
+        body: 'An ID is an identity, not a secret. If IDs can be guessed, put your security somewhere else.'
+    aside:
+      - type: story
+        title: 'The competitor''s scraper'
+        body: 'An e-commerce site used sequential numbers for order IDs. A competitor placed an order at the same time each day, noted the ID, and subtracted to learn how many orders the site got per day.'
+      - type: terms
+        items:
+          - {term: 'Sequence', meaning: 'A counter inside the database that hands out the next number each time: 1, 2, 3...'}
+          - {term: 'IDOR', meaning: 'Seeing someone else''s data by changing an ID, because ownership is never checked.'}
+    check:
+      q: 'How do sequential IDs leak business information?'
+      a: 'Subtract the IDs from two different days and you know how many rows, such as orders or users, were created in between.'
+
+  - slug: id-options-table
+    title: 'Five kinds of ID side by side'
+    kind: concept
+    tldr: 'Sequence, UUIDv4, UUIDv7, ULID and Snowflake differ on four questions: size, sortable by time, guessability, and whether they need coordination.'
+    keywords: ['UUIDv4', 'UUIDv7', 'ULID', 'Snowflake', 'sequence', 'comparison', 'ID comparison']
+    blocks:
+      - type: metaphor
+        icon: school
+        title: 'Five roll number schemes'
+        body: |
+          A sequential number is the plain roll number. UUIDv4 is a random card number drawn in a lottery: nobody can guess it, but it is not in any order. UUIDv7 and ULID are numbers that start with a date, like "2026-05-12-734": the date first makes them sortable, and the random tail makes them hard to guess. A Snowflake has the date, then which branch issued it and the branch's own running number.
+      - type: visual
+        kind: table
+        caption: 'The five IDs at a glance'
+        headers: ['', 'Size', 'Sorted by time', 'Guessable', 'Coordination']
+        rows:
+          - cells: ['Sequence', '8 bytes', 'Yes', 'Easy', 'Needed']
+            tip: 'One database does the counting. Generate from several places and the IDs collide.'
+          - cells: ['UUIDv4', '16 bytes', 'No', 'Nearly impossible', 'Not needed']
+            tip: '122 bits of pure randomness. It can be made anywhere, but it scatters across a B-tree index.'
+          - cells: ['UUIDv7', '16 bytes', 'Yes (ms)', 'Hard', 'Not needed']
+            tip: '48 bits of time first, then random. It keeps every UUID benefit and sorts by time, which makes it the best default for a new project today.'
+          - cells: ['ULID', '16 bytes (26 chars)', 'Yes (ms)', 'Hard', 'Not needed']
+            tip: 'Almost the same idea as UUIDv7, but written as a shorter alphanumeric string that also sorts. v7 is usually simpler because tools support UUIDs better.'
+          - cells: ['Snowflake', '8 bytes', 'Yes (ms)', 'Medium', 'Needs a machine id']
+            tip: 'Time + machine id + counter, 64 bits in total, fits in a bigint. Every server must be given a distinct machine id, and that is the coordination.'
+      - type: points
+        title: 'Which one, when'
+        style: check
+        items:
+          - 'One database, IDs never shown outside: a sequence is enough.'
+          - 'IDs shown outside, or generated in several places: UUIDv7.'
+          - 'Huge scale and you need a small bigint ID: a Snowflake-style ID (if you can manage the machine ids).'
+    aside:
+      - type: remember
+        body: 'In a new project, when in doubt: a sequence or UUIDv7 internally, UUIDv7 externally.'
+      - type: refs
+        items:
+          - {to: 'scaling/consistent-hashing', label: 'Machine ids and which server handles what'}
+    check:
+      q: 'What is the main difference between UUIDv4 and UUIDv7?'
+      a: 'v4 is entirely random, so it is not ordered. v7 starts with the time, so a new ID comes after older ones, while its random tail keeps it hard to guess.'
+
+  - slug: index-locality
+    title: 'Why random IDs tire out the index'
+    kind: concept
+    tldr: 'A primary key lives in a B-tree. A random UUIDv4 writes to any leaf of the tree each time (pages split, caches miss); a time-sorted ID is appended to the last leaf.'
+    keywords: ['index locality', 'page split', 'UUIDv4', 'UUIDv7', 'clustered index', 'primary key', 'B-tree']
+    blocks:
+      - type: metaphor
+        icon: book
+        title: 'A register sorted by roll number'
+        body: |
+          Names are written into a register in roll-number order. If each new student's roll number is always bigger than the last, you just write on the last page, and only one page is ever open. But if the numbers arrive at random, every time you must open the book somewhere in the middle and squeeze an entry in, and sometimes tear a page in two to make room.
+      - type: visual
+        kind: compare
+        caption: 'Where a new row lands in the primary key index'
+        columns:
+          - title: 'UUIDv4 (random)'
+            tone: bad
+            icon: shuffle
+            tip: 'Each insert falls on any page of the tree. If the pages do not all fit in memory, they must be read from disk.'
+            items:
+              - 'Inserts scatter over every page'
+              - 'A full page splits in two (page split)'
+              - 'The right page may not be in the cache'
+              - 'The index becomes hollow and large'
+          - title: 'UUIDv7 / sequence'
+            tone: good
+            icon: check
+            tip: 'A new ID is always bigger than the earlier ones, so it is appended to one page at the right edge of the index. That page stays in memory.'
+            items:
+              - 'Inserts always go to the last page'
+              - 'Pages fill completely and split rarely'
+              - 'The last page stays hot in the cache'
+              - 'The index is dense and small'
+      - type: visual
+        kind: steps
+        caption: 'The 64 bits of a Snowflake: three parts'
+        steps:
+          - {title: '1. Time (41 bits)', body: 'In milliseconds from a fixed start date. Lasts about 69 years.', tip: 'Time comes first, which is why the ID sorts in time order.'}
+          - {title: '2. Machine id (10 bits)', body: 'Which server or worker made it. 1024 distinct ones.', tip: 'Every running server needs its own id. Handing these out is the coordination work.'}
+          - {title: '3. Counter (12 bits)', body: 'Up to 4096 on the same machine in the same millisecond.', tip: 'If many IDs are needed in one ms, the counter climbs. When it runs out, it must wait for the next ms.'}
+      - type: quote
+        body: 'The order of the primary key decides the health of the index. On a big table, choose time-sorted IDs, not random ones.'
+    aside:
+      - type: tips
+        items:
+          - 'In MySQL InnoDB the primary key is the clustered index, meaning the whole table''s data is stored in that order. So a random PK hurts even more there.'
+          - 'On a small table (a few hundred thousand rows that all fit in memory) you will barely notice the difference. The damage shows on big tables.'
+      - type: refs
+        items:
+          - {to: 'data/indexing', label: 'How a B-tree index works'}
+    check:
+      q: 'Why does a UUIDv4 primary key slow inserts on a big table while UUIDv7 does not?'
+      a: 'v4 is random, so each insert lands on any leaf of the tree and pages split. v7 is sorted by time, so it is always appended to the last leaf.'
+
+  - slug: symfony-uid-howto
+    title: 'Using UUIDv7 with Symfony Uid'
+    kind: howto
+    tldr: 'With the Symfony Uid component, create `Uuid::v7()` in the constructor, give Doctrine a `UuidType`, and put `Requirement::UUID_V7` on the route; the ID is known before flush.'
+    keywords: ['Symfony Uid', 'Uuid::v7', 'UuidType', 'Doctrine UUID', 'Ulid', 'Requirement::UUID_V7']
+    blocks:
+      - type: text
+        body: |
+          `composer require symfony/uid` brings in the Uid component. If you create the UUID in the constructor, the ID is known before it ever reaches the database, so you can use the order's ID straight away to arrange events or emails. In Doctrine the column type is `UuidType::NAME`, which stores it as a native `uuid` on PostgreSQL and as `BINARY(16)` on MySQL, both smaller than 36 characters of text.
+      - type: code
+        lang: php
+        file: 'src/Entity/Order.php'
+        variant: good
+        code: |
+          use Symfony\Bridge\Doctrine\Types\UuidType;
+          use Symfony\Component\Uid\Uuid;
+
+          #[ORM\Entity]
+          #[ORM\Table(name: 'customer_order')]
+          class Order
+          {
+              #[ORM\Id]
+              #[ORM\Column(type: UuidType::NAME, unique: true)]
+              private Uuid $id;
+
+              public function __construct()
+              {
+                  $this->id = Uuid::v7();   // the ID is known before flush
+              }
+
+              public function getId(): Uuid
+              {
+                  return $this->id;
+              }
+          }
+        marks:
+          - {line: 9, tip: 'There is no GeneratedValue, because we make the ID ourselves. Doctrine just stores it.'}
+          - {line: 14, tip: 'v7: sorted by time. Because the ID exists before the database insert, related objects can be given it immediately.'}
+      - type: code
+        lang: php
+        file: 'src/Controller/OrderController.php'
+        code: |
+          use Symfony\Component\Routing\Requirement\Requirement;
+
+          #[Route('/orders/{id}', requirements: ['id' => Requirement::UUID_V7])]
+          #[IsGranted('VIEW', subject: 'order')]
+          public function show(
+              #[MapEntity(id: 'id')] Order $order,
+          ): JsonResponse {
+              return $this->json(['id' => $order->getId()->toRfc4122()]);
+          }
+        marks:
+          - {line: 3, tip: 'An id of the wrong kind gets a 404 before it ever reaches the controller.'}
+          - {line: 4, tip: 'Even when the ID is hard to understand, you still need an authorization check: use a voter to verify ownership.'}
+      - type: points
+        title: 'A few small rules'
+        style: dot
+        items:
+          - 'For ULIDs, use the `Ulid` class and `UlidType::NAME` in the same way.'
+          - 'Show `toRfc4122()` (36 characters) outside; keep a native uuid or binary in the database.'
+          - 'A two-ID design also works, a bigint inside and a UUID outside, but handling two IDs adds hassle.'
+    aside:
+      - type: commands
+        title: 'Uid commands'
+        items:
+          - {cmd: 'composer require symfony/uid', desc: 'The Uid component and the Doctrine type'}
+          - {cmd: 'php bin/console uuid:generate --time-based=now', desc: 'Generate a UUID for testing'}
+      - type: tips
+        items:
+          - 'Do not keep a UUID in a text column (varchar(36)). It takes more than double the space, and the index grows.'
+    check:
+      q: 'What is one benefit of putting Uuid::v7() in the entity''s constructor?'
+      a: 'The ID is known before the database insert. So you can hand it to an event, a log or another object without flushing first.'
+
+  - slug: ids-are-not-security
+    title: 'A hard-to-guess ID is not security'
+    kind: pitfall
+    tldr: 'Even when IDs are hard to guess, you cannot skip authorization; and a UUIDv7 reveals when it was created, so think about that if the time must stay secret.'
+    keywords: ['IDOR', 'broken access control', 'voter', 'UUID security', 'authorization', 'access check']
+    blocks:
+      - type: text
+        body: |
+          Many people think "if I use a UUID, nobody can see someone else's invoice any more." But once an ID leaks through a link, a log or the browser history, anyone can use it. The real protection is to check on every request: "is this user the owner of this record?"
+      - type: code
+        lang: php
+        file: 'src/Controller/InvoiceController.php'
+        variant: bad
+        code: |
+          #[Route('/invoices/{id}')]
+          public function show(Invoice $invoice): JsonResponse
+          {
+              // nobody checks who is asking; knowing the ID is enough
+              return $this->json($invoice);
+          }
+        marks:
+          - {line: 4, tip: 'There is no ownership check. Change /invoices/1042 to 1043 and you see someone else''s invoice: IDOR.'}
+      - type: code
+        lang: php
+        file: 'src/Controller/InvoiceController.php'
+        variant: good
+        code: |
+          #[Route('/invoices/{id}', requirements: ['id' => Requirement::UUID_V7])]
+          #[IsGranted('VIEW', subject: 'invoice')]
+          public function show(Invoice $invoice): JsonResponse
+          {
+              return $this->json($invoice);
+          }
+
+          // src/Security/InvoiceVoter.php
+          protected function voteOnAttribute(string $a, mixed $invoice, TokenInterface $t): bool
+          {
+              return $invoice->getCustomer() === $t->getUser();
+          }
+        marks:
+          - {line: 2, tip: 'The voter runs on every request. This, not the UUID, is the main protection.'}
+          - {line: 11, tip: 'It checks only one thing: whether the invoice''s owner is the current user.'}
+      - type: quote
+        body: 'Hiding an ID is not security. Check ownership on every request; a UUID is just an extra layer.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'With UUIDv7, ULID or Snowflake, the creation time can be read from the ID. If that must stay secret (such as an account''s sign-up date), use a separate random public token.'
+          - 'In a Snowflake, giving two servers the same machine id makes IDs collide, and a clock that jumps backwards can break IDs.'
+      - type: refs
+        items:
+          - {to: 'security/authn-authz', label: 'Authorization checks'}
+          - {to: 'time/clocks-lie', label: 'Why clocks cannot be trusted'}
+    check:
+      q: 'Even with UUIDs, why must you still check ownership before showing an invoice?'
+      a: 'Because a UUID can leak through a link or a log. Being hard to guess is not security; protection comes from an authorization check on every request.'
+
+flashcards:
+  - q: 'What are the three main limits of an auto-increment ID?'
+    a: 'It can be guessed, it leaks business size, and IDs collide when generated in more than one database.'
+    more: |
+      It has strengths too: it is small (8 bytes), appended to the end of the index, and made by the database itself. For an app that never shows IDs outside and has a single database, it is the simplest and best choice.
+    ref: roll-number-problem
+  - q: 'What is UUIDv4, and what is its main weakness?'
+    a: 'A 16-byte ID with 122 random bits. It can be made anywhere, but being unordered it scatters across a B-tree index.'
+    more: |
+      Each new row lands on any page of the tree, so pages split and cache misses go up. You will not notice on a small table; on a big one inserts slow down.
+    ref: index-locality
+  - q: 'What is UUIDv7, and why is it better than v4?'
+    a: '48 bits of millisecond time up front and the rest random. It sorts by time, so it is appended at the end of the index.'
+    more: |
+      It keeps every UUID benefit (made anywhere, hard to guess) and also gives an order that suits a B-tree. In Symfony it is Uuid::v7(). For a new project that wants UUIDs, this is the default choice.
+    ref: id-options-table
+  - q: 'What are the three parts of a Snowflake ID?'
+    a: '41 bits of time (ms), 10 bits of machine id and 12 bits of counter: 64 bits in all, which fits in a bigint.'
+    more: |
+      Each machine can make 4096 IDs per millisecond. The benefits: small (8 bytes) and sorted by time. The price: every server needs a distinct machine id, and you must be careful if the clock moves backwards.
+    ref: index-locality
+  - q: 'How are ULID and UUIDv7 alike and different?'
+    a: 'Both are 48 bits of time plus a random part. A ULID is written as 26 base32 characters; a UUIDv7 uses the standard UUID format.'
+    more: |
+      UUIDv7 is a standard (RFC 9562), so it goes straight into a database's native uuid type. A ULID is also 128 bits, and Symfony Uid has Ulid and UlidType. Both are good; UUIDv7 has more tool support.
+    ref: id-options-table
+  - q: 'How do you make an entity''s ID a UUIDv7 in Symfony?'
+    a: 'Give the field UuidType::NAME and set $this->id = Uuid::v7() in the constructor.'
+    more: |
+      When you make the ID yourself you do not need GeneratedValue, and the ID is known before flush. With Requirement::UUID_V7 on the route, an ID in the wrong format gets a 404 before it enters the controller.
+    ref: symfony-uid-howto
+  - q: 'Does using a UUID prevent IDOR?'
+    a: 'No. IDs can leak. Checking ownership (a voter) on every request is the real protection.'
+    more: |
+      IDOR means seeing someone else's data by changing an ID. A UUID makes guessing hard, but IDs can escape through shared links, logs or browser history. Without an authorization check, everything is then open.
+    ref: ids-are-not-security
+
+quiz:
+  - q: 'Rahim''s table has 200 million rows with a UUIDv4 primary key, and inserts are getting slow. What is the most likely cause?'
+    hint: 'Where in the index does each new ID land?'
+    options:
+      - text: 'A UUID is 16 bytes, which is too big, so everything is slow'
+        correct: false
+        why: 'It adds a little size, but it is not the main reason for the slowdown. The main reason is the lack of order.'
+      - text: 'Random IDs land on any page of the index each time, so pages split and cache misses rise'
+        correct: true
+        why: 'The lack of order is the cost. Switch to UUIDv7 and new IDs go to the last page.'
+      - text: 'The database does not understand UUIDs and treats them as text'
+        correct: false
+        why: 'With a native uuid type the database stores it as binary just fine.'
+      - text: 'The Symfony Uid component is slow'
+        correct: false
+        why: 'Making an ID takes microseconds. The slowness is in the database index.'
+    ref: index-locality
+  - q: 'In which of these cases is a sequence (auto-increment) a good enough choice?'
+    hint: 'Think about whether the ID is shown outside, and how many databases there are.'
+    options:
+      - text: 'One database, with IDs used only internally and never seen by users'
+        correct: true
+        why: 'Then there is no guessing or coordination problem. It is small and fast.'
+      - text: 'Three databases in different regions feed data into one table'
+        correct: false
+        why: 'If each database makes its own 1, 2, 3, the IDs will collide.'
+      - text: 'Public URLs like /orders/ID with no ownership check'
+        correct: false
+        why: 'It is easy to guess, so the risk is high; you must add authorization first.'
+      - text: 'A mobile app creates IDs offline and sends them to the server later'
+        correct: false
+        why: 'Offline, it cannot reach the server''s sequence; you need a UUID or ULID.'
+    ref: roll-number-problem
+  - q: 'Which of these are properties of UUIDv7?'
+    hint: 'v7 = time + random.'
+    options:
+      - text: 'It starts with 48 bits of millisecond time'
+        correct: true
+        why: 'This time is what makes the ID sort in time order.'
+      - text: 'It needs no central coordination to create'
+        correct: true
+        why: 'Any server or client can make one itself; a collision is practically impossible.'
+      - text: 'It is impossible to estimate how far apart in time two IDs were created'
+        correct: false
+        why: 'The opposite: the time is right there in the ID, so it can be read.'
+      - text: 'It fits in a bigint, 8 bytes'
+        correct: false
+        why: 'A UUID is 16 bytes. The 8 bytes belong to a Snowflake.'
+    ref: id-options-table
+  - q: 'What is the biggest risk in this code?'
+    lang: php
+    code: |
+      #[Route('/invoices/{id}', requirements: ['id' => Requirement::UUID_V7])]
+      public function show(Invoice $invoice): JsonResponse
+      {
+          return $this->json($invoice);
+      }
+    hint: 'The UUID is fine, but who checks who is asking?'
+    options:
+      - text: 'A UUID is too long and will break the URL'
+        correct: false
+        why: '36 characters fit in a URL without trouble.'
+      - text: 'There is no ownership check. Anyone who gets hold of another person''s invoice UUID can view it'
+        correct: true
+        why: 'A UUID can leak. Every request needs an authorization check with a voter or #[IsGranted].'
+      - text: 'Requirement::UUID_V7 is wrong, it should be UUID_V4'
+        correct: false
+        why: 'If the ID is v7, v7 is right. That is not the problem.'
+      - text: 'An entity cannot be returned with json()'
+        correct: false
+        why: 'It can, though a DTO is usually better. But that is not the main risk.'
+    ref: ids-are-not-security
+  - q: 'You need hundreds of thousands of IDs per second, generated on 12 servers, and they must fit in a bigint. What fits, and what care is needed?'
+    hint: 'You want both small (8 bytes) and sorted by time.'
+    options:
+      - text: 'UUIDv4, no care needed'
+        correct: false
+        why: 'v4 is 16 bytes and does not fit in a bigint; being random, it also scatters the index.'
+      - text: 'A Snowflake-style ID; give each server a distinct machine id and watch the clock'
+        correct: true
+        why: '64 bits of time + machine id + counter. The coordination is in the machine id, and a clock that goes backwards can break IDs.'
+      - text: 'Each server runs its own sequence'
+        correct: false
+        why: 'All 12 servers would make the same numbers and the IDs would collide.'
+      - text: 'All servers write to one central sequence'
+        correct: false
+        why: 'With hundreds of thousands of requests, that centre becomes the bottleneck, and if it fails everything stops.'
+    ref: index-locality

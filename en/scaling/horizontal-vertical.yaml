@@ -1,0 +1,386 @@
+slides:
+  - slug: bigger-or-more
+    title: 'One big server, or many small ones?'
+    kind: story
+    tldr: 'Vertical means making one server stronger, horizontal means adding more identical servers. The first is easy but has a ceiling; the second has none, but your app must be ready for it.'
+    keywords: ['vertical scaling', 'horizontal scaling', 'scale up', 'scale out', 'adding servers', 'scaling']
+    blocks:
+      - type: metaphor
+        icon: shop
+        title: 'The crowd at the biryani restaurant'
+        body: |
+          When the crowd grows, the owner has two options. One: buy a bigger pot and a stronger stove, so it's still a single shop. Two: open a second branch in the next lane. A big stove has a limit, and on the day you repair it the whole shop is closed. With branches the crowd gets split, and if one shuts the other keeps serving.
+      - type: visual
+        kind: compare
+        caption: 'Two answers to the same crowd'
+        columns:
+          - title: 'Vertical (scale up)'
+            tone: warn
+            icon: server
+            tip: 'One machine, just more CPU and RAM. You don''t touch the code, so for a first attempt it is the cheapest option.'
+            items:
+              - 'No code changes'
+              - 'A little downtime while you switch'
+              - 'No way forward past the biggest machine'
+              - 'If the machine dies, everything is down'
+          - title: 'Horizontal (scale out)'
+            tone: good
+            icon: layers
+            tip: 'Many copies of the same app run side by side. Capacity is almost unlimited, but the app has to be prepared for it in advance.'
+            items:
+              - 'Add small servers to add capacity'
+              - 'If one dies, the rest keep working'
+              - 'You need a load balancer to split the crowd'
+              - 'The app must be stateless'
+      - type: quote
+        body: 'Vertical is easy but has a ceiling. Horizontal has no ceiling, but your app has to be ready for it.'
+    aside:
+      - type: when
+        use:
+          - 'Vertical: you need relief right now and the server is small'
+          - 'Horizontal: the site must stay up even if a server dies'
+        avoid:
+          - 'Vertical: the database is already on the biggest machine'
+          - 'Horizontal: the app still keeps things in its own server''s files'
+      - type: terms
+        items:
+          - {term: 'Scale up', meaning: 'Putting more CPU, RAM and disk into the same machine.'}
+          - {term: 'Scale out', meaning: 'Adding more machines to do the same job.'}
+    check:
+      q: 'Your goal is for the site to stay up even if a server dies. Vertical or horizontal, and why?'
+      a: 'Horizontal. With many servers, the rest carry on when one dies. If your one big server dies, the whole site is down.'
+
+  - slug: stateless-app
+    title: 'The rule for many servers: nobody remembers anything'
+    kind: concept
+    tldr: 'To run the app on many servers, no server may keep sessions, files or cache inside itself. That data lives in Redis, the database and object storage.'
+    keywords: ['stateless', 'session', 'sticky', 'shared state', 'Redis', 'stateless app', 'requirements']
+    blocks:
+      - type: metaphor
+        icon: book
+        title: 'Switch branches, where is the credit ledger?'
+        body: |
+          If every branch kept its own credit ledger, where the shop writes down who owes what, Karim could run up a tab at branch 1 and walk into branch 2 as a stranger. So all branches read one central ledger. Servers work the same way: a user's login, cart and uploaded photos can't live on one server's own disk or in its memory.
+      - type: visual
+        kind: flow
+        caption: 'The same user, two servers, one Redis'
+        nodes:
+          - {id: user, label: 'Karim', sub: 'browser', icon: user, col: 0, row: 1, tip: 'The same Karim sends two requests. He doesn''t know which server each one lands on, and he doesn''t need to.'}
+          - {id: lb, label: 'Load balancer', sub: 'splits the crowd', icon: lb, col: 1.5, row: 1, tip: 'Sends each request to a different server. Nothing in the app may depend on which request goes where.'}
+          - {id: app1, label: 'App server 1', sub: 'keeps nothing', icon: server, col: 3, row: 0, tip: 'One copy of the app. If it dies or a new copy joins, nothing is lost.'}
+          - {id: app2, label: 'App server 2', sub: 'keeps nothing', icon: server, col: 3, row: 2, tip: 'Exactly the same code and behaviour. It never has to talk to the first server.'}
+          - {id: redis, label: 'Redis', sub: 'session and cache', icon: cache, tone: accent, col: 4, row: 1, tip: 'The central ledger everyone shares. Both servers read Karim''s session from here.'}
+        edges:
+          - {from: user, to: lb, label: 'Karim''s first request arrives and he logs in'}
+          - {from: lb, to: app1, label: 'The first request goes to server 1'}
+          - {from: app1, to: redis, label: 'Server 1 writes Karim''s session to Redis', tone: good}
+          - {from: user, to: lb, label: 'The second request arrives', dashed: true}
+          - {from: lb, to: app2, label: 'This time the request goes to server 2'}
+          - {from: app2, to: redis, label: 'Server 2 finds the session in Redis, so Karim stays logged in', tone: good}
+      - type: points
+        title: 'What must never live inside a server'
+        style: cross
+        items:
+          - 'Sessions (login state): they belong in Redis or the database'
+          - 'Uploaded files: they belong in object storage (S3-compatible)'
+          - 'In-memory cache that others need to know about: it belongs in Redis'
+          - 'A cron or scheduler that would run twice, once per server: run it in just one place'
+    aside:
+      - type: problem
+        body: 'Once something piles up inside a server, that server becomes "special". Special servers are hard to delete or copy, so horizontal scaling gets stuck.'
+      - type: remember
+        body: 'Servers are cattle, not pets: lose any one and nobody notices.'
+      - type: refs
+        items:
+          - {to: 'thinking/serverless-stateless', label: 'Stateless design in depth'}
+    check:
+      q: 'A user logs in, but the next request lands on another server and asks them to log in again. Why?'
+      a: 'The session was stored in the first server''s own file or memory. Move sessions to one place everyone shares (Redis or the database).'
+
+  - slug: sessions-in-redis
+    title: 'Move sessions and files out in Symfony'
+    kind: howto
+    tldr: 'Switch the session handler to Redis and write uploads to object storage instead of local disk. Two small changes make the app horizontal-ready.'
+    keywords: ['Redis session', 'handler_id', 'Flysystem', 'object storage', 'upload', 'session cluster']
+    blocks:
+      - type: text
+        body: |
+          Symfony's default session is stored as a file on the server's disk, and uploads usually go to `public/uploads`. Both work fine on one server and break on two. Start with the session: put a Redis DSN in `handler_id` and Symfony sets up the RedisSessionHandler for you.
+      - type: code
+        lang: yaml
+        file: 'config/packages/framework.yaml'
+        variant: good
+        code: |
+          framework:
+              session:
+                  # .env: REDIS_URL=redis://redis:6379/1
+                  handler_id: '%env(REDIS_URL)%'
+                  cookie_secure: auto
+                  cookie_samesite: lax
+                  gc_maxlifetime: 1800     # session expires after 30 idle minutes
+        marks:
+          - {line: 4, tip: 'Give it a DSN and Symfony uses the RedisSessionHandler. From now on every app server reads sessions from the same place.'}
+          - {line: 7, tip: 'The session TTL in Redis comes from this value, so old sessions delete themselves.'}
+      - type: text
+        body: |
+          Now uploads. In the diff below, the red line stores the file on this server's disk, where no other server will ever see it. The green lines write to object storage through Flysystem, which looks the same to every server.
+      - type: code
+        lang: diff
+        file: 'src/Controller/AvatarController.php'
+        code: |
+          -    $file->move($this->getParameter('kernel.project_dir').'/public/uploads', $name);
+          +    $stream = fopen($file->getPathname(), 'r');
+          +    $this->uploadsStorage->writeStream('avatars/'.$name, $stream);
+          +    fclose($stream);
+
+               // constructor:
+          +    private readonly FilesystemOperator $uploadsStorage,   // uploads.storage in flysystem.yaml
+        marks:
+          - {line: 1, tip: 'move() puts the file on this server''s disk. If the load balancer sends the next request to another server, the photo returns a 404.'}
+          - {line: 3, tip: 'writeStream() sends the file to object storage as a stream, so even a big file never has to be loaded into memory whole.'}
+    aside:
+      - type: tips
+        items:
+          - 'Store the object storage URL in the database, not a path on the server.'
+          - 'If you lose the Redis sessions, users just log in again. So keep nothing critical in a session; critical data goes in the database.'
+      - type: commands
+        title: 'Commands to check it'
+        items:
+          - {cmd: 'php bin/console debug:config framework session', desc: 'see which session handler is active'}
+          - {cmd: 'redis-cli -n 1 --scan --pattern ''sf*'' | head', desc: 'check that session keys are landing in Redis'}
+    check:
+      q: 'Before running the app on two servers, which two places must you change in Symfony at minimum?'
+      a: 'The session handler (Redis or the database) and file uploads (object storage). Both are currently stored on the server''s disk, which other servers can''t see.'
+
+  - slug: autoscaling-lag
+    title: 'Autoscaling wakes up late'
+    kind: concept
+    tldr: 'Autoscaling adds servers when it sees load, but measuring, deciding, starting and health checks take a few minutes. A sudden spike breaks the servers during exactly that time.'
+    keywords: ['autoscaling', 'HPA', 'cold start', 'warm-up', 'scale out lag', 'delay', 'flash sale']
+    blocks:
+      - type: metaphor
+        icon: building
+        title: 'The extra cooks at a wedding'
+        body: |
+          When more guests show up than expected, the manager phones for extra cooks. They have to arrive, wash their hands and get the stoves going, and that takes a long while. Meanwhile the guests stand in line. An autoscaler is the same: it sees the crowd and makes the call, but a new server takes time to become useful.
+      - type: visual
+        kind: bars
+        caption: 'After the crowd arrives, a new server takes 270 seconds in total to start working'
+        items:
+          - {label: 'Metrics collected', value: 60, display: '60s', tip: 'CPU numbers are usually collected once a minute. Even if the crowd is already here, the autoscaler knows nothing for the first minute.'}
+          - {label: 'Decision to scale up', value: 30, display: '30s', tip: 'The autoscaler looks at an average and doesn''t move on a single spike. This wait keeps a false alarm from adding servers.'}
+          - {label: 'Server starts, image pulled', value: 90, display: '90s', tone: warn, tip: 'Getting a new machine or pod, pulling the container image and starting PHP. This is the slowest step.'}
+          - {label: 'App warm-up', value: 60, display: '60s', tip: 'A new app starts cold: the Symfony cache isn''t warm and opcache isn''t filled. The first requests are slow.'}
+          - {label: 'Health check passes', value: 30, display: '30s', tone: good, tip: 'The load balancer confirms the server is healthy, and only then starts sending it requests.'}
+      - type: code
+        lang: yaml
+        file: 'k8s/app-hpa.yaml'
+        code: |
+          apiVersion: autoscaling/v2
+          kind: HorizontalPodAutoscaler
+          metadata: {name: shop-app}
+          spec:
+            scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: shop-app}
+            minReplicas: 6          # kept ready in advance for the known busy hours
+            maxReplicas: 20
+            metrics:
+              - type: Resource
+                resource:
+                  name: cpu
+                  target: {type: Utilization, averageUtilization: 60}
+            behavior:
+              scaleUp:   {stabilizationWindowSeconds: 0}
+              scaleDown: {stabilizationWindowSeconds: 300}
+        marks:
+          - {line: 6, tip: 'The most useful line. Keep 6 servers running before the crowd arrives and you skip the 270-second wait.'}
+          - {line: 12, tip: 'Scaling up starts once CPU passes 60%. If you wait for 80-90%, latency has already spiked before the new server arrives.'}
+          - {line: 15, tip: 'Waits 5 minutes before scaling down. Otherwise servers get cut the moment the crowd thins, and you suffer when the next wave comes.'}
+      - type: quote
+        body: 'Autoscaling wakes up late. For known crowds (Eid, sales), scale up in advance.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Without a max, a buggy loop or an attack can grow your servers and your bill without limit.'
+          - 'Without a readiness check, a new pod receives requests while it is still cold.'
+      - type: remember
+        body: 'Autoscaling handles slow waves, not sudden jumps. For jumps you need servers added in advance, plus a rate limit.'
+      - type: refs
+        items:
+          - {to: 'resilience/load-shedding', label: 'Holding off overload until new servers arrive'}
+    check:
+      q: 'A flash sale starts at exactly 8 pm, and the crowd jumps 10x at that moment. What happens if you rely on autoscaling alone?'
+      a: 'For about 4-5 minutes the old servers have to absorb the crowd, and latency and errors rise. Raise the minimum count before the sale starts.'
+
+  - slug: database-last
+    title: 'Scale the database last'
+    kind: pitfall
+    tldr: 'App servers are easy to add, the database is not. More servers mean more database connections and load, so fix queries, add a cache and replicas first, and shard last.'
+    keywords: ['database scaling', 'connection pool', 'PgBouncer', 'read replica', 'sharding', 'too many connections']
+    blocks:
+      - type: metaphor
+        icon: bank
+        title: 'The branches multiply, but the warehouse stays one'
+        body: |
+          The restaurant goes from 4 branches to 20, but they all fetch their rice and lentils from the same central warehouse. Now people from 20 branches are jostling at its door. Adding app servers does exactly this: everyone's pressure lands on a single database.
+      - type: text
+        body: |
+          Do the math: 20 app servers with 25 PHP-FPM workers each, one connection per worker, makes 500 connections. If Postgres has `max_connections` at 200, the new servers can't even get into the database. The fix is a connection pooler, such as PgBouncer.
+      - type: code
+        lang: ini
+        file: 'pgbouncer.ini'
+        variant: good
+        code: |
+          [databases]
+          shop = host=10.0.0.5 port=5432 dbname=shop
+
+          [pgbouncer]
+          pool_mode = transaction       ; connection goes back when the transaction ends
+          max_client_conn = 1000        ; connections coming in from the apps
+          default_pool_size = 20        ; only 20 real connections to the database
+        marks:
+          - {line: 5, tip: 'It doesn''t hold a connection for every query; it hands the connection to someone else as soon as the transaction ends. So few connections serve many clients.'}
+          - {line: 7, tip: '1000 clients, but the database sees only 20. The load on the database''s RAM and CPU drops dramatically.'}
+      - type: visual
+        kind: steps
+        caption: 'When the database is slow, work through these in order'
+        steps:
+          - {title: '1. Fix the queries', body: 'Add indexes, remove N+1', tip: 'The cheapest and most rewarding step. Many apps get 10 times faster right here.'}
+          - {title: '2. Add a cache', body: 'Put data read again and again in Redis', tip: 'It cuts the number of requests that reach the database at all, so the database gets room to breathe.'}
+          - {title: '3. Read replicas', body: 'Reads can come from a replica', tip: 'Writes stay on the primary, and the read load gets shared. You do have to keep replication lag in mind.'}
+          - {title: '4. A bigger machine (vertical)', body: 'A more powerful database server', tip: 'For databases, vertical is often the simplest option. Using it up to its limit is perfectly fine.'}
+          - {title: '5. Shard', body: 'Split the data across many databases', tip: 'The most powerful and the most expensive. Cross-shard queries and transactions get hard.', tone: warn}
+    aside:
+      - type: refs
+        items:
+          - {to: 'data/replication', label: 'Read replicas and replication'}
+          - {to: 'data/sharding', label: 'When and how to shard'}
+      - type: remember
+        body: 'Before you add pressure on the database, cut the database''s work.'
+    check:
+      q: 'After going from 4 to 20 app servers, the database throws "too many connections". What is the first fix?'
+      a: 'Put a pooler like PgBouncer in front, so the database holds only a few real connections. Just raising max_connections eats the database''s RAM.'
+
+flashcards:
+  - q: 'What is the difference between vertical and horizontal scaling?'
+    a: 'Vertical = more CPU/RAM in the same machine. Horizontal = adding more machines running the same app.'
+    more: |
+      Vertical doesn't change your code so it's easy, but there's no path past the biggest machine, and if it dies everything stops. Horizontal has almost unlimited capacity and the rest keep running when one dies, but the app must be stateless and you need a load balancer.
+    ref: bigger-or-more
+  - q: 'What does a stateless app mean?'
+    a: 'No server keeps user state (sessions, files) inside itself; any request can go to any server.'
+    more: |
+      State lives in shared places: sessions in Redis, files in object storage, data in the database. Then you can add or remove servers without losing anything, and that is the core requirement of horizontal scaling. More in [[thinking/serverless-stateless|stateless design]].
+    ref: stateless-app
+  - q: 'On two servers, users keep getting logged out. What is the likely cause?'
+    a: 'Each server stores sessions on its own disk. The second server doesn''t recognise the first one''s sessions.'
+    more: |
+      The fix is to keep sessions in one shared place; in Symfony that is `handler_id: '%env(REDIS_URL)%'`. Sticky sessions can hide the symptom too, but if the server dies the sessions are lost, so a shared store is the right way.
+    ref: sessions-in-redis
+  - q: 'What goes wrong with horizontal scaling if uploads are saved in `public/uploads`?'
+    a: 'The file exists only on the server that received it; a request to another server gets a 404.'
+    more: |
+      Files belong in object storage (S3-compatible). With Flysystem in Symfony you can switch between local disk and S3 with the same code. Put the file's key or URL in the database, not a server path.
+    ref: sessions-in-redis
+  - q: 'Why can''t autoscaling absorb a sudden spike?'
+    a: 'Measuring the load, deciding, starting the server and warm-up together take several minutes. The old servers can collapse in that time.'
+    more: |
+      Autoscaling is great for slowly growing crowds. For known jumps, like an Eid sale or a TV ad, raise the minimum count in advance. Add a rate limit and load shedding, and the first few minutes of the wave are survivable.
+    ref: autoscaling-lag
+  - q: 'Why does adding app servers lead to "too many connections" in the database?'
+    a: 'Every worker on every server takes one connection. More servers push the total past the database''s max_connections.'
+    more: |
+      20 servers x 25 workers = 500 connections, while the database may be stuck at 200. The fix is a pooler like PgBouncer, which turns many client connections into just a few real ones.
+    ref: database-last
+  - q: 'When the database is slow, what is the right order of scaling steps?'
+    a: 'Fix queries, cache, read replicas, bigger machine, and shard last. The cheapest step comes first.'
+    more: |
+      Sharding splits the data, so cross-shard queries, transactions and operations all become far more complicated. Most apps go a very long way with the first three steps. More in [[data/sharding|sharding]].
+    ref: database-last
+
+quiz:
+  - q: 'Ratul''s site runs on one server with CPU at 90%. Something has to be done by tomorrow, and there is no time to touch the code. Which is the most practical step?'
+    hint: 'What gives quick relief without changing code?'
+    options:
+      - text: 'Make the server bigger (more CPU/RAM)'
+        correct: true
+        why: 'Vertical scaling doesn''t change the code. It has a limit, but right now it is the easiest and cheapest path.'
+      - text: 'Start running on two servers right away'
+        correct: false
+        why: 'We don''t yet know whether the app is stateless. If sessions or uploads are local, users get logged out and photos go missing.'
+      - text: 'Shard the database instead of adding a server'
+        correct: false
+        why: 'The bottleneck hasn''t been measured, and sharding is the most expensive, hardest step. It is never the first move.'
+      - text: 'Do nothing and wait'
+        correct: false
+        why: 'CPU at 90% is the zone where latency jumps. If you wait, the site will get slow.'
+    ref: bigger-or-more
+  - q: 'After the app moved to 2 servers, some users say, "I uploaded a photo, but when I refresh the page it sometimes shows and sometimes doesn''t." What is the cause?'
+    hint: 'Does the user decide which server each request goes to?'
+    options:
+      - text: 'The photo was saved on one server''s local disk; when a request goes to the other server, the file isn''t there'
+        correct: true
+        why: 'The file exists only on the server that got the upload. When the load balancer sends the next request elsewhere, it gets a 404. Files must go to object storage.'
+      - text: 'The browser cache is stale'
+        correct: false
+        why: 'A browser cache behaves the same way every time for one user. Here the photo appears sometimes and not other times, which is a sign of switching servers.'
+      - text: 'The database is slow'
+        correct: false
+        why: 'A slow database would cause delays, not a file that is sometimes missing.'
+      - text: 'There are too few PHP-FPM workers'
+        correct: false
+        why: 'Too few workers makes requests slow or returns a 502. A file that "isn''t there" is a different problem.'
+    ref: stateless-app
+  - q: 'Which of these make an app unfit for horizontal scaling?'
+    hint: 'Whatever you would lose by deleting any one server is stored inside the server.'
+    options:
+      - text: 'Sessions stored as files in the server''s /var/lib/php/sessions'
+        correct: true
+        why: 'Other servers can''t see these sessions, and deleting the server logs everyone out.'
+      - text: 'Uploaded photos written to public/uploads'
+        correct: true
+        why: 'The file exists on just one server. You need storage that every server can reach.'
+      - text: 'Keeping the cache in Redis'
+        correct: false
+        why: 'Redis is a shared place, which is exactly what horizontal scaling wants.'
+      - text: 'Storing user data in PostgreSQL'
+        correct: false
+        why: 'The database is a shared store too; every server sees the same data, so there is no problem.'
+    ref: sessions-in-redis
+  - q: 'In the numbers below, what is the core problem?'
+    lang: text
+    code: |
+      app servers      : autoscaled from 4 to 20
+      PHP-FPM workers  : 25 per server
+      Postgres         : max_connections = 200
+      result           : SQLSTATE[08006] too many connections
+    hint: 'What is 20 x 25?'
+    options:
+      - text: '20 x 25 = 500 connections, past the database''s limit of 200; you need a connection pooler (PgBouncer)'
+        correct: true
+        why: 'As app servers grow, connections multiply with them. A pooler runs many clients over a few real connections.'
+      - text: 'Autoscaling has to be turned off'
+        correct: false
+        why: 'Autoscaling is fine; the problem is the database''s connection limit. Turn it off and the app will be slow again.'
+      - text: 'Just raise Postgres max_connections to 10,000'
+        correct: false
+        why: 'Every connection costs the database RAM; thousands of connections make the database itself slow.'
+      - text: 'Set PHP-FPM workers to 0'
+        correct: false
+        why: 'With no workers, the app doesn''t run at all.'
+    ref: database-last
+  - q: 'The crowd for a flash sale jumps 10x at exactly 8 pm, and autoscaling is on. Which is the smartest preparation?'
+    hint: 'How long does a server take to start working after the crowd arrives?'
+    options:
+      - text: 'Raise the minimum replicas before the sale, and keep a rate limit in place'
+        correct: true
+        why: 'You know the crowd in advance. Servers that are already running save you the delay of five minutes or so.'
+      - text: 'Rely entirely on autoscaling'
+        correct: false
+        why: 'Measuring, deciding, starting and warm-up take several minutes, and the old servers collapse in the meantime.'
+      - text: 'Set max replicas to 1000'
+        correct: false
+        why: 'A higher max doesn''t shorten the delay in the jump; it only raises the bill and the pressure on the database.'
+      - text: 'Raise the CPU target to 90%'
+        correct: false
+        why: 'Scaling would start even later, and by then latency has already spiked.'
+    ref: autoscaling-lag

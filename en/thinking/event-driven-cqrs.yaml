@@ -1,0 +1,401 @@
+slides:
+  - slug: checkout-calls-everyone
+    title: 'When checkout calls everyone itself'
+    kind: story
+    tldr: 'If you finish a job and then call everyone else one by one, adding anything new means touching checkout, and one slow service slows everybody.'
+    keywords: ['coupling', 'synchronous calls', 'orchestration', 'chain of calls', 'slow dependency', 'checkout']
+    blocks:
+      - type: metaphor
+        icon: school
+        title: 'The headmaster going from room to room'
+        body: |
+          To announce a holiday, the headmaster walks into each classroom and tells them one by one. When a new class opens, he has to remember to go there too. And if he gets stuck in one classroom, all the others wait. Here the headmaster is the checkout code, and the classrooms are Inventory, email and Loyalty.
+      - type: visual
+        kind: flow
+        caption: 'Checkout calls three places itself, and if one fails they all fail'
+        nodes:
+          - {id: checkout, label: 'Checkout', sub: 'the order-taking code', icon: cart, tone: accent, col: 0, row: 1, tip: 'Taking the order is its real job, but it has been forced to keep track of everyone else.'}
+          - {id: inv, label: 'Inventory', sub: 'reduces stock', icon: box, col: 2, row: 0, tip: 'When an order is placed, stock must change. Checkout calls it directly.'}
+          - {id: mail, label: 'Email service', sub: 'sends the receipt', icon: mail, col: 2, row: 1, tip: 'It can be slow or even down, yet checkout waits for it.'}
+          - {id: loyal, label: 'Loyalty', sub: 'adds points', icon: star, tone: bad, col: 2, row: 2, tip: 'A less important feature, but its slowness or breakage holds up the whole order.'}
+        edges:
+          - {from: checkout, to: inv, label: 'Checkout calls Inventory itself.'}
+          - {from: checkout, to: mail, label: 'Then it calls the email service.'}
+          - {from: checkout, to: loyal, label: 'Then it calls Loyalty.', tone: warn}
+          - {from: loyal, to: checkout, label: 'If Loyalty fails, the order itself gets stuck.', tone: bad, dashed: true}
+      - type: text
+        body: |
+          Now the business wants "tell analytics when an order is placed, too." The checkout file has to be opened again and tested again. The work grows, and so does the risk each time.
+    aside:
+      - type: problem
+        body: 'If whoever finishes the job calls everyone else itself, everyone is tied to it: adding something new is hard, and one service''s slowness is everyone''s slowness.'
+    check:
+      q: 'Why do you have to open the checkout file to add analytics, and why is that a problem?'
+      a: 'Because checkout calls everyone itself. Anything new means touching the core code again, and every touch is a risk to something as important as placing an order.'
+
+  - slug: events-as-notices
+    title: 'Event-driven: pin it to the notice board'
+    kind: concept
+    tldr: 'Event-driven means that when the work is done, you just announce what happened. Whoever cares listens and does their own job, and the announcer never needs to know who they are.'
+    keywords: ['event-driven architecture', 'domain event', 'publish subscribe', 'notice board', 'decoupling', 'pub/sub']
+    blocks:
+      - type: text
+        body: |
+          This time the headmaster pins a notice on the board: "Holiday tomorrow." Whoever needs it reads the board and does their own part: class teachers tell the parents, the office changes the timetable. When a new class opens, the headmaster has nothing to do. In software, that notice is called an **event**: a fact written in the past tense, like `OrderPlaced`, saying "this has happened."
+      - type: visual
+        kind: flow
+        caption: 'Sales only announces; the listeners do their own jobs'
+        nodes:
+          - {id: sales, label: 'Sales', sub: 'takes the order', icon: cart, tone: accent, col: 0, row: 1, tip: 'Does only its own work, then makes an announcement. It doesn''t know who is listening.'}
+          - {id: event, label: 'OrderPlaced', sub: 'something that happened', icon: megaphone, tone: warn, col: 1.5, row: 1, tip: 'The notice board. Its name is in the past tense because it is a fact, not an instruction.'}
+          - {id: inv, label: 'Inventory', sub: 'listens on its own', icon: box, col: 3, row: 0, tip: 'Hears the announcement and sets stock aside by itself.'}
+          - {id: mail, label: 'Notification', sub: 'listens on its own', icon: mail, col: 3, row: 1, tip: 'Hears the announcement and sends the email by itself. If the email fails, Sales couldn''t care less.'}
+          - {id: loyal, label: 'Loyalty', sub: 'listens on its own', icon: star, col: 3, row: 2, tip: 'Hears the announcement and awards points by itself. Adding a new listener like this means no change to Sales.'}
+        edges:
+          - {from: sales, to: event, label: 'Sales announces: an order has been placed.'}
+          - {from: event, to: inv, label: 'Inventory hears it and sets the stock aside.'}
+          - {from: event, to: mail, label: 'Notification hears it and sends the email.'}
+          - {from: event, to: loyal, label: 'Loyalty hears it and adds the points.'}
+      - type: quote
+        body: 'An event is a fact about the past ("an order was placed"), not an instruction ("send an email").'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Event', meaning: 'A fact written in the past tense (OrderPlaced) that has already happened and can''t be changed.'}
+          - {term: 'Consumer / handler', meaning: 'The code that hears an event and does its own job.'}
+          - {term: 'Eventual consistency', meaning: 'All the parts don''t agree right now, but they will after a short while.'}
+      - type: refs
+        items:
+          - {to: 'messaging/events-vs-commands', label: 'Events vs commands in detail'}
+    check:
+      q: 'In an event-driven design, do you have to touch the Sales code to change Loyalty''s rules, and why?'
+      a: 'No. Sales only announces OrderPlaced and doesn''t know who is listening. Loyalty just changes its own handler.'
+
+  - slug: cqrs-split
+    title: 'CQRS: the issue register and the catalogue'
+    kind: concept
+    tldr: 'CQRS means splitting writing (commands) and reading (queries) into separate models, so the read side can be arranged its own way and made fast.'
+    keywords: ['CQRS', 'command query responsibility segregation', 'read model', 'write model', 'denormalized', 'query side']
+    blocks:
+      - type: metaphor
+        icon: book
+        title: 'The library''s issue register and its catalogue cards'
+        body: |
+          A library lends and takes back books in the issue register, where the rules are strict: does the member have a card, has the last book come back? But readers go to the catalogue cards to find a book, sorted by subject and quick to search. The two jobs differ, so the layouts differ. That is CQRS: the **command** (write) side enforces the rules, and the **query** (read) side shows things fast.
+      - type: visual
+        kind: compare
+        caption: 'What happens with one model for everything, and what happens when you split'
+        columns:
+          - title: 'Command: the write side'
+            tone: warn
+            icon: pencil
+            tip: 'Rules and invariants matter here. Correctness comes before speed.'
+            items:
+              - 'Place, cancel, confirm orders'
+              - 'Enforce the rules (Aggregate)'
+              - 'Returns only success or failure'
+          - title: 'Query: the read side'
+            tone: good
+            icon: eye
+            tip: 'Speed and convenience matter here. There are no rules to enforce, so it stays simple and flat.'
+            items:
+              - 'Order lists, dashboards'
+              - 'Pre-arranged for the page'
+              - 'Changes no data'
+      - type: code
+        lang: php
+        file: 'src/Sales/Query/OrderSummaryQuery.php'
+        code: |
+          final readonly class OrderSummaryQuery
+          {
+              public function __construct(private Connection $db)
+              {
+              }
+
+              /** @return list<array{id: string, total: int, status: string}> */
+              public function forCustomer(string $customerId): array
+              {
+                  return $this->db->fetchAllAssociative(<<<'SQL'
+                      SELECT id, total_paisa AS total, status
+                      FROM order_summary
+                      WHERE customer_id = :customer
+                      ORDER BY placed_at DESC
+                      LIMIT 20
+                      SQL, ['customer' => $customerId]);
+              }
+          }
+        marks:
+          - {line: 3, tip: 'Not a Doctrine ORM entity, but the DBAL Connection directly. Reading needs no rule-laden objects, so there is no hassle of building them.'}
+          - {line: 12, tip: 'order_summary is a pre-built flat read model, with every column the page needs and no joins.'}
+    aside:
+      - type: remember
+        body: 'CQRS is a split: the write model is for rules, the read model is for speed.'
+      - type: tips
+        items:
+          - 'The simplest step: same database, but separate command handlers and query classes. That alone gets you most of the benefit.'
+          - 'The next step: a separate read table, updated by listening to events. That is where eventual consistency comes in.'
+    check:
+      q: 'Why does the CQRS read side read a flat table directly instead of building rule-laden Order objects?'
+      a: 'Reading doesn''t have to enforce any rules. Reading straight from a flat, pre-arranged table saves the joins and the cost of building objects, so it is faster.'
+
+  - slug: events-in-symfony
+    title: 'Events and handlers in Symfony'
+    kind: howto
+    tldr: 'Create separate command.bus and event.bus in Messenger, make events small past-tense readonly classes, and let listeners hear them with #[AsMessageHandler].'
+    keywords: ['Messenger', 'event bus', 'AsMessageHandler', 'allow_no_handlers', 'domain event', 'async']
+    blocks:
+      - type: text
+        body: |
+          First, the two buses. The event bus is fine with no listeners at all (`allow_no_handlers`), because when you make an announcement you don't need to know who is listening. Handlers for these events can even run asynchronously in a worker.
+      - type: code
+        lang: yaml
+        file: 'config/packages/messenger.yaml'
+        code: |
+          framework:
+            messenger:
+              default_bus: command.bus
+              buses:
+                command.bus: ~
+                event.bus:
+                  default_middleware:
+                    enabled: true
+                    allow_no_handlers: true
+              routing:
+                'App\Sales\Event\OrderPlaced': async
+        marks:
+          - {line: 9, tip: 'An event bus with no listeners is not an error. Once the announcement is made, the announcer''s job is done.'}
+          - {line: 11, tip: 'Routed to the async transport, the handlers run in a worker, and the announcer answers the user right away.'}
+      - type: code
+        lang: php
+        file: 'src/Sales + src/Inventory'
+        variant: good
+        code: |
+          // Something that happened: a past-tense name, just facts
+          final readonly class OrderPlaced
+          {
+              public function __construct(public string $orderId)
+              {
+              }
+          }
+
+          // Sales: does its own job, then announces
+          #[AsMessageHandler(bus: 'command.bus')]
+          final readonly class PlaceOrderHandler
+          {
+              public function __construct(
+                  private OrderRepository $orders,
+                  private MessageBusInterface $eventBus,
+              ) {
+              }
+
+              public function __invoke(PlaceOrder $command): void
+              {
+                  $this->orders->save(Order::place($command->orderId, $command->items));
+                  $this->eventBus->dispatch(new OrderPlaced($command->orderId));
+              }
+          }
+
+          // Inventory: listens on its own, doesn't know Sales
+          #[AsMessageHandler(bus: 'event.bus')]
+          final readonly class ReserveStockWhenOrderPlaced
+          {
+              public function __invoke(OrderPlaced $event): void
+              {
+                  // the work of setting the stock aside
+              }
+          }
+        marks:
+          - {line: 2, tip: 'The name is OrderPlaced, not PlaceOrder. An event gives information; it doesn''t give orders.'}
+          - {line: 22, tip: 'Sales only announces here. It doesn''t know which handlers exist, and it doesn''t need to.'}
+          - {line: 28, tip: 'Inventory wrote its own handler. Adding a new listener means no change to the Sales files.'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'Stuffing all the data into an event and making it huge. Put in the id and the essential facts; listeners can look up the rest themselves.'
+          - 'With async, the same event can arrive twice, so handlers must be idempotent.'
+      - type: refs
+        items:
+          - {to: 'messaging/delivery-guarantees', label: 'Arriving twice, and idempotent handlers'}
+    check:
+      q: 'Why is "OrderPlaced" in the past tense, and not an instruction like "PlaceOrder"?'
+      a: 'An event is a fact that has already happened; listeners can''t be forced to act on it, but they can know about it. "PlaceOrder" is an instruction, a command, which has one specific recipient.'
+
+  - slug: worth-the-cost
+    title: 'When it pays off, and what it costs'
+    kind: compare
+    tldr: 'Event-driven and CQRS loosen boundaries and add speed, at the price of harder debugging, eventual consistency and more code. Adopt them only once the need is proven.'
+    keywords: ['trade-offs', 'eventual consistency', 'complexity', 'when to use CQRS', 'event sourcing', 'costs and benefits']
+    blocks:
+      - type: visual
+        kind: table
+        caption: 'The benefits, costs and when to adopt each approach'
+        headers: ['', 'Event-driven', 'CQRS']
+        rows:
+          - cells: ['What it gives', 'Loose coupling, easy new listeners', 'Scale and shape reads and writes separately']
+            tip: 'Both are techniques for "separating". One separates a job from the jobs that follow it; the other separates reading from writing.'
+          - cells: ['Main cost', 'Hard to see who listens; debugging', 'Keeping two models in sync; more code']
+            tip: 'Press one button and you can no longer see in one place what happened. You can''t manage without logs and tracing.'
+          - cells: ['Consistency', 'Results arrive later (eventual)', 'The read model lags slightly']
+            tip: 'Right after placing an order, it may not show up in the list yet. The UI has to handle that wait.'
+          - cells: ['New burden', 'Events arriving twice, ordering, schema changes', 'Mismatch from mistakes updating the read table']
+            tip: 'Handlers must be idempotent, and an event''s shape must be changed carefully, because other teams depend on it.'
+          - cells: ['When to adopt', 'Many parties act on the same event', 'Read load is far higher than write load']
+            tip: 'You need evidence: say 5 listeners on checkout, or a list query that has become slow.'
+          - cells: ['When not to', 'A job of two or three simple steps', 'Simple CRUD, little data']
+            tip: 'Adopt it from day one and you pay for the extra complexity without any benefit.'
+      - type: points
+        title: 'Three questions before you adopt'
+        style: check
+        items:
+          - 'Do several parties really do separate work on one event?'
+          - 'Aren''t simpler steps (such as a separate query class on the same database) enough?'
+          - 'Can our team handle the cost of eventual consistency and debugging?'
+      - type: quote
+        body: 'Event-driven and CQRS are not free magic. Adopt them once the pain is proven.'
+    aside:
+      - type: when
+        use: ['Many parties do separate work on the same event', 'Read load and write load grow at different speeds']
+        avoid: ['A simple CRUD app with a small team', 'Instant consistency is essential (such as a balance)']
+      - type: story
+        title: 'Event sourcing is a different thing'
+        body: |
+          Many people think CQRS automatically means event sourcing. It doesn't: event sourcing means storing data as a list of events rather than as the current state. You can use CQRS and event-driven design on their own. For event sourcing in detail, see [[workflows/event-sourcing|Event sourcing]].
+      - type: refs
+        items:
+          - {to: 'messaging/events-vs-commands', label: 'Event vs command'}
+          - {to: 'workflows/event-sourcing', label: 'Event sourcing'}
+    check:
+      q: 'Why is it wrong to bolt CQRS and event-driven design onto a small CRUD app?'
+      a: 'There is nothing to gain (one party, low load), yet you pay for eventual consistency, extra code and harder debugging from day one.'
+
+flashcards:
+  - q: 'What is event-driven architecture?'
+    a: 'When the work is done you just announce the fact (an event); whoever needs it listens and does their own job.'
+    more: |
+      Like a notice board: the headmaster pins up the announcement and doesn't know who will read it. So the announcer's job stays simple, adding a listener means no change to its code, and one listener breaking doesn't stop it.
+    ref: events-as-notices
+  - q: 'What is the main difference between an event and a command?'
+    a: 'An event is a fact about the past (OrderPlaced); a command is an instruction about the future (PlaceOrder), with one specific recipient.'
+    more: |
+      An event doesn't force anyone to do anything; whoever wants to hears it. A command tells one specific handler to do a job, and may expect a result. More in [[messaging/events-vs-commands|event vs command]].
+    ref: events-as-notices
+  - q: 'What does CQRS mean?'
+    a: 'Splitting Command (write) and Query (read) into separate models, so each can be shaped for its own job.'
+    more: |
+      In the library, the issue register (rules) and the catalogue cards (speed) are separate. In CQRS too, the write model enforces rules, and the read model is fast and flat. The simplest form: same database, but separate command handlers and query classes.
+    ref: cqrs-split
+  - q: 'Are CQRS and event sourcing the same thing?'
+    a: 'No. CQRS splits reading from writing; event sourcing keeps the list of events as the real data. You can have either without the other.'
+    more: |
+      Many people use them together, which is why they get mixed up. But CQRS works on an ordinary SQL database too, and an event-driven system doesn't need event sourcing. Each has its own price and its own benefits. More in [[workflows/event-sourcing|event sourcing]].
+    ref: worth-the-cost
+  - q: 'What are the main costs of an event-driven system?'
+    a: 'Harder debugging (who is listening to what), eventual consistency, the risk of events arriving twice, and the care needed when changing an event''s shape.'
+    more: |
+      The result of one job is now spread across several places, so logs and tracing are essential. Handlers must be idempotent, because a message can arrive twice. Change an event's fields and its listeners may break.
+    ref: worth-the-cost
+  - q: 'What does it mean for a CQRS read model to "lag behind"?'
+    a: 'Right after a write the read model may not be updated yet; it catches up a few moments later. This is called eventual consistency.'
+    more: |
+      Right after an order is placed, the new order may not yet appear in the list. You handle it in the UI, by showing "processing" or by showing the user their own write straight away. Be careful where an instantly correct answer is needed, such as a balance.
+    ref: worth-the-cost
+  - q: 'How do you keep commands and events apart in Symfony Messenger?'
+    a: 'With two separate buses: command.bus and event.bus. The event bus gets `allow_no_handlers: true`.'
+    more: |
+      Write `#[AsMessageHandler(bus: 'event.bus')]` on a handler and it attaches to that bus. Inject `MessageBusInterface $eventBus` and Symfony supplies the event.bus. An event bus with no listeners is not a mistake.
+    ref: events-in-symfony
+
+quiz:
+  - q: 'After checkout you must notify Inventory, email, Loyalty and Analytics. Every new addition means editing the checkout file, and when Loyalty is slow the order is slow too. Which design is best?'
+    hint: 'Think about the difference between making an announcement and calling everyone.'
+    options:
+      - text: 'Checkout only announces an OrderPlaced event; the others listen on their own and work asynchronously'
+        correct: true
+        why: 'The announcer is loosely coupled, adding a listener doesn''t mean changing checkout, and a slow listener doesn''t hold up the order.'
+      - text: 'Add more timeouts to checkout and keep calling everyone as before'
+        correct: false
+        why: 'Timeouts limit the damage of slowness, but you still have to touch checkout to add anything new.'
+      - text: 'Cram all the services into one class inside checkout'
+        correct: false
+        why: 'That tangles things further, and one class would know everything.'
+      - text: 'Have every service poll checkout''s database every second'
+        correct: false
+        why: 'It loads the database and breaks the boundary; an event is the right way.'
+    ref: checkout-calls-everyone
+  - q: 'Which of these are good names for events?'
+    hint: 'An event is a fact about the past, not an instruction.'
+    options:
+      - text: 'OrderPlaced'
+        correct: true
+        why: 'Past tense, a fact that has already happened.'
+      - text: 'PaymentReceived'
+        correct: true
+        why: 'Written in the past tense, and it doesn''t say who should listen.'
+      - text: 'SendConfirmationEmail'
+        correct: false
+        why: 'This is a command: it tells one specific recipient to do a job.'
+      - text: 'ReserveStock'
+        correct: false
+        why: 'This is a command too. The event would be StockReserved.'
+    ref: events-as-notices
+  - q: 'What is wrong with the naming and usage in this handler?'
+    lang: php
+    code: |
+      #[AsMessageHandler(bus: 'event.bus')]
+      final readonly class SendReceiptEmail
+      {
+          public function __invoke(SendReceipt $message): void
+          {
+              // ...
+          }
+      }
+
+      // In Sales
+      $this->eventBus->dispatch(new SendReceipt($orderId));
+    hint: 'What is Sales telling the other side: reporting a fact, or giving an order?'
+    options:
+      - text: '`SendReceipt` is really a command; the event bus should carry the name of something that happened, like OrderPlaced'
+        correct: true
+        why: 'Sales is dictating the email service''s job, so the coupling is tight again. If it reports the fact, the email service decides for itself what to do.'
+      - text: 'The handler shouldn''t be final readonly'
+        correct: false
+        why: 'final readonly is harmless here; the problem is the naming and the concept.'
+      - text: 'Using event.bus is wrong; everything should go through command.bus'
+        correct: false
+        why: 'The event bus is the right place to announce facts; the mistake is that the message is a command.'
+      - text: 'Instead of dispatch(), it should call the email class directly'
+        correct: false
+        why: 'That takes you back to the tight coupling you started with.'
+    ref: events-in-symfony
+  - q: 'The order list page is slow because it needs 6 joins. The write side is fine. Which CQRS step is the wisest place to start?'
+    hint: 'Where do you get most of the benefit for the least cost?'
+    options:
+      - text: 'A separate query class on the same database, plus a flat read table (order_summary) if needed'
+        correct: true
+        why: 'A small step at low cost that directly fixes the slow page. Eventual consistency stays limited.'
+      - text: 'Introduce event sourcing across the whole system'
+        correct: false
+        why: 'The problem is the speed of one list. Event sourcing is a huge, unnecessary change.'
+      - text: 'Build a separate microservice for every class'
+        correct: false
+        why: 'That isn''t even CQRS, and it costs far more.'
+      - text: 'Do nothing and tell users to wait'
+        correct: false
+        why: 'The problem is measured and a simple fix exists. There is no reason to ignore it.'
+    ref: cqrs-split
+  - q: 'In which situations does event-driven design or CQRS not pay for itself?'
+    hint: 'Think about whether there is anything to gain.'
+    options:
+      - text: 'One developer, a simple CRUD app, a few hundred users a day'
+        correct: true
+        why: 'One party and little load, so the extra cost buys nothing.'
+      - text: 'Showing a balance, where you need the exact figure the moment a transaction happens'
+        correct: true
+        why: 'With eventual consistency the figure can be briefly wrong, which is unacceptable here.'
+      - text: 'One order event that 5 different teams each act on separately'
+        correct: false
+        why: 'This is exactly where event-driven shines: many parties, one event.'
+      - text: 'Read requests outnumber writes 100 to 1 and the page is slow'
+        correct: false
+        why: 'Here the benefit of shaping the read side separately (CQRS) is obvious.'
+    ref: worth-the-cost

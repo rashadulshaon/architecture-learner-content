@@ -1,0 +1,370 @@
+slides:
+  - slug: float-trap
+    title: 'Looks right, is wrong: money in a float'
+    kind: story
+    tldr: 'A float cannot store most decimals exactly; tiny errors pile up until the books stop adding up. Never keep money in a float.'
+    keywords: ['float', 'floating point', 'precision', '0.1 + 0.2', 'money rounding', 'wrong sum']
+    blocks:
+      - type: text
+        body: |
+          Press 0.1 + 0.2 on the corner shop's calculator and it shows 0.3. Your PHP code quietly keeps a slightly different number. Computers store decimals in **binary**, and 0.1 never ends in binary, just as 1 ÷ 3 never ends in decimal. So a `float` holds a very close number, not the exact one.
+      - type: code
+        lang: php
+        file: 'Adding floats (the wrong way)'
+        variant: bad
+        code: |
+          $total = 0.10 + 0.20;           // 10 paisa + 20 paisa
+
+          var_dump($total == 0.30);       // bool(false)
+          echo $total;                    // 0.3 - looks fine
+          printf('%.20f', $total);        // 0.30000000000000004441
+        marks:
+          - {line: 3, tip: 'The sum is not equal to 0.30. A comparison like `if ($paid == $due)` can therefore make the wrong decision now and then.'}
+          - {line: 5, tip: 'This is the number actually stored. echo rounds it for display, which is why the error goes unnoticed.'}
+      - type: visual
+        kind: steps
+        caption: 'How a tiny error grows into a real discrepancy'
+        steps:
+          - {title: '1. Add floats', body: '0.10 + 0.20 gives 0.30000000000000004', tip: 'In binary both 0.1 and 0.2 are approximations, so their sum is an approximation too.'}
+          - {title: '2. Comparison breaks', body: 'Checking with `==` against 0.30 gives false', tip: 'Even the question "does the payment equal the amount due?" can get the wrong answer.'}
+          - {title: '3. Millions of payments', body: 'A little error piles up with each one', tip: 'One error is a tiny fraction of a paisa, but with hundreds of thousands of transactions a day it adds up.'}
+          - {title: '4. Books don''t match', body: 'At day end the bank and the ledger disagree', tip: 'No exception, no log line, the totals just differ. This is the hardest kind of bug to track down.'}
+      - type: quote
+        body: 'Money is never a float. Never.'
+    aside:
+      - type: story
+        title: 'Three days for a few paisa'
+        body: |
+          An e-commerce company's end-of-day report came out 3 taka 12 paisa short of the bank's figure. It took three days to find the cause: one float multiplication in the VAT calculation. There was no exception anywhere.
+      - type: terms
+        items:
+          - {term: 'float', meaning: 'An approximate decimal number stored in binary; it cannot hold an exact money amount.'}
+    check:
+      q: 'Printing 0.10 + 0.20 shows 0.3. Why can you still not trust it?'
+      a: 'Printing rounds it for display. The stored value is 0.30000000000000004..., so `==` comparisons break and errors pile up over many transactions.'
+
+  - slug: poisa-and-currency
+    title: 'Count the paisa, and write the currency with it'
+    kind: concept
+    tldr: 'Store money as an integer in the smallest unit (the minor unit), and always keep the currency code next to the amount.'
+    keywords: ['minor unit', 'integer', 'currency', 'ISO 4217', 'paisa', 'cents']
+    blocks:
+      - type: metaphor
+        icon: wallet
+        title: 'Counting at the cash counter'
+        body: |
+          A cashier never counts "half a taka"; they count 50 one-paisa coins, a whole number. And the taka drawer is separate from the dollar drawer: put a note in the wrong one and the books go wrong. The **minor unit** is that smallest coin (paisa, cent), and the currency is the label on the drawer.
+      - type: visual
+        kind: table
+        caption: 'The amount people see and the integer in the database'
+        headers: ['Displayed amount', 'Currency', 'Stored integer']
+        rows:
+          - cells: ['1250.50 taka', 'BDT (2 places)', '125050']
+            tip: 'One paisa is the minor unit of the taka. 1250 taka and 50 paisa is 125050 paisa.'
+          - cells: ['5.99 dollars', 'USD (2 places)', '599']
+            tip: 'The dollar''s minor unit is the cent. 5 dollars and 99 cents is 599 cents.'
+          - cells: ['500 yen', 'JPY (0 places)', '500']
+            tip: 'The yen has no fractional part, which is why assuming two decimal places for every currency is a mistake.'
+          - cells: ['1.234 dinar', 'KWD (3 places)', '1234']
+            tip: 'The Kuwaiti dinar has three decimal places. The ISO 4217 list tells you how many each currency has.'
+      - type: quote
+        body: 'An amount is an integer minor unit plus a currency. The two are never separated.'
+    aside:
+      - type: problem
+        body: 'The float error and the question "which currency?" have one fix: keep an integer and a currency together in a single Money object.'
+      - type: terms
+        items:
+          - {term: 'Minor unit', meaning: 'The smallest unit of a currency: the paisa for the taka, the cent for the dollar.'}
+          - {term: 'ISO 4217', meaning: 'The international list of currencies (BDT, USD, JPY and so on), including how many decimal places each has.'}
+      - type: tips
+        items:
+          - 'Don''t hardcode the number of decimal places; take the list from a library (for example `brick/money` or `moneyphp/money`).'
+    check:
+      q: 'You store both 500 yen and 500 taka as `500` in the database. What gets lost?'
+      a: 'The currency. A bare `500` doesn''t say yen or taka. And 500 taka is really 50000 paisa, so you also need to know the number of decimal places.'
+
+  - slug: money-value-object
+    title: 'The Money value object and Doctrine'
+    kind: howto
+    tldr: 'An immutable Money class holds an integer and a currency, checks the currency before adding, catches overflow, and maps to two Doctrine columns.'
+    keywords: ['Money value object', 'readonly class', 'Doctrine', 'BIGINT', 'immutable', 'value object']
+    blocks:
+      - type: text
+        body: |
+          Bind the amount and currency together in a **value object**: it never changes after creation (`readonly`) and it refuses to do the wrong thing. Add BDT to USD and it throws an exception instead of quietly producing a wrong number.
+      - type: code
+        lang: php
+        file: 'src/Money/Money.php'
+        variant: good
+        code: |
+          final readonly class Money
+          {
+              private function __construct(
+                  public int $amount,        // minor unit: paisa
+                  public string $currency,   // 'BDT'
+              ) {}
+
+              public static function of(int $minor, string $currency): self
+              {
+                  return new self($minor, strtoupper($currency));
+              }
+
+              public function add(self $other): self
+              {
+                  $this->assertSameCurrency($other);
+                  $sum = $this->amount + $other->amount;
+                  if (!is_int($sum)) {            // on overflow PHP turns it into a float
+                      throw new \OverflowException('Money overflow');
+                  }
+
+                  return new self($sum, $this->currency);
+              }
+
+              private function assertSameCurrency(self $other): void
+              {
+                  if ($this->currency !== $other->currency) {
+                      throw new \DomainException("Cannot add {$this->currency} to {$other->currency}");
+                  }
+              }
+          }
+        marks:
+          - {line: 1, tip: '`readonly` means the amount never changes once built. Adding returns a new Money.'}
+          - {line: 17, tip: 'When an int overflows, PHP silently turns it into a float. This one line catches that.'}
+          - {line: 26, tip: 'Matching the drawers: adding different currencies throws an exception instead of failing silently.'}
+      - type: code
+        lang: php
+        file: 'src/Entity/Wallet.php'
+        variant: good
+        code: |
+          #[ORM\Entity]
+          class Wallet
+          {
+              #[ORM\Id, ORM\GeneratedValue, ORM\Column]
+              private ?int $id = null;
+
+              #[ORM\Column(type: Types::BIGINT)]
+              private int $balanceMinor = 0;      // in paisa, never a float
+
+              #[ORM\Column(length: 3)]
+              private string $currency = 'BDT';
+
+              public function balance(): Money
+              {
+                  return Money::of($this->balanceMinor, $this->currency);
+              }
+          }
+        marks:
+          - {line: 7, tip: 'The column is BIGINT because even 10 million taka is over a billion paisa, too big for a 32-bit INT.'}
+          - {line: 15, tip: 'Callers only ever see a Money; the two-column detail stays inside the entity.'}
+    aside:
+      - type: tips
+        items:
+          - 'In DBAL 4 a BIGINT column comes back as an `int`; older DBAL returns a string, so you need an `(int)` cast.'
+          - 'A `DECIMAL` column works too, but PHP hands it back as a string; an integer minor unit is simplest.'
+      - type: remember
+        body: 'Money is immutable: add and subtract return a new Money.'
+    check:
+      q: 'Money has `$amount` and `$currency` as public properties. Why is the class still safe?'
+      a: 'The class is `readonly`, so nobody can change a value after it is built. And the add/subtract paths check the currency, so a wrong amount can never be created.'
+
+  - slug: remainder-never-lost
+    title: 'Split money without losing a single paisa'
+    kind: pitfall
+    tldr: 'Dividing money leaves a remainder; rounding every share the same way loses paisa. Allocate instead, and put the remainder in someone''s share.'
+    keywords: ['allocate', 'rounding', 'remainder', 'half-up', 'split money', 'divide money']
+    blocks:
+      - type: text
+        body: |
+          Three brothers are splitting 100 taka after a wedding. 100 ÷ 3 = 33.333..., so giving each 33.33 totals 99.99 and 1 paisa belongs to nobody. Rounding share by share loses or invents paisa like this. The fix: first give everyone their floor share, then hand out the **remainder** one paisa at a time.
+      - type: code
+        lang: php
+        file: 'The wrong split'
+        variant: bad
+        code: |
+          $share = (int) round(10000 / 3);          // 3333 paisa
+          $parts = [$share, $share, $share];        // total 9999 - 1 paisa vanished
+        marks:
+          - {line: 2, tip: 'We split 100 taka and got back 99.99. That missing paisa is written down nowhere in the ledger.'}
+      - type: code
+        lang: php
+        file: 'src/Money/Money.php'
+        variant: good
+        code: |
+          /** @return list<self> */
+          public function allocate(int ...$ratios): array
+          {
+              if ($this->amount < 0 || array_sum($ratios) <= 0) {
+                  throw new \DomainException('allocate: invalid amount or ratios');
+              }
+
+              $total = array_sum($ratios);
+              $shares = array_map(fn (int $r) => intdiv($this->amount * $r, $total), $ratios);
+              $remainder = $this->amount - array_sum($shares);
+
+              for ($i = 0; $remainder > 0; $i++, $remainder--) {
+                  $shares[$i]++;                      // hand out the remainder one paisa at a time
+              }
+
+              return array_map(fn (int $s) => new self($s, $this->currency), $shares);
+          }
+        marks:
+          - {line: 9, tip: 'intdiv cuts toward the lower number (the floor), so nobody gets too much. What was cut off is the remainder.'}
+          - {line: 12, tip: 'The remainder is always smaller than the number of ratios, so one paisa each is enough to hand it all out.'}
+      - type: visual
+        kind: bars
+        caption: '100 taka (10000 paisa) split three ways with allocate(1, 1, 1)'
+        items:
+          - {label: 'Brother 1', value: 3334, display: '3334 paisa', tone: accent, tip: 'The first brother got the 1 leftover paisa. The rule for who gets it is fixed in advance.'}
+          - {label: 'Brother 2', value: 3333, display: '3333 paisa', tone: good, tip: 'The floor share.'}
+          - {label: 'Brother 3', value: 3333, display: '3333 paisa', tone: good, tip: 'The floor share. The three shares add up to exactly 10000.'}
+      - type: quote
+        body: 'The parts always add up to the whole. The remainder has to land in someone''s share.'
+    aside:
+      - type: tips
+        items:
+          - 'When a percentage (fee, VAT) produces a fraction, choose the rounding rule once (usually half-up) and keep it in one place.'
+          - 'Don''t round step by step; do all the multiplying and dividing first, then round once at the end.'
+      - type: pitfalls
+        items:
+          - 'If an API sends amounts as a JSON number (12.5), JavaScript turns it into a float. Send an integer minor unit and a currency instead.'
+    check:
+      q: 'What does allocate return when 100 taka is split four ways in the ratio 1:1:1:1?'
+      a: 'Each person gets 25 taka (2500 paisa) with a remainder of 0. Split three ways, the 1 paisa remainder goes to the first person: 3334, 3333, 3333.'
+
+flashcards:
+  - q: 'Why can''t you store money in a float?'
+    a: 'A float stores decimals as approximations in binary. So 0.1 + 0.2 is not exactly 0.3, and the tiny errors keep piling up.'
+    more: |
+      0.1 is an endless fraction in binary, like 1 ÷ 3 in decimal. The computer cuts it off, which is why `0.1 + 0.2 == 0.3` is false. One error is small, but over hundreds of thousands of transactions they add up and break the end-of-day totals.
+    ref: float-trap
+  - q: 'What is a minor unit? What are the minor units of the taka and the dollar?'
+    a: 'The smallest unit of a currency. The taka''s minor unit is the paisa, the dollar''s is the cent.'
+    more: |
+      1250 taka and 50 paisa is stored as `125050` paisa. That way all adding and subtracting is whole-number arithmetic, so no approximation error can creep in.
+    ref: poisa-and-currency
+  - q: 'Do all currencies have two decimal places?'
+    a: 'No. JPY has 0, BDT and USD have 2, KWD has 3. The number of places comes from ISO 4217.'
+    more: |
+      Code that always multiplies by 100 produces amounts that are 100 times wrong for the yen. Don't hardcode the number of places; use the currency list from a library such as `brick/money`.
+    ref: poisa-and-currency
+  - q: 'What is the risk of keeping the currency separate from the amount?'
+    a: 'The number loses its meaning: is `500` taka or dollars? Different currencies can also get added together by mistake.'
+    more: |
+      A Money value object keeps the amount and currency together and checks that the currencies match before adding or subtracting. Adding BDT to USD throws an exception instead of quietly producing a wrong total.
+    ref: money-value-object
+  - q: 'Why make the Money class `readonly`?'
+    a: 'Its amount can''t change after construction. Add and subtract return a new Money, so nothing is silently modified somewhere else.'
+    more: |
+      With a mutable Money, changing it in one place also changes the same object everywhere else it is shared. An immutable value object rules out that whole class of trouble.
+    ref: money-value-object
+  - q: 'What happens in PHP when integer addition overflows?'
+    a: 'PHP silently turns the result into a float. So check with `is_int($sum)` and throw an exception.'
+    more: |
+      `PHP_INT_MAX + 1` returns a float without any error. In money calculations that silent change is the most dangerous kind, which is why Money's add and subtract include an overflow check.
+    ref: money-value-object
+  - q: 'What is the right way to split 100 taka among three people?'
+    a: 'allocate: give everyone the floor share, then hand out the remainder one paisa at a time. The result is 3334, 3333, 3333 paisa.'
+    more: |
+      Giving everyone a rounded amount makes the total differ from the original. The rule of allocate: the parts always add up to the whole.
+    ref: remainder-never-lost
+  - q: 'What goes wrong if an API sends money as a JSON number (`12.5`)?'
+    a: 'JavaScript turns numbers into floats, and errors creep in. Send an integer minor unit and a currency in separate fields.'
+    more: |
+      For example `{"amount": 125050, "currency": "BDT"}`. The client works only with the integer and divides it to show 1250.50 at display time.
+    ref: remainder-never-lost
+
+quiz:
+  - q: 'What is wrong with this code?'
+    lang: php
+    code: |
+      $price = 19.99;
+      $qty = 3;
+      $total = $price * $qty;
+      if ($total == 59.97) {
+          $order->markPaid();
+      }
+    hint: 'Will multiplying floats give exactly 59.97?'
+    options:
+      - text: 'The float product may not equal 59.97, so `==` can wrongly return false'
+        correct: true
+        why: 'Approximate numbers are not guaranteed to be exactly equal. In integer paisa (1999 × 3 = 5997) this problem does not exist.'
+      - text: '`$qty` should be a float, not an int'
+        correct: false
+        why: 'The opposite. The integer is fine; the problem is that the price is a float.'
+      - text: '`markPaid()` is outside a transaction'
+        correct: false
+        why: 'Transactions are a separate topic; the problem in this code is the float comparison.'
+      - text: 'Nothing is wrong, 59.97 will match just fine'
+        correct: false
+        why: 'You can''t rely on it. Code like this fails now and then, and when it does there is no error at all.'
+    ref: float-trap
+  - q: 'How should 1250 taka and 50 paisa be stored in the database?'
+    hint: 'You need both the minor unit and the currency.'
+    options:
+      - text: '`1250.5` in a DOUBLE column'
+        correct: false
+        why: 'DOUBLE is a float; it stores approximations.'
+      - text: '`125050` paisa in a BIGINT column, with `BDT` in a separate column'
+        correct: true
+        why: 'An integer minor unit is exact, and with the currency beside it the amount has a clear meaning.'
+      - text: '`"1250.50"` in a VARCHAR column'
+        correct: false
+        why: 'You can''t add or subtract strings, and formats can break.'
+      - text: '`1250` taka and `50` paisa in two separate columns'
+        correct: false
+        why: 'When adding, you have to handle the carry yourself once the paisa pass 100; a single integer is much simpler.'
+    ref: poisa-and-currency
+  - q: 'Which is the biggest problem in this Money code?'
+    lang: php
+    code: |
+      public function add(Money $other): Money
+      {
+          return new Money($this->amount + $other->amount, $this->currency);
+      }
+    hint: 'What happens if you add a USD Money to a BDT Money?'
+    options:
+      - text: 'It adds the two amounts without checking that the currencies match'
+        correct: true
+        why: 'BDT 100 + USD 5 would quietly become BDT 105. You have to check the currencies and throw an exception before adding.'
+      - text: 'The method should not be `public`'
+        correct: false
+        why: 'A public add is fine; the problem is the missing currency check.'
+      - text: 'It creates a new Money, which is wrong'
+        correct: false
+        why: 'Returning a new object is exactly the right rule for an immutable value object.'
+      - text: 'The amount should be a `string`, not an `int`'
+        correct: false
+        why: 'An integer is the right choice; with a string you would have to cast again to add.'
+    ref: money-value-object
+  - q: 'Which of these are part of a sound Money design?'
+    hint: 'Think about the amount, the currency and overflow.'
+    options:
+      - text: 'Storing the amount as an integer minor unit'
+        correct: true
+        why: 'Whole-number arithmetic has no approximation error.'
+      - text: 'Keeping the currency in the same object as the amount'
+        correct: true
+        why: 'If they are separate, the wrong pair can get stuck together; kept together, they can be matched before adding.'
+      - text: 'Catching overflow with `is_int` after the addition'
+        correct: true
+        why: 'PHP makes a float when an int overflows; this check stops the silent error.'
+      - text: 'Using a `float $amount` for convenience'
+        correct: false
+        why: 'The float is the root of the problem; there is no convenience, only hidden errors.'
+    ref: money-value-object
+  - q: '100 taka (10000 paisa) is allocated among 3 people in the ratio 1:1:1. Which result is correct?'
+    hint: 'The parts must add up to exactly 10000.'
+    options:
+      - text: '3333, 3333, 3333'
+        correct: false
+        why: 'The total is 9999; 1 paisa has gone missing.'
+      - text: '3334, 3334, 3334'
+        correct: false
+        why: 'The total is 10002; 2 paisa were created from nothing.'
+      - text: '3334, 3333, 3333'
+        correct: true
+        why: 'The 1 paisa remainder went to one person, and the total is exactly 10000.'
+      - text: '3333, 3333, 3333 and the 1 paisa parked "somewhere else"'
+        correct: false
+        why: 'The ledger has no such place, so the books won''t balance later. The remainder has to go into someone''s share.'
+    ref: remainder-never-lost

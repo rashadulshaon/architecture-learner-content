@@ -1,0 +1,390 @@
+slides:
+  - slug: single-point-of-failure
+    title: 'When one box dies, everyone dies'
+    kind: story
+    tldr: 'A single point of failure (SPOF) is any part that stops the whole system when it dies. Two app servers aren''t enough: the load balancer can be a SPOF too.'
+    keywords: ['SPOF', 'single point of failure', 'high availability', 'redundancy', 'keepalived', 'reliability']
+    blocks:
+      - type: metaphor
+        icon: ticket
+        title: 'The bus stand with one ticket counter'
+        body: |
+          The bus stand has 10 buses but only one ticket counter. If the clerk steps out for tea or falls ill, nobody can buy a ticket, even though the buses are right there. The buses were your app servers and the counter is the load balancer. Adding more buses doesn't fix the problem.
+      - type: visual
+        kind: table
+        caption: 'What happens when each part of Ratul''s shop dies'
+        headers: ['Part', 'How many', 'What happens if it dies']
+        rows:
+          - cells: ['App server', '2', 'The other carries on, slower']
+            tip: 'There are several copies, so when one dies another keeps working. That is redundancy.'
+          - cells: ['Load balancer (nginx)', '1', 'The whole site is down']
+            tip: 'Every request passes through it, yet there is only one copy. This is the biggest mistake.'
+          - cells: ['Database primary', '1', 'Writes stop, the site half-works']
+            tip: 'Even with replicas, when the primary dies writes stay down until a new primary is chosen. You need failover.'
+          - cells: ['A single data center', '1', 'A power cut takes everything down']
+            tip: 'If servers, LB and database all sit in one place, one incident takes them all. You need multiple availability zones.'
+      - type: quote
+        body: 'Ask every box: what happens when you die? If the answer is "everything stops", that box is a SPOF.'
+    aside:
+      - type: story
+        title: 'Two servers, still down'
+        body: 'A small online shop figured that two app servers made it safe. One night the disk on its only nginx server filled up. Both app servers were healthy, yet the site was down for 40 minutes.'
+      - type: tips
+        items:
+          - 'Run two load balancers. When one dies, the other takes over the same IP (keepalived/VRRP), or use your cloud''s managed LB.'
+          - 'When you draw a new system, write "how many copies?" next to every box.'
+      - type: refs
+        items:
+          - {to: 'resilience/disaster-recovery', label: 'Multi-region and failover'}
+    check:
+      q: 'With two app servers and one nginx, which one is the SPOF, and how do you remove it?'
+      a: 'The nginx. Make it two as well, using a floating IP like keepalived, or use a cloud managed load balancer, which already runs in several places.'
+
+  - slug: balancing-algorithms
+    title: 'Three rules for splitting the crowd'
+    kind: concept
+    tldr: 'Round robin takes turns, least connections picks whoever has the least work, weighted gives bigger machines more. The best choice depends on how uneven your requests are.'
+    keywords: ['round robin', 'least connections', 'weighted', 'load balancing algorithm', 'load balancing']
+    blocks:
+      - type: metaphor
+        icon: users
+        title: 'Seating guests among the wedding waiters'
+        body: |
+          When a new guest arrives, which waiter's table does the manager pick? **Round robin**: 1, 2, 3, taking turns. **Least connections**: whoever has the fewest tables right now. **Weighted**: three tables for the most experienced waiter, one for the newcomer. If all tables are alike, taking turns is enough. If some tables sit all night, you have to keep count.
+      - type: visual
+        kind: table
+        caption: 'The three rules compared'
+        headers: ['Rule', 'How it picks', 'Good when', 'Bad when']
+        rows:
+          - cells: ['Round robin', 'One by one, in turn', 'Requests are about equal', 'Some requests run very long']
+            tip: 'The simplest, and the default. It counts requests but doesn''t look at how heavy each one was.'
+          - cells: ['Least connections', 'The least busy right now', 'Request times are uneven (uploads, reports)', 'Requests are tiny and the bookkeeping costs more']
+            tip: 'It counts open connections, so a slow server automatically receives fewer requests.'
+          - cells: ['Weighted', 'Shares by capacity', 'Servers are unequal (old 2-core, new 8-core)', 'A wrong weight drowns one server']
+            tip: 'A weight is really a capacity ratio. Some people combine it with round robin or least connections.'
+      - type: points
+        title: 'A simple way to choose'
+        style: check
+        items:
+          - 'With no particular reason, start with round robin.'
+          - 'Some requests run for seconds (uploads, exports)? Choose least connections.'
+          - 'Servers unequal? Set weights.'
+    aside:
+      - type: remember
+        body: 'Equal work: take turns. Uneven work: pick the least busy. Uneven machines: use weights.'
+      - type: terms
+        items:
+          - {term: 'Upstream', meaning: 'The servers behind nginx that requests are sent to.'}
+          - {term: 'Weight', meaning: 'How many times more requests one server gets compared to another.'}
+    check:
+      q: 'Some requests run for 20 seconds, the rest finish in 10ms. Which rule makes it less likely that one server piles up, and why?'
+      a: 'Least connections. Round robin hands the same number to a server stuck with slow requests, while least connections skips the busy server and sends work to an idle one.'
+
+  - slug: nginx-upstream
+    title: 'nginx upstream and health checks'
+    kind: howto
+    tldr: 'Write the rule, weights, failure limits and a backup server in an nginx upstream. Add a cheap /healthz to the app that tells the LB whether this server can take requests.'
+    keywords: ['nginx upstream', 'least_conn', 'max_fails', 'health check', 'healthz', 'drain', 'backup server']
+    blocks:
+      - type: text
+        body: |
+          A load balancer takes just a few lines of config. Here `max_fails` and `fail_timeout` give you a **passive health check**: when real requests fail, nginx sidelines the server for a while. Poking the server ahead of time, an **active health check**, isn't in free nginx; you'll find it in HAProxy, nginx Plus or a cloud LB.
+      - type: code
+        lang: nginx
+        file: '/etc/nginx/conf.d/shop.conf'
+        variant: good
+        code: |
+          upstream shop_app {
+              least_conn;                       # give it to whoever has the least work
+              server 10.0.1.11:8080 weight=3 max_fails=3 fail_timeout=10s;
+              server 10.0.1.12:8080 weight=3 max_fails=3 fail_timeout=10s;
+              server 10.0.1.13:8080 weight=1 max_fails=3 fail_timeout=10s;  # older, smaller
+              server 10.0.1.20:8080 backup;     # only when everyone else is down
+              keepalive 32;
+          }
+
+          server {
+              listen 80;
+              location / {
+                  proxy_pass http://shop_app;
+                  proxy_http_version 1.1;
+                  proxy_set_header Connection '';
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_next_upstream error timeout http_502 http_503;
+                  proxy_next_upstream_tries 2;
+              }
+          }
+        marks:
+          - {line: 3, tip: 'After 3 failures the server is skipped for 10 seconds. weight=3 means it gets three times as many requests as the small server.'}
+          - {line: 6, tip: 'The backup server gets no requests in normal times. It steps in only when all the others are down.'}
+          - {line: 18, tip: 'When one server fails, nginx retries the same request on another. By default it does not do this for POST, so an order isn''t placed twice.'}
+      - type: code
+        lang: php
+        file: 'src/Controller/HealthController.php'
+        variant: good
+        code: |
+          final class HealthController
+          {
+              public function __construct(
+                  #[Autowire('%kernel.project_dir%/var/drain')] private readonly string $drainFile,
+              ) {
+              }
+
+              #[Route('/healthz', methods: ['GET'])]
+              public function __invoke(): JsonResponse
+              {
+                  // during a deploy, `touch var/drain` makes the LB stop sending requests here
+                  if (is_file($this->drainFile)) {
+                      return new JsonResponse(['status' => 'draining'], 503);
+                  }
+
+                  return new JsonResponse(['status' => 'ok']);   // no database check, on purpose
+              }
+          }
+        marks:
+          - {line: 12, tip: 'When the drain file exists it returns 503, so the LB stops sending new requests. Requests already running get time to finish.'}
+          - {line: 16, tip: 'If the database had a small hiccup, this check would fail on every server at once and the LB would pull them all out. A minor problem becomes a full outage.'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'If the health check calls the database or an outside API, the moment that gets slow every server turns "sick" at once and the whole site goes down.'
+          - 'Behind a proxy, set `framework.trusted_proxies` in Symfony, or the user''s IP will always show up as the LB''s IP.'
+      - type: refs
+        items:
+          - {to: 'observability/health-alerts', label: 'Liveness, readiness and deep checks'}
+          - {to: 'resilience/zero-downtime-deploys', label: 'Draining servers during a deploy'}
+    check:
+      q: 'What does max_fails=3 fail_timeout=10s mean in nginx?'
+      a: 'If real requests fail 3 times within 10 seconds, the server is skipped for the next 10 seconds. After that nginx tries it again.'
+
+  - slug: l4-vs-l7
+    title: 'L4 vs L7: the address on the envelope, or the letter inside?'
+    kind: compare
+    tldr: 'An L4 load balancer looks only at IP and port and forwards TCP: fast, and works with any protocol. L7 reads HTTP, so it can decide by path, header and cookie.'
+    keywords: ['L4', 'L7', 'layer 4', 'layer 7', 'TLS termination', 'path routing', 'HAProxy', 'nginx stream']
+    blocks:
+      - type: metaphor
+        icon: mail
+        title: 'Two kinds of post office worker'
+        body: |
+          One worker looks only at the address on the envelope and drops it in a sack. They never learn what's inside, so they're very fast. The other opens and reads the letter, and if it's "urgent" puts it in a separate sack: more work, but smarter. The first is **L4**, the second **L7**.
+      - type: visual
+        kind: compare
+        caption: 'At which layer the crowd gets split'
+        columns:
+          - title: 'L4 (TCP)'
+            tone: muted
+            icon: lb
+            tip: 'Looks only at IP and port and passes the connection along. It never reads the message inside, so it is very fast.'
+            items:
+              - 'Any TCP: PostgreSQL, Redis, MQTT'
+              - 'Very fast, low CPU'
+              - 'Doesn''t understand paths or cookies'
+              - 'TLS usually gets opened on the servers behind it'
+          - title: 'L7 (HTTP)'
+            tone: accent
+            icon: api
+            tip: 'It opens up the HTTP, so it can decide by path, header and cookie. It does need more CPU.'
+            items:
+              - '/api to one group, /images to another'
+              - 'Opens TLS right here (termination)'
+              - 'Retries, rate limits, adding headers'
+              - 'Only for HTTP/gRPC'
+      - type: code
+        lang: nginx
+        file: 'nginx.conf'
+        code: |
+          # L7: look at the path and pick a different group
+          location /api/    { proxy_pass http://shop_api; }
+          location /images/ { proxy_pass http://image_cache; }
+
+          # L4: plain TCP, never looks inside
+          stream {
+              upstream pg_replicas { server 10.0.2.11:5432; server 10.0.2.12:5432; }
+              server { listen 5433; proxy_pass pg_replicas; }
+          }
+        marks:
+          - {line: 2, tip: 'nginx reads the URL of the HTTP request, so /api and /images can go to different servers.'}
+          - {line: 6, tip: 'In a stream block nginx is just a pipe of bytes and doesn''t understand the database protocol. Even so, reads can be spread across replicas.'}
+    aside:
+      - type: when
+        use:
+          - 'L7: web apps, APIs, routing by path or host, TLS in one place'
+          - 'L4: databases, Redis, games or any other non-HTTP protocol'
+        avoid:
+          - 'L7: for a protocol that isn''t HTTP'
+          - 'L4: when you must split by path or cookie'
+      - type: terms
+        items:
+          - {term: 'TLS termination', meaning: 'Opening the HTTPS encryption at the load balancer, so the servers behind it receive plain HTTP.'}
+    check:
+      q: 'On one domain, /api should run on 3 servers and /admin on a separate one. L4 or L7?'
+      a: 'L7. To see the path you have to open and read the HTTP request, and L4 sees only IP and port.'
+
+  - slug: sticky-sessions-trap
+    title: 'Sticky sessions: quick relief, lasting trouble'
+    kind: pitfall
+    tldr: 'Sticky sessions always send the same user to the same server. That unbalances the load and loses the session when a server dies. The real fix is to keep sessions outside the server.'
+    keywords: ['sticky session', 'session affinity', 'ip_hash', 'NAT', 'cookie affinity', 'sticky']
+    blocks:
+      - type: metaphor
+        icon: ticket
+        title: 'Always the same waiter'
+        body: |
+          A family walks in and the manager says, "They always sit at Rahim's table", because only Rahim's notebook has their order. When 500 people from one big office arrive together, they all land on Rahim while the other waiters stand idle. If Rahim falls ill, the order notebook is lost with him.
+      - type: code
+        lang: nginx
+        file: 'upstream — ip_hash'
+        variant: bad
+        code: |
+          upstream shop_app {
+              ip_hash;                  # the same IP always goes to the same server
+              server 10.0.1.11:8080;
+              server 10.0.1.12:8080;
+              server 10.0.1.13:8080;
+          }
+        marks:
+          - {line: 2, tip: 'Behind an office or mobile carrier NAT, thousands of users arrive with the same IP. They all land on one server.'}
+      - type: visual
+        kind: bars
+        caption: 'Open connections on the three servers after ip_hash is switched on (at the same moment)'
+        items:
+          - {label: 'Server 1 (office NAT)', value: 520, display: '520', tone: bad, tip: 'The 500 people of one company come from a single IP, and all of them are stuck on this one server.'}
+          - {label: 'Server 2', value: 90, display: '90', tone: muted, tip: 'Almost empty. Capacity is going to waste.'}
+          - {label: 'Server 3', value: 85, display: '85', tone: muted, tip: 'Nearly empty too, while server 1 is about to collapse.'}
+      - type: quote
+        body: 'Sticky sessions hide the symptom and leave the disease. The disease is state kept inside the server.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'When a server dies or is deployed, all its users lose their session.'
+          - 'With autoscaling, new servers join but the existing users stay stuck on the old ones, so the new servers sit almost idle.'
+      - type: tips
+        items:
+          - 'If you can''t move the state right now, use cookie-based stickiness deliberately and only temporarily, not ip_hash. And put moving the session on your to-do list.'
+      - type: refs
+        items:
+          - {to: 'scaling/horizontal-vertical', label: 'How to move sessions to Redis'}
+    check:
+      q: 'Why can sticky sessions with ip_hash overload one server?'
+      a: 'Many users behind an office or carrier NAT arrive with the same IP, and ip_hash always sends that IP to the same server.'
+
+flashcards:
+  - q: 'What is a single point of failure (SPOF)?'
+    a: 'A part that stops the whole system when it dies, because it has no backup copy.'
+    more: |
+      People often add app servers and think everything is safe, but a lone load balancer, a lone database primary or a single data center is still a SPOF. Ask each part "what happens when you die?" and for any answer of "everything stops", add a second copy.
+    ref: single-point-of-failure
+  - q: 'How do you stop the load balancer itself from being a SPOF?'
+    a: 'Run two LBs and let the survivor take over the same IP (keepalived/VRRP), or use a cloud managed load balancer.'
+    more: |
+      In an active-passive pair one LB works while the other watches. If the main one stops answering, the second grabs the floating IP. A cloud managed LB already runs in several places, so it is usually the easy route.
+    ref: single-point-of-failure
+  - q: 'Round robin, least connections, weighted: which one when?'
+    a: 'Round robin takes turns, so it piles up on long requests. Least connections suits uneven request times, weighted suits unequal servers.'
+    more: |
+      When all requests are about equally short, round robin is the simplest and good enough. When some requests, like uploads or report exports, run for seconds on end, least connections is better. With unequal servers (2 cores vs 8) set a weight such as `weight=3`; in nginx the two can work together.
+    ref: balancing-algorithms
+  - q: 'What is the difference between passive and active health checks?'
+    a: 'Passive: a server is dropped when real requests fail. Active: the LB itself calls /healthz regularly, without waiting for real requests.'
+    more: |
+      Free nginx does passive checks with `max_fails` and `fail_timeout`; active checks are in HAProxy, nginx Plus or a cloud LB. With an active check, the first user doesn't have to be the victim of a failed request.
+    ref: nginx-upstream
+  - q: 'What is the danger of calling the database in a health check?'
+    a: 'When the database has trouble, every server looks sick at once, the LB removes them all, and a small problem becomes a full outage.'
+    more: |
+      The LB's health check should answer "can this server take requests?", which is usually a cheap check of the server's own state. Watch the database's state with separate metrics and alerts. More in [[observability/health-alerts|health checks and alerts]].
+    ref: nginx-upstream
+  - q: 'What is the main difference between L4 and L7 load balancers?'
+    a: 'L4 looks only at IP and port and forwards TCP. L7 opens up the HTTP, so it can decide by path, header and cookie.'
+    more: |
+      L4 is fast and works for any TCP protocol (databases, Redis). L7 uses more CPU, but it can do TLS termination, path routing and header injection. In front of a web app you normally put L7.
+    ref: l4-vs-l7
+  - q: 'What are sticky sessions, and why avoid them?'
+    a: 'Always sending the same user to the same server. It unbalances the load and loses sessions when a server dies.'
+    more: |
+      Sticky sessions really just hide the symptom of state kept inside the server. Move the session to Redis and stickiness isn't needed, so the LB can split the load truly evenly. With ip_hash there is also the risk of thousands of users behind a NAT landing on one server.
+    ref: sticky-sessions-trap
+
+quiz:
+  - q: 'Ratul''s system has 2 app servers, 1 nginx LB, 1 Postgres primary and 1 replica. Which are SPOFs?'
+    hint: 'The one that, when it dies, blocks the site or writes even though the rest are healthy.'
+    options:
+      - text: 'The lone nginx LB'
+        correct: true
+        why: 'Every request goes through it, and there is no backup copy. If it dies, the site is down even though the app servers are healthy.'
+      - text: 'The Postgres primary (without automatic failover)'
+        correct: true
+        why: 'Even with a replica, without failover writes stop the moment the primary dies, until someone promotes the replica by hand.'
+      - text: 'Either one of the two app servers'
+        correct: false
+        why: 'The other serves the remaining requests. It will be slower, but not down, which is exactly why you keep several copies.'
+      - text: 'The Postgres replica'
+        correct: false
+        why: 'If the replica dies, read capacity drops, but reads and writes on the primary carry on.'
+    ref: single-point-of-failure
+  - q: 'Most requests to an API take 10ms, but a few "download report" requests run for 30 seconds. With round robin some servers often bog down. What do you do?'
+    hint: 'When you count in turns, does it tell heavy work from light work?'
+    options:
+      - text: 'Turn on least_conn'
+        correct: true
+        why: 'A server holding many long requests shows a high connection count, so the LB sends new ones elsewhere.'
+      - text: 'Double the number of servers'
+        correct: false
+        why: 'The problem isn''t the number but the splitting rule. Even with more servers, an unlucky one can pile up heavy requests under round robin.'
+      - text: 'Turn on ip_hash'
+        correct: false
+        why: 'That makes the split even more uneven. It goes by IP and doesn''t look at what each request does.'
+      - text: 'Keep weight=1 on every server'
+        correct: false
+        why: 'Equal weights mean equal counts; the weight of a long job isn''t captured by that.'
+    ref: balancing-algorithms
+  - q: 'You want to spread reads across database replicas (PostgreSQL, port 5432). What kind of load balancer do you need?'
+    hint: 'Does the database speak HTTP, or some other protocol?'
+    options:
+      - text: 'L4 (TCP), such as nginx stream or HAProxy in tcp mode'
+        correct: true
+        why: 'PostgreSQL isn''t HTTP. L4 just splits TCP connections without understanding the protocol.'
+      - text: 'L7 (HTTP), splitting by path'
+        correct: false
+        why: 'PostgreSQL has no URL path, so an HTTP LB can''t even make sense of it.'
+      - text: 'Neither: you can''t load balance a database'
+        correct: false
+        why: 'Spreading reads across read replicas is very common.'
+      - text: 'DNS round robin is the only way'
+        correct: false
+        why: 'DNS caching makes the split uneven and slow, and a dead server''s address stays in the list. An L4 LB is far better.'
+    ref: l4-vs-l7
+  - q: 'The team builds a health check endpoint that runs "SELECT 1 to see if the database is fine". One night the database goes 20 seconds slow. What can happen?'
+    hint: 'All app servers look at the same database. If the check fails, how many servers get removed?'
+    options:
+      - text: 'The check fails on every app server at once and the LB removes them all: a small slowdown takes the whole site down'
+        correct: true
+        why: 'The database is a shared dependency, so its trouble makes every server look sick together. Removing servers doesn''t add to the database''s problem, but the site is completely down.'
+      - text: 'The LB removes only the slow server and everything else stays fine'
+        correct: false
+        why: 'The problem isn''t one server, it''s the shared database. All servers will fail for the same reason.'
+      - text: 'Nothing, because SELECT 1 is a very small query'
+        correct: false
+        why: 'When the database is slow or its connections are full, even the smallest query gets stuck or times out.'
+      - text: 'The database will speed up because the LB eases the pressure'
+        correct: false
+        why: 'The LB doesn''t reduce the database''s load. If every server is removed, users simply can''t reach the site.'
+    ref: nginx-upstream
+  - q: '300 office staff visit a site that uses ip_hash, and one server is close to collapse while the others sit idle. Which are correct fixes?'
+    hint: 'What is the root cause: the IP, or the state inside the server?'
+    options:
+      - text: 'Move sessions to Redis, remove ip_hash and use least_conn'
+        correct: true
+        why: 'Once the state is outside, stickiness isn''t needed, and the LB can split the load truly evenly.'
+      - text: 'Use cookie-based stickiness (not IP), as a temporary measure'
+        correct: true
+        why: 'A cookie identifies each user separately, whereas everyone behind a NAT looks the same by IP. Still, it''s only temporary relief.'
+      - text: 'Keep ip_hash and make that server bigger'
+        correct: false
+        why: 'The same problem returns as soon as a bigger office arrives, and if the server dies all those users lose their sessions.'
+      - text: 'Lower the weight of the other servers'
+        correct: false
+        why: 'That pushes even more of the crowd onto that one server. It turns the problem the wrong way round.'
+    ref: sticky-sessions-trap

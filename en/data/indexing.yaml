@@ -1,0 +1,395 @@
+slides:
+  - slug: slow-without-index
+    title: 'Millions of rows, all read every time'
+    kind: story
+    tldr: 'With no index, the database reads every row of the table for each query; 10 thousand rows go unnoticed, 2 million do not.'
+    keywords: ['index', 'seq scan', 'full table scan', 'slow query', 'database index', 'performance']
+    blocks:
+      - type: metaphor
+        icon: book
+        title: 'The library catalogue'
+        body: |
+          A library holds 2 million books. To find "Gitanjali by Rabindranath Tagore", you walk the shelves and check every book from the first to the last. Go to the catalogue cards instead, sorted by author, and you get "shelf 14, third row" straight away. A database index is exactly that catalogue: a sorted list where each entry says where the row is.
+      - type: text
+        body: |
+          In Rahim's app the `customer_order` table has 2 million rows. The "My orders" page was fast a week ago and now takes about 0.4 seconds every time. The code hasn't changed at all; only the number of rows has grown.
+      - type: visual
+        kind: bars
+        caption: 'Time to find customer_id = 42 in a table of 2 million rows'
+        items:
+          - {label: 'Without an index', value: 412, display: '412ms', tone: bad, tip: 'The database read all 2 million rows, then picked out 20. This is called a sequential scan.'}
+          - {label: 'With an index', value: 1, display: '0.12ms', tone: good, tip: 'It followed the sorted list straight to customer 42''s rows and never touched the other 1.9 million or so.'}
+      - type: quote
+        body: 'Without an index, every lookup reads the whole table. Add rows and the time grows at the same rate.'
+    aside:
+      - type: story
+        title: 'The month before Eid'
+        body: 'An e-commerce site''s "My orders" page ran in 50ms at the start of the year. In the Eid shopping month, orders piled up and it reached 3 seconds. The only cause was a missing index.'
+      - type: terms
+        items:
+          - {term: 'Sequential scan', meaning: 'Reading every row of the table, from the first to the last.'}
+          - {term: 'Index', meaning: 'A separate list sorted by a column''s values, telling you where each row is.'}
+    check:
+      q: 'Why is the same query fast on 10 thousand rows and slow on 2 million?'
+      a: 'With no index, the database reads every row each time. So 200 times more rows means roughly 200 times more reading.'
+
+  - slug: btree-how-it-works
+    title: 'What a B-tree index really is'
+    kind: concept
+    tldr: 'A B-tree is a sorted tree: from the root, three or four steps down reach any value, and because neighbours sit together, ranges and ORDER BY are cheap too.'
+    keywords: ['B-tree', 'index structure', 'range query', 'ORDER BY', 'sorted tree', 'balanced tree']
+    blocks:
+      - type: metaphor
+        icon: book
+        title: 'The catalogue drawers'
+        body: |
+          A big catalogue drawer is labelled "Q to Z". Inside it, a smaller slot says "Ta to Th", and in that slot are the individual cards. At every step most of the remaining cards drop out of the search. Because the cards are in order, lifting out everything from "Tagore" to "Tolstoy" in one go is easy too.
+      - type: visual
+        kind: flow
+        caption: 'The journey of finding customer_id = 42 in a B-tree'
+        nodes:
+          - {id: q, label: 'query', sub: 'customer_id = 42', icon: search, col: 0, row: 1, tip: 'The value being looked for.'}
+          - {id: root, label: 'root page', sub: '1 - 2M', icon: layers, col: 1, row: 1, tip: 'The top of the tree. It records which range of values goes down which branch.'}
+          - {id: branch, label: 'branch page', sub: '1 - 10K', icon: layers, col: 2, row: 1, tip: 'A middle level. It narrows the range further and points to the next level down.'}
+          - {id: leaf, label: 'leaf page', sub: '40 - 45', icon: list, tone: accent, col: 3, row: 1, tip: 'The bottom level. It holds the sorted values and the location of each row. Leaves are linked to their neighbours, which makes reading a range easy.'}
+          - {id: table, label: 'table rows', sub: 'the real data', icon: db, col: 4, row: 1, tip: 'The leaf''s location is used to read the actual rows.'}
+        edges:
+          - {from: q, to: root, label: 'The search starts at the root page'}
+          - {from: root, to: branch, label: '42 falls in the 1 - 10K branch, so it goes down there'}
+          - {from: branch, to: leaf, label: 'A narrower range still: it arrives at the 40 - 45 leaf'}
+          - {from: leaf, to: table, label: 'Following the leaf''s locations, it fetches just 20 rows', tone: good}
+      - type: points
+        title: 'Because it is sorted, three jobs are cheap'
+        style: check
+        items:
+          - 'Lookup by value: even with 2 million rows, the tree is only 3 or 4 levels high.'
+          - 'Ranges: created_at BETWEEN ... The leaves sit side by side, so it is one continuous read.'
+          - 'ORDER BY: the data is already in order, so no separate sort is needed.'
+    aside:
+      - type: remember
+        body: 'B-tree = a sorted tree. You get lookup, ranges and ORDER BY, all three.'
+      - type: tips
+        items:
+          - 'The default index in PostgreSQL and MySQL (InnoDB) is a B-tree. You rarely need to say "B-tree" explicitly.'
+          - 'Searching from the middle of a value, such as LIKE ''%abc'', cannot use the sorted tree.'
+      - type: refs
+        items:
+          - {to: 'data/storage-engines', label: 'B-trees and LSM-trees underneath'}
+    check:
+      q: 'Why is a B-tree index useful for ORDER BY and range queries too?'
+      a: 'Because the values in the leaves are stored in order. A range of values can be read in one run, and the result comes out already sorted, with no separate sort.'
+
+  - slug: composite-index-order
+    title: 'Composite index: column order'
+    kind: howto
+    tldr: 'Column order in a composite index decides which queries it helps: equality columns first, range or sort columns after, and a condition must start from the left or the index is useless.'
+    keywords: ['composite index', 'leftmost prefix', 'column order', 'Doctrine Index', 'multi-column index']
+    blocks:
+      - type: metaphor
+        icon: book
+        title: 'The phone book rule'
+        body: |
+          A phone book is sorted by surname first, then by first name. Finding "Rahman" and then "Karim" inside that is easy. But if you only know "Karim" you would have to leaf through the whole book. This is the leftmost prefix rule: an index works only for conditions that start from its leftmost column.
+      - type: code
+        lang: php
+        file: 'src/Entity/CustomerOrder.php'
+        variant: good
+        code: |
+          #[ORM\Entity]
+          #[ORM\Table(name: 'customer_order')]
+          #[ORM\Index(
+              name: 'idx_order_customer_created',
+              columns: ['customer_id', 'created_at'],
+          )]
+          class CustomerOrder
+          {
+              #[ORM\Column]
+              private int $customerId;
+
+              #[ORM\Column]
+              private \DateTimeImmutable $createdAt;
+          }
+        marks:
+          - {line: 4, tip: 'Name the index yourself, so you can recognise it in EXPLAIN and in migrations.'}
+          - {line: 5, tip: 'The equality column (customer_id) first, the sorting column (created_at) after. This order lets one index serve "my orders, newest first".'}
+      - type: visual
+        kind: table
+        caption: 'Which queries the index (customer_id, created_at) helps'
+        headers: ['Query condition', 'Does the index help?']
+        rows:
+          - cells: ['customer_id = 42', 'Yes, the leftmost column']
+            tip: 'The search goes by the first column, so the index is fully used.'
+          - cells: ['customer_id = 42 ORDER BY created_at DESC', 'Yes, both lookup and sort']
+            tip: 'Within each customer_id, created_at is in order, so no separate sort is needed.'
+          - cells: ['customer_id = 42 AND created_at > ''2026-01-01''', 'Yes, the whole index']
+            tip: 'Equality, then a range. Both columns are used.'
+          - cells: ['created_at > ''2026-01-01''', 'No, the left column is skipped']
+            tip: 'Without the first column you cannot even begin. Like searching the phone book by first name only.'
+      - type: quote
+        body: 'Column order: equality conditions first, then the range or ORDER BY column. And if a condition does not start from the left, the index is useless.'
+    aside:
+      - type: tips
+        items:
+          - 'Two separate single-column indexes usually do not do the work of one well-chosen composite index.'
+          - 'Write the query first, then the index. Do not create one because "that column might get searched".'
+      - type: refs
+        items:
+          - {to: 'api/pagination', label: 'Cursor pagination needs exactly this index'}
+    check:
+      q: 'With an index on (customer_id, created_at), why will a query with only WHERE created_at > ... not use it?'
+      a: 'The index is sorted by customer_id first. created_at is sorted only inside each customer_id, so without the first column there is no way into it.'
+
+  - slug: read-explain
+    title: 'Reading a query plan with EXPLAIN'
+    kind: howto
+    tldr: 'EXPLAIN (ANALYZE) shows how the database really ran the query; Seq Scan turning into Index Scan means the index works, and a covering index even skips the table rows.'
+    keywords: ['EXPLAIN', 'EXPLAIN ANALYZE', 'query plan', 'Index Only Scan', 'covering index', 'INCLUDE']
+    blocks:
+      - type: text
+        body: |
+          Creating an index does not mean the database uses it. To be sure, put `EXPLAIN (ANALYZE, BUFFERS)` in front of the query. It really runs the query and shows the plan along with actual timings. First, glance for which "Scan" words appear.
+      - type: code
+        lang: text
+        file: 'EXPLAIN ANALYZE (no index)'
+        variant: bad
+        code: |
+          Limit  (actual time=410.8..412.5 rows=20 loops=1)
+            ->  Sort  (actual time=410.8..410.9 rows=20 loops=1)
+                  Sort Key: created_at DESC
+                  ->  Seq Scan on customer_order
+                        (actual time=0.02..408.9 rows=20 loops=1)
+                        Filter: (customer_id = 42)
+                        Rows Removed by Filter: 1999980
+          Execution Time: 412.7 ms
+        marks:
+          - {line: 4, tip: 'Seq Scan: reading the whole table. On a big table this is the red flag.'}
+          - {line: 7, tip: 'Rows Removed by Filter is nearly 2 million: rows read and thrown away. It touched 2 million rows to get 20.'}
+      - type: code
+        lang: sql
+        file: 'After adding the index, then a covering index'
+        variant: good
+        code: |
+          CREATE INDEX idx_order_customer_created
+            ON customer_order (customer_id, created_at);
+
+          EXPLAIN (ANALYZE, BUFFERS)
+          SELECT id, total_in_poisha FROM customer_order
+          WHERE customer_id = 42 ORDER BY created_at DESC LIMIT 20;
+          -- Index Scan Backward using idx_order_customer_created
+          -- Execution Time: 0.12 ms
+
+          -- Covering: keep the query's columns in the index itself
+          CREATE INDEX idx_order_customer_cov
+            ON customer_order (customer_id, created_at)
+            INCLUDE (total_in_poisha);
+          -- Now the plan shows Index Only Scan: no table rows touched
+        marks:
+          - {line: 7, tip: 'Index Scan Backward: the newest-first sorted index is being read from the far end. There is no separate Sort step.'}
+          - {line: 8, tip: 'From 412ms to 0.12ms. This number is the real proof.'}
+          - {line: 13, tip: 'INCLUDE: this column is copied into the leaf. If the index holds all the query''s columns, the real table need not be visited.'}
+    aside:
+      - type: commands
+        title: 'Ways to see a plan'
+        items:
+          - {cmd: 'EXPLAIN SELECT ...', desc: 'Only the plan; it does not run the query'}
+          - {cmd: 'EXPLAIN (ANALYZE, BUFFERS) SELECT ...', desc: 'Really runs it and shows actual timings'}
+      - type: pitfalls
+        items:
+          - 'EXPLAIN ANALYZE really runs the query. For an INSERT or UPDATE, run it inside BEGIN ... ROLLBACK.'
+          - 'On a small table the database picks Seq Scan on purpose, because it is cheaper. Test with production-sized data.'
+    check:
+      q: 'What do you conclude when EXPLAIN shows "Seq Scan" and "Rows Removed by Filter: 1999980"?'
+      a: 'The database read the whole table and threw away nearly every row. There is no index in the right order on the filter column, or the database is not using it.'
+
+  - slug: write-cost-of-indexes
+    title: 'The price of indexes: writes get slower'
+    kind: pitfall
+    tldr: 'Every index speeds up reads but must also be updated on every INSERT, UPDATE and DELETE; keep only the useful ones, and use partial indexes to keep them small.'
+    keywords: ['write amplification', 'partial index', 'unused index', 'too many indexes', 'index cost', 'WHERE index']
+    blocks:
+      - type: metaphor
+        icon: book
+        title: 'The catalogue when a new book arrives'
+        body: |
+          A new book arrives at the library. A card must go into the author catalogue, another into the subject catalogue, another into the publisher catalogue. The more catalogues there are, the slower it is to shelve a book. A database is the same: every new row has to be inserted in the right place in every index.
+      - type: visual
+        kind: compare
+        caption: '2 indexes versus 10 indexes on one table'
+        columns:
+          - title: '2 working indexes'
+            tone: good
+            icon: check
+            tip: 'Each index exists for some important query, and the extra cost on writes is small.'
+            items:
+              - 'Each INSERT updates 2 indexes'
+              - 'Less disk space'
+              - 'Every index serves some query'
+          - title: '10 "might need" indexes'
+            tone: bad
+            icon: warning
+            tip: 'Most of these indexes are never read, yet every write updates all of them.'
+            items:
+              - 'Each INSERT updates 10 indexes'
+              - 'The indexes can grow bigger than the table'
+              - 'An unused index is just dead weight'
+      - type: code
+        lang: php
+        file: 'src/Entity/CustomerOrder.php'
+        variant: good
+        code: |
+          #[ORM\Index(
+              name: 'idx_order_pending',
+              columns: ['created_at'],
+              options: ['where' => "(status = 'pending')"],
+          )]
+          class CustomerOrder
+          {
+              // ...
+          }
+        marks:
+          - {line: 4, tip: 'Partial index: only pending orders go into the index. The tens of millions of completed orders do not weigh it down. In Doctrine you can pass where through options (PostgreSQL).'}
+      - type: quote
+        body: 'Every index makes reads faster and every write slower. Keep only the indexes that some query actually uses.'
+    aside:
+      - type: commands
+        title: 'Finding unused indexes (PostgreSQL)'
+        items:
+          - {cmd: 'SELECT relname, indexrelname, idx_scan FROM pg_stat_user_indexes WHERE idx_scan = 0;', desc: 'Indexes that have never been used'}
+      - type: tips
+        items:
+          - 'Before dropping an index, check that idx_scan stayed at zero over several weeks of full traffic, month-end reports included.'
+          - 'On tables that are written to very often (logs, events), keep indexes to the bare minimum.'
+    check:
+      q: 'Why do many indexes slow writes down, and how does a partial index help?'
+      a: 'Every write must update every index too. A partial index holds only rows that match its condition, so it stays small and many writes never touch it.'
+
+flashcards:
+  - q: 'What is an index, and how does it make queries faster?'
+    a: 'A separate list sorted by a column''s values that says where each row is, so the whole table need not be read.'
+    more: |
+      Like a library catalogue: sorted cards take you straight to the shelf. Without an index the database reads every row one by one (a sequential scan).
+    ref: slow-without-index
+  - q: 'What is a B-tree index good for?'
+    a: 'Lookup by value (=), ranges (BETWEEN, >, <) and ORDER BY, because the values are kept sorted.'
+    more: |
+      Even with 2 million rows the tree is only 3 or 4 levels high, so a lookup finishes in a few steps. The leaves are linked side by side, so a range is one continuous read. But for a middle-of-value search like LIKE '%abc', the sorted tree does not help.
+    ref: btree-how-it-works
+  - q: 'What is the leftmost prefix rule?'
+    a: 'A composite index works only for queries whose conditions start from the index''s leftmost column.'
+    more: |
+      With an index on (a, b), searching by a, or by a and b together, works. Searching by b alone does not use the index. A phone book sorts by surname and then first name: you cannot look up by first name alone.
+    ref: composite-index-order
+  - q: 'In what order should you arrange the columns of a composite index?'
+    a: 'Columns with equality (=) conditions first, then the range or ORDER BY column.'
+    more: |
+      For WHERE customer_id = 42 ORDER BY created_at DESC, the right index is (customer_id, created_at). With the equality column first, the remaining columns are sorted inside it, so no separate sort is needed.
+    ref: composite-index-order
+  - q: 'What does Seq Scan in EXPLAIN tell you?'
+    a: 'The database read the whole table. On a big table it usually means an index is missing or not being used.'
+    more: |
+      A big number in Rows Removed by Filter shows how many rows were read and discarded. On a small table Seq Scan is fine: the database chose it on purpose because it is cheap. Always test with production-sized data.
+    ref: read-explain
+  - q: 'What is a covering index?'
+    a: 'An index that holds every column the query needs, so the real table rows are never touched (Index Only Scan).'
+    more: |
+      In PostgreSQL, INCLUDE (col) lets you keep extra columns in the leaf. Reads get faster, but the index grows and writes cost more. So use it only for very frequent queries.
+    ref: read-explain
+  - q: 'What is a partial index, and when is it useful?'
+    a: 'An index over only some rows, chosen by a WHERE condition (such as status = pending). It stays small and does not slow writes of the other rows.'
+    more: |
+      When most rows in a table are "finished" and queries care only about the active ones, an index over the whole table is a waste. In Doctrine, #[ORM\Index(options: ['where' => '...'])] creates a partial index on PostgreSQL.
+    ref: write-cost-of-indexes
+  - q: 'What is the cost of having many indexes?'
+    a: 'Every INSERT, UPDATE and DELETE must update every index, so writes get slower and disk use grows.'
+    more: |
+      It is like adding a card to every catalogue when a new book arrives. An index that no query uses only adds write cost. In PostgreSQL, look at pg_stat_user_indexes for indexes with idx_scan = 0 and drop them.
+    ref: write-cost-of-indexes
+
+quiz:
+  - q: 'Rahim''s query is WHERE customer_id = 42 AND status = ''paid'' ORDER BY created_at DESC LIMIT 20. Which composite index is best?'
+    hint: 'Equality columns first, the sorting column last.'
+    options:
+      - text: '(created_at, customer_id, status)'
+        correct: false
+        why: 'With the sorting column first, you cannot jump straight to customer_id. Every row has to be examined.'
+      - text: '(status, created_at)'
+        correct: false
+        why: 'customer_id is missing. status has only a few distinct values, so it cuts out almost nothing.'
+      - text: '(customer_id, status, created_at)'
+        correct: true
+        why: 'The two equality columns come first and the sorting column last. customer_id and status narrow it down, and then 20 rows are taken straight from created_at''s sorted order.'
+      - text: 'Three separate indexes, one per column'
+        correct: false
+        why: 'The database usually picks just one, and the others cannot supply the sort order. Writes cost three times as much.'
+    ref: composite-index-order
+  - q: 'You have an index on (customer_id, created_at). Which of these queries will it help?'
+    hint: 'Check whether the first column is in the condition.'
+    options:
+      - text: 'WHERE customer_id = 7'
+        correct: true
+        why: 'It starts from the leftmost column, so the index helps directly.'
+      - text: 'WHERE created_at > ''2026-01-01'''
+        correct: false
+        why: 'Without the first column there is no way into the index. It breaks the leftmost prefix rule.'
+      - text: 'WHERE customer_id = 7 AND created_at > ''2026-01-01'''
+        correct: true
+        why: 'Equality, then a range. Both columns follow the index order.'
+      - text: 'WHERE customer_id = 7 ORDER BY created_at DESC'
+        correct: true
+        why: 'Within each customer_id, created_at is sorted, so the result comes back without a separate sort.'
+    ref: composite-index-order
+  - q: 'Looking at this EXPLAIN output, what should you do?'
+    lang: text
+    code: |
+      Seq Scan on customer_order
+        (actual time=0.02..408.9 rows=20 loops=1)
+        Filter: (customer_id = 42)
+        Rows Removed by Filter: 1999980
+      Execution Time: 412.7 ms
+    hint: 'How many rows were touched to get 20?'
+    options:
+      - text: 'Create an index on customer_id, then run EXPLAIN again to confirm'
+        correct: true
+        why: '2 million rows were read for 20. With an index the plan should become an Index Scan, and you verify that in EXPLAIN.'
+      - text: 'Add more RAM to the database server'
+        correct: false
+        why: 'More RAM would read all the rows faster, but it would still read 2 million of them. The problem is the amount of work.'
+      - text: 'Lower the LIMIT to 10'
+        correct: false
+        why: 'The problem is in the filter. Reducing the LIMIT leaves the amount of reading almost the same.'
+      - text: 'Nothing, 412ms is always fine'
+        correct: false
+        why: '412ms is a lot for 20 rows, and it will keep growing as rows are added.'
+    ref: read-explain
+  - q: 'A log table takes thousands of INSERTs per second and has 8 indexes. What problem will it have?'
+    hint: 'How many places does each INSERT write to?'
+    options:
+      - text: 'SELECTs will be slow, because more indexes make lookups slower'
+        correct: false
+        why: 'More indexes do not usually slow lookups down; they slow writes.'
+      - text: 'Every INSERT updates 8 indexes, so writes are slow and more disk is used'
+        correct: true
+        why: 'A new entry must be placed in the right spot in every index. On a table written to this often, that is a heavy load.'
+      - text: 'Nothing, because indexes live in a separate file'
+        correct: false
+        why: 'Even in a separate file, they must be updated on every write.'
+      - text: 'The database will drop the extra indexes by itself'
+        correct: false
+        why: 'A database never drops your indexes on its own.'
+    ref: write-cost-of-indexes
+  - q: 'A company gets 50 million orders a year, mostly "delivered". Queries run frequently, and only on "pending" orders. Which index fits best?'
+    hint: 'Why keep rows the query never visits in the index?'
+    options:
+      - text: 'A plain index on the status column'
+        correct: false
+        why: 'The tens of millions of delivered rows would go into the index too. It gets bigger and slower, though the query never wants them.'
+      - text: 'A partial index only for rows where status = ''pending'''
+        correct: true
+        why: 'The index stays small, and most writes (orders becoming delivered) barely touch it.'
+      - text: 'A separate index on every column'
+        correct: false
+        why: 'Write cost multiplies, and none of them is specially small for pending rows.'
+      - text: 'No index, just a bigger server'
+        correct: false
+        why: 'The root cause is reading the wrong amount of data. A bigger server only hides it.'
+    ref: write-cost-of-indexes

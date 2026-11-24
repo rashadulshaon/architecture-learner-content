@@ -1,0 +1,332 @@
+slides:
+  - slug: silent-drift
+    title: 'Rules on paper, code that quietly drifts'
+    kind: story
+    tldr: 'If an architecture rule lives only in a document, the code drifts away from it unnoticed until the damage is big.'
+    keywords: ['architecture drift', 'erosion', 'rules', 'architecture decay', 'broken rules', 'code review']
+    blocks:
+      - type: metaphor
+        icon: heart
+        title: 'A diet chart vs weighing yourself daily'
+        body: |
+          The doctor hands Rahim a diet chart and he sticks it on the fridge. There is no scale in the house, so nobody notices the weight creeping up. Six months later, at the checkup, he is 15 kg heavier. An architecture rule is that same chart: if nobody measures it, nobody knows how far the code has moved.
+      - type: visual
+        kind: bars
+        caption: 'Rule-breaking imports over nine months (nobody was measuring)'
+        items:
+          - {label: 'January', value: 0, display: '0', tone: good, tip: 'At the start everyone follows the rule: nothing from Doctrine or HTTP inside the Domain.'}
+          - {label: 'March', value: 7, display: '7', tip: 'A few shortcuts in rushed features. Each one looks harmless on its own.'}
+          - {label: 'June', value: 31, display: '31', tone: warn, tip: 'Newcomers learn from the existing code. When they see shortcuts, they take shortcuts too.'}
+          - {label: 'September', value: 96, display: '96', tone: bad, tip: 'Now Domain and Doctrine are almost impossible to pull apart. Undoing it is a matter of months.'}
+      - type: text
+        body: |
+          This team had decided at the start: no Doctrine or HTTP code inside the Domain. The rule was written on the wiki, and a few people remembered it in code review. But people forget, people are busy, and reviewers don't scrutinise every single import.
+    aside:
+      - type: story
+        title: 'Small shortcuts, big decay'
+        body: |
+          Nobody objected to any single shortcut, because on its own each one was small. But over nine months, 96 of them added up until Doctrine was welded into the Domain code. The danger never arrived all at once. It came in through a little daily drift.
+      - type: remember
+        body: 'What isn''t measured drifts away, slowly.'
+    check:
+      q: 'The rule was on the wiki, so why did 96 violations pile up?'
+      a: 'Nobody was measuring it automatically. When you rely on human memory and code review, small violations slip past and keep accumulating.'
+
+  - slug: fitness-functions
+    title: 'Fitness functions: rules that test themselves'
+    kind: concept
+    tldr: 'A fitness function is an automated check that measures an architectural quality or rule and runs in CI. Break the rule and the build goes red.'
+    keywords: ['fitness function', 'evolutionary architecture', 'architecture test', 'automated check', 'CI', 'performance budget']
+    blocks:
+      - type: text
+        body: |
+          **Evolutionary architecture** is an architecture that can change in small, safe steps and still keep its important qualities while it changes. The guard that keeps those qualities in place is the **fitness function**. Think of the bathroom scale: on every commit it measures for itself and tells you whether everything is still fine.
+      - type: visual
+        kind: table
+        caption: 'A few rules and the automated guard behind each'
+        headers: ['Rule', 'Guard', 'When it runs']
+        rows:
+          - cells: ['No Doctrine inside the Domain', 'Deptrac or PHPat', 'Every pull request']
+            tip: 'Reads imports and class dependencies without running the code and checks them against the rule. A violation turns CI red.'
+          - cells: ['No more than 10 queries on the product list', 'PHPUnit test + query count', 'Every pull request']
+            tip: 'When an N+1 sneaks in, the query count jumps and the test catches it at once, long before anyone complains about slowness.'
+          - cells: ['p95 response under 300ms', 'k6 threshold', 'Every night']
+            tip: 'This is a performance budget. When the budget is exceeded the pipeline fails, so nobody quietly accepts a slowdown.'
+          - cells: ['No security holes in old libraries', 'composer audit', 'Every build']
+            tip: 'This is a fitness function too: the security quality is measured, and nobody has to remember to check it.'
+      - type: quote
+        body: 'A rule that is not measured automatically is not a rule, just a wish.'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Fitness function', meaning: 'An automated check that measures one architectural quality (speed, dependency rules, security) and reports pass or fail.'}
+          - {term: 'Performance budget', meaning: 'A speed limit, such as p95 of 300ms; if it is exceeded, the build fails.'}
+      - type: refs
+        items:
+          - {to: 'thinking/quality-attributes', label: 'Which qualities are worth measuring'}
+    check:
+      q: 'What is a fitness function, and why is it better than code review alone?'
+      a: 'It is an automated check of an architectural quality. It runs on every commit and never gets tired or busy, so it catches even small violations.'
+
+  - slug: write-fitness-functions
+    title: 'Guarding with Deptrac and a query budget'
+    kind: howto
+    tldr: 'Describe layers and permissions in deptrac.yaml, put a query-count limit in PHPUnit, and run both in CI. A violation blocks the merge.'
+    keywords: ['deptrac', 'PHPUnit', 'query count', 'CI pipeline', 'performance budget', 'architecture test']
+    blocks:
+      - type: text
+        body: |
+          First, the dependency rules: three layers and a list of who may know whom. **Domain** knows nobody, **Application** knows only Domain, and **Infrastructure** knows both.
+      - type: code
+        lang: yaml
+        file: 'deptrac.yaml'
+        code: |
+          deptrac:
+            paths:
+              - ./src
+            layers:
+              - name: Domain
+                collectors:
+                  - {type: directory, value: src/Domain/.*}
+              - name: Application
+                collectors:
+                  - {type: directory, value: src/Application/.*}
+              - name: Infrastructure
+                collectors:
+                  - {type: directory, value: src/Infrastructure/.*}
+            ruleset:
+              Domain: ~
+              Application: [Domain]
+              Infrastructure: [Domain, Application]
+        marks:
+          - {line: 15, tip: '`~` means Domain may not depend on any layer. Import Doctrine here and deptrac catches it.'}
+          - {line: 17, tip: 'Infrastructure may depend on both inner layers, but never the reverse. Arrows point inward only.'}
+      - type: text
+        body: |
+          Now the speed limit. If an N+1 or any extra query sneaks in, this test goes red immediately.
+      - type: code
+        lang: php
+        file: 'tests/Budget/ProductListBudgetTest.php'
+        code: |
+          final class ProductListBudgetTest extends WebTestCase
+          {
+              public function testProductListStaysWithinQueryBudget(): void
+              {
+                  $client = static::createClient();
+                  $client->enableProfiler();   // turns on the db collector
+
+                  $client->request('GET', '/api/products?limit=50');
+
+                  self::assertResponseIsSuccessful();
+                  $db = $client->getProfile()->getCollector('db');
+                  self::assertLessThanOrEqual(
+                      10,
+                      $db->getQueryCount(),
+                      'More than 10 queries on the product list: probably an N+1',
+                  );
+              }
+          }
+        marks:
+          - {line: 6, tip: 'Without the profiler there is no way to know how many queries ran.'}
+          - {line: 13, tip: 'The limit is 10. If each of the 50 products triggers its own query, the count passes 50 and the test fails.'}
+    aside:
+      - type: commands
+        title: 'What to run in CI'
+        items:
+          - {cmd: 'composer require --dev qossmic/deptrac', desc: 'Install Deptrac'}
+          - {cmd: 'vendor/bin/deptrac analyse', desc: 'Check the dependency rules; exit code is non-zero on a violation'}
+          - {cmd: 'php bin/phpunit --testsuite budget', desc: 'Run the query budget tests'}
+          - {cmd: 'k6 run --quiet load/products.js', desc: 'Nightly load test with a p95 threshold'}
+      - type: tips
+        items:
+          - 'On the day you add a new rule, many violations will show up. Record the old ones in a baseline file, block only new violations, then shrink the baseline over time.'
+          - 'Timing tests are flaky. In CI measure something stable like the query count, and measure time in a separate load test.'
+    check:
+      q: 'Why does ProductListBudgetTest measure the query count instead of time?'
+      a: 'Time varies from machine to machine, so the test would sometimes fail for no reason. The query count is stable, and it is enough to catch a real problem like N+1.'
+
+  - slug: last-responsible-moment
+    title: 'The last responsible moment: when to decide?'
+    kind: pitfall
+    tldr: 'Postpone hard-to-reverse decisions as long as waiting costs nothing, because that is when you know the most. But without a trigger, "later" never comes.'
+    keywords: ['last responsible moment', 'deferring decisions', 'premature decision', 'postponing decisions', 'trigger']
+    blocks:
+      - type: text
+        body: |
+          Having no plan is a problem, and so is over-planning. The **last responsible moment** is the final point after which not deciding starts to cost you. Decide before it and you decide with too little information; decide after it and you are late. You must book the hall before the wedding cards are printed, but the last dish on the menu can still change a few days before the wedding.
+      - type: visual
+        kind: compare
+        caption: 'Three moments to make a decision'
+        columns:
+          - title: 'Too early'
+            tone: warn
+            icon: clock
+            tip: 'A decision made on guesses, with little information. If it proves wrong, you throw away something expensive.'
+            items:
+              - 'Installing Kafka before there is any problem'
+              - 'Building on guesswork'
+          - title: 'Just in time'
+            tone: good
+            icon: check
+            tip: 'A decision made just before the last moment has the most information, and the damage has not started yet.'
+            items:
+              - 'Start with a small solution and keep measuring'
+              - 'Switch when the trigger is hit'
+          - title: 'Too late'
+            tone: bad
+            icon: warning
+            tip: 'The problem is already on fire, and now you decide in a hurry.'
+            items:
+              - 'The queue is overflowing, yet "we''ll look later"'
+              - 'Deciding in firefighting mode'
+      - type: code
+        lang: yaml
+        file: 'config/packages/messenger.yaml'
+        code: |
+          framework:
+            messenger:
+              transports:
+                # Today: the existing database is the queue. Trigger: 1000 messages/min or lag > 1 min
+                async: '%env(MESSENGER_TRANSPORT_DSN)%'
+              routing:
+                'App\Message\SendInvoiceEmail': async
+        marks:
+          - {line: 5, tip: 'Changing the DSN changes the transport (from doctrine://default to redis:// or amqp://). The decision is cheap, so it is safe to postpone.'}
+      - type: quote
+        body: 'Before you say "later", write down which number will make you look.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Postponing a decision without a trigger is just avoiding the problem.'
+          - 'Don''t postpone decisions that are expensive to change (the data model, a public API) so long that you get stuck.'
+      - type: refs
+        items:
+          - {to: 'thinking/reversible-decisions', label: 'Which decisions can be reversed'}
+    check:
+      q: 'Why is it safe to keep Messenger on the database transport today and change it later, and how do you pick the "later" moment?'
+      a: 'Changing the DSN switches the transport without touching the code, so the decision is cheap. Pick the moment with a measured number (such as message rate or lag), not with a feeling.'
+
+flashcards:
+  - q: 'What is evolutionary architecture?'
+    a: 'An architecture that can change in small, safe steps and still keeps its important qualities while it changes.'
+    more: |
+      The goal is not a perfect design up front; it is to keep change safe. Automated checks run at every step so that a change can't quietly break a rule or a quality.
+    ref: fitness-functions
+  - q: 'What is a fitness function?'
+    a: 'An automated check that measures an architectural quality or rule, reports pass or fail, and runs in CI.'
+    more: |
+      Examples: "no Doctrine in the Domain" (Deptrac), "no more than 10 queries on the list" (PHPUnit), "p95 of 300ms" (k6). Like a bathroom scale, it tells you the moment a rule is broken.
+    ref: fitness-functions
+  - q: 'What is architecture drift?'
+    a: 'The code slowly, almost silently, moving away from the rules of the real architecture.'
+    more: |
+      A single shortcut looks harmless, so nobody blocks it in review. But over months they pile up into serious decay. Automated checks are the only reliable prevention.
+    ref: silent-drift
+  - q: 'What is Deptrac used for?'
+    a: 'You write down which code layer may know which, and CI fails when the rules are broken.'
+    more: |
+      deptrac.yaml describes layers such as Domain, Application and Infrastructure and the permissions between them. `vendor/bin/deptrac analyse` reads dependencies without running the code and checks them against the rules. PHPat and PHPArkitect are similar alternatives.
+    ref: write-fitness-functions
+  - q: 'What is a performance budget?'
+    a: 'A speed limit (say p95 of 300ms, or 10 queries) that fails CI when exceeded.'
+    more: |
+      Once an app gets slow it is hard to win the speed back, because everyone gets used to it. With a budget, every change has to answer to the limit. In CI, measure stable things like query count instead of time, and your tests won't be flaky.
+    ref: write-fitness-functions
+  - q: 'What is the last responsible moment?'
+    a: 'The final point after which not deciding starts to cost you. Until then, you can postpone the decision.'
+    more: |
+      The later you decide, the more information you have. So decide hard-to-change things just before that moment. But "later" must not be open-ended: write down in advance which measured number will trigger the decision.
+    ref: last-responsible-moment
+  - q: 'What must you write down when you postpone a decision?'
+    a: 'A trigger: the measured number or event that will make you decide.'
+    more: |
+      For example: "if we pass 1000 messages a minute or the queue lag exceeds a minute, we move to Redis". Without a trigger, postponing is really avoidance, and the problem arrives like a fire.
+    ref: last-responsible-moment
+
+quiz:
+  - q: 'The team rule: no Doctrine in Domain code. What is the most reliable way to enforce it?'
+    hint: 'People get tired and forget. CI doesn''t.'
+    options:
+      - text: 'Add Deptrac or PHPat rules and run them in CI, so a violation turns the build red'
+        correct: true
+        why: 'It is measured automatically on every pull request, and nobody can forget.'
+      - text: 'Write the rule on the wiki in bold'
+        correct: false
+        why: 'Even when it is written down, if it isn''t measured nobody knows whether the code is drifting.'
+      - text: 'Have a senior engineer read the whole codebase every month'
+        correct: false
+        why: 'Slow, expensive, and human eyes skip small imports anyway.'
+      - text: 'Tell new team members the rule in person'
+        correct: false
+        why: 'Spoken rules get forgotten, and even longtime members take shortcuts.'
+    ref: silent-drift
+  - q: 'Which of these are good fitness functions?'
+    hint: 'If it can report pass or fail automatically, it qualifies.'
+    options:
+      - text: 'At most 10 queries on the list API, enforced in PHPUnit'
+        correct: true
+        why: 'A stable measure that runs on every PR and catches N+1 immediately.'
+      - text: 'A dependency rule: Domain knows no layer, enforced in Deptrac'
+        correct: true
+        why: 'Dependency rules can be measured automatically, so this is a good fitness function.'
+      - text: '"We will keep the code clean": a team pledge'
+        correct: false
+        why: 'Sincere, but it can''t be measured. So it is not a fitness function.'
+      - text: 'p95 under 300ms, with a k6 threshold in the nightly pipeline'
+        correct: true
+        why: 'Speed is measured, and the pipeline fails when the budget is exceeded.'
+    ref: fitness-functions
+  - q: 'What is wrong with this deptrac rule set?'
+    lang: yaml
+    code: |
+      ruleset:
+        Domain: [Infrastructure]
+        Application: [Domain]
+        Infrastructure: [Domain, Application]
+    hint: 'Look at the direction of the arrows: who knows whom?'
+    options:
+      - text: 'Domain may know Infrastructure: the dependency points from inside to outside instead of outside to inside'
+        correct: true
+        why: 'It opens the door for Doctrine or HTTP code to enter the Domain. The rule should be `Domain: ~`.'
+      - text: 'Application knows only Domain, which is too little'
+        correct: false
+        why: 'Application knowing Domain is exactly right. The problem is on another line.'
+      - text: 'Infrastructure should not know both inner layers'
+        correct: false
+        why: 'Infrastructure knowing the inner layers is the correct direction.'
+      - text: 'Nothing is wrong, you can write anything in the ruleset'
+        correct: false
+        why: 'The ruleset is the architecture rule. Write it wrong and you guard the wrong thing.'
+    ref: write-fitness-functions
+  - q: 'The product list used to run 8 queries and now runs 54. What is the best way to catch this in CI?'
+    hint: 'Measure what is stable.'
+    options:
+      - text: 'Put a limit on the profiler''s query count in a functional test'
+        correct: true
+        why: 'With an N+1 the query count jumps at once and the test fails; the number is stable, so it isn''t flaky.'
+      - text: 'Fail the test if it takes more than 200ms on the clock'
+        correct: false
+        why: 'CI machine speed varies, so the test would fail now and then for no reason.'
+      - text: 'Wait until users complain in production'
+        correct: false
+        why: 'By then users have gotten used to the slowness, and the cause is harder to find.'
+      - text: 'Put a cache on every query'
+        correct: false
+        why: 'A cache hides the problem rather than fixing it, and adds complexity of its own.'
+    ref: write-fitness-functions
+  - q: 'A new project must send emails in the background. Someone says, "Let''s install RabbitMQ now, or we''ll be in trouble later." Which is the better decision by the last responsible moment?'
+    hint: 'How cheap is it to change the transport in Messenger?'
+    options:
+      - text: 'Start with the Messenger doctrine transport; write down a trigger on message rate or lag and switch when it is hit'
+        correct: true
+        why: 'The decision is cheap (a DSN change), there will be more information later, and the trigger makes sure "later" really arrives.'
+      - text: 'Install RabbitMQ right now, because changing later will be hard'
+        correct: false
+        why: 'With Messenger it isn''t hard to change; installing it now only adds operational burden.'
+      - text: 'Skip the queue and send the email inside the request'
+        correct: false
+        why: 'The user waits, and fixing it later means changing scattered code.'
+      - text: 'Say "we''ll look later" without fixing any number'
+        correct: false
+        why: 'Without a trigger "later" never comes; it comes after the fire starts.'
+    ref: last-responsible-moment

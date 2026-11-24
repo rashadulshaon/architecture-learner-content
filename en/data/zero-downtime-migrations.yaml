@@ -1,0 +1,410 @@
+slides:
+  - slug: alter-table-freeze
+    title: 'One ALTER TABLE froze the whole site'
+    kind: story
+    tldr: 'A schema-change command on a big table holds a lock while every query behind it queues up. New code running against an old schema breaks things too.'
+    keywords: ['ALTER TABLE', 'lock', 'zero downtime', 'migration', 'schema change', 'downtime']
+    blocks:
+      - type: metaphor
+        icon: building
+        title: 'Replacing a bridge on a busy road'
+        body: |
+          Close a busy Dhaka road to demolish its old bridge and hundreds of thousands of people are stuck. A sensible engineer builds a new bridge alongside, moves the traffic onto it, and only then tears down the old one. A database schema change works the same way: don't tear down the old structure in place; build the new one next to it and move across step by step.
+      - type: text
+        body: |
+          At midday, Rahim ran a migration that changed a column on the `users` table, which has 10 million rows. The command held a lock on the table for 40 seconds, a lock that blocks all reads and writes. Thousands of the app's queries piled up in line behind it.
+      - type: visual
+        kind: sequence
+        caption: 'Everyone gets stuck behind one slow ALTER'
+        actors:
+          - {id: mig, label: 'Migration', icon: tools, tip: 'The schema-change command; it asks for an exclusive lock on the table.'}
+          - {id: db, label: 'Database', icon: db, tip: 'Keeps a queue of lock requests; when one is held up, everything behind it waits too.'}
+          - {id: app, label: 'App query', icon: server, tip: 'An ordinary SELECT or UPDATE that just touches this table.'}
+        messages:
+          - {from: mig, to: db, label: 'ALTER TABLE users ...'}
+          - {at: db, note: 'Exclusive lock on users for 40 seconds', tone: bad, tip: 'Rewriting rows across the whole table takes time, and nobody can get in meanwhile.'}
+          - {from: app, to: db, label: 'SELECT ... FROM users'}
+          - {at: app, note: 'Waiting... waiting... timeout', tone: bad, tip: 'The connection pool fills up, and then other pages stop responding too.'}
+      - type: quote
+        body: 'Write every migration on the assumption that the site stays up while it runs.'
+    aside:
+      - type: story
+        title: 'Old code, new schema'
+        body: |
+          There's a second kind of trouble. The migration finishes, but half the servers are still running old code, which looks for a column that's gone. Deploys don't happen all at once; for a while, old and new code and schema coexist.
+      - type: terms
+        items:
+          - {term: 'Zero-downtime', meaning: 'Users notice no interruption while the change is being made.'}
+          - {term: 'Exclusive lock', meaning: 'A lock that stops everyone else from reading or writing that table while it is held.'}
+    check:
+      q: 'Why does one slow ALTER block the whole site, not just that one query?'
+      a: 'While ALTER holds the lock, every query on that table queues up and the connection pool fills. Then even unrelated pages can''t respond.'
+
+  - slug: expand-migrate-contract
+    title: 'Expand, migrate, contract: build the bridge alongside'
+    kind: concept
+    tldr: 'Three safe steps: first add the new structure (expand), then move data and code over (migrate), and finally remove the old one (contract). Each step is its own deploy.'
+    keywords: ['expand contract', 'parallel change', 'rename column', 'backward compatible migration', 'dual write']
+    blocks:
+      - type: text
+        body: |
+          To rename the `phone` column to `mobile_number`, you can't run `RENAME COLUMN` in one go, because old code will still look for `phone` while the deploy rolls out. So it takes three phases. **Expand**: add the new column and keep the old one. **Migrate**: make the code write to both columns, copy the old data into the new one, then switch reads to the new column. **Contract**: once nothing uses the old column, drop it. At the end of every step, both old and new code can run.
+      - type: visual
+        kind: steps
+        caption: '`phone` to `mobile_number`: six small steps, each its own deploy'
+        steps:
+          - {title: '1. Expand', body: 'Add a nullable `mobile_number`', tip: 'The new column is empty; old code doesn''t notice a thing.'}
+          - {title: '2. Dual write', body: 'Code writes to both columns', tip: 'From now on, new writes land in both places.'}
+          - {title: '3. Backfill', body: 'Copy old rows in batches', tip: 'Old data moves into the new column gradually, so no long lock is needed.'}
+          - {title: '4. Read new', body: 'Code reads the new column', tip: 'Before this step, make sure every row has been copied.'}
+          - {title: '5. Stop old', body: 'Stop writing the old column', tip: 'Watch for a while and confirm nothing broke.'}
+          - {title: '6. Contract', body: 'Drop the `phone` column', tip: 'The final step. Before it you can still go back, after it you can''t, so take a backup first.'}
+      - type: points
+        title: 'The rules'
+        style: check
+        items:
+          - 'At the end of each step, both old code and new code must work.'
+          - 'Schema changes and code deploys go in separate releases, never together.'
+          - 'The last step (the drop) comes at the very end, once you are sure.'
+    aside:
+      - type: remember
+        body: 'Add first, then move, and delete last.'
+      - type: refs
+        items:
+          - {to: 'resilience/zero-downtime-deploys', label: 'Code deploys follow the same rule'}
+          - {to: 'data/serialization', label: 'The same logic as changing an API field'}
+    check:
+      q: 'What breaks if you rename the `phone` column and deploy the new code in a single migration?'
+      a: 'During the deploy, old code still looks for `phone`, which no longer exists. Splitting it into add, move and drop avoids this.'
+
+  - slug: safe-doctrine-migrations
+    title: 'The expand step in a Doctrine Migration'
+    kind: howto
+    tldr: 'Write Doctrine Migrations with a nullable column, `CREATE INDEX CONCURRENTLY` and `lock_timeout`. Locks stay short, and a failure backs out quickly.'
+    keywords: ['Doctrine Migrations', 'CREATE INDEX CONCURRENTLY', 'lock_timeout', 'isTransactional', 'nullable column']
+    blocks:
+      - type: text
+        body: |
+          In PostgreSQL, adding a nullable column with a default is nearly instant. But a plain `CREATE INDEX` blocks writes to the table, while `CONCURRENTLY` doesn't, though it can't run inside a transaction. So in Doctrine Migrations you return `false` from `isTransactional()`. Also set a `lock_timeout`: if the lock isn't available, the migration gives up after 3 seconds instead of freezing the site.
+      - type: code
+        lang: php
+        file: 'migrations/Version20260301000001.php'
+        variant: good
+        code: |
+          final class Version20260301000001 extends AbstractMigration
+          {
+              public function getDescription(): string
+              {
+                  return 'expand: users.mobile_number + index';
+              }
+
+              // CREATE INDEX CONCURRENTLY can't run inside a transaction
+              public function isTransactional(): bool
+              {
+                  return false;
+              }
+
+              public function up(Schema $schema): void
+              {
+                  $this->addSql("SET lock_timeout = '3s'");
+                  $this->addSql('ALTER TABLE users ADD mobile_number VARCHAR(20) DEFAULT NULL');
+                  $this->addSql(
+                      'CREATE INDEX CONCURRENTLY idx_users_mobile ON users (mobile_number)'
+                  );
+              }
+
+              public function down(Schema $schema): void
+              {
+                  $this->addSql('DROP INDEX CONCURRENTLY idx_users_mobile');
+                  $this->addSql('ALTER TABLE users DROP mobile_number');
+              }
+          }
+        marks:
+          - {line: 11, tip: 'Without a transaction, a failure halfway leaves the work half done, so keep a migration like this small.'}
+          - {line: 16, tip: 'If the lock isn''t available, it errors out after 3 seconds. Let the migration fail rather than the site, and run it again later.'}
+          - {line: 19, tip: 'CONCURRENTLY builds the index without locking the table. It takes longer, but writes keep flowing.'}
+      - type: code
+        lang: php
+        file: 'src/Entity/User.php'
+        variant: good
+        code: |
+          #[ORM\Column(length: 20, nullable: true)]
+          private ?string $phone = null;          // old, stays for a while
+
+          #[ORM\Column(length: 20, nullable: true)]
+          private ?string $mobileNumber = null;   // new
+
+          public function changeMobile(string $number): void
+          {
+              $this->mobileNumber = $number;
+              $this->phone = $number;             // dual write: old code still gets correct data
+          }
+
+          public function getMobile(): ?string
+          {
+              return $this->mobileNumber ?? $this->phone;   // fallback until the backfill is done
+          }
+        marks:
+          - {line: 10, tip: 'Writing both columns means that even after a rollback, old code finds correct data.'}
+          - {line: 15, tip: 'Rows not yet backfilled have an empty `mobileNumber`, hence the fallback.'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'If `CONCURRENTLY` fails it leaves an INVALID index behind. Run `DROP INDEX CONCURRENTLY` and build it again.'
+          - 'In MySQL, spell out `ALGORITHM=INPLACE, LOCK=NONE`; if that''s not possible it errors instead of quietly taking a lock.'
+      - type: commands
+        title: 'Doctrine Migrations'
+        items:
+          - {cmd: 'php bin/console make:migration', desc: 'generate a migration from your entities, then review it by hand'}
+          - {cmd: 'php bin/console doctrine:migrations:migrate --dry-run', desc: 'see the SQL without running it'}
+          - {cmd: 'php bin/console doctrine:migrations:status', desc: 'see which migrations are still pending'}
+    check:
+      q: 'If you run a migration with `lock_timeout = 3s` and the lock isn''t available, what happens, and why is that good?'
+      a: 'After 3 seconds the migration errors out by itself. The site doesn''t freeze, and you can rerun the failed migration in a quiet period.'
+
+  - slug: batched-backfill
+    title: 'Backfill: millions of rows in small batches'
+    kind: howto
+    tldr: 'One `UPDATE` over 10 million rows means a long lock and a huge transaction. Instead, run a re-runnable command that handles 1,000 rows at a time with a short pause.'
+    keywords: ['backfill', 'batch update', 'resumable', 'Symfony Command', 'ArrayParameterType', 'batching']
+    blocks:
+      - type: text
+        body: |
+          Updating 10 million rows in one `UPDATE` means minutes of locking, a gigantic transaction log, and replicas falling behind. A better approach is like cooking for a wedding: not every pot at once, but one at a time. Process 1,000 rows per round, pause briefly between rounds, and advance by `id` so that if it stops partway you can restart from the same place.
+      - type: code
+        lang: php
+        file: 'src/Command/BackfillMobileCommand.php'
+        variant: good
+        code: |
+          #[AsCommand(name: 'app:backfill-mobile')]
+          final class BackfillMobileCommand extends Command
+          {
+              public function __construct(private readonly Connection $db)
+              {
+                  parent::__construct();
+              }
+
+              protected function execute(InputInterface $in, OutputInterface $out): int
+              {
+                  $lastId = 0;
+                  while (true) {
+                      $ids = $this->db->fetchFirstColumn(
+                          'SELECT id FROM users WHERE id > ? AND mobile_number IS NULL
+                           AND phone IS NOT NULL ORDER BY id LIMIT 1000',
+                          [$lastId],
+                      );
+                      if ($ids === []) {
+                          return Command::SUCCESS;
+                      }
+                      $this->db->executeStatement(
+                          'UPDATE users SET mobile_number = phone WHERE id IN (?)',
+                          [$ids], [ArrayParameterType::INTEGER],
+                      );
+                      $lastId = (int) end($ids);
+                      $out->writeln("done up to id $lastId");
+                      usleep(100_000);   // let the replica and the database catch their breath
+                  }
+              }
+          }
+        marks:
+          - {line: 14, tip: 'Advancing with `id > ?` resumes from the last position each time. Because of `mobile_number IS NULL`, a rerun never touches rows already done.'}
+          - {line: 27, tip: 'A short pause. It keeps replicas from lagging and leaves room for other queries.'}
+      - type: visual
+        kind: bars
+        caption: '10 million rows: all at once vs in batches (lock time per transaction)'
+        items:
+          - {label: 'One UPDATE', value: 600, display: '~10 minutes', tone: bad, tip: 'The rows stay locked for that long, and the transaction log grows huge too.'}
+          - {label: '10,000 per batch', value: 12, display: '~12 seconds', tone: warn, tip: 'Better, but still noticeable at peak hours.'}
+          - {label: '1,000 per batch', value: 1, display: '~1 second', tone: good, tip: 'Each batch is so short that no query gets stuck behind it.'}
+    aside:
+      - type: tips
+        items:
+          - 'Add a `--dry-run` option that reports how many rows are left; it also gives you progress while the job runs.'
+          - 'Measure replica lag. If lag grows, shrink the batch size or lengthen the pause.'
+      - type: pitfalls
+        items:
+          - 'Advance with `id >`, not OFFSET; OFFSET gets slower as rows pile up and can skip rows when data changes underneath it.'
+    check:
+      q: 'If the backfill command is stopped halfway and you run it again, what happens, and why is that safe?'
+      a: 'Rows whose `mobile_number` is already filled are excluded by the `IS NULL` condition, so only the remaining ones are picked up. The job is idempotent and can be rerun freely.'
+
+  - slug: dangerous-ddl
+    title: 'Traps: NOT NULL, foreign keys and plain indexes'
+    kind: pitfall
+    tldr: 'On a big table, a direct `SET NOT NULL`, `ADD FOREIGN KEY` or plain `CREATE INDEX` scans or locks the whole table. Doing it in two steps (NOT VALID, then VALIDATE) is safe.'
+    keywords: ['SET NOT NULL', 'NOT VALID', 'VALIDATE CONSTRAINT', 'foreign key', 'lock', 'CHECK constraint']
+    blocks:
+      - type: text
+        body: |
+          The new column will eventually need `NOT NULL`, but a direct `SET NOT NULL` scans the whole table and holds a lock while it does. Foreign keys behave the same way. The fix: first add the constraint as **NOT VALID** (only new writes are checked, not existing rows), then run a separate `VALIDATE CONSTRAINT`, which doesn't block the table.
+      - type: code
+        lang: sql
+        file: 'Dangerous'
+        variant: bad
+        code: |
+          -- full table scan, with writes blocked meanwhile
+          ALTER TABLE users ALTER COLUMN mobile_number SET NOT NULL;
+
+          -- checks every row while holding a lock
+          ALTER TABLE orders
+            ADD CONSTRAINT fk_orders_user FOREIGN KEY (user_id) REFERENCES users (id);
+        marks:
+          - {line: 2, tip: 'On a big table this can take minutes, and writes are blocked the whole time.'}
+      - type: code
+        lang: sql
+        file: 'Safe'
+        variant: good
+        code: |
+          -- step 1: enforce on new writes only, existing rows untouched: fast
+          ALTER TABLE users
+            ADD CONSTRAINT users_mobile_nn CHECK (mobile_number IS NOT NULL) NOT VALID;
+
+          -- step 2: check the existing rows while writes carry on
+          ALTER TABLE users VALIDATE CONSTRAINT users_mobile_nn;
+
+          -- step 3 (PostgreSQL 12+): the proof exists, so NOT NULL needs no scan
+          ALTER TABLE users ALTER COLUMN mobile_number SET NOT NULL;
+          ALTER TABLE users DROP CONSTRAINT users_mobile_nn;
+
+          -- same for foreign keys: ADD CONSTRAINT ... NOT VALID, then VALIDATE
+        marks:
+          - {line: 3, tip: 'With `NOT VALID`, only new writes are checked right now; existing rows aren''t examined, so the lock stays short.'}
+          - {line: 6, tip: '`VALIDATE` takes a weaker lock: reads and writes continue.'}
+          - {line: 9, tip: 'From PostgreSQL 12, with a valid CHECK constraint in place, `SET NOT NULL` skips the scan.'}
+      - type: quote
+        body: 'On a big table, any command that scans every row also holds a lock. Take the short lock first, do the heavy check later.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Dropping a column comes dead last: if old code still reads it, you get 500 errors immediately.'
+          - 'Changing a column''s type (`ALTER TYPE`) often rewrites the whole table. Build a new column and use expand-contract.'
+      - type: remember
+        body: 'On big tables: NOT VALID first, VALIDATE after.'
+    check:
+      q: 'Why use `CHECK ... NOT VALID` and `VALIDATE` instead of a direct `SET NOT NULL`?'
+      a: 'A direct statement holds the lock for the whole table scan. Two steps keep the lock short, and writes aren''t blocked while validation runs.'
+
+flashcards:
+  - q: 'What does zero-downtime migration mean?'
+    a: 'The site stays up during the schema change, and both old and new code keep working.'
+    more: |
+      There are two goals: avoid long locks, and cope with the period during a deploy when old and new code run side by side. As a result, a migration is usually split into several small, separate releases.
+    ref: alter-table-freeze
+  - q: 'What is expand-migrate-contract?'
+    a: 'A three-phase safe change: add the new structure, move data and code across, then delete the old one.'
+    more: |
+      To rename a column: add a new column (expand), write to both and backfill, then read from the new one (migrate), and finally drop the old column (contract). Each step is its own deploy, so at every moment both old and new code work.
+    ref: expand-migrate-contract
+  - q: 'Why is renaming a column and changing code in one release dangerous?'
+    a: 'During the deploy, some servers still run old code that looks for the old column name, which no longer exists.'
+    more: |
+      In a rolling deploy, old and new code run side by side for a while. It's impossible to change the migration and the code at the same instant. So keep the schema in a state that works for both versions.
+    ref: expand-migrate-contract
+  - q: 'What must you do to run `CREATE INDEX CONCURRENTLY` in a Doctrine Migration?'
+    a: 'Return `false` from `isTransactional()`, because PostgreSQL won''t let that command run inside a transaction.'
+    more: |
+      `CONCURRENTLY` builds the index without locking the table, but takes longer. If it fails it leaves an INVALID index behind; drop it with `DROP INDEX CONCURRENTLY` and build it again. It's best to keep such a command alone in its migration.
+    ref: safe-doctrine-migrations
+  - q: 'What is the benefit of setting `lock_timeout` in a migration?'
+    a: 'If it can''t get the lock, the migration fails by itself after a short wait, so queries don''t pile up behind it and take the site down.'
+    more: |
+      `SET lock_timeout = '3s'` means it never waits more than 3 seconds for a lock. The migration fails, but the site keeps running. You can try again during a quiet period.
+    ref: safe-doctrine-migrations
+  - q: 'How do you backfill a big table?'
+    a: 'In small batches (say 1,000 rows), advancing by `id`, with pauses between them, in a command you can safely rerun.'
+    more: |
+      A single `UPDATE` over millions of rows creates a long lock and a huge transaction. Batching keeps each lock short. An `IS NULL` condition makes reruns safe. Measure replica lag to tune the speed.
+    ref: batched-backfill
+  - q: 'What does `ADD CONSTRAINT ... NOT VALID` do?'
+    a: 'It enforces the constraint on new writes right away, but postpones checking existing rows. That keeps the lock short.'
+    more: |
+      Running `VALIDATE CONSTRAINT` afterwards checks the existing rows, and reads and writes continue meanwhile. This works for foreign keys and CHECK constraints. In PostgreSQL 12+, a valid CHECK lets `SET NOT NULL` skip the scan.
+    ref: dangerous-ddl
+quiz:
+  - q: 'A team wants to rename the `orders.status` column to `state`, and deploys are rolling. What is the safest path?'
+    hint: 'In a rolling deploy, old and new code run side by side for a while.'
+    options:
+      - text: 'Add a new `state` column, write to both, backfill, read from the new one, then drop `status`'
+        correct: true
+        why: 'At every step, both old and new code work.'
+      - text: '`RENAME COLUMN` and the new code in the same release'
+        correct: false
+        why: 'During the deploy, old servers will look for `status`, which is gone.'
+      - text: 'Take the site down at night and rename it'
+        correct: false
+        why: 'That means downtime, which is unacceptable for a 24/7 service.'
+      - text: 'Just put an alias in the code and leave the column alone'
+        correct: false
+        why: 'That doesn''t rename anything; the goal is to rename the column itself, and an alias isn''t a lasting fix.'
+    ref: expand-migrate-contract
+  - q: 'Why will this migration cause a problem?'
+    lang: php
+    code: |
+      public function up(Schema $schema): void
+      {
+          $this->addSql('CREATE INDEX CONCURRENTLY idx_o ON orders (user_id)');
+      }
+      // isTransactional() is not overridden
+    hint: 'How does a Doctrine Migration run by default?'
+    options:
+      - text: 'By default the migration runs in a transaction, and PostgreSQL won''t allow `CONCURRENTLY` there: error'
+        correct: true
+        why: 'You need `isTransactional(): bool { return false; }`.'
+      - text: 'CONCURRENTLY will lock the whole table'
+        correct: false
+        why: 'Quite the opposite, `CONCURRENTLY` doesn''t lock; the trouble is that it can''t run inside a transaction.'
+      - text: 'The index will be built but nobody will use it'
+        correct: false
+        why: 'The command fails right away.'
+      - text: 'There is no problem'
+        correct: false
+        why: 'Running `CREATE INDEX CONCURRENTLY` inside a transaction makes PostgreSQL raise an error.'
+    ref: safe-doctrine-migrations
+  - q: 'Which are the safe and correct ways to fill a new column on a table with 20 million rows?'
+    hint: 'All at once, or in small pieces?'
+    options:
+      - text: 'In batches of 1,000 rows, advancing by `id`, with pauses between them'
+        correct: true
+        why: 'Each lock stays short and the site keeps running.'
+      - text: 'Write the job so it can be rerun safely (an `IS NULL` condition)'
+        correct: true
+        why: 'If it stops halfway, you can pick up from where it left off.'
+      - text: 'Run one `UPDATE users SET mobile_number = phone`'
+        correct: false
+        why: 'It creates a long lock, a huge log and replica lag.'
+      - text: 'Load every row into PHP memory and save them one by one'
+        correct: false
+        why: 'It runs out of RAM, and every row costs a separate round trip.'
+    ref: batched-backfill
+  - q: 'The `reference` column on a 50-million-row `payments` table is now fully populated. What is the safest way to add `NOT NULL`?'
+    hint: 'Keep the lock short, and do the verification separately.'
+    options:
+      - text: 'Add CHECK (reference IS NOT NULL) NOT VALID, then VALIDATE, then SET NOT NULL'
+        correct: true
+        why: 'The heavy check runs without blocking, and the last step needs no scan (PG 12+).'
+      - text: 'Run `ALTER COLUMN reference SET NOT NULL` directly'
+        correct: false
+        why: 'The lock is held for the whole table scan.'
+      - text: 'Drop the table and recreate it'
+        correct: false
+        why: 'You would lose all the data.'
+      - text: 'Be content with adding validation in the app'
+        correct: false
+        why: 'Something can bypass the app and insert blanks; a database constraint is the last line of defence.'
+    ref: dangerous-ddl
+  - q: 'You ran an `ALTER TABLE` at midday. Database CPU is low, yet the site is stuck. What is the most likely cause?'
+    hint: 'Low CPU means waiting, not working.'
+    options:
+      - text: 'The ALTER holds a lock, or is waiting for one, and every query behind it is stuck'
+        correct: true
+        why: 'When the lock queue builds up the connection pool fills, while CPU stays low.'
+      - text: 'The database disk is full'
+        correct: false
+        why: 'A full disk produces write errors, and you would see other symptoms.'
+      - text: 'A bug in the new code'
+        correct: false
+        why: 'The timing matches the ALTER; check the database''s lock list first.'
+      - text: 'A DNS problem'
+        correct: false
+        why: 'With DNS trouble there would be no connections at all; here connections exist but queries are stuck.'
+    ref: alter-table-freeze

@@ -1,0 +1,373 @@
+slides:
+  - slug: backup-that-never-restored
+    title: 'There was a backup, but it wouldn''t restore'
+    kind: story
+    tldr: 'Believing your backup works is not the same as restoring it and seeing; a backup nobody has tested often turns out empty or corrupt on the day it is needed.'
+    keywords: ['backup', 'restore', 'tested backup', 'disaster', 'data loss', 'backup verification']
+    blocks:
+      - type: text
+        body: |
+          At 3:02 on a Friday afternoon, a developer runs `DELETE FROM orders` on production by mistake, without a `WHERE`. It's noticed within ten minutes. "Don't worry, we back up every night." But when they go to restore, the backup files turn out to be 0 bytes: the disk had been full for 3 weeks. Nobody ever opened a file to check.
+      - type: visual
+        kind: sequence
+        caption: 'A backup ran every night, and for three weeks it was empty'
+        actors:
+          - {id: dev, label: 'Developer', icon: user, tip: 'Made the mistake, but the real fault is in the system: data can be deleted from production this easily.'}
+          - {id: db, label: 'Production DB', icon: db, tip: 'Does what it is told, even a mistaken command.'}
+          - {id: bk, label: 'Backup server', icon: archive, tip: 'Stores a file every night, but nobody checks whether the file is any good.'}
+        messages:
+          - {from: dev, to: db, label: '3:02: DELETE FROM orders (no WHERE)'}
+          - {at: db, note: '1,200,000 orders gone', tone: bad}
+          - {from: dev, to: bk, label: '3:12: restore last night''s backup'}
+          - {from: bk, to: dev, label: 'File is 0 bytes: empty for 3 weeks', dashed: true, tone: bad, tip: 'The disk was full and the backup job failed silently. Nobody had set up an alert.'}
+          - {at: bk, note: 'Nobody ever tried a restore', tone: warn}
+      - type: quote
+        body: 'A backup you have never restored is not a backup. It is a hope.'
+    aside:
+      - type: story
+        title: 'A real story, many times over'
+        body: |
+          Companies large and small have lived this: the backup job showed green, but the files were useless because of a wrong directory, a full disk or a lost password. They found out on the very day they needed them.
+      - type: terms
+        items:
+          - {term: 'RPO', meaning: 'Recovery Point Objective: the most data, measured in time, you can afford to lose.'}
+          - {term: 'RTO', meaning: 'Recovery Time Objective: how quickly you must be back up and running.'}
+    check:
+      q: 'Why can''t you be sure the backup is fine just because the nightly job reports "success"?'
+      a: 'A successful job only means the command finished. Whether the file is complete, intact and restorable is proven only by actually restoring it.'
+
+  - slug: three-two-one
+    title: 'Photocopies of the deed: the 3-2-1 rule'
+    kind: concept
+    tldr: 'Keep 3 copies of your data, on 2 kinds of storage, with 1 at another location. And a replica is not a backup, because a mistaken DELETE reaches it instantly too.'
+    keywords: ['3-2-1 rule', 'offsite', 'immutable backup', 'replica vs backup', 'ransomware', 'backup copies']
+    blocks:
+      - type: metaphor
+        icon: building
+        title: 'The land deed'
+        body: |
+          The original deed for your land sits in the safe at home. What if it burns or gets stolen? So you keep a photocopy in a bank locker and another at the family house in the village. If the house burns, the locker copy survives; if the city floods, the village copy does. Keep all copies in the same safe and you really have one copy.
+      - type: visual
+        kind: flow
+        caption: '3-2-1: three copies, two kinds of storage, one far away'
+        nodes:
+          - {id: prod, label: 'Production DB', sub: 'copy 1 (original)', icon: db, tone: accent, col: 0, row: 1, tip: 'The live database. It counts as a copy, but isn''t enough on its own.'}
+          - {id: local, label: 'Separate disk', sub: 'copy 2 (same region)', icon: archive, col: 2, row: 0, tip: 'Regular backups and WAL on a separate machine or disk, for fast restores.'}
+          - {id: remote, label: 'Bucket in another region', sub: 'copy 3 (offsite)', icon: cloud, tone: good, col: 4, row: 1, tip: 'Object storage in another city or region. Turn on immutability (no deletes) here.'}
+        edges:
+          - {from: prod, to: local, label: 'Daily full-incremental backups and WAL go to a separate disk'}
+          - {from: local, to: remote, label: 'That copy goes to a bucket in another region, made immutable'}
+          - {from: prod, to: remote, label: 'WAL also goes there directly, so you can recover to the latest moment', dashed: true}
+      - type: quote
+        body: 'A replica is not a backup. A mistaken DELETE and ransomware reach the replica instantly too.'
+    aside:
+      - type: problem
+        body: 'With a single copy, any one of fire, disk wear, a mistaken command or an attacker ends everything.'
+      - type: tips
+        items:
+          - 'Turn on object lock (immutability) on the offsite bucket, so neither an attacker nor a mistake can delete the copies.'
+          - 'Store the backup encryption key somewhere else, or you will have the files and no way to open them.'
+    check:
+      q: 'The primary already has a replica. Why do you still need a separate backup?'
+      a: 'A replica copies every change from the primary the moment it happens, including a mistaken DELETE. A backup lets you go back to an earlier moment; a replica doesn''t.'
+
+  - slug: point-in-time-recovery
+    title: 'Point-in-time recovery: back to one minute before the mistake'
+    kind: howto
+    tldr: 'A base backup plus continuously archived WAL lets you recover to any moment; the restore happens on a new server, never on top of the live DB.'
+    keywords: ['PITR', 'WAL archive', 'pgBackRest', 'recovery target time', 'point in time recovery', 'base backup']
+    blocks:
+      - type: text
+        body: |
+          A nightly backup is only a picture of 2 a.m.; for a mistake at 3:02 it loses an hour of data. **PITR** fixes that: PostgreSQL collects a log of every transaction (the **WAL**) in a separate place. To restore, you first lay down the nightly picture, then replay the WAL and stop at exactly 3:01. MySQL does the same with its binary log.
+      - type: code
+        lang: ini
+        file: 'postgresql.conf'
+        variant: good
+        code: |
+          wal_level = replica
+          archive_mode = on
+          archive_command = 'pgbackrest --stanza=main archive-push %p'
+          archive_timeout = 60        # push a WAL file at least every 60 seconds
+        marks:
+          - {line: 3, tip: 'Every completed WAL file goes to the backup repository (ideally offsite). This is what preserves "all the writes in between".'}
+          - {line: 4, tip: 'Forces a WAL file out even if it isn''t full. So the RPO is about 1 minute.'}
+      - type: code
+        lang: bash
+        file: 'restore (on a new server)'
+        variant: good
+        code: |
+          # never on the live DB; use a new or scratch server
+          sudo systemctl stop postgresql
+          pgbackrest --stanza=main restore \
+            --type=time --target='2026-11-20 15:01:00+06' \
+            --target-action=promote
+          sudo systemctl start postgresql
+
+          psql -c 'SELECT count(*), max(created_at) FROM orders'   # check it looks right
+        marks:
+          - {line: 4, tip: 'The time one minute before the mistake. Don''t forget the timezone (+06) with the time.'}
+          - {line: 5, tip: 'On reaching the target, the DB comes up (promote); otherwise it sits read-only, waiting.'}
+          - {line: 8, tip: 'Finally count for yourself: are the orders back, is the latest timestamp right? This is the check before you go live.'}
+    aside:
+      - type: tips
+        items:
+          - 'Do the PITR on a scratch server first, then copy only the missing data back into production. Rolling the whole DB back also loses every valid transaction made after the mistake.'
+          - 'Without pgBackRest, doing it by hand needs `restore_command`, `recovery_target_time` and a `recovery.signal` file.'
+      - type: pitfalls
+        items:
+          - 'If the backup server''s clock and the DB server''s time disagree, the target time lands in the wrong place.'
+    check:
+      q: 'Even with a 2 a.m. backup, why do you need PITR?'
+      a: 'The nightly backup restores only the 2 a.m. state, losing about an hour of data up to the mistake. Replaying WAL takes you to exactly one minute before it.'
+
+  - slug: restore-drill
+    title: 'Restore drills: break it yourself and see'
+    kind: howto
+    tldr: 'Once a week, restore the latest backup into a scratch DB, time it and verify the data; alert immediately if it fails.'
+    keywords: ['restore drill', 'backup verification', 'scratch database', 'Symfony Scheduler', 'RTO', 'AsCronTask']
+    blocks:
+      - type: text
+        body: |
+          A backup is trustworthy only when a machine restores it by itself once a week. This command loads the latest backup into a scratch DB, measures how long it took (that is your real **RTO**), and runs a few sanity checks: are there enough orders, and is the newest data recent?
+      - type: code
+        lang: php
+        file: 'src/Command/BackupVerifyCommand.php'
+        variant: good
+        code: |
+          #[AsCommand(name: 'app:backup:verify', description: 'Restore the latest backup and verify it')]
+          #[AsCronTask('0 5 * * 0')]
+          final class BackupVerifyCommand extends Command
+          {
+              protected function execute(InputInterface $in, OutputInterface $out): int
+              {
+                  $start = microtime(true);
+                  (new Process(['pg_restore', '--clean', '--if-exists', '--no-owner',
+                      '-d', $this->scratchDsn, $this->latestDump()]))->setTimeout(3600)->mustRun();
+                  $secs = (int) (microtime(true) - $start);
+
+                  $orders = (int) $this->scratch->fetchOne('SELECT count(*) FROM orders');
+                  $raw = $this->scratch->fetchOne('SELECT max(created_at) FROM orders');
+                  $latest = new \DateTimeImmutable($raw);
+                  if ($orders < $this->minOrders || $latest < new \DateTimeImmutable('-26 hours')) {
+                      $out->writeln('<error>restore worked, but data is too small or old</error>');
+
+                      return Command::FAILURE;     // the alert fires from here
+                  }
+                  $out->writeln("restore OK, took {$secs}s");   // this is the real RTO
+
+                  return Command::SUCCESS;
+              }
+          }
+        marks:
+          - {line: 2, tip: 'Runs by itself every Sunday at 5 a.m. Nobody has to remember.'}
+          - {line: 9, tip: '`mustRun()` throws if it fails; the scheduler logs the failure, so you get an alert.'}
+          - {line: 15, tip: 'Just "the restore ran" isn''t enough. Checking that the data is complete and recent is what catches an empty backup.'}
+          - {line: 20, tip: 'Chart the measured time. As the data grows the restore slows down, and the RTO quietly creeps up.'}
+      - type: visual
+        kind: bars
+        caption: 'How restore time (minutes) grows as the data grows'
+        items:
+          - {label: 'Last year', value: 20, display: '20 min', tone: good, tip: 'With a small database the restore was fast, so the RTO was never a worry.'}
+          - {label: 'Now', value: 70, display: '70 min', tone: warn, tip: 'The data grew and the restore got slower. Nobody noticed.'}
+          - {label: 'Target RTO', value: 60, display: '60 min', tone: bad, tip: 'The business can accept at most one hour of downtime. Today''s 70 minutes is over that.'}
+    aside:
+      - type: tips
+        items:
+          - 'Write the time the drill measures into the runbook as the "expected duration".'
+          - 'The scratch DB holds personal data; protect it like production, and delete it when the job is done.'
+      - type: refs
+        items:
+          - {to: 'resilience/disaster-recovery', label: 'Disaster recovery'}
+    check:
+      q: 'Besides "the file restored", which two data checks does a restore drill need, and why?'
+      a: 'That there are enough orders, and that the newest data is recent. Those two catch an empty or stale backup, which can still restore without any error.'
+
+  - slug: runbook
+    title: 'The runbook: the page you read when you''re scared'
+    kind: howto
+    tldr: 'A runbook is step-by-step instructions you can follow half asleep: who does what, which commands, how to verify, and it is updated after every drill.'
+    keywords: ['runbook', 'incident', 'checklist', 'on-call', 'restore procedure', 'playbook']
+    blocks:
+      - type: text
+        body: |
+          At 3 a.m., in a crisis, your head doesn't work. What you need is a page where every step is simple enough for a half-asleep person. That is a **runbook**: who to call, which command, what you should see if it worked, what you should see if you must stop. In an emergency you don't make a plan; you follow the written one.
+      - type: code
+        lang: text
+        file: 'runbooks/restore-production-db.md'
+        variant: good
+        code: |
+          RUNBOOK: Production DB restore (PITR)
+          Owner: data team · last drill: 2026-11-15 (70 minutes)
+
+          When: mistaken DELETE/UPDATE, disk failure, suspected ransomware
+
+          1. Open an incident channel, pick an incident commander
+          2. Stop writes: `php bin/console app:maintenance on`
+          3. Note the exact time of the mistake (from the logs) → T
+          4. Restore on a new server: target 1 minute before T
+             pgbackrest --stanza=main restore --type=time \
+               --target='T' --target-action=promote
+          5. Verify: `psql -c 'SELECT count(*), max(created_at) FROM orders'`
+             Expect: order count ≈ yesterday's, max(created_at) ≈ T
+          6. Pull out the deleted data and put it back into production
+             (don't swap the whole DB: valid transactions came after the mistake)
+          7. Maintenance off, watch for 1 hour, write the post-mortem
+
+          Stop if: the restore runs past 120 minutes → phone the data lead
+        marks:
+          - {line: 2, tip: 'With the date and duration of the last drill written down, you know how old the page is and how long this will take.'}
+          - {line: 9, tip: 'Commands are written out exactly, ready to copy and paste. Nobody types from memory in a crisis.'}
+          - {line: 12, tip: 'Next to each step is what "correct" looks like. It stops you heading down the wrong path.'}
+          - {line: 15, tip: 'Not a whole-DB rollback; you would lose the valid transactions that came after the mistake.'}
+      - type: points
+        title: 'Five qualities of a good runbook'
+        style: check
+        items:
+          - 'Every step is short, in order and copy-pastable.'
+          - 'Next to each step is what "correct" looks like.'
+          - 'It names the owner and when the last drill was.'
+          - 'It is clear when to stop and whom to call.'
+          - 'It is updated after every drill or incident.'
+      - type: quote
+        body: 'At 3 a.m. you can''t invent a plan. You can follow a written one.'
+    aside:
+      - type: refs
+        items:
+          - {to: 'observability/incident-response', label: 'Incident response'}
+          - {to: 'recovery/corrective-actions', label: 'Correcting bad data'}
+      - type: remember
+        body: 'An outdated runbook is a wrong one. Read it at every drill and replace stale steps.'
+    check:
+      q: 'Why is it important to write "what correct looks like" next to each runbook step?'
+      a: 'When you''re frightened you can take a wrong step without noticing. With the expected result written down, you know at once whether you are on the right path.'
+
+flashcards:
+  - q: 'What exactly is the risk of never restoring a backup to test it?'
+    a: 'On the day of a disaster you may find the file empty, corrupt or useless without its key. A "successful" job doesn''t tell you the backup can be restored.'
+    more: |
+      A successful job only means the command finished. A full disk, a wrong directory or a lost key can make the file useless. Only restoring it and checking the data gives proof.
+    ref: backup-that-never-restored
+  - q: 'What are RPO and RTO?'
+    a: 'RPO: the most data, in time, you can tolerate losing. RTO: how quickly you must be running again.'
+    more: |
+      An RPO of 1 minute means you must save almost all data (so you need PITR). An RTO of 1 hour means the restore must finish within an hour. The business sets these two numbers, and then the backup design has to meet them.
+    ref: backup-that-never-restored
+  - q: 'What is the 3-2-1 rule for backups?'
+    a: 'Keep 3 copies of the data, on 2 kinds of storage, with 1 of them at another location (offsite).'
+    more: |
+      Three copies in the same safe are really one copy: fire, flood or an attacker takes them all together. A separate location plus immutability (no deletes) also protects you from ransomware.
+    ref: three-two-one
+  - q: 'Is a replica a substitute for a backup?'
+    a: 'No. A replica copies every change instantly, including a mistaken DELETE and ransomware.'
+    more: |
+      A replica is for staying up (availability), not for going back to an earlier moment. To go back in time, you need backups and WAL.
+    ref: three-two-one
+  - q: 'How does point-in-time recovery (PITR) work?'
+    a: 'You restore a base backup, then replay the archived WAL logs and stop at the chosen moment, for example 1 minute before the mistake.'
+    more: |
+      The nightly backup is just one picture; the WAL stores every transaction in between. Together they let you reach any moment. A small `archive_timeout` brings the RPO down to seconds or minutes.
+    ref: point-in-time-recovery
+  - q: 'Why is a PITR restore done on a new or scratch server?'
+    a: 'Restoring over the live DB wipes all current data. On a separate server you can verify first and bring back only the data you need.'
+    more: |
+      Valid transactions made after the mistake exist too. Roll the whole DB back and you lose them. So you first recover elsewhere, extract the deleted data, and then put it into production.
+    ref: point-in-time-recovery
+  - q: 'What is a restore drill, and how often should you run one?'
+    a: 'Loading the latest backup into a scratch DB, timing it and verifying the data. At least weekly, automatically.'
+    more: |
+      The time measured in the drill is your real RTO. As data grows, restores slow down and the RTO quietly rises. Measuring regularly catches that.
+    ref: restore-drill
+  - q: 'What is a runbook, and what makes a good one?'
+    a: 'Written instructions to follow in an emergency: short ordered steps, copy-paste commands, expected results, when to stop, and an owner.'
+    more: |
+      Nobody can build a plan at 3 a.m.; they can follow one. If a runbook isn't updated after every drill or incident, within a few months it is wrong.
+    ref: runbook
+
+quiz:
+  - q: 'You have a 2 a.m. backup and no WAL archive. A mistaken DELETE happens at 3:02. What is the most you can recover?'
+    hint: 'No transaction between 2:00 and 3:02 is stored anywhere.'
+    options:
+      - text: 'The 2 a.m. state; about 1 hour of later data is lost'
+        correct: true
+        why: 'Without WAL you can only go back to the moment of the backup; the writes in between are stored nowhere.'
+      - text: 'The state at exactly 3:01'
+        correct: false
+        why: 'That needs a WAL archive, which you don''t have here.'
+      - text: 'Nothing; a DELETE can''t be undone'
+        correct: false
+        why: 'The 2 a.m. backup at least gets you back to that moment.'
+      - text: 'The deleted orders can be brought back from the replica'
+        correct: false
+        why: 'The DELETE reached the replica instantly too.'
+    ref: point-in-time-recovery
+  - q: 'Which of these are part of the 3-2-1 rule?'
+    hint: 'Think about what each of the three numbers means.'
+    options:
+      - text: 'Three copies in total (including the original)'
+        correct: true
+        why: 'One original and two backup copies, so that losing one still leaves others.'
+      - text: 'Two kinds of medium or location (say disk and object storage)'
+        correct: true
+        why: 'One kind of failure shouldn''t take all the copies at once.'
+      - text: 'One copy at another location or region'
+        correct: true
+        why: 'It survives a fire, a flood or the loss of a whole region.'
+      - text: 'All three copies in three directories of the same server'
+        correct: false
+        why: 'If the server dies, all three go. That is really one copy.'
+    ref: three-two-one
+  - q: 'What is wrong with this restore command?'
+    lang: bash
+    code: |
+      # on the production server, with the DB running
+      pgbackrest --stanza=main restore \
+        --type=time --target='2026-11-20 15:01:00' \
+        --target-action=promote
+    hint: 'Which server, and what is missing from the time?'
+    options:
+      - text: 'It restores over the live production DB, and the target time has no timezone'
+        correct: true
+        why: 'Restoring over a live DB wipes all current data, and a time without a timezone can land on the wrong moment.'
+      - text: 'Using `--target-action=promote` is wrong'
+        correct: false
+        why: 'promote is right; it brings the DB up once the target is reached.'
+      - text: 'pgBackRest doesn''t support PITR'
+        correct: false
+        why: 'It does; `--type=time` is for exactly this.'
+      - text: 'There is nothing wrong'
+        correct: false
+        why: 'There are problems: the live DB and the timezone.'
+    ref: point-in-time-recovery
+  - q: 'The weekly restore drill succeeds, but the restore took 110 minutes. The business RTO is 60 minutes. What should you do?'
+    hint: 'What is the real result of the drill?'
+    options:
+      - text: 'Treat the gap as a problem and find ways to restore faster (incremental backups, faster disks, splitting the DB)'
+        correct: true
+        why: 'This is exactly what a drill is worth: finding out before disaster that you miss the target.'
+      - text: '"It restored", so all is well'
+        correct: false
+        why: 'The RTO target was missed. On the day of an incident the business would be down for 110 minutes.'
+      - text: 'Change the RTO figure on paper to 120 minutes'
+        correct: false
+        why: 'The business need doesn''t change on paper; the system has to change.'
+      - text: 'Stop the drills so the bad numbers stop appearing'
+        correct: false
+        why: 'Hide the number and the first time you learn it is on the day of the disaster.'
+    ref: restore-drill
+  - q: 'Which signs in a runbook are dangerous?'
+    hint: 'Someone half asleep is reading it at 3 a.m.'
+    options:
+      - text: 'The last drill was six months ago, and a command has been renamed since'
+        correct: true
+        why: 'An old runbook tells you to run the wrong command, and its time estimate is wrong too.'
+      - text: 'The steps are long paragraphs with no commands, just "restore properly"'
+        correct: true
+        why: 'Vague instructions can''t be followed under stress.'
+      - text: 'It doesn''t say when to stop and whom to call'
+        correct: true
+        why: 'If you don''t know what to do when stuck, you lose time.'
+      - text: 'Each step has its expected result written next to it'
+        correct: false
+        why: 'That is a good quality; it stops you going down a wrong path.'
+    ref: runbook

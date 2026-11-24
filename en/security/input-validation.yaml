@@ -1,0 +1,546 @@
+slides:
+  - slug: validate-at-the-door
+    title: 'Check at the door: everything coming in is a stranger'
+    kind: story
+    tldr: 'Browser checks are only a convenience for the user. The real guard is on the server, using an allowlist, and in Symfony DTOs and constraints make that easy.'
+    keywords: ['input validation', 'MapRequestPayload', 'Symfony Validator', 'allowlist', 'validation', 'DTO']
+    blocks:
+      - type: metaphor
+        icon: ticket
+        title: 'The ticket check at a cinema gate'
+        body: |
+          At the cinema gate, a man waving a torn ticket still doesn't get in: the gatekeeper checks the date, the show and the seat himself. Even if a sign outside says "No entry without a ticket", he doesn't rely on the sign. The check in a Vue form is the sign; the Validator on the server is the gatekeeper.
+      - type: visual
+        kind: compare
+        caption: 'Two places to check, two different jobs'
+        columns:
+          - title: 'In the browser (Vue)'
+            tone: warn
+            icon: browser
+            tip: 'Users learn about mistakes quickly, but an attacker can skip the browser and send requests straight with curl.'
+            items:
+              - 'Shows mistakes at once, a convenience for the user'
+              - 'Can be turned off or bypassed'
+              - 'Not something to rely on for security'
+          - title: 'On the server (Symfony)'
+            tone: good
+            icon: shield
+            tip: 'The last line of defense. The client has no way around the checks made here.'
+            items:
+              - 'Mandatory on every request'
+              - 'Allowlist: say what is valid, reject the rest'
+              - 'Check type, length, limits and format'
+      - type: code
+        lang: php
+        file: 'src/Dto/CreateOrderRequest.php + controller'
+        variant: good
+        code: |
+          final class CreateOrderRequest
+          {
+              public function __construct(
+                  #[Assert\NotBlank, Assert\Length(max: 100)]
+                  public readonly string $customerName,
+                  #[Assert\Range(min: 1, max: 10)]
+                  public readonly int $quantity,
+                  #[Assert\Choice(['pickup', 'delivery'])]
+                  public readonly string $method,
+              ) {
+              }
+          }
+
+          #[Route('/orders', methods: ['POST'])]
+          public function create(#[MapRequestPayload] CreateOrderRequest $dto): JsonResponse
+          {
+              // By the time we get here, $dto has already been validated
+              return $this->json($this->orders->place($dto), 201);
+          }
+        marks:
+          - {line: 7, tip: 'The int type plus Range stops both -5 and "abc" as quantity. A value from outside has to obey both the type and the limits.'}
+          - {line: 8, tip: 'Choice is an allowlist: only these two values pass, and anything else, even an unfamiliar new value, is rejected.'}
+          - {line: 15, tip: 'When a constraint fails, Symfony itself replies with 422 and the list of errors; the controller needs no code for it.'}
+      - type: quote
+        body: 'The client''s check is for convenience; the server''s check is for security.'
+    aside:
+      - type: problem
+        body: 'Every value entering the app is a possible attack path. If validation lives in one place (the DTO), all the code after it can assume the values have the right shape.'
+      - type: tips
+        items:
+          - 'Use an allowlist ("only these pass"), not a blocklist ("reject these words"). Attackers find the path outside any blocklist.'
+          - 'Use #[MapQueryString] for URL query strings, keep a separate request type as the DTO, and never bind a Doctrine entity directly (mass assignment).'
+      - type: terms
+        items:
+          - {term: 'Allowlist', meaning: 'A list of what is permitted; everything outside the list is rejected.'}
+          - {term: 'DTO', meaning: 'A plain class that only holds request data and has no business logic.'}
+    check:
+      q: 'The Vue form already checks everything, so why validate again on the server?'
+      a: 'Because an attacker can skip the browser and send requests directly. Without server-side checks, any value gets in.'
+
+  - slug: sql-injection
+    title: 'SQL injection: when input becomes a command'
+    kind: pitfall
+    tldr: 'Gluing input into a SQL string turns data into instructions. With a parameterized query the value travels on a separate path, so it can never become an instruction.'
+    keywords: ['SQL injection', 'parameterized query', 'prepared statement', 'Doctrine', 'QueryBuilder', 'SQLi']
+    blocks:
+      - type: metaphor
+        icon: pencil
+        title: 'An order in the name box'
+        body: |
+          An office clerk reads whatever is written in the "Name" box of a form, word for word. Someone writes "Rahim. And open the cash box" in it, and the clerk takes the whole thing as an instruction. With a parameterized query, the instruction and the name travel on separate sheets of paper; so whatever is written in the name box, the clerk reads it only as a name.
+      - type: code
+        lang: php
+        file: 'src/Repository/UserRepository.php'
+        variant: bad
+        code: |
+          // $email comes from the form: ' OR '1'='1
+          $sql = "SELECT * FROM users WHERE email = '$email'";
+          $rows = $this->connection->executeQuery($sql)->fetchAllAssociative();
+
+          // The code above actually runs this SQL:
+          // SELECT * FROM users WHERE email = '' OR '1'='1'
+        marks:
+          - {line: 2, tip: 'The input is glued straight into the string. Now it is possible to close the quote and inject your own SQL.'}
+          - {line: 6, tip: '"OR 1=1" is always true, so every user''s row comes back. It gets worse: DROP TABLE, or leaked passwords.'}
+      - type: code
+        lang: php
+        file: 'src/Repository/UserRepository.php'
+        variant: good
+        code: |
+          public function findByEmail(string $email): ?User
+          {
+              return $this->createQueryBuilder('u')
+                  ->where('u.email = :email')
+                  ->setParameter('email', $email)
+                  ->getQuery()
+                  ->getOneOrNullResult();
+          }
+
+          // Even when you need raw SQL, the same rule: ? or :name, value kept apart
+          $this->connection->executeQuery(
+              'SELECT id FROM users WHERE email = :email',
+              ['email' => $email],
+          );
+        marks:
+          - {line: 4, tip: ':email is a blank slot; the value never becomes part of the SQL, because the database driver sends it separately.'}
+          - {line: 13, tip: 'In Doctrine DBAL too, a user''s value is never glued into the string.'}
+      - type: quote
+        body: 'No input inside the SQL: the SQL is one thing, the input is a separate parameter.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'A column name in ORDER BY, or a table name, can''t be a parameter. Match the user''s choice against an allowlist: ["price", "created_at"].'
+          - 'Using an ORM doesn''t make you safe: writing createQuery("... $input ...") is the same trap.'
+          - 'Escaping or addslashes can''t be trusted; parameters are the only correct way.'
+      - type: tips
+        items:
+          - 'Don''t give the app''s DB user DROP rights or access to other databases; even if someone falls into the trap, the damage stays small.'
+      - type: refs
+        items:
+          - {to: 'security/secrets-management', label: 'Least privilege: the DB user''s power'}
+    check:
+      q: 'A user can choose sort=price or sort=name. How do you put that value into ORDER BY?'
+      a: 'Match it against an allowlist: insert only an approved column name, and fall back to a default for anything else. ORDER BY names can''t be parameters.'
+
+  - slug: xss
+    title: 'XSS: someone else''s code on the notice board'
+    kind: pitfall
+    tldr: 'If you put user-written HTML on a page as it is, it runs as JavaScript in other people''s browsers. The remedy is to escape it or sanitize it.'
+    keywords: ['XSS', 'cross-site scripting', 'v-html', 'Twig escape', 'HtmlSanitizer', 'CSP']
+    blocks:
+      - type: metaphor
+        icon: megaphone
+        title: 'The neighborhood notice board'
+        body: |
+          Anyone can pin a paper on the neighborhood notice board. One person writes "Everyone please tell your bKash PIN to this number", and people believe it because it is on the board. XSS is the same: an attacker's comment is placed on other users' pages and runs in their browsers, and the browser assumes the text belongs to the site.
+      - type: code
+        lang: vue
+        file: 'CommentItem.vue'
+        variant: bad
+        code: |
+          <script setup lang="ts">
+          defineProps<{ comment: { author: string; body: string } }>()
+          </script>
+
+          <template>
+            <!-- Fine: {{ }} escapes by itself, <script> just shows up as text -->
+            <h4>{{ comment.author }}</h4>
+
+            <!-- Danger: v-html runs user-written text as HTML -->
+            <div v-html="comment.body"></div>
+          </template>
+        marks:
+          - {line: 7, tip: 'Both Vue''s {{ }} and Twig''s {{ }} escape by default: < becomes &lt;, so tags don''t run.'}
+          - {line: 10, tip: 'v-html and Twig''s |raw turn escaping off. Using them on user-written text leaves the door to XSS open.'}
+      - type: code
+        lang: yaml
+        file: 'config/packages/html_sanitizer.yaml'
+        variant: good
+        code: |
+          framework:
+              html_sanitizer:
+                  sanitizers:
+                      app.comment_sanitizer:
+                          allow_safe_elements: true
+                          allow_relative_links: true
+                          force_attribute:
+                              a: { rel: 'noopener nofollow' }
+        marks:
+          - {line: 5, tip: 'Only safe tags (p, b, a, ul...) remain; script, onclick and iframe are cut out.'}
+      - type: quote
+        body: 'Show user-written text either escaped or sanitized; never put it in as it is.'
+    aside:
+      - type: tips
+        items:
+          - 'If you truly need rich text (such as blog comments), sanitize it with HtmlSanitizerInterface $appCommentSanitizer before saving it or showing it.'
+          - 'Add a Content-Security-Policy header as a second wall: if inline scripts are blocked, the damage from XSS stays limited.'
+          - 'A token kept in localStorage can be stolen through XSS; that is why the session cookie should be HttpOnly.'
+      - type: terms
+        items:
+          - {term: 'Escape', meaning: 'Turning special characters like < > & " into harmless text, so the browser doesn''t take them for tags.'}
+          - {term: 'CSP', meaning: 'A header that tells the browser which sources scripts may run from.'}
+      - type: refs
+        items:
+          - {to: 'security/sessions-tokens', label: 'Where to keep tokens'}
+    check:
+      q: 'A comment needs a little bold text and a link. Why is v-html dangerous, and what is the alternative?'
+      a: 'v-html runs every tag, including <script> and onerror. Instead, sanitize on the server with HtmlSanitizer, keep only safe tags, and then display it.'
+
+  - slug: ssrf
+    title: 'SSRF: making the server open an inner door'
+    kind: pitfall
+    tldr: 'If the server fetches any URL a user gives it, it can also fetch the internal network or cloud metadata. A host allowlist and blocking private IPs are the way out.'
+    keywords: ['SSRF', 'server side request forgery', 'NoPrivateNetworkHttpClient', 'metadata endpoint', 'allowlist host']
+    blocks:
+      - type: metaphor
+        icon: truck
+        title: 'The courier and the manager''s room'
+        body: |
+          A courier is told, "Go to this address and bring back the parcel." An outsider supplies the address, but it is really the manager's own strongroom, which only office staff may enter. Because the courier works for the office, he walks in and brings out the parcel (the key). A server can reach the internal network too, which is why it must not follow just any URL an outsider gives it.
+      - type: visual
+        kind: flow
+        caption: 'What happens when an internal address is given as the avatar URL'
+        nodes:
+          - {id: attacker, label: 'Attacker', sub: 'an outsider', icon: user, tone: bad, col: 0, row: 1, tip: 'Can''t get inside on their own, so they want to use the server to get in.'}
+          - {id: api, label: 'Symfony API', sub: 'avatar import', icon: api, tone: accent, col: 1.5, row: 1, tip: 'Sends a GET to the user-supplied URL to fetch an image. Without validation it goes to any address.'}
+          - {id: meta, label: 'Cloud metadata', sub: '169.254.169.254', icon: cloud, tone: warn, col: 3, row: 1, tip: 'An internal address of a cloud server that hands out the server''s temporary access keys. Unreachable from outside.'}
+        edges:
+          - {from: attacker, to: api, label: 'Gives http://169.254.169.254/... as the avatar URL', tone: bad}
+          - {from: api, to: meta, label: 'The server itself goes to that internal address and sends a GET', tone: bad}
+          - {from: meta, to: api, label: 'The cloud access key lands in the server''s hands', dashed: true, tone: bad}
+          - {from: api, to: attacker, label: 'The server hands that very response back to the attacker', dashed: true, tone: bad}
+      - type: code
+        lang: php
+        file: 'src/Avatar/AvatarImporter.php'
+        variant: good
+        code: |
+          final class AvatarImporter
+          {
+              private const ALLOWED_HOSTS = ['images.example.com', 'cdn.example.com'];
+              private HttpClientInterface $client;
+
+              public function __construct(HttpClientInterface $client)
+              {
+                  // blocks requests to private/loopback/link-local IPs
+                  $this->client = new NoPrivateNetworkHttpClient($client);
+              }
+
+              public function fetch(string $url): string
+              {
+                  $p = parse_url($url);
+                  if (($p['scheme'] ?? '') !== 'https'
+                      || !in_array($p['host'] ?? '', self::ALLOWED_HOSTS, true)) {
+                      throw new \InvalidArgumentException('Host is not allowed');
+                  }
+
+                  return $this->client->request('GET', $url, [
+                      'max_redirects' => 0,
+                      'timeout' => 3,
+                  ])->getContent();
+              }
+          }
+        marks:
+          - {line: 9, tip: 'NoPrivateNetworkHttpClient looks at the IP in the DNS answer and blocks private addresses, so even an "evil.com resolves to 127.0.0.1" trick gets caught.'}
+          - {line: 16, tip: 'Only https, and only hosts on the allowlist. Never send a request to a host outside the list.'}
+          - {line: 21, tip: 'Redirects off: otherwise an approved host could bounce you to an internal address of the attacker''s choosing.'}
+      - type: quote
+        body: 'The server may follow a user-supplied URL only inside the allowlist.'
+    aside:
+      - type: tips
+        items:
+          - 'Learn to recognize features that take a URL: image import, webhook URLs, link previews, PDF rendering. SSRF hides there.'
+          - 'In the cloud, keep IMDSv2 (token-based metadata) turned on; then a plain GET can''t fetch keys.'
+          - 'The strongest wall is a network rule on the server (an egress firewall) that never lets the app reach internal addresses at all.'
+      - type: terms
+        items:
+          - {term: 'SSRF', meaning: 'Server-Side Request Forgery: tricking the server into sending requests on the attacker''s behalf.'}
+    check:
+      q: 'A user supplies evil.com, whose DNS answer is 127.0.0.1. Why does checking only the hostname leave a hole?'
+      a: 'An unlisted hostname is rejected, true, but an approved name can also point at an internal IP. So you must check the resolved IP too, which NoPrivateNetworkHttpClient does.'
+
+  - slug: unsafe-deserialization
+    title: 'unserialize(): the toy that starts when the box opens'
+    kind: pitfall
+    tldr: 'Running unserialize() on untrusted data lets an attacker build objects of any class, and those run code as they open. JSON and DTOs are the safe path.'
+    keywords: ['unserialize', 'object injection', 'deserialization', 'gadget chain', 'Symfony Serializer', 'json_decode']
+    blocks:
+      - type: metaphor
+        icon: box
+        title: 'The box with a living toy'
+        body: |
+          A stranger hands you a box and says, "Open it and set the contents out exactly as they are." Inside is a toy that switches itself on the moment it is opened and starts smashing things in your house. `unserialize()` opens that box; JSON is just a written list, and opening it starts nothing.
+      - type: code
+        lang: php
+        file: 'src/Controller/CartController.php'
+        variant: bad
+        code: |
+          // The cart is stored in a cookie as PHP-serialized data
+          $cart = unserialize(base64_decode($request->cookies->get('cart')));
+        marks:
+          - {line: 2, tip: 'The cookie is in the client''s hands. If they send a serialized object of their own making, PHP runs that class''s __destruct or __wakeup.'}
+      - type: code
+        lang: php
+        file: 'src/Controller/CartController.php'
+        variant: good
+        code: |
+          #[Route('/cart', methods: ['POST'])]
+          public function update(#[MapRequestPayload] CartRequest $cart): JsonResponse
+          {
+              // JSON -> only the CartRequest class, validated by constraints
+              return $this->json($this->carts->save($cart));
+          }
+
+          // If you are forced to unserialize anyway:
+          $data = unserialize($payload, ['allowed_classes' => false]);
+        marks:
+          - {line: 2, tip: 'The Symfony Serializer only fills the fields of the declared class. No code runs.'}
+          - {line: 9, tip: 'With allowed_classes: false, no objects can be built at all. Still, avoid it in new code.'}
+      - type: quote
+        body: 'Never unserialize() untrusted data. Use JSON as the format, and a specific DTO as the target.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'The same danger applies to cache, session, queue or cookie values that a user can modify. Treat anything that has passed through the client''s hands as untrusted.'
+          - 'JSON itself is safe, but using it afterwards to build class or method names and call them (new $data[''class'']) is the same trap again.'
+      - type: tips
+        items:
+          - 'If you must send some state back to the client, sign it (HMAC) and verify the signature when it returns; still, keep anything important on the server.'
+    check:
+      q: 'A user''s cart is stored serialized in a cookie. Why is that risky, and what do you do instead?'
+      a: 'The cookie is in the client''s hands, and they can send a crafted object to run code. Keep the cart on the server (session or DB), or read it through JSON and a DTO.'
+
+  - slug: safe-file-uploads
+    title: 'File uploads: look inside the parcel, not at the label'
+    kind: howto
+    tldr: 'In an upload, the file name, extension and client-supplied type can''t be trusted. Check the size and real type, assign a new name, and store it outside the web root.'
+    keywords: ['file upload', 'MapUploadedFile', 'MIME type', 'web shell', 'Assert File', 'secure upload']
+    blocks:
+      - type: metaphor
+        icon: archive
+        title: 'Receiving parcels at the post office'
+        body: |
+          A post office doesn't trust the label on a parcel; it weighs it and looks at what is inside. Then it stamps its own number and puts it in a warehouse customers can't enter. Uploads work the same way: the name and type sent by the client are only a label.
+      - type: points
+        title: 'Five rules for uploads'
+        style: check
+        items:
+          - 'Set a size limit; otherwise huge files fill up disk and memory (DoS).'
+          - 'Allowlist the types (jpg, png, pdf), and check the real content type from inside the file.'
+          - 'Throw away the client''s name and generate a random one; this stops path tricks like "../../x.php".'
+          - 'Store files outside the web root, or in separate storage (like S3), and never let code run there.'
+          - 'For images, re-encode them, so anything hidden inside gets dropped.'
+      - type: code
+        lang: php
+        file: 'src/Controller/AvatarController.php'
+        variant: good
+        code: |
+          #[Route('/me/avatar', methods: ['POST'])]
+          public function upload(
+              #[MapUploadedFile([
+                  new Assert\File(maxSize: '2M'),
+                  new Assert\Image(mimeTypes: ['image/jpeg', 'image/png']),
+              ])]
+              UploadedFile $photo,
+              #[Autowire('%kernel.project_dir%/var/uploads')] string $dir,
+          ): JsonResponse {
+              // The name is ours, not the client's; the extension is guessed from content
+              $name = Uuid::v7()->toRfc4122().'.'.$photo->guessExtension();
+              $photo->move($dir, $name);
+
+              return $this->json(['file' => $name], 201);
+          }
+        marks:
+          - {line: 5, tip: 'The Symfony Validator checks the file''s real type (from the content, via finfo). It doesn''t trust the type the client sent.'}
+          - {line: 8, tip: 'var/uploads is outside public/. It can''t be fetched directly by URL, and the server doesn''t run PHP there.'}
+          - {line: 11, tip: 'A UUID name means nothing can be guessed from the name, and old files can''t be overwritten.'}
+      - type: quote
+        body: 'An uploaded file is something made by an unknown person: our own name, our own place, our own checks.'
+    aside:
+      - type: pitfalls
+        items:
+          - '"I only look at the extension": shell.php.jpg or a doctored header slips through easily. Look at the content.'
+          - 'Storing in public/uploads/ with PHP execution allowed: an uploaded shell.php becomes a web shell right away.'
+          - 'SVG can contain script (XSS); if you must show a user''s SVG, sanitize it or avoid it.'
+      - type: tips
+        items:
+          - 'When serving the file back, set the Content-Type yourself and add the X-Content-Type-Options: nosniff header.'
+      - type: refs
+        items:
+          - {to: 'data/files-blobs', label: 'Where to keep files and blobs'}
+    check:
+      q: 'Uploaded files are saved under the name the client sent. Which two problems can this cause?'
+      a: 'A path trick (../) can write somewhere else or overwrite an old file, and a name like shell.php can lead to code running. So assign your own random name.'
+
+flashcards:
+  - q: 'Why do you need server-side validation even if the browser already validates?'
+    a: 'Because an attacker can skip the browser and send requests directly. The client''s check is for convenience, the server''s is for security.'
+    more: |
+      Anyone can send any value straight to the API with curl or Postman. A Vue form shows mistakes quickly, but it can't stop anyone. With a DTO and constraints on the server, every request is checked by the same rules.
+    ref: validate-at-the-door
+  - q: 'What is the difference between an allowlist and a blocklist, and which is better?'
+    a: 'An allowlist says what passes and rejects the rest. A blocklist says what is refused and lets the rest through. The allowlist is safer.'
+    more: |
+      With a blocklist, an attacker finds some form you never thought of. With an allowlist, everything unfamiliar is dropped automatically. In Symfony, `Assert\Choice`, `Assert\Range` and a host allowlist are all examples of this idea.
+    ref: validate-at-the-door
+  - q: 'What is the correct way to prevent SQL injection?'
+    a: 'Parameterized queries: the SQL is one thing, the value is a separate parameter. Never glue input into a string.'
+    more: |
+      `setParameter('email', $email)` or DBAL's `['email' => $email]` sends the value to the database on a separate path, so it never becomes an instruction. Escaping or a blocklist can't be trusted. Even with an ORM, gluing in a raw string is the same trap.
+    ref: sql-injection
+  - q: 'What do you do when a user supplies the column name for ORDER BY?'
+    a: 'It can''t be a parameter, so match it against an allowlist of approved columns and insert only that.'
+    more: |
+      A parameter can fill in only a value, not a column or table name. So compare `$sort` with `['price', 'created_at']`, and use a default if it doesn't match. Never put a user's string directly into SQL.
+    ref: sql-injection
+  - q: 'What is XSS (cross-site scripting)?'
+    a: 'A script written by an attacker running in another user''s browser as if it were part of the site.'
+    more: |
+      If you don't escape a comment or a name when placing it on the page, the browser treats it as HTML and runs it. That script can then steal a session or token and act as the user. Twig's and Vue's `{{ }}` escape by default.
+    ref: xss
+  - q: 'Which two features are the main doors to XSS?'
+    a: 'Vue''s `v-html` and Twig''s `|raw`: both turn escaping off and run user-written text as HTML.'
+    more: |
+      If you truly must display rich text, sanitize it on the server with HtmlSanitizer, keep only safe tags, and then show it. Add a CSP header on top, which blocks inline scripts, so even one mistake does limited damage.
+    ref: xss
+  - q: 'What is SSRF, and in which features does it show up most?'
+    a: 'The server sends a request to a user-supplied URL and ends up reaching the internal network. Image import, webhook URLs, link previews.'
+    more: |
+      The most dangerous target is the cloud metadata address (169.254.169.254), which hands out the server's access keys. The remedies: a host allowlist, blocking private IPs (`NoPrivateNetworkHttpClient`), turning off redirects, and an egress firewall.
+    ref: ssrf
+  - q: 'Why is unsafe deserialization dangerous?'
+    a: 'unserialize() builds objects of any class the attacker picks, and their magic methods can run code as soon as it happens.'
+    more: |
+      PHP methods like `__destruct` and `__wakeup` run on their own when an object is created or destroyed. An attacker finds a chain of such methods inside the app's or a library's classes and runs malicious code. The fix: take untrusted data as JSON and map it onto a DTO.
+    ref: unsafe-deserialization
+  - q: 'Why can''t the client-supplied name and type be trusted in a file upload?'
+    a: 'The client can change both. Verify the real type from the content, and generate the name yourself.'
+    more: |
+      Sending shell.php labelled as image/jpeg is easy. So Symfony's `Assert\Image` or `Assert\File` judge the type from the content. Give the file your own UUID name, set a size limit, and store it outside the web root.
+    ref: safe-file-uploads
+
+quiz:
+  - q: 'What is the problem with the endpoint below?'
+    lang: php
+    code: |
+      #[Route('/orders', methods: ['POST'])]
+      public function create(Request $request): JsonResponse
+      {
+          $data = json_decode($request->getContent(), true);
+          $qty = $data['quantity'];
+
+          return $this->json($this->orders->place($data['sku'], $qty));
+      }
+    hint: 'What type could quantity be, and what value could it have? Is sku even there?'
+    options:
+      - text: 'There is no validation: quantity could be negative, a string or missing'
+        correct: true
+        why: 'With #[MapRequestPayload] and a DTO using a type and Range, these are stopped right at the server boundary.'
+      - text: 'json_decode is slow; it should use simplexml'
+        correct: false
+        why: 'Speed is not the problem here; the problem is unvalidated values.'
+      - text: 'It should be GET, not POST'
+        correct: false
+        why: 'POST is right for creating an order. The HTTP method is not the security problem here.'
+      - text: 'Everything is fine, because the Vue form has checks'
+        correct: false
+        why: 'A request sent directly with curl never even touches Vue''s checks.'
+    ref: validate-at-the-door
+  - q: 'How would you fix the code below?'
+    lang: php
+    code: |
+      $sql = "SELECT * FROM orders WHERE user_id = {$userId} AND status = '{$status}'";
+      $rows = $connection->executeQuery($sql)->fetchAllAssociative();
+    hint: 'The values and the SQL need to travel on separate paths.'
+    options:
+      - text: 'Escape $status with addslashes($status)'
+        correct: false
+        why: 'Escaping is brittle; some character-set tricks break it, and $userId doesn''t even need a quote to be exploited.'
+      - text: 'Check with a regex that $status is only lowercase letters'
+        correct: false
+        why: 'It is good as an extra check, but it is not the main fix; the shape of the query stays the same.'
+      - text: 'Call executeQuery with two parameters: ... WHERE user_id = :uid AND status = :st'
+        correct: true
+        why: 'Both values travel to the database as parameters on a separate path, so they never become SQL instructions.'
+      - text: 'Give the database user read-only rights'
+        correct: false
+        why: 'It reduces the damage, but with injection all the data can still be read. It is an extra layer, not the main fix.'
+    ref: sql-injection
+  - q: 'Which of these in a comment area create an XSS risk?'
+    hint: 'Which ones put user-written text on the page without escaping?'
+    options:
+      - text: '<div v-html="comment.body"> in Vue'
+        correct: true
+        why: 'v-html runs the text as HTML; an <img onerror=...> would go right through.'
+      - text: '{{ comment.body|raw }} in Twig'
+        correct: true
+        why: '|raw turns off auto-escaping; on user-written text it is dangerous.'
+      - text: '{{ comment.body }} in Vue'
+        correct: false
+        why: 'It is escaped by default; a script tag shows up as text and doesn''t run.'
+      - text: 'Cleaning it with HtmlSanitizer, then displaying it'
+        correct: false
+        why: 'This is the remedy: only safe tags stay, and script or event handlers are dropped.'
+    ref: xss
+  - q: 'Rashed''s app has an "import a photo from a URL" feature. Which measure best prevents SSRF?'
+    hint: 'Who should decide the list of places the server may go?'
+    options:
+      - text: 'Checking whether the URL contains the word "localhost"'
+        correct: false
+        why: 'A blocklist is easy to dodge: 127.1, [::1], or a DNS name that points to 127.0.0.1.'
+      - text: 'A host allowlist, blocking private IPs (NoPrivateNetworkHttpClient), and turning off redirects'
+        correct: true
+        why: 'It stops the attack in three layers: the approved host, the resolved IP, and the redirect trick.'
+      - text: 'Rejecting every scheme except https'
+        correct: false
+        why: 'You can reach the internal network over https too; checking the scheme is only one part.'
+      - text: 'Keeping the response size small'
+        correct: false
+        why: 'A size limit helps against DoS, but even a small response can leak an access key.'
+    ref: ssrf
+  - q: 'Which of these are safe alternatives or remedies for unserialize()?'
+    hint: 'Look for a path where no class''s code starts on its own.'
+    options:
+      - text: 'Take the data as JSON and read it into a DTO with #[MapRequestPayload]'
+        correct: true
+        why: 'JSON is only data; nothing outside the DTO''s declared fields gets filled in, so no code runs.'
+      - text: 'unserialize($data, [''allowed_classes'' => false])'
+        correct: true
+        why: 'No objects can be built, so no magic method runs. Still, JSON is better in new code.'
+      - text: 'Base64-encoding the serialized data and sending it in a cookie'
+        correct: false
+        why: 'Base64 is neither secrecy nor protection; an attacker can decode and encode it easily.'
+      - text: 'Keeping the name of the cart cookie secret'
+        correct: false
+        why: 'Hiding the name stops nothing; the cookie sits with the client.'
+    ref: unsafe-deserialization
+  - q: 'What is the safest way to store an uploaded file?'
+    hint: 'Who should control the file''s name, location and type?'
+    options:
+      - text: 'In public/uploads/ under the client''s name, allowlisting by extension'
+        correct: false
+        why: 'The name and extension are in the client''s hands; if shell.php can run in a public folder, the server is taken over.'
+      - text: 'Verify the type from the content, use your own UUID name, and store it outside the web root'
+        correct: true
+        why: 'The server controls the name, type and location; the file can''t be reached directly by URL.'
+      - text: 'Accept the file based on the Content-Type the client sent'
+        correct: false
+        why: 'The client can set the Content-Type to anything.'
+    ref: safe-file-uploads

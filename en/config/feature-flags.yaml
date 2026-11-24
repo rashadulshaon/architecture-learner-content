@@ -1,0 +1,393 @@
+slides:
+  - slug: bad-release-night
+    title: 'A bad release at 11 pm, and no switch to undo it'
+    kind: story
+    tldr: 'Deploying code and opening a feature to users are two separate jobs. A feature flag splits them, so a bad release can be switched off without a deploy.'
+    keywords: ['feature flag', 'feature toggle', 'rollback', 'deploy vs release', 'kill switch']
+    blocks:
+      - type: metaphor
+        icon: switch
+        title: 'The switchboard at home'
+        body: |
+          Say a new room has just been wired. If it short-circuits, you don't cut power to the whole neighbourhood. You flip that one room's switch to off. Running the wire is the deploy; turning the switch on is the release. Keep the two apart and a mistake means flipping a switch, not pulling out wire.
+      - type: text
+        body: |
+          Rahim's team deploys a new checkout at 11 pm, and it has a bug. Going back to the old code means a rollback deploy, which takes 20 minutes and is risky in itself. For those 20 minutes, customers can't place orders.
+      - type: visual
+        kind: compare
+        caption: 'Two ways to fix a bad release'
+        columns:
+          - title: 'Without a flag'
+            tone: bad
+            icon: cross
+            tip: 'The feature and the code are one thing, so undoing the feature means undoing the code.'
+            items:
+              - 'Rollback deploy: 20 minutes'
+              - 'The rollback can bring new mistakes'
+              - 'Other teams'' good changes get rolled back too'
+          - title: 'With a flag'
+            tone: good
+            icon: check
+            tip: 'The code is already deployed and sitting there; only the switch is off. No deploy needed.'
+            items:
+              - 'Switch off: 5 seconds'
+              - 'The code doesn''t change, so there is no new risk'
+              - 'Only that feature goes dark; everything else stays on'
+      - type: quote
+        body: 'Deploy means the code is on the server. Release means users can see it. They are two separate decisions.'
+    aside:
+      - type: problem
+        body: 'Open a risky change slowly, and shut it off in a second if it goes wrong, without rolling the code back.'
+      - type: terms
+        items:
+          - {term: 'Feature flag', meaning: 'A condition in the code whose on/off state comes from config or data, not from changing the code.'}
+          - {term: 'Rollback', meaning: 'Putting the previous version back in place of the new one.'}
+    check:
+      q: 'Why does a feature flag mean you don''t need a deploy to undo a bad checkout?'
+      a: 'The new code is already on the server, just switched off by the flag. If something breaks, you turn the flag off and the old path runs. The code never changes.'
+
+  - slug: four-kinds-of-flags
+    title: 'Four kinds of flags: different jobs, different lifespans'
+    kind: concept
+    tldr: 'Flags come in four kinds: release (open a feature slowly), ops/kill switch (emergency off), experiment (A/B) and permission (who gets it). The kind decides the lifespan and the owner.'
+    keywords: ['release flag', 'ops flag', 'kill switch', 'experiment flag', 'permission flag', 'A/B test', 'flag types']
+    blocks:
+      - type: text
+        body: |
+          Not all switches are equal. The main switch of a house stays for years, but the temporary switch for a new room comes out once the work is done. Flags are the same. First decide which kind a flag is, because the kind tells you how long it lives and who is allowed to change it.
+      - type: visual
+        kind: table
+        caption: 'The four kinds of feature flag'
+        headers: ['Kind', 'Used for', 'Lifespan', 'Who flips it']
+        rows:
+          - cells: ['Release', 'Opening a new feature slowly', 'Days to weeks', 'Developers']
+            tip: 'A flag to delete as soon as the job is done. This is the kind that piles up the most.'
+          - cells: ['Ops / kill switch', 'Switching a feature off in an emergency', 'Years', 'On-call, ops']
+            tip: 'The switch that lets you turn off a slow payment gateway while the rest of the app keeps running.'
+          - cells: ['Experiment', 'A/B tests', 'Until the test ends', 'Product team']
+            tip: 'Users are split into two groups. Once you see the result, you pick one and remove the flag.'
+          - cells: ['Permission', 'Who gets it (plan, team)', 'Long, sometimes permanent', 'Product, support']
+            tip: 'For example, "reports for premium customers". It is really a business rule, not a temporary flag.'
+      - type: points
+        title: 'The three requirements of a kill switch'
+        style: check
+        items:
+          - 'It can be changed without a deploy (from the database or a config service).'
+          - 'The on-call engineer can find and change it within a minute.'
+          - 'When it is off, the app doesn''t crash. It takes a fallback path, such as a "please try again later" message.'
+    aside:
+      - type: tips
+        items:
+          - 'For every flag, write down its kind, its owner and when it will be removed. Everything except permission flags and kill switches needs an expiry date.'
+          - 'A permission flag is really an access rule. It belongs under authorization in the security topic.'
+      - type: refs
+        items:
+          - {to: 'security/authorization-models', label: 'Permissions and authorization'}
+          - {to: 'resilience/graceful-degradation', label: 'Kill switches and graceful degradation'}
+    check:
+      q: 'The payment gateway suddenly slows down. Which kind of flag lets the on-call engineer shut off that part within a minute?'
+      a: 'An ops flag, or kill switch. It can be changed without a deploy, and while it is off the app runs a fallback path.'
+
+  - slug: flag-service-symfony
+    title: 'A simple flag service and percentage rollout in Symfony'
+    kind: howto
+    tldr: 'Keep flag state in the database and cache it with a short TTL. For a percentage rollout, hash the user id into 0–99 so the same user always gets the same result.'
+    keywords: ['FeatureFlags service', 'percentage rollout', 'gradual rollout', 'crc32', 'sticky bucketing', 'Symfony']
+    blocks:
+      - type: text
+        body: |
+          Don't open a feature to everyone at once; open it in steps. Start at 1% and raise it while everything looks healthy. The key trick: hash the user id together with the flag name and reduce it to a number from 0 to 99. If that number is below the percentage, the feature is on. The same id always gets the same number, so a user who has the feature keeps it.
+      - type: visual
+        kind: steps
+        caption: 'Rolling out a new checkout step by step'
+        steps:
+          - {title: '1. Team only', body: 'Your own ids on the allow list; percentage 0.', tip: 'Use it in production yourselves before any real user sees it.'}
+          - {title: '2. 1% of users', body: 'Compare error rate and order count.', tip: 'If it goes badly, only 1% are hurt. Turn the flag off and they are back.'}
+          - {title: '3. 25%', body: 'Run for a day; check that load and errors stay fine.', tip: 'Problems that only show up under real load come out here.'}
+          - {title: '4. 100%', body: 'On for everyone.', tip: 'The flag isn''t deleted yet. Keep watching for a few days.'}
+          - {title: '5. Remove the flag and old code', body: 'Drop the condition and keep only the new path.', tone: accent, tip: 'Skip this step and flag debt builds up. More on that in a later slide.'}
+      - type: code
+        lang: php
+        file: 'src/Flag/FeatureFlags.php'
+        variant: good
+        code: |
+          final readonly class FeatureFlags
+          {
+              public function __construct(
+                  private FlagRepository $flags,
+                  private CacheInterface $cache,
+              ) {
+              }
+
+              public function isOn(string $name, ?User $user = null): bool
+              {
+                  $flag = $this->cache->get("flag.$name", function (ItemInterface $item) use ($name) {
+                      $item->expiresAfter(30);     // a switch change reaches every server in 30s
+
+                      return $this->flags->snapshot($name);   // missing: ['enabled' => false, ...]
+                  });
+
+                  if (!$flag['enabled'] || null === $user) {
+                      return $flag['enabled'] && 100 === $flag['percent'];
+                  }
+
+                  return \in_array($user->getId(), $flag['allow'], true)
+                      || crc32($name.':'.$user->getId()) % 100 < $flag['percent'];
+              }
+          }
+        marks:
+          - {line: 12, tip: 'A short TTL: when a flag changes in the database, every server knows within 30 seconds at most.'}
+          - {line: 14, tip: 'Flag missing, or the database unreachable? The safe default is false: the new feature stays off.'}
+          - {line: 22, tip: 'The flag name goes into the hash too, so every flag picks a different 1% of users.'}
+    aside:
+      - type: tips
+        items:
+          - 'Never show a user the feature on and then off. That is why you hash instead of calling random().'
+          - 'Log which flag values each request saw. It is invaluable when you are hunting a bug.'
+      - type: pitfalls
+        items:
+          - 'If flag state lives in a config file, changing it needs a deploy, which defeats the whole point.'
+    check:
+      q: 'Why does a percentage rollout hash the user id instead of calling random()?'
+      a: 'random() gives a different result on every request, so the same user would see the new path one time and the old path the next. A hash gives the same id the same result every time.'
+
+  - slug: flag-in-vue
+    title: 'Flags in Vue: the server decides, the client displays'
+    kind: howto
+    tldr: 'Make the flag decision on the server and send the per-user result to Vue through an API. Vue only shows or hides; enforcement stays on the server.'
+    keywords: ['Vue feature flag', 'Pinia', 'flags endpoint', 'client side flag', 'server enforcement', 'UI toggle']
+    blocks:
+      - type: text
+        body: |
+          A Vue app doesn't decide flags itself. The server evaluates every flag for the current user and returns a small JSON object. Vue keeps it in a Pinia store and uses it in `v-if`. But remember that everything in the browser is visible: hiding a button in the UI doesn't make anything safe. The new checkout's API has to be guarded by the same flag on the server.
+      - type: code
+        lang: php
+        file: 'src/Controller/FlagController.php'
+        variant: good
+        code: |
+          #[Route('/api/flags', methods: ['GET'])]
+          public function index(): JsonResponse
+          {
+              $user = $this->getUser();
+              $response = $this->json([
+                  'new-checkout' => $this->flags->isOn('new-checkout', $user),
+                  'new-search' => $this->flags->isOn('new-search', $user),
+              ]);
+              $response->setPrivate();           // differs per user, so a CDN must not keep it
+
+              return $response;
+          }
+        marks:
+          - {line: 5, tip: 'Give the client only true/false results. Never expose the percentage or the allow list.'}
+          - {line: 9, tip: 'The answer depends on the user, so it is private.'}
+      - type: code
+        lang: vue
+        file: 'src/pages/CheckoutPage.vue'
+        variant: good
+        code: |
+          <script setup lang="ts">
+          import { useFlagsStore } from '@/stores/flags'
+          import NewCheckout from '@/components/NewCheckout.vue'
+          import OldCheckout from '@/components/OldCheckout.vue'
+
+          const flags = useFlagsStore()
+          </script>
+
+          <template>
+            <NewCheckout v-if="flags.isOn('new-checkout')" />
+            <OldCheckout v-else />
+          </template>
+        marks:
+          - {line: 11, tip: 'With the feature off, users see the old path. The way back stays intact.'}
+    aside:
+      - type: tips
+        items:
+          - 'Call /api/flags once when the page loads and keep the result in the store. Don''t have every component call it separately.'
+          - 'If the flags don''t arrive or the request fails, let isOn() return false: the new feature stays off.'
+      - type: pitfalls
+        items:
+          - 'If you only hide the button in Vue and leave the API open, anyone can send the request directly and use the closed feature.'
+    check:
+      q: 'Why isn''t hiding a button in Vue enough to protect a feature?'
+      a: 'The browser code and requests are in the user''s hands. They can call the API directly. So the server must block it with the same flag.'
+
+  - slug: flag-debt
+    title: 'Flag debt: the switch nobody flips'
+    kind: pitfall
+    tldr: 'Old release flags that were never deleted keep two code paths alive, double your tests and create places people are afraid to touch. Give every flag an owner and a removal date.'
+    keywords: ['flag debt', 'flag cleanup', 'stale flags', 'technical debt', 'flag registry', 'remove_by']
+    blocks:
+      - type: text
+        body: |
+          If a switchboard has year-old switches that nobody recognises, nobody dares to touch them. Code is the same. 10 flags means 1,024 possible combinations in theory, yet only a couple are ever tested. The saddest case: someone flips an old flag by mistake, and its old path broke long ago.
+      - type: code
+        lang: yaml
+        file: 'config/flags.yaml (as documentation)'
+        code: |
+          new-checkout:
+            type: release
+            owner: 'rahim'
+            created: '2026-11-01'
+            remove_by: '2026-12-15'      # CI warns after this date
+          payments-kill-switch:
+            type: ops
+            owner: 'oncall-payments'
+            runbook: 'wiki/payments-kill-switch'
+        marks:
+          - {line: 5, tip: 'Every release flag gets a removal date. Once it passes, CI or a weekly report speaks up.'}
+          - {line: 9, tip: 'An ops flag carries a runbook: what happens when you turn it off, and when to use it.'}
+      - type: points
+        title: 'Rules for removing flags'
+        style: number
+        items:
+          - 'Once the feature is at 100%, remove the flag and the old path within a week.'
+          - 'If the feature is cancelled, remove the flag and the new path, and keep the old one.'
+          - 'Create a ticket and treat the cleanup as part of the release, not as "I''ll do it later".'
+      - type: quote
+        body: 'A flag whose job is done is now debt. Removing it is part of finishing the feature.'
+    aside:
+      - type: when
+        use:
+          - 'Release and experiment flags: remove them when the work is done.'
+        avoid:
+          - 'Nesting one flag inside another. It tangles the logic.'
+      - type: remember
+        body: 'Every flag is born carrying its own date of death.'
+      - type: refs
+        items:
+          - {to: 'thinking/tech-debt', label: 'Technical debt'}
+    check:
+      q: 'A release flag has sat at 100% in the code for two months. What harm can it do?'
+      a: 'You have to keep two code paths alive, you need twice the tests, and if someone flips the flag by mistake the old, broken path switches back on.'
+
+flashcards:
+  - q: 'What is a feature flag?'
+    a: 'A condition in the code whose on/off state comes from config or data, so you can change it without changing code or deploying.'
+    more: |
+      The new code is already on the server, switched off. You can open it slowly, and shut it off at once if it goes wrong. It works like a house switchboard: running the wire and turning the switch on are separate acts.
+    ref: bad-release-night
+  - q: 'What is the difference between deploy and release?'
+    a: 'Deploy: the code reaches the server. Release: users can see the feature. A flag separates the two.'
+    more: |
+      Once they are separate, deploying becomes low-risk because the new code is switched off. The risk moves to the release, which you can do slowly, by percentage, and undo with one switch.
+    ref: bad-release-night
+  - q: 'What are the four kinds of feature flag?'
+    a: 'Release (open slowly), ops/kill switch (emergency off), experiment (A/B) and permission (who gets it).'
+    more: |
+      The kind decides the lifespan and the owner. Release and experiment flags are temporary: delete them when the job is done. A kill switch lives long, ideally with a runbook. A permission flag is really a business rule, so think of it as part of authorization.
+    ref: four-kinds-of-flags
+  - q: 'What is a kill switch and why do you need one?'
+    a: 'A flag that turns off a feature or dependency in an emergency without a deploy, for example a slow payment gateway.'
+    more: |
+      While it is off, the app must keep working on a fallback path, such as a "this method isn't available right now" message. Keep it where the on-call engineer can find and change it in a minute, and write a runbook for it.
+    ref: four-kinds-of-flags
+  - q: 'In a percentage rollout, how do you decide who gets the new feature?'
+    a: 'Hash the user id with the flag name into 0–99. If the number is below the percentage, the feature is on.'
+    more: |
+      For example, `crc32($name.':'.$userId) % 100 < $percent`. The same id always gets the same number, so once a user has the feature they keep it as you go from 25% to 100%. With random(), they would see the new path one moment and the old one the next.
+    ref: flag-service-symfony
+  - q: 'Why keep flag state in the database rather than a config file?'
+    a: 'Changing a file needs a deploy; changing a database value doesn''t. So you can switch a feature off immediately after a mistake.'
+    more: |
+      Read it from the database and cache it with a short TTL (say 30 seconds), so you don't hit the database on every request and changes still spread quickly. If the flag can't be found, the default is false.
+    ref: flag-service-symfony
+  - q: 'What is flag debt and how do you avoid it?'
+    a: 'Finished flags left in the code. Avoid it by giving every flag an owner and a removal date.'
+    more: |
+      Old flags keep two paths alive, double your tests, and bring back a broken path if someone flips them by mistake. Once a feature hits 100%, remove the flag and the old code within a week. That is part of the release.
+    ref: flag-debt
+  - q: 'Is hiding a button in Vue with a flag enough to protect a feature?'
+    a: 'No. A user can call the API directly, so the server must block it with the same flag.'
+    more: |
+      Vue only shows or hides things. The server makes the decision and sends the per-user result (true/false) through an API. The client never needs to know the percentage or the allow list.
+    ref: flag-in-vue
+
+quiz:
+  - q: 'At 11 pm you discover a bug in a new feature. It was behind a flag. What is the fastest, safest move?'
+    hint: 'Does the code have to change, or only a switch?'
+    options:
+      - text: 'Turn the flag off'
+        correct: true
+        why: 'The code doesn''t change, so there is no new risk, and it takes seconds.'
+      - text: 'Do a rollback deploy to the previous version'
+        correct: false
+        why: 'It would work, but it is slow and the rollback is risky too. Avoiding that is the whole point of a flag.'
+      - text: 'Wait until morning and write a hotfix'
+        correct: false
+        why: 'Customers would suffer all night.'
+      - text: 'Restart the server'
+        correct: false
+        why: 'A restart brings back the same buggy code.'
+    ref: bad-release-night
+  - q: 'Which of these correctly describes a kill switch?'
+    hint: 'Who changes it in an emergency, and how?'
+    options:
+      - text: 'It can be changed without a deploy, and the app takes a fallback path when it is off'
+        correct: true
+        why: 'These are the two core requirements for an emergency off-switch.'
+      - text: 'It lives in a config file, and changing it needs a full deploy'
+        correct: false
+        why: 'In an emergency you can''t wait for a deploy.'
+      - text: 'A flag you delete once the feature reaches 100%'
+        correct: false
+        why: 'That is a release flag. A kill switch is permanent, because you will need it again.'
+      - text: 'A button hidden only in Vue'
+        correct: false
+        why: 'If the API stays open on the server, nothing has actually been switched off.'
+    ref: four-kinds-of-flags
+  - q: 'In the code below, users sometimes get the new checkout and sometimes the old one. Why?'
+    lang: php
+    code: |
+      public function isOn(string $name, User $user): bool
+      {
+          $percent = $this->flags->percent($name);
+
+          return random_int(0, 99) < $percent;
+      }
+    hint: 'What number will the same user get the second time around?'
+    options:
+      - text: 'A new random number on every request, so the same user''s result changes'
+        correct: true
+        why: 'Hashing the user id and flag name would give a stable result.'
+      - text: 'random_int() is slow'
+        correct: false
+        why: 'Speed isn''t the problem here. The stability of the result is.'
+      - text: 'The value of $percent is wrong'
+        correct: false
+        why: 'Even with the right percentage, a random number differs every time.'
+      - text: 'The flag name isn''t in English'
+        correct: false
+        why: 'The language of the name doesn''t matter.'
+    ref: flag-service-symfony
+  - q: 'Which of these are part of the right way to roll out a new checkout slowly?'
+    hint: 'Who goes first, and then what percentage?'
+    options:
+      - text: 'Team only first, then 1%, 25%, and finally 100%'
+        correct: true
+        why: 'If you check error rate and orders at each step, the damage stays small.'
+      - text: 'Check the metrics at every step and turn the flag off if they get worse'
+        correct: true
+        why: 'That is the main purpose of a slow rollout: catching problems while the damage is limited.'
+      - text: 'Remove the flag and the old code once you reach 100%'
+        correct: true
+        why: 'If you don''t, flag debt builds up.'
+      - text: 'Open it to all users at once and only use the flag if there is a problem'
+        correct: false
+        why: 'The damage then reaches everyone, and you lose the benefit of a slow rollout.'
+    ref: flag-service-symfony
+  - q: 'A release flag reached 100% two months ago and is still in the code. What should you do now?'
+    hint: 'The flag''s job is over. Does it still belong in the code?'
+    options:
+      - text: 'Remove the flag and the old path, and keep only the new code'
+        correct: true
+        why: 'A finished flag is debt. Removing it simplifies the code and cuts tests.'
+      - text: 'Leave it. You never know when you''ll need it'
+        correct: false
+        why: 'The old path often no longer works, and it is dangerous if switched on by mistake.'
+      - text: 'Add a few more flags to keep everything under control'
+        correct: false
+        why: 'It only adds combinations and tangles things further.'
+      - text: 'Set the flag to true and forget about it'
+        correct: false
+        why: 'The debt is still there. If someone sets it to false by mistake, the broken path runs.'
+    ref: flag-debt

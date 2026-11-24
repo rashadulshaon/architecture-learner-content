@@ -1,0 +1,361 @@
+slides:
+  - slug: delete-me-twelve-copies
+    title: '"Delete my data" and the dozen copies'
+    kind: story
+    tldr: 'A user''s data isn''t only in the users table: copies live in logs, backups, search, analytics and caches. Skip lifecycle planning and deletion becomes nearly impossible.'
+    keywords: ['data lifecycle', 'right to be forgotten', 'erasure', 'data copies', 'GDPR', 'delete user data']
+    blocks:
+      - type: metaphor
+        icon: archive
+        title: 'Old papers around the house'
+        body: |
+          Bills, letters and deeds pile up in a home year after year. The land deed must be kept for life, electricity bills for a few years, and the market shopping list can go straight in the bin. If nobody decides how long each kind stays, everything sits in one heap, and on the day you need something you can't find it.
+      - type: text
+        body: |
+          A user who signed up five years ago writes, "Delete all my information." Rahim runs `DELETE FROM users` and thinks he's done. But that person's email and phone number are scattered across a dozen other places.
+      - type: visual
+        kind: flow
+        caption: 'How many places one user''s data spreads to'
+        nodes:
+          - {id: users, label: 'users table', sub: 'main data', icon: db, tone: accent, col: 0, row: 1.5, tip: 'Where we think of deleting. In reality it is just one of the copies.'}
+          - {id: logs, label: 'App logs', sub: 'with emails', icon: file, col: 1.5, row: 0, tip: 'An email or phone number gets written to a log by mistake and piles up for years.'}
+          - {id: search, label: 'Search index', sub: 'name, email', icon: search, col: 1.5, row: 1, tip: 'A separate copy; it isn''t deleted automatically along with the users table.'}
+          - {id: wh, label: 'Analytics', sub: 'warehouse', icon: chart, col: 1.5, row: 2, tip: 'Data copied for reporting; names or ids may be in here too.'}
+          - {id: bk, label: 'Backup', sub: '30-90 days', icon: archive, col: 1.5, row: 3, tip: 'Like a photograph, frozen in time; old backups still contain the user.'}
+        edges:
+          - {from: users, to: logs, label: 'Requests write the email into the logs', dashed: true}
+          - {from: users, to: search, label: 'Name and email get copied into the search index', dashed: true}
+          - {from: users, to: wh, label: 'A copy, with history, goes to the warehouse', dashed: true}
+          - {from: users, to: bk, label: 'A backup of everything is taken every night', dashed: true, tone: warn}
+      - type: quote
+        body: 'Decide how long you keep data, why, and how you''ll delete it on the day you collect it.'
+    aside:
+      - type: story
+        title: 'The old data that leaked'
+        body: |
+          A small service had a data breach. Most of the leaked records belonged to users who had left four years earlier, whose data was no use to anyone. Had it not been kept, there would have been no harm.
+      - type: terms
+        items:
+          - {term: 'Data lifecycle', meaning: 'The life of data from birth to death: collection, use, storage, archiving, deletion.'}
+          - {term: 'Right to be forgotten', meaning: 'A user''s right to have their personal data erased (the erasure right in GDPR).'}
+    check:
+      q: 'Why does a user''s data survive a `DELETE FROM users`?'
+      a: 'It also lives as separate copies in logs, the search index, analytics, backups and caches. Deleting the main table doesn''t remove the copies.'
+
+  - slug: retention-and-minimisation
+    title: 'Retention policy and data minimisation'
+    kind: concept
+    tldr: 'For each kind of data, write down in advance why you keep it, for how long, and what happens afterwards. And collect only what you truly need from the start.'
+    keywords: ['retention policy', 'data minimisation', 'compliance', 'GDPR', 'personal data', 'PII']
+    blocks:
+      - type: text
+        body: |
+          Like those old papers, each kind of data needs a rule: a **retention policy**. It says why you keep it (the purpose), for how long, and what happens at the end (delete or archive). The second rule is **data minimisation**: don't ask for information you don't really need. Data you never collected can't leak and never has to be deleted. Some data you must keep by law, such as payment records. You can't delete it, but you can strip away the person's identity.
+      - type: visual
+        kind: table
+        caption: 'A sample retention policy (the numbers are examples; set yours by your law and business)'
+        headers: ['Data', 'Why we keep it', 'How long', 'After that']
+        rows:
+          - cells: ['Login logs', 'Security investigations', '90 days', 'Delete']
+            tip: 'The purpose is narrow, so the period is short. After an investigation, this data has no further use.'
+          - cells: ['Orders and invoices', 'Accounting and tax law', '7 years', 'Archive, then delete']
+            tip: 'The law sets this period; deleting earlier would break the law.'
+          - cells: ['User profile', 'Providing the service', 'While the account exists', 'Anonymise 30 days after closure']
+            tip: 'Keeping it a while after closure lets you undo an accidental account closure.'
+          - cells: ['Marketing consent and history', 'Proof of consent', 'Until consent is withdrawn', 'Delete']
+            tip: 'The proof of when someone consented is data too; delete it when its time is up.'
+      - type: points
+        title: 'Data minimisation: three questions before you collect'
+        style: number
+        items:
+          - 'Can we provide the service without this information? If so, don''t take it.'
+          - 'Do we need the full date of birth, or is an age check enough?'
+          - 'When will this stop being useful? Write that date down now.'
+    aside:
+      - type: tips
+        items:
+          - 'Keep the policy in code, not on paper: the number of days in `config/retention.yaml`, and a job that follows it.'
+          - 'Keep a list of which columns hold personal data (PII); otherwise, what will you delete?'
+      - type: pitfalls
+        items:
+          - 'Laws differ by country and by type of data. Alongside GDPR and the laws that apply where you operate, get advice from your company''s lawyer; the numbers here are only samples.'
+      - type: refs
+        items:
+          - {to: 'security/data-protection', label: 'Data protection'}
+    check:
+      q: 'The law says order records must be kept for 7 years, but the user asks you to delete their data. What do you do?'
+      a: 'Keep the accounting row but anonymise the personal data (name, email, address). The legal record survives, and the person can''t be identified.'
+
+  - slug: purge-and-archive
+    title: 'Purge jobs and archives: deleting by the rules'
+    kind: howto
+    tldr: 'Delete expired data nightly through the Scheduler, in small batches. For data you occasionally need, archive it to cheap storage first, verify, then delete.'
+    keywords: ['purge job', 'archival', 'Symfony Scheduler', 'batch delete', 'cold storage', 'partition']
+    blocks:
+      - type: text
+        body: |
+          Old papers get thrown out on a schedule, with one big clear-out a year. A database needs a **purge job** that runs at 3am and removes rows whose retention period has passed. On a big table, don't delete millions of rows at once, because of locks and replica lag. Delete in small batches, just like a [[data/zero-downtime-migrations|backfill]]. Some data may be needed years later; archive that first.
+      - type: code
+        lang: php
+        file: 'src/Retention/PurgeLoginEventsHandler.php'
+        variant: good
+        code: |
+          #[AsSchedule('retention')]
+          final class RetentionSchedule implements ScheduleProviderInterface
+          {
+              public function getSchedule(): Schedule
+              {
+                  return (new Schedule())->add(
+                  RecurringMessage::cron('30 3 * * *', new PurgeLoginEvents()),
+              );
+              }
+          }
+
+          #[AsMessageHandler]
+          final readonly class PurgeLoginEventsHandler
+          {
+              public function __construct(
+                  private Connection $db,
+                  private ClockInterface $clock,
+                  #[Autowire('%app.retention.login_events_days%')] private int $days,
+              ) {}
+
+              public function __invoke(PurgeLoginEvents $m): void
+              {
+                  $cutoff = $this->clock->now()->modify("-{$this->days} days");
+                  do {
+                      $deleted = $this->db->executeStatement(
+                          'DELETE FROM login_events WHERE id IN (
+                               SELECT id FROM login_events WHERE created_at < :c LIMIT 5000)',
+                          ['c' => $cutoff], ['c' => Types::DATETIMETZ_IMMUTABLE],
+                      );
+                  } while ($deleted === 5000);
+              }
+          }
+        marks:
+          - {line: 18, tip: 'The retention period isn''t hard-coded; it comes from a parameter. When the policy changes, you change the config.'}
+          - {line: 27, tip: 'PostgreSQL has no `DELETE ... LIMIT`, so a subquery picks 5,000 ids.'}
+          - {line: 30, tip: 'Keep going while a full batch gets deleted. A smaller count means nothing is left.'}
+      - type: visual
+        kind: steps
+        caption: 'The safe order for archive-then-delete'
+        steps:
+          - {title: '1. Select', body: 'Pick the expired rows', tip: 'Rows older than the cutoff date, in batches by id.'}
+          - {title: '2. Archive', body: 'As files in cheap storage', tip: 'Parquet or CSV in object storage, in year-month folders.'}
+          - {title: '3. Verify', body: 'Match row counts and checksums', tip: 'Deleting without verifying what was written to the archive is dangerous.'}
+          - {title: '4. Delete', body: 'Remove from the main table', tip: 'Only after verification passes, and in small batches.'}
+    aside:
+      - type: tips
+        items:
+          - 'If you partition the table by date, dropping or detaching an old partition is the deletion: instant, and no heavy DELETE.'
+          - 'Record how many rows each purge deleted in a metric or log; a sudden zero or a huge number signals a problem.'
+      - type: pitfalls
+        items:
+          - 'Compute the cutoff from `ClockInterface`, not the current time directly; then tests can set the time and check the result.'
+      - type: refs
+        items:
+          - {to: 'config/configuration', label: 'Config and parameters'}
+    check:
+      q: 'Why does a purge job delete in batches of 5,000 instead of running one `DELETE`?'
+      a: 'One huge DELETE holds a long lock, bloats the transaction log and makes replicas fall behind. Small batches keep each lock brief, so the site keeps running.'
+
+  - slug: erasure-and-copies
+    title: 'Erasure: delete, anonymise, and tell the copies'
+    kind: pitfall
+    tldr: 'For an account-deletion request, anonymise personal data while keeping legal records, tell every copy with an event, and keep an erasure list for backups.'
+    keywords: ['right to erasure', 'anonymize', 'GDPR', 'backup deletion', 'UserErased', 'crypto shredding']
+    blocks:
+      - type: text
+        body: |
+          Deleting the row breaks foreign keys and loses the order accounts. So you usually **anonymise**: replace the name, email and phone with meaningless values, but keep the order rows and the money amounts. Then publish a `UserErased` event so that search, analytics and cache clean up their own copies. Keep a separate list of who was erased, because restoring from a backup would bring the erased user back.
+      - type: code
+        lang: php
+        file: 'src/Privacy/ErasureService.php'
+        variant: good
+        code: |
+          public function erase(User $user): void
+          {
+              $id = $user->getId();
+
+              $this->em->wrapInTransaction(function () use ($user): void {
+                  $user->anonymize();            // personal data becomes meaningless values
+                  $this->sessions->revokeAll($user);
+                  $this->db->insert('erasure_log', [   // list to re-apply after a restore
+                      'user_id' => $user->getId(),
+                      'erased_at' => (new \DateTimeImmutable())->format('c'),
+                  ]);
+              });
+
+              // after the commit, tell everyone: search, analytics, cache
+              $this->bus->dispatch(new UserErased($id));
+          }
+
+          // User::anonymize()
+          //   $this->email = sprintf('erased-%d@invalid.example', $this->id);
+          //   $this->name = 'Erased user';  $this->phone = null;
+          //   $this->passwordHash = '!';  $this->erasedAt = new \DateTimeImmutable();
+        marks:
+          - {line: 6, tip: 'The row stays (foreign keys intact), but nobody can recognise it as a person any more.'}
+          - {line: 8, tip: 'With `erasure_log`, you can anonymise everyone again after a backup restore.'}
+          - {line: 15, tip: 'Dispatch the event after the transaction ends, otherwise an event for a failed transaction might go out.'}
+      - type: visual
+        kind: compare
+        caption: 'The person''s data vs the legal record'
+        columns:
+          - title: 'Anonymise'
+            tone: good
+            icon: shield
+            tip: 'For data where you need the row for accounts or statistics but don''t need to know who the person is.'
+            items:
+              - 'Order and invoice rows'
+              - 'Remove name, email, phone, address'
+              - 'Money amounts and dates stay'
+          - title: 'Delete completely'
+            tone: bad
+            icon: trash
+            tip: 'Data you have no legal reason to keep should be removed entirely.'
+            items:
+              - 'Profile pictures, files'
+              - 'Copies in the search index and cache'
+              - 'Marketing lists and device tokens'
+      - type: quote
+        body: 'To delete, remove every copy, not just the main table. And keep a list of erased users for backups.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Never write emails or phone numbers into app logs. Deleting from logs is almost impossible, so log the user id from the start.'
+          - 'If a `UserErased` event is lost, copies survive; look at the outbox pattern to guarantee delivery.'
+      - type: tips
+        items:
+          - 'Rows can''t be removed from inside a backup; a backup simply expires after its retention period. After a restore, re-run the anonymisation from `erasure_log`.'
+      - type: refs
+        items:
+          - {to: 'workflows/outbox-inbox', label: 'Sending events reliably'}
+          - {to: 'recovery/backups-restore', label: 'Backup and restore'}
+    check:
+      q: 'After a user asks to be deleted, a backup restore brings their data back. What should you have kept to prevent it?'
+      a: 'An `erasure_log` of erased users. After the restore, run the anonymisation again from that list, and the data doesn''t come back.'
+
+flashcards:
+  - q: 'What does data lifecycle mean?'
+    a: 'The whole journey of data: collection, use, storage, archiving and finally deletion.'
+    more: |
+      Many people think only about collecting data, never about deleting it. As a result, data piles up for years for no reason. Think on the day you collect it: why you keep it, for how long, and what happens at the end.
+    ref: delete-me-twelve-copies
+  - q: 'Where is one user''s data usually spread?'
+    a: 'Besides the main table: logs, search indexes, analytics or a warehouse, caches, backups and third-party services.'
+    more: |
+      Deleting the main table doesn't delete these copies. So a "delete me" request needs a list of every copy. A data map made in advance makes deletion much easier.
+    ref: delete-me-twelve-copies
+  - q: 'What is a retention policy?'
+    a: 'A written rule for each kind of data: why you keep it, how long, and whether you delete or archive it afterwards.'
+    more: |
+      Login logs 90 days, invoices 7 years by law, and so on. The numbers come from law and business needs. Don't leave the policy on paper; enforce it with config and a job.
+    ref: retention-and-minimisation
+  - q: 'What is the data minimisation principle?'
+    a: 'Collect and keep only the information you really need to provide the service.'
+    more: |
+      Data you never collected can't leak and never has to be deleted. Before adding a field to a form, ask whether you can do without it. Checking "is the user 18 or over" is enough; you don't need the full date of birth.
+    ref: retention-and-minimisation
+  - q: 'How should a purge job run?'
+    a: 'On a schedule through the Scheduler, in small batches, with the retention period in config, logging how many rows it deleted.'
+    more: |
+      Delete about 5,000 rows per batch, and repeat while full batches keep coming. On big tables, partitioning and dropping an old partition is even faster. Watching the counts helps you spot anything unusual.
+    ref: purge-and-archive
+  - q: 'What is the correct order for archive-then-delete?'
+    a: 'Select, write to the archive, verify row counts and checksums, and only then delete from the main table.'
+    more: |
+      Skip verification and a failed archive write still results in deleted data, leaving nothing at all. Keep archives in cheap object storage, in year-month folders, so you can find them later.
+    ref: purge-and-archive
+  - q: 'What happens to a user''s order rows when they say "delete my data"?'
+    a: 'Usually the rows stay, but the name, email, phone and address are anonymised.'
+    more: |
+      Accounting and tax law require order records to be kept for several years. Removing the personal data keeps the legal record while making the person unidentifiable. Data like photos, files and marketing lists gets deleted outright.
+    ref: erasure-and-copies
+quiz:
+  - q: 'A user asks you to delete their account. By law, their orders must be kept for 7 years. What is the best action?'
+    hint: 'The accounts and the person are two separate things.'
+    options:
+      - text: 'Keep the order rows and anonymise the personal data'
+        correct: true
+        why: 'The legal record survives, but the person can no longer be identified.'
+      - text: 'Delete both users and orders completely'
+        correct: false
+        why: 'Deleting data the law requires you to keep would break the law.'
+      - text: 'Ignore the request'
+        correct: false
+        why: 'You must honour a request to delete personal data; only what the law requires you to keep is excluded.'
+      - text: 'Just set `deleted_at`'
+        correct: false
+        why: 'With soft delete, the personal data stays; nothing is removed.'
+    ref: erasure-and-copies
+  - q: 'Which of these are likely places holding copies of a user''s data that `DELETE FROM users` doesn''t touch?'
+    hint: 'Which systems take copies of data?'
+    options:
+      - text: 'Elasticsearch or another search index'
+        correct: true
+        why: 'It is a separate copy and doesn''t sync deletions by itself.'
+      - text: 'Nightly backups'
+        correct: true
+        why: 'They are old snapshots; the data stays until they expire.'
+      - text: 'App logs, if emails were written to them'
+        correct: true
+        why: 'Logs are separate files; deleting from the database doesn''t change them.'
+      - text: 'The `id` column of the deleted `users` row'
+        correct: false
+        why: 'That row is gone.'
+    ref: delete-me-twelve-copies
+  - q: 'Look at the code: what is the biggest risk in this purge job?'
+    lang: php
+    code: |
+      $this->db->executeStatement(
+          'DELETE FROM login_events WHERE created_at < :c',
+          ['c' => $cutoff],
+      );
+    hint: 'What if the table has 50 million rows?'
+    options:
+      - text: 'One huge DELETE: a long lock, a huge transaction log and replica lag'
+        correct: true
+        why: 'Deleting in small batches keeps each lock brief.'
+      - text: 'Nothing will be deleted, because there is no `LIMIT`'
+        correct: false
+        why: 'DELETE works fine without LIMIT; the problem is its size.'
+      - text: 'It is against the law'
+        correct: false
+        why: 'Deleting logs past their retention period is part of the policy; the question is only about the method.'
+      - text: 'The `:c` parameter won''t work'
+        correct: false
+        why: 'The parameter binding is fine.'
+    ref: purge-and-archive
+  - q: 'Which of these follow data minimisation?'
+    hint: 'Take less, risk less.'
+    options:
+      - text: 'Checking that the user is 18+ without storing the full date of birth'
+        correct: true
+        why: 'Keep only what the check needs.'
+      - text: 'Asking only for an email for a newsletter, not a phone number'
+        correct: true
+        why: 'You don''t need the phone number, so it is better not to take it.'
+      - text: 'Asking for a national ID on every form "in case it''s useful later"'
+        correct: false
+        why: 'Collecting data on a guess about the future is the opposite of minimisation.'
+      - text: 'Keeping all data forever so it can be analysed later'
+        correct: false
+        why: 'Unlimited retention raises both risk and cost.'
+    ref: retention-and-minimisation
+  - q: 'Rahim''s team deleted a user. A week later the database crashed and was restored from last night''s backup. What can happen, and what should have been kept to prevent it?'
+    hint: 'A backup is a snapshot from before the deletion.'
+    options:
+      - text: 'The deleted user comes back; with an `erasure_log`, you can anonymise them again after the restore'
+        correct: true
+        why: 'A backup is an old snapshot, so keeping a separate list of deletions is the rule.'
+      - text: 'Nothing; a backup automatically leaves out deleted data'
+        correct: false
+        why: 'A backup doesn''t remember events; whatever was there comes back.'
+      - text: 'Only the search index comes back'
+        correct: false
+        why: 'The database rows are what come back.'
+      - text: 'The restore fails automatically'
+        correct: false
+        why: 'The restore succeeds, which is why the risk is silent.'
+    ref: erasure-and-copies

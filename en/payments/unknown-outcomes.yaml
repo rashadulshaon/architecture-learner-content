@@ -1,0 +1,380 @@
+slides:
+  - slug: timeout-not-failure
+    title: 'A timeout, and nobody knows whether the money moved'
+    kind: story
+    tldr: 'When a gateway call times out, it may have succeeded, failed or be unknown; treat a timeout as failure and retry, and the customer is charged twice.'
+    keywords: ['timeout', 'unknown outcome', 'assume failure', 'double charge', 'gateway timeout']
+    blocks:
+      - type: text
+        body: |
+          Rahim's app tells the gateway, "charge 1200 taka to Rina's card." The gateway takes the money, but the network jams on the way back, and after 5 seconds Rahim's app gets a timeout. The app assumes "failed", marks the payment `failed` and tells Rina to try again. Rina taps again, and 1200 taka is deducted twice.
+      - type: visual
+        kind: sequence
+        caption: 'Treating a timeout as failure charges the money twice'
+        actors:
+          - {id: app, label: 'Rahim''s app', icon: server, tip: 'Calls the gateway. When no reply comes, it decides for itself, and that is the mistake.'}
+          - {id: gw, label: 'Gateway', icon: bank, tip: 'The real owner of the charge. It knows what actually happened, but couldn''t tell the app.'}
+          - {id: rina, label: 'Rina', icon: user, tip: 'The customer. She believes whatever the app shows her.'}
+        messages:
+          - {from: app, to: gw, label: 'charge 1200 taka'}
+          - {at: gw, note: 'The money is already taken', tone: warn, tip: 'The work was done properly, but the app doesn''t know yet.'}
+          - {from: gw, to: app, label: 'Success (lost on the way)', dashed: true, tone: bad}
+          - {at: app, note: 'Timeout after 5 s, so "failed"', tone: bad, tip: 'A timeout only says no reply came. It doesn''t say whether the work failed.'}
+          - {from: app, to: rina, label: '"Failed, please try again"', tone: bad}
+          - {from: rina, to: app, label: 'Taps again'}
+          - {from: app, to: gw, label: 'A new charge for 1200 taka', tone: bad}
+          - {at: gw, note: 'Total charged: 2400 taka', tone: bad}
+      - type: quote
+        body: 'A timeout doesn''t mean failure, it means "I don''t know". Until you know, say neither failed nor succeeded.'
+    aside:
+      - type: problem
+        body: 'Over a network, a job takes two steps: going out and the reply coming back. Lose it at either step and the app sees the same thing from outside: silence.'
+      - type: terms
+        items:
+          - {term: 'Unknown outcome', meaning: 'The state of not knowing whether the work happened, usually after a timeout or a dropped connection.'}
+    check:
+      q: 'After a timeout, how many outcomes are possible, and which one did the app wrongly choose?'
+      a: 'Three: success, failure or unknown. The app treated unknown as failure, yet the money had actually been taken.'
+
+  - slug: bkash-sms-missing
+    title: 'No SMS, but the balance went down'
+    kind: concept
+    tldr: 'Give the unknown state its own place (pending), then take your time asking the gateway for the truth or wait for its webhook; never guess.'
+    keywords: ['pending state', 'status query', 'reconciliation', 'source of truth', 'unknown state', 'verification']
+    blocks:
+      - type: metaphor
+        icon: phone
+        title: 'A bKash payment, but no SMS'
+        body: |
+          Rina pays at a shop with bKash (a mobile wallet), but the shopkeeper's phone gets no confirmation SMS. The shopkeeper doesn't say "I didn't get it", and doesn't say "I got it" either. He says "hold on", then checks the transaction ID in the bKash app. That "hold on" is **pending**, and checking the app is a **status query**; the real truth lives in bKash's ledger.
+      - type: visual
+        kind: flow
+        caption: 'When you don''t know, stay pending, then ask the gateway'
+        nodes:
+          - {id: app, label: 'Our app', sub: 'Symfony', icon: server, col: 0, row: 1, tip: 'Sends the charge, and when no reply comes it makes no decision. It waits and verifies.'}
+          - {id: gw, label: 'Gateway', sub: 'source of truth', icon: bank, tone: accent, col: 2, row: 0, tip: 'Only this ledger can say whether the money was actually taken, not our database.'}
+          - {id: pending, label: 'pending', sub: 'don''t know', icon: hourglass, tone: warn, col: 2, row: 2, tip: 'The unknown state''s own home. It is neither failed nor succeeded, so no wrong decision gets made.'}
+          - {id: done, label: 'succeeded / failed', sub: 'known state', icon: check, tone: good, col: 4, row: 1, tip: 'The payment arrives here only after the gateway''s real answer.'}
+        edges:
+          - {from: app, to: gw, label: 'The app sends the charge and no reply comes (timeout)', tone: warn}
+          - {from: app, to: pending, label: 'The app keeps the payment pending and does not call it failed'}
+          - {from: pending, to: gw, label: 'Later it asks the gateway for the status, using the same reference'}
+          - {from: gw, to: done, label: 'The gateway gives the real result: succeeded or failed', tone: good}
+          - {from: done, to: app, label: 'The app moves the payment to match that result', dashed: true, tone: good}
+      - type: text
+        body: |
+          There are three ways to learn the result: the gateway's **webhook** arrives, you run a **status query** yourself, or a regular **reconciliation** job goes through the stuck pending payments and matches them up. Keep all three, because any one of them can fail.
+    aside:
+      - type: terms
+        items:
+          - {term: 'Source of truth', meaning: 'The ledger whose word is final; here, the gateway.'}
+          - {term: 'Reconciliation', meaning: 'Comparing your own ledger with an outside one, then finding and fixing mismatches.'}
+      - type: refs
+        items:
+          - {to: 'ledgers/reconciliation', label: 'Reconciliation in detail'}
+          - {to: 'payments/webhooks', label: 'The result arriving by webhook'}
+    check:
+      q: 'If you skip the pending state and set failed straight after a timeout, what information is lost?'
+      a: 'You lose the fact that the result was really unknown. If the gateway later reports success, nothing tells us how to correct a payment we marked failed.'
+
+  - slug: same-key-retry
+    title: 'Stay pending, and retry with the same key'
+    kind: howto
+    tldr: 'Commit the payment as pending before calling the gateway; on a transport error or 5xx, don''t fail it but verify later; and on a retry, send the same idempotency key.'
+    keywords: ['HttpClient timeout', 'TransportExceptionInterface', 'DelayStamp', 'safe retry', 'idempotency key', 'retry']
+    blocks:
+      - type: code
+        lang: php
+        file: 'src/Payment/ChargeService.php (wrong)'
+        variant: bad
+        code: |
+          try {
+              $res = $this->gateway->request('POST', '/charges', [
+                  'headers' => ['Idempotency-Key' => (string) Uuid::v4()],   // new each time
+                  'json' => ['amount' => $payment->getAmount()],
+                  'timeout' => 5,
+              ]);
+              $res->getStatusCode();
+              $payment->markSucceeded();
+          } catch (\Throwable) {
+              $payment->markFailed();              // timeout = failure?
+          }
+        marks:
+          - {line: 3, tip: 'A new key every time means the gateway sees each attempt as separate work; a retry will charge again.'}
+          - {line: 10, tip: 'Every exception is treated as failure. On a timeout the payment stays failed even if the money was taken.'}
+      - type: code
+        lang: php
+        file: 'src/Payment/ChargeService.php'
+        variant: good
+        code: |
+          public function charge(Payment $payment): void
+          {
+              $this->transitions->apply($payment->getId(), 'submit');   // pending first, commit
+              try {
+                  $res = $this->gateway->request('POST', '/charges', [
+                      'headers' => ['Idempotency-Key' => $payment->getIdempotencyKey()],
+                      'json' => [
+                          'reference' => $payment->getReference(),
+                          'amount' => $payment->getAmount(),
+                      ],
+                      'timeout' => 5,
+                  ]);
+                  $code = $res->getStatusCode();
+              } catch (TransportExceptionInterface) {       // timeout or dropped: outcome unknown
+                  $this->checkLater($payment);
+                  return;
+              }
+              match (true) {
+                  $code < 300 => $this->transitions->apply($payment->getId(), 'succeed'),
+                  $code === 408 || $code === 429 || $code >= 500 => $this->checkLater($payment),
+                  default => $this->transitions->apply($payment->getId(), 'fail'),   // a clear no
+              };
+          }
+
+          private function checkLater(Payment $payment): void
+          {
+              $this->bus->dispatch(
+                  new CheckPaymentStatus($payment->getId()), [new DelayStamp(30_000)]);
+          }
+        marks:
+          - {line: 3, tip: 'Pending is committed before the call. Even if we crash, the ledger shows that a call was in flight.'}
+          - {line: 6, tip: 'The key was made once, when the payment was created, so every attempt sends this same key.'}
+          - {line: 14, tip: 'TransportExceptionInterface also covers timeouts. We don''t set failed here; we only schedule a check for later.'}
+          - {line: 20, tip: '5xx, 408 and 429 mean the gateway hasn''t given a final word. Any other 4xx is a clear "no".'}
+          - {line: 28, tip: 'The check runs 30 seconds later, giving the gateway time to finish the work.'}
+      - type: quote
+        body: 'On a retry, always the same idempotency key. A new key means new work.'
+    aside:
+      - type: tips
+        items:
+          - 'HttpClient is lazy: the real error appears only when you call `getStatusCode()` or `getContent()`, not on `request()`.'
+          - 'Always set a `timeout`. Without one, your own app can hang forever.'
+      - type: refs
+        items:
+          - {to: 'payments/idempotency-keys', label: 'Building idempotency keys'}
+          - {to: 'resilience/circuit-breakers', label: 'Retry, backoff and jitter'}
+    check:
+      q: 'When does `charge()` mark the payment `failed`, and when does it not?'
+      a: 'Only for a clear rejection (4xx, other than 408 and 429). On a timeout, a dropped connection, 408, 429 or 5xx it stays pending and is checked later.'
+
+  - slug: resolve-by-asking
+    title: 'Ask for the truth: status queries and the sweeper'
+    kind: howto
+    tldr: 'A CheckPaymentStatus handler asks the gateway by reference and settles the payment; a periodic sweeper picks up old pending ones and sends them back for checking.'
+    keywords: ['status query', 'sweeper', 'AsPeriodicTask', 'reconciliation job', 'stale pending', 'stuck payments']
+    blocks:
+      - type: text
+        body: |
+          Verification runs in two ways: once, on time (a delayed message), and through a regular sweeper for pending payments whose time has run out. Both ask the gateway by `reference`, and neither does anything on its own guess.
+      - type: code
+        lang: php
+        file: 'src/MessageHandler/CheckPaymentStatusHandler.php'
+        variant: good
+        code: |
+          public function __invoke(CheckPaymentStatus $m): void
+          {
+              $payment = $this->repo->find($m->paymentId);
+              if ('pending' !== $payment->getStatus()) {
+                  return;                                   // a webhook already settled it
+              }
+              $res = $this->gateway->request('GET', '/charges', [
+                  'query' => ['reference' => $payment->getReference()],
+              ]);
+              if (404 === $res->getStatusCode()) {
+                  $this->bus->dispatch(new RetryCharge($payment->getId()));   // same key
+                  return;                                   // the gateway never got the call
+              }
+              match ($res->toArray()['status']) {
+                  'succeeded' => $this->transitions->apply($payment->getId(), 'succeed'),
+                  'failed' => $this->transitions->apply($payment->getId(), 'fail'),
+                  default => $this->bus->dispatch(          // still in progress: ask again
+                      new CheckPaymentStatus($payment->getId()), [new DelayStamp(60_000)]),
+              };
+          }
+        marks:
+          - {line: 4, tip: 'If it''s no longer pending there is nothing to do: the webhook came. This check makes the handler idempotent.'}
+          - {line: 8, tip: 'We search by our own reference, because we may never have received the gateway''s id.'}
+          - {line: 11, tip: '404 means the call never reached the gateway. Then sending the charge again with the same key is safe.'}
+          - {line: 17, tip: 'If the gateway itself still says "processing", we wait: ask again 60 seconds later.'}
+      - type: code
+        lang: php
+        file: 'src/Scheduler/StalePendingSweeper.php'
+        variant: good
+        code: |
+          #[AsPeriodicTask(frequency: '10 minutes', schedule: 'default')]
+          final readonly class StalePendingSweeper
+          {
+              public function __construct(private Connection $db, private MessageBusInterface $bus) {}
+
+              public function __invoke(): void
+              {
+                  $ids = $this->db->fetchFirstColumn(
+                      "SELECT id FROM payment
+                       WHERE status = 'pending' AND updated_at < now() - interval '15 minutes'"
+                  );
+                  foreach ($ids as $id) {
+                      $this->bus->dispatch(new CheckPaymentStatus((int) $id));
+                  }
+              }
+          }
+        marks:
+          - {line: 1, tip: 'A Symfony Scheduler attribute. You need to run a worker: messenger:consume scheduler_default.'}
+          - {line: 9, tip: 'Pending for more than 15 minutes means neither the webhook nor the earlier query worked. Pick these up again.'}
+    aside:
+      - type: commands
+        title: 'Running the Scheduler'
+        items:
+          - {cmd: 'php bin/console messenger:consume scheduler_default', desc: 'The worker that runs Scheduler tasks'}
+          - {cmd: 'php bin/console debug:scheduler', desc: 'See the registered periodic tasks'}
+      - type: tips
+        items:
+          - 'If a payment stays pending for a long time (say 24 hours), alert a person. Don''t keep retrying on your own forever.'
+    check:
+      q: 'If a status query makes the gateway say "I don''t recognise this reference" (404), what is the safe move, and why?'
+      a: 'Send the charge again with the same idempotency key. The call never reached the gateway, and if it did arrive late, the same key stops the work from happening a second time.'
+
+flashcards:
+  - q: 'After a timeout, how many outcomes can a payment call have?'
+    a: 'Three: the work succeeded, it failed, or we don''t know. A timeout only says that no reply came.'
+    more: |
+      There are two reasons a reply gets lost: the request never arrived, or it arrived and the work was done but the reply got lost on the way. From outside, the two look identical, so you can't decide anything from a timeout.
+    ref: timeout-not-failure
+  - q: 'What can happen if you treat a timeout as "failed"?'
+    a: 'The money may have been taken while the app keeps it failed. The customer tries again and is charged twice, or the money is taken with no record.'
+    more: |
+      There are two kinds of damage: the customer is charged twice, and your books say "failed" while the gateway's say "succeeded". Reconciliation will catch that mismatch later, but by then the complaint has already arrived.
+    ref: timeout-not-failure
+  - q: 'What can happen if you treat a timeout as "succeeded"?'
+    a: 'The goods or service go out even though the money was never taken, and the business loses.'
+    more: |
+      If the request never reached the gateway or the card was declined, an app that assumes "success" ships the order anyway. That is the same as giving the goods away free. So you need a definite answer from the gateway before saying success or failure.
+    ref: timeout-not-failure
+  - q: 'Why does a payment need a `pending` state?'
+    a: 'It is the home for "I don''t know". It makes no wrong decision either way, and you can verify later.'
+    more: |
+      Without pending, you'd have to force an unknown outcome into succeeded or failed. With pending, it simply means "waiting", and you can easily query which payments are waiting to be verified.
+    ref: bkash-sms-missing
+  - q: 'What are the three ways to learn the real result of an unknown payment?'
+    a: 'The gateway''s webhook, a status query you make yourself, and a regular reconciliation job. Keep all three.'
+    more: |
+      A webhook is fast but can be lost. A status query is under your control. Reconciliation or a sweeper catches every remaining gap. With all three in place, no payment stays pending forever.
+    ref: bkash-sms-missing
+  - q: 'What should the idempotency key be when retrying after an unknown outcome?'
+    a: 'The same key as the earlier attempt. A new key is new work to the gateway, so the money could be taken again.'
+    more: |
+      Make the key once when the payment is created and store it in the database; don't make it at attempt time. With the same key, if the first attempt succeeded the gateway returns the earlier reply, and if it didn't, the work now happens once.
+    ref: same-key-retry
+  - q: 'Why is a payment committed as pending before calling the gateway?'
+    a: 'So that if we crash mid-call, the ledger still shows that a call was in flight, and the payment can be found for verification later.'
+    more: |
+      If you call first and write afterwards, a crash leaves money taken at the gateway with nothing in our ledger, and nobody can find that payment. Write first, and the sweeper will catch it.
+    ref: same-key-retry
+  - q: 'What do you do when a status query says the gateway doesn''t recognise the reference?'
+    a: 'The call never reached the gateway. Sending the charge again with the same idempotency key is safe.'
+    more: |
+      If the gateway really never got the call, the work will happen for the first time now. If a call turns up late from somewhere else, the same key means the gateway won't do the work a second time. The result is the same either way, so it is safe.
+    ref: resolve-by-asking
+
+quiz:
+  - q: 'A gateway call times out after 5 seconds. What is the app''s correct next step?'
+    hint: 'What does a timeout prove: that the work didn''t happen, or that no reply came?'
+    options:
+      - text: 'Mark the payment failed and tell the customer to try again'
+        correct: false
+        why: 'The money may already have been taken. If the customer tries again, it may be taken a second time.'
+      - text: 'Mark the payment succeeded and ship the order'
+        correct: false
+        why: 'The goods would go out even if the money was never taken. A timeout is not proof of success.'
+      - text: 'Keep the payment pending and ask the gateway later'
+        correct: true
+        why: 'Pending is the right home for an unknown state. The real result then comes from a status query or a webhook.'
+      - text: 'Immediately send the same request again with a new key'
+        correct: false
+        why: 'A new key means new work. If the first one succeeded, the money will be taken twice.'
+    ref: timeout-not-failure
+  - q: 'What is wrong with the code below?'
+    lang: php
+    code: |
+      try {
+          $res = $gateway->request('POST', '/charges', [
+              'headers' => ['Idempotency-Key' => (string) Uuid::v4()],
+              'json' => ['amount' => 1200],
+          ]);
+          $res->getStatusCode();
+          $payment->markSucceeded();
+      } catch (\Throwable) {
+          $payment->markFailed();
+      }
+    hint: 'When is the key made? What state is set on a timeout? And is there a timeout option?'
+    options:
+      - text: 'A new key every time, so on a retry the gateway will take the money again'
+        correct: true
+        why: 'The key must be tied to the payment, not to the attempt.'
+      - text: 'Every exception sets failed, so a timeout counts as a failure too'
+        correct: true
+        why: 'The outcome of a timeout is unknown. If you mark it failed, money that was taken is never caught.'
+      - text: 'There is no `timeout` option, so the call could hang indefinitely'
+        correct: true
+        why: 'Every outside call should have a timeout, otherwise your app''s worker gets stuck.'
+      - text: 'You shouldn''t POST with HttpClient at all'
+        correct: false
+        why: 'HttpClient is the right tool; the trouble is in how the key, exceptions and timeout are handled.'
+    ref: same-key-retry
+  - q: 'The gateway returns 402 (card declined) on one call and 503 on another. What state do the two payments end up in?'
+    hint: '4xx versus 5xx: which is a final "no", and which is "I can''t right now"?'
+    options:
+      - text: 'Both failed'
+        correct: false
+        why: '503 means the gateway can''t respond right now; you can''t say whether the money was taken.'
+      - text: 'Both pending'
+        correct: false
+        why: '402 is a clear rejection, so there is no reason to keep it pending.'
+      - text: '402 → failed, 503 → pending'
+        correct: true
+        why: 'A clear rejection is final; a 5xx is unknown.'
+      - text: '402 → pending, 503 → failed'
+        correct: false
+        why: 'Exactly backwards: 402 is final, 503 is unknown.'
+    ref: same-key-retry
+  - q: 'Rahim decides that if a payment is still pending after 1 hour, the app will mark it "failed" itself, without waiting for a webhook or a query. What is the problem?'
+    hint: 'Does the money go back just because time has passed?'
+    options:
+      - text: 'Time passing doesn''t prove the money wasn''t taken. It may still be taken at the gateway'
+        correct: true
+        why: 'The truth is with the gateway. You learn the result by asking the gateway, not from a timer.'
+      - text: 'One hour is too short; 24 hours would be safe'
+        correct: false
+        why: 'Whatever the time, a guess is a guess. You can''t call it failed without asking the gateway.'
+      - text: 'There is no problem; one hour is enough'
+        correct: false
+        why: 'If the gateway''s ledger later says "succeeded", the customer has been charged while the order is cancelled.'
+    ref: bkash-sms-missing
+  - q: 'Which measures help stop a payment staying pending forever?'
+    hint: 'If one path fails, what do the others do?'
+    options:
+      - text: 'A regular sweeper that picks up pending payments older than 15 minutes and queries them again'
+        correct: true
+        why: 'If a webhook or an earlier query is lost, this sweeper is the last safety net.'
+      - text: 'Scheduling a CheckPaymentStatus message 5 minutes after any pending payment appears'
+        correct: true
+        why: 'With a check on time, most payments are settled quickly.'
+      - text: 'Relying on the webhook alone'
+        correct: false
+        why: 'A webhook can be lost or arrive very late; on its own it is not enough.'
+      - text: 'Telling the customer to phone the bank themselves'
+        correct: false
+        why: 'The problem is in our system; pushing it onto the customer is no solution.'
+    ref: resolve-by-asking
+  - q: 'A status query makes the gateway say "I don''t recognise this reference". What is the safest next step?'
+    hint: 'When you send the charge again, which does the gateway go by: the old key or a new one?'
+    options:
+      - text: 'Make a new key and send the charge again'
+        correct: false
+        why: 'If the earlier call arrives late, the new key means the work happens twice.'
+      - text: 'Mark the payment succeeded'
+        correct: false
+        why: 'The gateway doesn''t recognise it at all, so the money was not taken. Calling it a success is wrong.'
+      - text: 'Send the charge again with the same earlier idempotency key'
+        correct: true
+        why: 'If the call never arrived, the work now happens once; if it did, the gateway returns the earlier result.'
+    ref: resolve-by-asking

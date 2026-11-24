@@ -1,0 +1,371 @@
+slides:
+  - slug: edited-the-amount
+    title: 'I changed the number, and now the books don''t add up'
+    kind: story
+    tldr: 'Overwriting the original payment amount for a partial refund destroys history; at month end the gateway''s books and ours disagree and nobody can say why.'
+    keywords: ['refund', 'mutate original', 'partial refund', 'audit trail', 'reconciliation', 'payments']
+    blocks:
+      - type: text
+        body: |
+          Rina returns a 300 taka item from a 1200 taka order. Rahim's support agent takes the easy way out: he edits `payment.amount` from 1200 to 900. At month end the accountant sits down to match the gateway's statement against the database and finds that the gateway says 1200 collected while the database says 900. 300 taka went back, but when, why and who did it is written nowhere.
+      - type: visual
+        kind: sequence
+        caption: 'Overwriting the amount destroys the original fact'
+        actors:
+          - {id: agent, label: 'Support agent', icon: user, tip: 'Handles the refund request. Takes what looks like the simple route and edits the amount directly.'}
+          - {id: db, label: 'Database', icon: db, tip: 'Treats whatever was last written as the truth. Keeps no way to get the earlier value back.'}
+          - {id: acc, label: 'Accountant', icon: receipt, tip: 'At month end, matches the gateway''s statement against our books.'}
+        messages:
+          - {from: agent, to: db, label: 'payment.amount: 1200 → 900', tone: bad}
+          - {at: db, note: 'The original amount is gone', tone: bad, tip: 'Now there is no way to say how much was actually collected, or how much went back.'}
+          - {from: acc, to: db, label: 'Total collected this month?'}
+          - {from: db, to: acc, label: '900 taka', dashed: true}
+          - {at: acc, note: 'The gateway says 1200: no match', tone: bad}
+      - type: quote
+        body: 'A money record never changes. What happened becomes a new record, linked to the old one.'
+    aside:
+      - type: problem
+        body: 'Change the original record and you lose the answer to "what happened?". Audits, dispute handling and reconciliation with the gateway all rest on history.'
+      - type: refs
+        items:
+          - {to: 'ledgers/double-entry', label: 'Immutable entries and double-entry'}
+    check:
+      q: 'Exactly which facts are lost when the amount goes from 1200 to 900?'
+      a: 'That 1200 was originally collected, that 300 went back, and when, why and by whom. Only one number is left, and it explains none of this.'
+
+  - slug: return-memo
+    title: 'The return slip: don''t tear the original, write a new one'
+    kind: concept
+    tldr: 'The original payment stays untouched; each refund is a new Refund record linked to it, and the remaining refundable amount is calculated.'
+    keywords: ['linked records', 'refund record', 'credit note', 'immutable', 'remaining refundable', 'append-only']
+    blocks:
+      - type: metaphor
+        icon: receipt
+        title: 'The shop''s cash memo and return slip'
+        body: |
+          Once a cash memo (the shop's receipt) is written, nobody tears it up or scribbles on it. When goods come back, the shopkeeper writes a new return slip saying "300 taka returned against original memo number 552". Put the two side by side and the whole history is clear. The remaining amount isn't kept in anyone's head; it comes from adding and subtracting the two slips.
+      - type: visual
+        kind: table
+        caption: 'Two refunds against one payment, the original unchanged'
+        headers: ['Record', 'Type', 'Amount', 'Linked to']
+        rows:
+          - cells: ['P-1', 'Payment', '+1200', '—']
+            tip: 'The original collection. This record never changes again.'
+          - cells: ['R-1', 'Refund', '−300', 'P-1']
+            tip: 'The first refund. Linked to P-1, with its own reason and timestamp.'
+          - cells: ['R-2', 'Refund', '−200', 'P-1']
+            tip: 'The second partial refund, as a separate record.'
+          - cells: ['Left', 'Refundable', '700', 'Calculated']
+            tip: '1200 − 300 − 200 = 700. This value isn''t stored; it is worked out each time.'
+      - type: points
+        title: 'Why this shape works'
+        style: check
+        items:
+          - 'The whole history is kept: who, when, why, how much.'
+          - 'Reconciling with the gateway is easy: every Refund matches one gateway refund.'
+          - 'Several partial refunds on the same payment are handled naturally.'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Reversal / void', meaning: 'Cancelling an authorization before the money has moved. The money is still with the customer.'}
+          - {term: 'Refund', meaning: 'Returning money to the customer in a new transaction, after it has been collected.'}
+          - {term: 'Chargeback', meaning: 'The customer''s bank raises a dispute and forces the money back.'}
+    check:
+      q: 'Why is the remaining refundable amount calculated each time instead of stored in a payment column?'
+      a: 'A separately updated column can drift out of step with the refunds, and you lose track of who changed it and when. When you add and subtract, the records are the only source of truth.'
+
+  - slug: refund-service
+    title: 'Creating a Refund record: limits, locks and idempotency'
+    kind: howto
+    tldr: 'Lock the Payment with PESSIMISTIC_WRITE, count the remaining refundable amount, persist a new Refund; if the same idempotency key arrives again, return the earlier one.'
+    keywords: ['Refund entity', 'Doctrine', 'PESSIMISTIC_WRITE', 'over-refund', 'idempotency', 'refund limit']
+    blocks:
+      - type: code
+        lang: php
+        file: 'src/Refund/RefundService.php (wrong)'
+        variant: bad
+        code: |
+          public function refund(Payment $payment, int $amount): void
+          {
+              $payment->setAmount($payment->getAmount() - $amount);   // overwrites the original
+              $this->em->flush();
+              $this->gateway->refund($payment->getGatewayId(), $amount);
+          }
+        marks:
+          - {line: 3, tip: 'The original amount is changed, and if two people refund at once, more than the limit can go back.'}
+      - type: code
+        lang: php
+        file: 'src/Refund/RefundService.php'
+        variant: good
+        code: |
+          public function refund(Uuid $paymentId, int $amount, string $reason, string $key): Refund
+          {
+              return $this->em->wrapInTransaction(function () use ($paymentId, $amount, $reason, $key) {
+                  $payment = $this->em->find(Payment::class, $paymentId, LockMode::PESSIMISTIC_WRITE);
+
+                  $same = $this->refunds->findOneBy(['payment' => $payment, 'idemKey' => $key]);
+                  if (null !== $same) {
+                      return $same;                       // the same request again
+                  }
+                  $remaining = $payment->getAmount() - $this->refunds->totalFor($payment);
+                  if ($amount <= 0 || $amount > $remaining) {
+                      throw new RefundExceedsPayment($remaining);
+                  }
+                  $refund = new Refund($payment, $amount, $reason, $key);
+                  $this->em->persist($refund);
+                  $this->outbox->add(new RefundRequested($refund->getId()));   // gateway call comes later
+
+                  return $refund;
+              });
+          }
+        marks:
+          - {line: 4, tip: 'Locks the payment row. Another refund on the same payment waits until this transaction ends.'}
+          - {line: 6, tip: 'If the client retries, the earlier Refund with the same key is returned; no second payout.'}
+          - {line: 10, tip: 'Remaining = original − sum of all earlier refunds. Calculated inside the lock, so the number is true right now.'}
+          - {line: 16, tip: 'The gateway call happens outside the transaction, via the outbox. Handling an unknown result from that call is a separate topic.'}
+    aside:
+      - type: tips
+        items:
+          - 'Always store money as integers (minor units), never floats. Keep a Refund amount positive; the type (Refund) already says it goes back.'
+          - 'Add a unique constraint on `(payment_id, idem_key)` so the database stops a duplicate even if the lock is missed.'
+      - type: refs
+        items:
+          - {to: 'payments/idempotency-keys', label: 'Idempotency keys'}
+          - {to: 'ledgers/modeling-money', label: 'Modeling money'}
+    check:
+      q: 'Two support agents each refund 800 on a 1200 taka payment at the same moment, with no lock. What can happen?'
+      a: 'Both see 1200 remaining, so both 800 refunds pass and 1600 taka goes back. With a lock, the second sees 400 remaining and rejects the 800.'
+
+  - slug: partial-capture-shipment
+    title: 'Partial capture and partial shipments'
+    kind: howto
+    tldr: 'An authorization holds the money once; each shipment captures exactly its share as a separate record, and any share that will never ship is voided (a reversal).'
+    keywords: ['partial capture', 'authorization', 'void', 'partial shipment', 'reversal', 'split shipment']
+    blocks:
+      - type: text
+        body: |
+          In online shopping the money is first **held** (authorized) and only **taken** (captured) when the goods ship. Rina has 3 items at 400 each, so 1200 is held. Two ship first, so 800 is captured. If the third is delayed, the remaining 400 is captured with a later shipment, or released (voided). Each one is a new record.
+      - type: visual
+        kind: table
+        caption: 'One authorization, a few captures and a void'
+        headers: ['Step', 'Record', 'Amount', 'Still held']
+        rows:
+          - cells: ['Authorization', 'Authorize A-1', '1200', '1200']
+            tip: '1200 is held on the customer''s card, but the money hasn''t been taken yet.'
+          - cells: ['Shipment 1 (2 items)', 'Capture C-1 → A-1', '800', '400']
+            tip: 'Two items shipped, so 800 was taken. A-1 hasn''t changed; the new record is C-1.'
+          - cells: ['Shipment 2 (1 item)', 'Capture C-2 → A-1', '400', '0']
+            tip: 'When the third item ships, the remaining 400 is taken. Nothing is held any more.'
+          - cells: ['If item 3 is cancelled', 'Void V-1 → A-1', '400', '0']
+            tip: 'This happens instead of C-2: the remaining 400 is released. The money never moved, so this is a reversal, not a refund.'
+      - type: points
+        title: 'Rules'
+        style: check
+        items:
+          - 'The sum of all captures and voids never exceeds the authorization.'
+          - 'Each capture is linked to a shipment, so you know which money was for which goods.'
+          - 'Returning money after a capture is a refund, not a void.'
+    aside:
+      - type: remember
+        body: 'Releasing held money is a void. Returning taken money is a refund.'
+      - type: tips
+        items:
+          - 'An authorization usually expires within a few days. A late shipment may need a new authorization, so check your gateway''s rules.'
+    check:
+      q: 'Rina cancels the third item. What record covers the remaining 400 taka: a refund or a void? Why?'
+      a: 'A void. That 400 was never taken, only held. A refund applies only once the money has been collected.'
+
+  - slug: hardcoded-fee
+    title: 'Don''t hard-code the fee: compute it from rules'
+    kind: pitfall
+    tldr: 'Hard-coding a refund fee in an `if` means a deploy for every rule change and float errors; keep the rules separate, calculate in integers, and record the fee as its own record.'
+    keywords: ['refund fee', 'rule-driven', 'ExpressionLanguage', 'basis points', 'restocking fee', 'config rules']
+    blocks:
+      - type: text
+        body: |
+          "Returns after 7 days lose 10%." A rule like this changes a few times a year. Write `if ($days > 7) $fee = $amount * 0.1;` in code and every change needs a deploy, while floats make the cents drift. Keep the rules in config and calculate in integers (basis points, where 10% = 1000).
+      - type: code
+        lang: php
+        file: 'src/Refund/RefundFeePolicy.php'
+        variant: good
+        code: |
+          final readonly class RefundFeePolicy
+          {
+              public function __construct(
+                  #[Autowire('%refund.fee_rules%')] private array $rules,
+                  private ExpressionLanguage $expr,
+              ) {}
+
+              /** @param array<string, mixed> $facts e.g. ['days' => 9, 'reason' => 'changed_mind'] */
+              public function feeFor(int $amount, array $facts): int
+              {
+                  foreach ($this->rules as $rule) {
+                      if ($this->expr->evaluate($rule['when'], $facts)) {
+                          return intdiv($amount * $rule['bp'], 10_000);   // in integers
+                      }
+                  }
+
+                  return 0;
+              }
+          }
+        marks:
+          - {line: 4, tip: 'The list of rules comes from config, not from code. To change a rule, change only the config.'}
+          - {line: 12, tip: '`when` is an expression string such as "days > 7". It is run against the facts to see whether it matches.'}
+          - {line: 13, tip: 'Basis points: 1000 means 10%. Integer division, so there is no float noise.'}
+      - type: code
+        lang: yaml
+        file: 'config/services.yaml'
+        variant: good
+        code: |
+          parameters:
+              refund.fee_rules:                     # the first match applies
+                  - {when: 'reason == "defective"', bp: 0}
+                  - {when: 'days > 7',              bp: 1000}
+                  - {when: 'reason == "changed_mind"', bp: 500}
+        marks:
+          - {line: 3, tip: 'No fee for a defective item. Because this rule comes first, it beats the rules below it.'}
+      - type: quote
+        body: 'A fee never changes the original amount. The Refund record states the full amount, and the fee is a separate, linked record.'
+    aside:
+      - type: tips
+        items:
+          - 'Show the user first: "Refund 1000, fee 100, you receive 900".'
+          - 'Store which rule applied, by name, on the fee record. It will help in a later dispute.'
+      - type: refs
+        items:
+          - {to: 'config/rules-engines', label: 'Rules engines and ExpressionLanguage'}
+    check:
+      q: 'What do you gain by keeping fee rules in config and calculating in integers (bp)?'
+      a: 'Rule changes need no deploy, and there is no float noise. And because the fee is a separate record, history keeps which rule took how much.'
+
+flashcards:
+  - q: 'Why is it wrong to change the original payment amount for a refund?'
+    a: 'You lose the original facts and the history: how much was collected, how much went back, when and why. The books also stop matching the gateway.'
+    more: |
+      A money record is the basis of every audit. Overwrite the amount and the gateway says 1200 while the database says 900, and nobody can say where the 300 went. So we write the event as a new record and leave the old one intact.
+    ref: edited-the-amount
+  - q: 'What is the "never mutate the original" rule for money?'
+    a: 'The original payment record never changes. Any change becomes a new record (Refund, Capture) linked to the original.'
+    more: |
+      Like the shop's cash memo: if something goes wrong, you don't tear it or scribble on it, you write a new return slip that names the original memo number. The history stays intact, and the whole story can be read at any time.
+    ref: return-memo
+  - q: 'How do you work out the remaining refundable amount of a payment?'
+    a: 'Take the original amount and subtract the sum of all Refunds on that payment. Calculate it each time rather than storing it in a separate column.'
+    more: |
+      A separate column for the remaining amount can drift out of step with the Refund records. Computing it from the sum leaves a single source of truth: the records themselves.
+    ref: return-memo
+  - q: 'What is the difference between a reversal (void) and a refund?'
+    a: 'A void cancels the authorization before the money moves. A refund returns money in a new transaction after it was collected.'
+    more: |
+      With a void the customer's money never left, it was only held on the card, so it is less hassle and usually has no fee. With a refund the money has moved, it can take days to come back, and the gateway may not return its fee.
+    ref: return-memo
+  - q: 'How do you prevent over-refunding when two people refund the same payment at once?'
+    a: 'Inside a transaction, lock the payment row with `PESSIMISTIC_WRITE`, then count the remaining amount and create the refund.'
+    more: |
+      Without a lock, both see the same remaining amount and both refunds pass. With a lock, the second one waits, then sees the new remaining amount and is correctly rejected.
+    ref: refund-service
+  - q: 'How do you stop a retried refund request from refunding twice?'
+    a: 'With an idempotency key. If the same (payment, key) arrives again, you return the earlier Refund record and create nothing new.'
+    more: |
+      A unique constraint on `(payment_id, idem_key)` means the database stops a duplicate even if the lock is missed. Send the same key on the gateway call too, so the gateway side doesn't refund a second time either.
+    ref: refund-service
+  - q: 'What are authorize, capture and void?'
+    a: 'Authorize holds money on the card. Capture actually takes the held money. Void releases held money without taking it.'
+    more: |
+      In online shopping you authorize before the goods ship and capture when they ship. With partial shipments, each shipment captures exactly its share, and any share that will never ship is voided. All captures and voids together can never exceed the authorization.
+    ref: partial-capture-shipment
+  - q: 'Why keep refund fee rules in config rather than in an `if` in code?'
+    a: 'Rules change often; config lets you change them without a deploy. Calculating in integers (basis points) also removes float errors.'
+    more: |
+      With Symfony ExpressionLanguage you can write conditions like `days > 7` in config, and the first matching rule applies. The fee is a separate record too, so the original amount stays intact.
+    ref: hardcoded-fee
+
+quiz:
+  - q: 'Rina is owed 300 taka back from a 1200 taka payment. Which design is right?'
+    hint: 'History must not be lost, and it must match the gateway.'
+    options:
+      - text: 'Set `payment.amount` to 900'
+        correct: false
+        why: 'The original amount is lost, it doesn''t match the gateway, and nobody can say why 300 went back.'
+      - text: 'Keep the payment unchanged and create a new Refund record for 300, linked to the payment'
+        correct: true
+        why: 'History stays intact, and the remaining amount comes from adding up the records.'
+      - text: 'Delete the payment and create a new one for 900'
+        correct: false
+        why: 'Deleting is even worse: you lose the proof of the original transaction.'
+      - text: 'Write "partially_refunded" in the status column and nothing else'
+        correct: false
+        why: 'How much went back, when and why is all missing. A status alone isn''t enough.'
+    ref: edited-the-amount
+  - q: 'From the table below, what is the remaining refundable amount? P-1: +1200, R-1: −300 (P-1), R-2: −200 (P-1).'
+    hint: 'The original minus all the Refunds.'
+    options:
+      - text: '1200'
+        correct: false
+        why: 'That is the original amount; the earlier refunds haven''t been counted.'
+      - text: '900'
+        correct: false
+        why: 'You subtracted only the first refund; there is a second one too.'
+      - text: '700'
+        correct: true
+        why: '1200 − 300 − 200 = 700.'
+      - text: '500'
+        correct: false
+        why: 'The two refunds add up to 500, but that is what has gone back, not what remains.'
+    ref: return-memo
+  - q: 'What is wrong with this refund code?'
+    lang: php
+    code: |
+      $payment = $em->find(Payment::class, $id);
+      $remaining = $payment->getAmount() - $refunds->totalFor($payment);
+      if ($amount <= $remaining) {
+          $em->persist(new Refund($payment, $amount));
+          $em->flush();
+      }
+    hint: 'What if two agents come in at once? And what if the request is retried?'
+    options:
+      - text: 'No lock: two agents can see the same remaining amount and both get approved'
+        correct: true
+        why: 'There is a gap between the read and the write. Without PESSIMISTIC_WRITE or a unique constraint, over-refunding is possible.'
+      - text: 'No idempotency key: a retry will create the same refund twice'
+        correct: true
+        why: 'It creates a new Refund every time, because there is no way to recognise the earlier request.'
+      - text: 'Creating a new Refund record is wrong; it should change a payment column'
+        correct: false
+        why: 'A new record is the right approach. The problems are the missing lock and key.'
+      - text: 'It shouldn''t persist; flush alone is enough'
+        correct: false
+        why: 'A new entity always needs persist; that isn''t the problem.'
+    ref: refund-service
+  - q: 'From Rina''s 1200 taka authorization, 800 was captured with the first shipment. Then the third item was cancelled. Which is the correct record for the remaining 400 taka?'
+    hint: 'Was that 400 ever taken from the customer''s card?'
+    options:
+      - text: 'A Refund of 400'
+        correct: false
+        why: 'A refund applies once the money has been taken. Here the 400 was only held.'
+      - text: 'A Void of 400, against the authorization'
+        correct: true
+        why: 'Releasing money that is held but not taken is a void (reversal).'
+      - text: 'Change the authorization amount to 800'
+        correct: false
+        why: 'You never change the original record. The remaining share gets a new Void record.'
+      - text: 'Do nothing; it will release itself when it expires'
+        correct: false
+        why: 'The customer''s money stays held until it expires. Voiding directly is the right move.'
+    ref: partial-capture-shipment
+  - q: 'Which practices keep fee rules safe and easy to change?'
+    hint: 'When a rule changes, how much code and arithmetic must you touch?'
+    options:
+      - text: 'Keep the list of rules in config, such as a `days > 7` condition and a bp value'
+        correct: true
+        why: 'Rules can be changed without a deploy.'
+      - text: 'Calculate in integers: `intdiv($amount * $bp, 10_000)`'
+        correct: true
+        why: 'No float noise, and the result is the same every time.'
+      - text: 'Drop the fee and just write a smaller Refund amount'
+        correct: false
+        why: 'Then the Refund won''t match the gateway, and you lose how much fee was taken. The fee is a separate record.'
+      - text: 'Hard-code `$fee = $amount * 0.1` in the code'
+        correct: false
+        why: 'Floats make the cents drift, and changing a rule means changing code.'
+    ref: hardcoded-fee

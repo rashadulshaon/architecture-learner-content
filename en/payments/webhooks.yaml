@@ -1,0 +1,373 @@
+slides:
+  - slug: fake-paid-call
+    title: 'Who sent this "paid" message?'
+    kind: story
+    tldr: 'A webhook is a POST that arrives at your URL from outside; trust it without checking the seal and anyone can fake a "paid" call and get an order for free.'
+    keywords: ['webhook', 'fake webhook', 'payment callback', 'spoofing', 'forged request', 'untrusted input']
+    blocks:
+      - type: text
+        body: |
+          Rahim's shop takes payment online and then ships the order. When the money arrives, the payment gateway POSTs to a URL on Rahim's server to say "order 77 paid". That call is a **webhook**. The catch is that the URL is open to the whole internet. A mischievous kid simply POSTs "order 77 paid" to it himself, and Rahim's server believes it without any check and ships the goods.
+      - type: visual
+        kind: sequence
+        caption: 'A fake webhook marks an order paid with no money'
+        actors:
+          - {id: fake, label: 'The prankster', icon: user, tip: 'Not the gateway, but he can POST to the same URL pretending to be the gateway, because the URL is open to everyone.'}
+          - {id: api, label: 'Rahim''s server', icon: api, tip: 'The code behind the webhook URL. It takes the body at its word without asking who sent it.'}
+          - {id: db, label: 'Database', icon: db, tip: 'Writes whatever the server tells it; even a fake message becomes the truth.'}
+        messages:
+          - {from: fake, to: api, label: 'POST /webhooks/pay {order: 77, paid}', tone: bad}
+          - {from: api, to: db, label: 'Order 77 = paid'}
+          - {at: db, note: 'No money came, order is paid', tone: bad, tip: 'The database now holds a lie. The goods will leave, and no money will arrive.'}
+          - {from: api, to: fake, label: '200 OK: goods on their way', dashed: true, tone: bad}
+      - type: quote
+        body: 'Whatever a webhook body says, until the seal checks out it is just the word of a stranger.'
+    aside:
+      - type: problem
+        body: 'A webhook URL is not a secret. Hiding the URL doesn''t make you safe: you have to prove mathematically that each call really came from the gateway.'
+      - type: terms
+        items:
+          - {term: 'Webhook', meaning: 'A POST that another system sends to your URL by itself when something happens.'}
+          - {term: 'Spoofing', meaning: 'Sending a fake request while pretending to be someone else.'}
+    check:
+      q: 'Is a very long, random webhook URL secure enough by itself? Why not?'
+      a: 'No. A URL can leak through logs, proxies or email. So you verify the signature of every call; keeping the URL secret is not enough.'
+
+  - slug: sealed-parcel
+    title: 'The sealed parcel: HMAC signatures'
+    kind: concept
+    tldr: 'The gateway sends a signature: an HMAC of the body and timestamp under a shared secret. The server builds the same hash itself to compare, and rejects old timestamps.'
+    keywords: ['HMAC', 'signature verification', 'replay protection', 'timestamp', 'shared secret', 'webhook signature']
+    blocks:
+      - type: metaphor
+        icon: truck
+        title: 'The courier''s sealed parcel'
+        body: |
+          The courier company and Rahim share a secret stamp that nobody else has. The company looks at what's inside the parcel and the date, then stamps a seal. Rahim makes a seal of his own with the same stamp and compares. If the contents change, the seal won't match. And if last month's sealed parcel turns up again today, he sends it back because of the date.
+      - type: visual
+        kind: flow
+        caption: 'Seal matches: do the work. No match: reject'
+        nodes:
+          - {id: gw, label: 'Gateway', sub: 'applies the seal', icon: bank, col: 0, row: 1, tip: 'Runs HMAC-SHA256 over the body and timestamp with the shared secret to make the seal (signature), and sends it in a header.'}
+          - {id: api, label: 'Webhook endpoint', sub: 'Symfony', icon: api, tone: accent, col: 2, row: 1, tip: 'Checks the seal and the timestamp before doing anything else.'}
+          - {id: ok, label: 'Seal is good', sub: 'keep the event', icon: check, tone: good, col: 4, row: 0, tip: 'The signature matches and the timestamp is fresh. Now it is safe to store the event.'}
+          - {id: no, label: 'Seal is wrong', sub: 'rejected', icon: cross, tone: bad, col: 4, row: 2, tip: 'If the signature doesn''t match, or the timestamp is more than five minutes old, the request is dropped.'}
+        edges:
+          - {from: gw, to: api, label: 'The gateway sends the body with a seal of body and timestamp in a header'}
+          - {from: api, to: ok, label: 'The server builds a seal with its own secret and compares: they match', tone: good}
+          - {from: api, to: no, label: 'If the seal doesn''t match or the timestamp is old, it rejects the call', tone: bad, dashed: true}
+          - {from: api, to: gw, label: 'When all is well, it quickly replies 200', dashed: true, tone: good}
+    aside:
+      - type: terms
+        items:
+          - {term: 'HMAC', meaning: 'A hash made from a secret key plus a message; without the key you can''t produce the same hash.'}
+          - {term: 'Replay attack', meaning: 'Capturing a genuine, sealed request and sending it again later.'}
+      - type: remember
+        body: 'Seal = HMAC(secret, timestamp + body). The timestamp is inside the seal, which is why it can''t be changed.'
+    check:
+      q: 'If someone captures a genuine sealed request and resends it two days later, the signature is still valid. How do you stop that?'
+      a: 'The timestamp is part of the seal. The server checks whether the timestamp is more than five minutes away from the current time, and if so it rejects the request even though the seal is valid.'
+
+  - slug: verify-then-store
+    title: 'Verify, store, then reply 200'
+    kind: howto
+    tldr: 'Check the seal with hash_hmac and hash_equals on the raw body, store the event and hand it to Messenger, and return 200 fast.'
+    keywords: ['hash_hmac', 'hash_equals', 'raw body', 'respond fast', 'Messenger', 'async processing', 'fast response']
+    blocks:
+      - type: text
+        body: |
+          Keep two rules in mind. First, verify the seal against the **raw body**, not the array you get after `json_decode`, because even a change in whitespace changes the hash. Second, the gateway waits only briefly for your reply, so don't do slow work: verify, store, and answer 200.
+      - type: code
+        lang: php
+        file: 'src/Webhook/WebhookVerifier.php'
+        variant: good
+        code: |
+          final readonly class WebhookVerifier
+          {
+              public function __construct(
+                  #[Autowire('%env(PAY_WEBHOOK_SECRET)%')] private string $secret,
+                  private ClockInterface $clock,
+              ) {}
+
+              public function verify(string $rawBody, string $header): void
+              {
+                  parse_str(str_replace(',', '&', $header), $parts);   // t=...,v1=...
+                  $t = (int) ($parts['t'] ?? 0);
+                  $sig = (string) ($parts['v1'] ?? '');
+
+                  if (abs($this->clock->now()->getTimestamp() - $t) > 300) {
+                      throw new BadRequestHttpException('Timestamp too old');
+                  }
+                  $expected = hash_hmac('sha256', $t.'.'.$rawBody, $this->secret);
+                  if (!hash_equals($expected, $sig)) {
+                      throw new AccessDeniedHttpException('Signature mismatch');
+                  }
+              }
+          }
+        marks:
+          - {line: 4, tip: 'The secret does not live in code or in git; it comes from an env var or Symfony secrets.'}
+          - {line: 15, tip: 'Anything older than five minutes is treated as a replay and dropped. The timestamp sits inside the seal, so nobody can alter it.'}
+          - {line: 18, tip: 'Not a plain ===. hash_equals stops attackers from guessing the hash character by character by measuring response time (a timing attack).'}
+      - type: code
+        lang: php
+        file: 'src/Controller/PayWebhookController.php'
+        variant: good
+        code: |
+          #[Route('/webhooks/pay', methods: ['POST'])]
+          public function __invoke(
+              Request $request,
+              WebhookVerifier $verifier,
+              MessageBusInterface $bus,
+              Connection $db,
+          ): Response {
+              $raw = $request->getContent();                 // raw body, before json_decode
+              $verifier->verify($raw, (string) $request->headers->get('X-Signature'));
+              $event = json_decode($raw, true, flags: JSON_THROW_ON_ERROR);
+
+              $db->executeStatement(
+                  'INSERT INTO webhook_event (event_id, type, payload, received_at)
+                   VALUES (?, ?, ?, now()) ON CONFLICT (event_id) DO NOTHING',
+                  [$event['id'], $event['type'], $raw],
+              );
+              $bus->dispatch(new ProcessWebhookEvent($event['id']));
+
+              return new Response('', 200);                  // no slow work here
+          }
+        marks:
+          - {line: 8, tip: 'getContent() returns exactly the bytes that arrived. This is what the seal must be checked against.'}
+          - {line: 14, tip: 'A unique constraint on event_id. If the gateway sends the same event twice, the second one creates no new row.'}
+          - {line: 17, tip: 'A worker will do the real work later. Here we only wrote the event into the ledger.'}
+      - type: points
+        title: 'Which reply, and when'
+        style: check
+        items:
+          - '200: the seal is good and the event is stored, even if the event type is one you don''t recognise.'
+          - '400/401: the seal is wrong. Retrying from the gateway would not help.'
+          - '500: you couldn''t write to the database. The gateway will then retry on its own.'
+    aside:
+      - type: tips
+        items:
+          - 'Most gateways retry failed deliveries with exponential backoff for hours or days. Returning 500 is how you ask for that retry.'
+          - 'When you rotate the secret, accept both the old and the new one for a short while.'
+      - type: refs
+        items:
+          - {to: 'messaging/background-jobs', label: 'Async work with Messenger workers'}
+          - {to: 'security/secrets-management', label: 'Handling secrets'}
+    check:
+      q: 'Why does the seal check need the raw body rather than the `json_decode`d array? And why is slow work kept out of the controller?'
+      a: 'Re-encoding an array can change the bytes, and then the hash won''t match. And if slow work takes too long, the gateway times out and sends the same event again.'
+
+  - slug: duplicate-out-of-order
+    title: 'It will arrive twice, and out of order'
+    kind: pitfall
+    tldr: 'Webhooks are delivered at least once and in no guaranteed order; the handler must block duplicates by event id, and a state machine must stop old news from moving a payment backwards.'
+    keywords: ['duplicate webhook', 'out-of-order', 'at-least-once', 'event id', 'idempotent handler', 'event ordering']
+    blocks:
+      - type: text
+        body: |
+          A gateway that gets no reply sends the same event again, so seeing one event twice is normal. And `succeeded` can arrive before `pending`, because retries scramble the order. The easiest mistake is to set the status and send the email right in the controller.
+      - type: code
+        lang: php
+        file: 'src/Controller/PayWebhookController.php (wrong)'
+        variant: bad
+        code: |
+          $event = json_decode($request->getContent(), true);      // seal never checked
+          $payment = $repo->findOneBy(['gatewayId' => $event['data']['id']]);
+
+          $payment->setStatus($event['data']['status']);           // applies old news too
+          $mailer->send(new ReceiptEmail($payment));               // twice = two emails
+          $erp->notify($payment);                                  // slow, may time out
+          $em->flush();
+
+          return new Response('ok');
+        marks:
+          - {line: 4, tip: 'If a pending event arrives late, it turns a succeeded payment back into pending. Writing the status directly is dangerous.'}
+          - {line: 5, tip: 'If the same event arrives twice, the customer gets two receipts, and without keeping the gateway''s copy you can''t recognise the duplicate.'}
+      - type: code
+        lang: php
+        file: 'src/MessageHandler/ProcessWebhookEventHandler.php'
+        variant: good
+        code: |
+          #[AsMessageHandler]
+          final readonly class ProcessWebhookEventHandler
+          {
+              public function __construct(private Connection $db, private PaymentService $payments) {}
+
+              public function __invoke(ProcessWebhookEvent $m): void
+              {
+                  $this->db->transactional(function () use ($m): void {
+                      $claimed = $this->db->executeStatement(
+                          'UPDATE webhook_event SET processed_at = now()
+                           WHERE event_id = ? AND processed_at IS NULL',
+                          [$m->eventId],
+                      );
+                      if (0 === $claimed) {
+                          return;                    // already done: a duplicate
+                      }
+                      $payload = $this->db->fetchOne(
+                          'SELECT payload FROM webhook_event WHERE event_id = ?', [$m->eventId]);
+                      $event = json_decode($payload, true);
+                      $this->payments->applyGatewayEvent($event['data']['id'], $event['type']);
+                  });
+              }
+          }
+        marks:
+          - {line: 11, tip: 'You can only claim it while processed_at IS NULL. Even if two workers arrive together, only one updates 1 row.'}
+          - {line: 15, tip: '0 rows means someone else already handled it. Just return: no exception, or Messenger would retry.'}
+          - {line: 20, tip: 'The payment status isn''t set directly here; the state machine checks the transition is valid and only then changes it.'}
+      - type: quote
+        body: 'Assume both about webhooks: the same event will come more than once, and the order will not be right.'
+    aside:
+      - type: tips
+        items:
+          - 'Don''t rely on order. Let the state machine accept only forward transitions, drop old news, and never move a status backwards.'
+          - 'When in doubt, don''t trust the event''s data: ask the gateway''s API for the payment''s current state.'
+      - type: refs
+        items:
+          - {to: 'payments/payment-state-machine', label: 'Valid transitions and the state machine'}
+          - {to: 'payments/idempotency-keys', label: 'Making the same job safe to repeat'}
+    check:
+      q: 'When a duplicate event reaches the worker handler, how many rows does `UPDATE ... processed_at IS NULL` change, and what does the handler do then?'
+      a: 'The first time, 1 row, so the work runs. For a duplicate, 0 rows, so the handler quietly returns and does nothing more.'
+
+flashcards:
+  - q: 'What is a webhook, and why can''t you trust it without verification?'
+    a: 'A POST an outside system sends to your URL when something happens. The URL is open, so anyone can pose as the gateway and send fake news.'
+    more: |
+      When money arrives, the payment gateway tells your server about it, and that call is the webhook. But the URL is open on the internet, so a body that says "paid" is not necessarily true. You need a signature to prove who sent it.
+    ref: fake-paid-call
+  - q: 'How is a webhook verified with an HMAC signature?'
+    a: 'The gateway sends an HMAC of the timestamp and body under a shared secret. The server builds the same hash with its own secret and compares.'
+    more: |
+      Only the gateway and you hold the secret. So being able to produce the right hash proves you know the secret, and therefore that the sender is genuine. Change one character of the body and the hash changes completely, so tampering in transit is caught too.
+    ref: sealed-parcel
+  - q: 'When comparing signatures, why `hash_equals` and not `===`?'
+    a: '`hash_equals` compares in constant time, so an attacker can''t guess the hash character by character by measuring response time (a timing attack).'
+    more: |
+      A plain `===` stops at the first mismatch. An attacker can measure tiny differences in response time and work out the right signature step by step. `hash_equals` always takes the same time.
+    ref: verify-then-store
+  - q: 'What is a replay attack on a webhook, and how do you stop it?'
+    a: 'Capturing a genuine sealed request and sending it again later. Stop it by putting the timestamp inside the seal and rejecting anything older than five minutes.'
+    more: |
+      A signature, once made, is genuine, so it still looks valid when sent again later. If the timestamp is also an input to the hash, the attacker can't change it, and the server can check that the request is fresh.
+    ref: sealed-parcel
+  - q: 'Why shouldn''t a webhook endpoint do slow work (emails, ERP calls)?'
+    a: 'The gateway gives up after a short wait and resends the same event. So only verify and store, return 200, and leave the rest to a queue.'
+    more: |
+      In the controller, do just this: verify, store the event, dispatch to Messenger, then answer 200. The real work happens in a worker, so a slow job never holds the gateway's connection open, and if it fails the worker handles it with its own retries.
+    ref: verify-then-store
+  - q: 'How does a handler stay safe when the same webhook event arrives twice?'
+    a: 'A unique constraint on event_id plus an UPDATE guarded by `processed_at IS NULL`. If 0 rows change, it was already handled: just return.'
+    more: |
+      Gateways deliver at least once, so the same event can come more than once and the handler must be idempotent. Insert the event id into the ledger only once and mark it "done" only once; both rest on the database's uniqueness guarantee.
+    ref: duplicate-out-of-order
+  - q: 'Webhooks don''t always arrive in order. How do you handle that?'
+    a: 'Don''t set the status directly; use a state machine where only forward transitions are valid. Drop old news when it arrives.'
+    more: |
+      If a late `pending` event drags a `succeeded` payment backwards, you have a problem. A list of valid transitions rejects that. If you're really unsure, ask the gateway's API for the payment's actual current state.
+    ref: duplicate-out-of-order
+  - q: 'When should a webhook endpoint return 500, and when 200?'
+    a: '200 once you have stored the event, even if its type is unknown. 500 if storing fails, so the gateway sends it again.'
+    more: |
+      200 means "I have this safely, don't send it again." If you reply 200 to news you couldn't keep, it is lost for good. And for a bad seal, reply 400/401, since a retry from the genuine gateway wouldn't be needed here.
+    ref: verify-then-store
+
+quiz:
+  - q: 'Rahim''s webhook handler marks the order paid just because the body says `status: paid`, with no signature check. What is the biggest risk?'
+    hint: 'Who can find out what the URL is?'
+    options:
+      - text: 'Anyone can POST a fake call and get an order marked paid with no money'
+        correct: true
+        why: 'The URL is open, and the handler doesn''t check who the sender is. So even fake news becomes the truth.'
+      - text: 'The gateway''s server will slow down'
+        correct: false
+        why: 'Without verification the handler actually runs faster. The problem is trust, not speed.'
+      - text: 'Parsing the JSON will take longer'
+        correct: false
+        why: 'The time spent parsing has nothing to do with security.'
+      - text: 'The same order will be saved twice in the database'
+        correct: false
+        why: 'That is a different problem (duplicates). The main risk here is a fake sender.'
+    ref: fake-paid-call
+  - q: 'What is wrong with the signature check in the code below?'
+    lang: php
+    code: |
+      $data = json_decode($request->getContent(), true);
+      $expected = hash_hmac('sha256', json_encode($data), $secret);
+
+      if ($expected == $request->headers->get('X-Signature')) {
+          $this->process($data);
+      }
+    hint: 'What exactly is being hashed, and how is the comparison done?'
+    options:
+      - text: 'It hashes the re-encoded array, not the raw body; if the bytes differ, the seal won''t match'
+        correct: true
+        why: 'You must hash exactly the bytes the gateway sealed. Decoding and re-encoding can change whitespace or key order.'
+      - text: 'It compares with `==` instead of hash_equals'
+        correct: true
+        why: 'A plain comparison opens the door to timing attacks. Always use hash_equals to check a seal.'
+      - text: 'sha256 is far too weak; sha1 should be used'
+        correct: false
+        why: 'The other way round: sha256 is fine, and sha1 is old and weak.'
+      - text: 'You needn''t think about timestamps, because the HMAC is enough'
+        correct: false
+        why: 'Without a timestamp, a genuine sealed request can be sent again later (a replay). So the timestamp should be part of the seal too.'
+    ref: verify-then-store
+  - q: 'Which approach is the right way to handle slow work at a webhook endpoint?'
+    hint: 'How long does the gateway wait? Who retries when the work fails?'
+    options:
+      - text: 'Verify the seal, store the event, dispatch to Messenger, and return 200 straight away'
+        correct: true
+        why: 'The gateway gets a quick reply, and the slow work runs in a worker, which has its own retries.'
+      - text: 'Finish all the work in the controller, then return 200'
+        correct: false
+        why: 'If it is slow, the gateway times out and resends the same event, so duplicates multiply.'
+      - text: 'Return 200 before the work is done, without storing anything'
+        correct: false
+        why: 'If the server then crashes, the event is lost for good, and the gateway thinks the news was delivered.'
+      - text: 'Return 500 for every event so the gateway keeps resending'
+        correct: false
+        why: 'Every event then goes into the retry queue, and in the end the gateway may disable the endpoint altogether.'
+    ref: verify-then-store
+  - q: 'A webhook delivers `payment.succeeded` first, then an older `payment.pending`. The handler does `status = event.status`. What happens?'
+    hint: 'Do retries and networks keep the order intact?'
+    options:
+      - text: 'The payment goes from succeeded back to pending, and the customer paid but finds the order stuck'
+        correct: true
+        why: 'The old news arrived later and wiped out the newer state. If only forward transitions were valid in a state machine, this would be rejected.'
+      - text: 'The gateway guarantees order, so this never happens'
+        correct: false
+        why: 'Most gateways give no ordering guarantee, especially when retrying.'
+      - text: 'The handler will ignore the second event automatically'
+        correct: false
+        why: 'Nothing like that exists: the code does what it says (set the status).'
+    ref: duplicate-out-of-order
+  - q: 'Which of these keep a webhook handler safe from duplicate events?'
+    hint: 'Can the handler tell whether this is the first or the second arrival?'
+    options:
+      - text: 'A unique constraint on event_id in the webhook_event table'
+        correct: true
+        why: 'The same event arriving again creates no new row, so there is a basis for spotting the duplicate.'
+      - text: '`UPDATE ... SET processed_at = now() WHERE event_id = ? AND processed_at IS NULL`, returning when 0 rows change'
+        correct: true
+        why: 'When two come at once, the database gives only one of them 1 row. The other gets 0 and skips the work.'
+      - text: 'SELECT first to see whether the event exists, then INSERT'
+        correct: false
+        why: 'If two requests arrive together, both will see "not there". There is a gap between checking and writing.'
+      - text: 'Tell the gateway never to retry'
+        correct: false
+        why: 'Turn off retries and an event is lost for good on a 500 or a timeout. Handling duplicates is your side''s job.'
+    ref: duplicate-out-of-order
+  - q: 'The database is down at your webhook endpoint, so the event can''t be stored. Which reply should you give?'
+    hint: 'When does the gateway send again?'
+    options:
+      - text: '200, and fix it later'
+        correct: false
+        why: 'The gateway will assume the news was delivered and never send it again. The event is lost for good.'
+      - text: '401, because something is wrong'
+        correct: false
+        why: '401 means a wrong seal. Here the seal is fine; the fault is on your server.'
+      - text: '500, so the gateway sends it again on its retry schedule'
+        correct: true
+        why: 'If the event isn''t stored, you can''t reply 2xx. A 5xx means "I couldn''t take it, try again".'
+    ref: verify-then-store

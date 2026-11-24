@@ -1,0 +1,379 @@
+slides:
+  - slug: nobody-remembers-why
+    title: 'The newcomer''s question nobody can answer'
+    kind: story
+    tldr: 'If a system''s structure and the reasons behind its decisions live only in people''s heads, the knowledge leaves when they do. Three tools capture it: C4, sequence diagrams and ADRs.'
+    keywords: ['documentation', 'architecture documentation', 'onboarding', 'knowledge loss', 'new team member', 'decision records']
+    blocks:
+      - type: text
+        body: |
+          Karim is new at the company. He asks, "Why does the report service have its own MongoDB when everything else is PostgreSQL?" Nobody on the team is sure: the person who made the decision left two years ago. There is a photo of a whiteboard, but nobody knows what the boxes or the arrows mean. Karim wonders, "What will break if I remove this?" and it takes him a week to find out.
+      - type: visual
+        kind: compare
+        caption: 'What the code does is in the code; these three are not'
+        columns:
+          - title: 'What lives in heads, not on paper'
+            tone: bad
+            icon: warning
+            tip: 'You can''t learn these three by reading the code, and they walk out the door with the people.'
+            items:
+              - 'Which parts the system is made of'
+              - 'Who calls whom, and how'
+              - 'Which decision was taken, and why'
+          - title: 'What survives when written down'
+            tone: good
+            icon: check
+            tip: 'Each question has its own tool. All three are short, and can live in the repository.'
+            items:
+              - 'C4 diagram: the parts and how they relate'
+              - 'Sequence diagram: what happens in order'
+              - 'ADR: why this decision'
+    aside:
+      - type: story
+        title: 'After the removal'
+        body: |
+          In the end someone removed MongoDB and moved the data to PostgreSQL. Two weeks later they found that one report query had been built specifically for MongoDB's aggregation pipeline, and the whole report had become 12 times slower. If the reason had been written in an ADR, a week of searching would have taken a minute.
+      - type: remember
+        body: 'Code tells you what the system does. Only writing tells you why.'
+    check:
+      q: 'Why can''t you tell the reason for a decision just by reading the code?'
+      a: 'Code shows what was done, not why. The reasons, the alternatives and the constraints live in people''s heads, so they have to be written down separately.'
+
+  - slug: c4-zoom
+    title: 'C4: four zoom levels, like a map'
+    kind: concept
+    tldr: 'C4 draws a system at four levels: Context, Container, Component and Code. It works like zooming a map, and each diagram shows exactly one zoom level.'
+    keywords: ['C4 model', 'context diagram', 'container diagram', 'component diagram', 'Simon Brown', 'architecture diagram']
+    blocks:
+      - type: metaphor
+        icon: map
+        title: 'Zooming into a map'
+        body: |
+          On a map of Bangladesh you first see the country and its neighbours. Zoom in and you see districts and highways, zoom further and you see the streets of a neighbourhood, and finally the floor plan of a single house. Each zoom answers a different question, and if you cram every level onto one map, you can read nothing. C4 works the same way.
+      - type: visual
+        kind: layers
+        caption: 'The four levels of C4, zooming in from top to bottom'
+        layers:
+          - {label: 'Level 1 — Context', sub: 'the system, its users and outside systems', tone: accent, tip: 'The country map. Even non-technical people get it: what our system is and who it talks to.'}
+          - {label: 'Level 2 — Container', sub: 'the runnable parts: apps, databases, queues', tone: default, tip: 'The district-and-city map. A "container" is a separately running part, and doesn''t have to be Docker.'}
+          - {label: 'Level 3 — Component', sub: 'the main parts inside one container', tone: default, tip: 'The neighbourhood map. For example the Catalog, Checkout and Billing modules inside a Symfony API.'}
+          - {label: 'Level 4 — Code', sub: 'a class diagram; you can usually skip it', tone: muted, tip: 'The floor plan inside the house. Code changes fast, so this diagram goes stale. If you need it, generate it from the IDE.'}
+      - type: visual
+        kind: table
+        caption: 'Each level, in the example of an online shop'
+        headers: ['Level', 'Who it is for', 'What the shop diagram shows']
+        rows:
+          - cells: ['Context', 'Everyone: PMs, newcomers', 'Customer, admin, payment gateway, SMS vendor']
+            tip: 'The internal technology isn''t shown here, only the outside relationships.'
+          - cells: ['Container', 'Developers, ops', 'Vue app, Symfony API, PostgreSQL, Redis, worker']
+            tip: 'Each box carries its technology, and each arrow carries its protocol (JSON/HTTPS, SQL).'
+          - cells: ['Component', 'The team working on that container', 'Catalog, Checkout, Billing inside the API']
+            tip: 'The module boundaries you set up earlier show up here.'
+          - cells: ['Code', 'Rarely anyone', 'A class diagram, generated automatically if needed']
+            tip: 'A hand-drawn class diagram goes stale in weeks. If you want one, generate it with a tool.'
+      - type: quote
+        body: 'One zoom level per diagram. And every box gets a name, a responsibility and a technology.'
+    aside:
+      - type: tips
+        items:
+          - 'For most teams the Context and Container diagrams are enough. Draw a Component diagram only where the inside is complicated.'
+          - 'Put a verb on every arrow ("reads and writes", "sends order events"), not just an inked line.'
+      - type: refs
+        items:
+          - {to: 'thinking/conways-law', label: 'Component boundaries and teams'}
+    check:
+      q: 'To explain the system to a new PM, which C4 level do you show first, and why?'
+      a: 'Context. It has no internal technology, only our system, its users and outside systems, so it can be understood without knowing the technology.'
+
+  - slug: sequence-diagram
+    title: 'Sequence diagram: what happens in order'
+    kind: howto
+    tldr: 'C4 shows who knows whom; a sequence diagram shows what happens in what order, including the failure branch that box-and-arrow pictures miss.'
+    keywords: ['sequence diagram', 'Mermaid', 'failure path', 'timeline', 'ordering', 'diagram as code']
+    blocks:
+      - type: text
+        body: |
+          A C4 diagram is a map, and a map has no time in it. But the answer to "what happens if the money is taken and then we time out?" comes in time order. So draw one sequence diagram for one checkout scenario, and show the failure branch alongside the happy path.
+      - type: visual
+        kind: sequence
+        caption: 'Checkout: the success path and the timeout path'
+        actors:
+          - {id: ui, label: 'Vue app', icon: browser, tip: 'The part that runs in the user''s browser.'}
+          - {id: api, label: 'Symfony API', icon: api, tip: 'Runs the checkout rules and calls the Payment API.'}
+          - {id: pay, label: 'Payment API', icon: card, tip: 'An outside service. We have no control over its answer.'}
+        messages:
+          - {from: ui, to: api, label: 'POST /checkout'}
+          - {from: api, to: pay, label: 'charge + Idempotency-Key', tip: 'Each order gets one fixed key, so a retry doesn''t charge twice.'}
+          - {from: pay, to: api, label: 'Success: 200 paid', dashed: true, tone: good}
+          - {from: api, to: ui, label: '201 order confirmed', dashed: true, tone: good}
+          - {at: pay, note: 'On timeout, no answer comes', tone: warn, tip: 'This is the branch box-and-arrow pictures miss, and where most mistakes hide.'}
+          - {from: api, to: ui, label: '202 verification in progress', dashed: true, tone: warn, tip: 'We don''t know whether the money was taken, so we say "verification in progress", not "confirmed".'}
+      - type: code
+        lang: text
+        file: 'docs/sequences/checkout.md (Mermaid)'
+        code: |
+          sequenceDiagram
+              participant U as Vue app
+              participant A as Symfony API
+              participant P as Payment API
+              U->>A: POST /checkout
+              A->>P: charge + Idempotency-Key
+              alt success
+                  P-->>A: 200 paid
+                  A-->>U: 201 order confirmed
+              else timeout
+                  P--xA: no answer
+                  A-->>U: 202 verification in progress
+              end
+        marks:
+          - {line: 7, tip: '`alt` ... `else` ... `end` shows alternative branches of one path. The happy and the failing one sit in the same picture.'}
+          - {line: 11, tip: '`--x` is an arrow that never reached its destination: no answer came.'}
+    aside:
+      - type: tips
+        items:
+          - 'One diagram, one scenario. With more than four or five participants, split it into two pictures.'
+          - 'Name messages with real API names (`POST /checkout`), not vague ones like "process order".'
+          - 'Mermaid lives in the repository as text; GitHub or GitLab renders the picture itself, and changes show up in the pull request.'
+    check:
+      q: 'Even with a C4 container diagram, why do you need a separate sequence diagram?'
+      a: 'A container diagram has no time in it: it shows who knows whom, not the order or the failure branches. Questions about timeouts and retries are answered by order.'
+
+  - slug: adr
+    title: 'ADR: the record of a decision'
+    kind: howto
+    tldr: 'An ADR (Architecture Decision Record) is a short file with the context, the decision, the alternatives and the consequences. Once written it is not edited; a new ADR supersedes an old one.'
+    keywords: ['ADR', 'architecture decision record', 'decision log', 'supersede', 'decision document', 'Michael Nygard']
+    blocks:
+      - type: text
+        body: |
+          Think of a court ruling: an old ruling isn't erased, a new ruling overrides it. An ADR works the same way. Each big decision gets a one-page file with a number, like `docs/adr/0007-email-via-messenger.md`. When someone later asks why, the answer is right there.
+      - type: code
+        lang: text
+        file: 'docs/adr/0007-email-via-messenger.md'
+        code: |
+          # ADR-0007: Send email asynchronously through Messenger
+
+          Date: 2026-03-14
+          Status: Accepted
+
+          ## Context
+          Sending the email at checkout takes 4 seconds on average. When
+          the email service is slow or down, the order fails too. The team
+          is 4 people, with nobody to run a separate queue service.
+
+          ## Decision
+          Send emails to a worker through Symfony Messenger's doctrine transport.
+
+          ## Alternatives rejected
+          - RabbitMQ: not needed yet, and costly to run.
+          - Sending inside the request: the slowness and failures remain.
+
+          ## Consequences
+          + The order no longer depends on how slow the email is.
+          - Email arrives a few seconds late; the worker must be kept running.
+          Revisit: if we pass 1000 messages a minute, look at RabbitMQ.
+        marks:
+          - {line: 4, tip: 'Status: Proposed, Accepted, or Superseded by ADR-0021. The old one isn''t deleted; only its status changes.'}
+          - {line: 6, tip: 'Context: what problem, what constraints. Use numbers: not "slow" but "4 seconds".'}
+          - {line: 14, tip: 'Alternatives rejected and why: when someone in the future raises the same idea, the answer is here.'}
+          - {line: 18, tip: 'Consequences, good and bad both, and the trigger for when to revisit the decision.'}
+      - type: visual
+        kind: flow
+        animate: false
+        caption: 'An ADR''s life cycle: once Accepted it isn''t edited, only superseded'
+        nodes:
+          - {id: proposed, label: 'Proposed', sub: 'a proposal', icon: pencil, col: 0, row: 1, tip: 'A draft, discussed in a pull request.'}
+          - {id: accepted, label: 'Accepted', sub: 'the live decision', icon: check, tone: good, col: 2, row: 1, tip: 'The team has agreed. From now on the text of the file is not edited.'}
+          - {id: superseded, label: 'Superseded', sub: 'a new ADR replaced it', icon: history, tone: muted, col: 4, row: 1, tip: 'A new ADR was written that replaces the old one. The old one stays as history.'}
+        edges:
+          - {from: proposed, to: accepted, label: 'team agrees'}
+          - {from: accepted, to: superseded, label: 'things change'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'Editing an old ADR to record a new decision. The history is lost, and nobody knows when or why things changed.'
+          - 'Writing ADRs for small decisions. Write them only for hard-to-reverse or contested decisions.'
+      - type: refs
+        items:
+          - {to: 'thinking/reversible-decisions', label: 'Which decisions need an ADR'}
+    check:
+      q: 'When a decision changes, what do you do instead of editing the old ADR, and why?'
+      a: 'Write a new ADR and set the old one''s status to "Superseded by ...". That keeps the history: when the decision changed and why.'
+
+  - slug: docs-that-rot
+    title: 'Documents that go stale'
+    kind: pitfall
+    tldr: 'A wiki diagram drifts from the code and goes stale in two years. Keep diagrams and ADRs beside the code in the repository, and they get updated in the same pull request.'
+    keywords: ['docs as code', 'stale documentation', 'Structurizr', 'wiki', 'repository docs', 'outdated docs']
+    blocks:
+      - type: text
+        body: |
+          The most common mistake: a beautiful picture drawn in Confluence or Google Slides, far from the code. The code changes, the picture doesn't, and within two years it starts to lie. A stale document is worse than none, because people believe it. The fix: make diagrams files like code, and keep them in the repository.
+      - type: code
+        lang: text
+        file: 'docs/architecture/workspace.dsl (Structurizr)'
+        variant: good
+        code: |
+          workspace {
+              model {
+                  customer = person "Customer"
+                  shop = softwareSystem "Online Shop" {
+                      spa = container "Vue app" "UI" "Vue 3"
+                      api = container "Symfony API" "Checkout rules" "PHP 8.3, Symfony"
+                      db = container "Database" "Orders and products" "PostgreSQL"
+                  }
+                  pay = softwareSystem "Payment gateway" "Outside service"
+
+                  customer -> spa "Browses and orders"
+                  spa -> api "JSON/HTTPS"
+                  api -> db "Reads and writes"
+                  api -> pay "Sends charges"
+              }
+              views {
+                  container shop {
+                      include *
+                      autoLayout lr
+                  }
+              }
+          }
+        marks:
+          - {line: 4, tip: 'Containers inside a softwareSystem: the second level of C4. The names, responsibilities and technologies of the boxes are all in the file.'}
+          - {line: 11, tip: 'The relationship verbs are in the file too. Change one line of the file to change an arrow, and the picture updates itself.'}
+          - {line: 17, tip: 'The tool builds the picture from this view, so nobody draws boxes by hand.'}
+      - type: points
+        title: 'Rules for keeping documents fresh'
+        style: check
+        items:
+          - 'Diagrams and ADRs live in the code repository, in the `docs/` folder.'
+          - 'A change to the picture goes in the same pull request and the same review as the code change.'
+          - 'Validate the diagram files in CI, so a broken file can''t be merged.'
+    aside:
+      - type: commands
+        title: 'Structurizr CLI'
+        items:
+          - {cmd: 'structurizr.sh validate -workspace docs/architecture/workspace.dsl', desc: 'Check that the DSL file is valid'}
+          - {cmd: 'structurizr.sh export -workspace docs/architecture/workspace.dsl -format mermaid', desc: 'Export the diagram to Mermaid'}
+      - type: remember
+        body: 'A document that isn''t next to the code won''t live as long as the code.'
+    check:
+      q: 'Why does a picture drawn in a wiki go stale faster than diagram-as-code in the repository?'
+      a: 'When changing code, nobody remembers to open the wiki and update the picture. In the repository the diagram file is reviewed in the same pull request, so it goes stale less.'
+
+flashcards:
+  - q: 'What is the C4 model?'
+    a: 'Four levels for drawing software architecture: Context, Container, Component, Code. It works like zooming a map.'
+    more: |
+      Each level answers a different question, and each diagram holds just one level. For most teams the Context and Container diagrams are enough. Simon Brown popularised the approach.
+    ref: c4-zoom
+  - q: 'What does the C4 Context diagram show, and for whom?'
+    a: 'Our system, its users and the outside systems. Relationships, not technology. For everyone, including non-technical people.'
+    more: |
+      For an online shop, the Context diagram would hold the customer, the admin, the payment gateway and the SMS vendor. The internal technology isn't written here. This is the picture a newcomer or a PM sees first.
+    ref: c4-zoom
+  - q: 'What does "Container" mean in C4?'
+    a: 'A separately running and deployed part: the Vue app, the Symfony API, the database, a worker. It doesn''t have to be a Docker container.'
+    more: |
+      The name is confusing. Here a container is any separate part that holds data or runs code. Each box carries a name, a responsibility and a technology, and each arrow carries a protocol.
+    ref: c4-zoom
+  - q: 'When should you draw a sequence diagram?'
+    a: 'When order and failure branches matter: checkout, retries, timeouts, webhooks.'
+    more: |
+      A C4 picture has no time in it, so it can't answer "what happens if the money is taken and then we time out?" One diagram per scenario, covering the happy and the failing path, with real API names on the messages. Mermaid can live in the repository as text.
+    ref: sequence-diagram
+  - q: 'What is an ADR (Architecture Decision Record)?'
+    a: 'A short record of one big decision: the context, the decision, the alternatives rejected and the consequences.'
+    more: |
+      It lives in the repository with a number, like `docs/adr/0007-...md`. When someone asks "why is it like this?", the answer is there. Write them only for hard-to-reverse or contested decisions.
+    ref: adr
+  - q: 'What happens to an ADR when the decision changes?'
+    a: 'The old ADR is not edited. A new ADR is written, and the old one''s status becomes "Superseded by ...".'
+    more: |
+      Like a court ruling, the history is not erased, so someone in the future can see when and why a decision changed. The statuses are: Proposed, Accepted, Superseded (or Deprecated).
+    ref: adr
+  - q: 'Why is it better to keep diagrams and ADRs beside the code in the repository?'
+    a: 'Because the diagram or decision is updated and reviewed in the same pull request as the code change, so it goes stale less.'
+    more: |
+      Nobody remembers a wiki picture when changing code, and within a few years it lies. As Mermaid or Structurizr DSL files, you can see diffs, validate them in CI, and have GitHub render the picture for you.
+    ref: docs-that-rot
+
+quiz:
+  - q: 'You have 10 minutes to explain to a new product manager what our system is and who it talks to. Which picture is best?'
+    hint: 'They don''t know the technology.'
+    options:
+      - text: 'The C4 Context diagram'
+        correct: true
+        why: 'It shows the system, its users and the outside systems, without any internal technology.'
+      - text: 'The C4 Code diagram (a class diagram)'
+        correct: false
+        why: 'That is the innermost level, far too fine-grained for a new PM.'
+      - text: 'A Component diagram'
+        correct: false
+        why: 'It shows the parts inside a container, which is much more than the PM needs.'
+      - text: 'The full database schema'
+        correct: false
+        why: 'A schema is internal detail; it doesn''t show the system''s outside relationships.'
+    ref: c4-zoom
+  - q: 'What happens at checkout when the Payment API times out? Which picture is best for answering that question?'
+    hint: 'What is the question about: structure, or order?'
+    options:
+      - text: 'A sequence diagram with the happy and the timeout branch'
+        correct: true
+        why: 'The question is about time order and a failure branch, which a sequence diagram shows directly.'
+      - text: 'The C4 Container diagram'
+        correct: false
+        why: 'It shows who calls whom, but not the order or what happens on a timeout.'
+      - text: 'The C4 Context diagram'
+        correct: false
+        why: 'That is a higher level; it has no failure sequence.'
+      - text: 'The team''s org chart'
+        correct: false
+        why: 'That is team structure, not the order of events in the system.'
+    ref: sequence-diagram
+  - q: 'Which of these belong in a good ADR?'
+    hint: 'The reason, the alternatives and the price: you need all three.'
+    options:
+      - text: 'Context: what problem and what constraints, with numbers'
+        correct: true
+        why: 'Without the context, a future reader can''t tell why the decision was made.'
+      - text: 'The alternatives that were rejected, and why'
+        correct: true
+        why: 'When the same proposal comes up again, the answer is here.'
+      - text: 'Consequences: both good and bad, and the trigger for revisiting'
+        correct: true
+        why: 'No decision is free; when the price is written down, later discussion can be honest.'
+      - text: 'The whole code, so the decision can be reproduced exactly'
+        correct: false
+        why: 'An ADR records the reason for a decision, not a copy of the code. The code is already in the repository.'
+    ref: adr
+  - q: 'ADR-0007 says "email goes through Messenger''s doctrine transport". A year later, 1200 messages a minute arrive, so you move to RabbitMQ. What should you do?'
+    hint: 'Don''t erase history.'
+    options:
+      - text: 'Write a new ADR-0021 and set ADR-0007''s status to "Superseded by ADR-0021"'
+        correct: true
+        why: 'The history stays: why it was the doctrine transport before, and why it is RabbitMQ now.'
+      - text: 'Erase the text of ADR-0007 and write RabbitMQ instead'
+        correct: false
+        why: 'The old context and reasons are lost; in the future nobody will know why it changed.'
+      - text: 'Do nothing; the code is the truth'
+        correct: false
+        why: 'Code says what is there, not why, and ADR-0007 would now give wrong information.'
+      - text: 'Delete ADR-0007'
+        correct: false
+        why: 'Delete the history and you delete the answer to "why did we change?".'
+    ref: adr
+  - q: 'An architecture diagram drawn in Confluence two years ago shows a service that no longer exists in the code. What is the root problem, and what is the remedy?'
+    hint: 'The picture is far from the code, so who will update it?'
+    options:
+      - text: 'The picture is far from the code so it was never updated; make it diagram-as-code in the repository and change it in PRs'
+        correct: true
+        why: 'When a picture change arrives in the same review as the code change, it goes stale less.'
+      - text: 'Confluence is slow; pick a different wiki tool'
+        correct: false
+        why: 'Whichever wiki you use, if it is away from the code it will go stale the same way.'
+      - text: 'Drawing pictures is the mistake; reading the code is enough'
+        correct: false
+        why: 'Code doesn''t show structure, relationships or the reasons for decisions quickly. Pictures are needed; they just need to stay fresh.'
+      - text: 'Redraw every picture from scratch once a year'
+        correct: false
+        why: 'With one update a year, the picture lies for the other eleven months.'
+    ref: docs-that-rot

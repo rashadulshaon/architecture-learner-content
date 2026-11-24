@@ -1,0 +1,345 @@
+slides:
+  - slug: silent-update-in-prod
+    title: 'A silent UPDATE in production: a fix that makes things worse'
+    kind: story
+    tldr: 'Seeing bad data and hurriedly running an UPDATE in the console leaves no evidence, can change the wrong rows, and later nobody can tell what happened.'
+    keywords: ['data fix', 'silent edit', 'production console', 'audit', 'bad data', 'data correction']
+    blocks:
+      - type: text
+        body: |
+          A bad deploy wrongly marked 2300 paid orders as `cancelled` within two hours. In a hurry, an engineer ran `UPDATE orders SET status = 'paid' WHERE status = 'cancelled'` in the production console. The 2300 were fixed, but 800 more orders that really had been cancelled also became `paid`. Nobody wrote down which rows changed.
+      - type: visual
+        kind: sequence
+        caption: 'A one-line UPDATE, with no evidence left behind'
+        actors:
+          - {id: dep, label: 'Bad deploy', icon: rocket, tip: 'The new code had a bug that wrongly cancelled paid orders.'}
+          - {id: eng, label: 'Engineer', icon: terminal, tip: 'Wants to fix it fast, with good intentions. But in the rush the condition grew too broad.'}
+          - {id: db, label: 'Production DB', icon: db, tip: 'Does what it is told. Can''t tell which rows are the right ones and which are wrong.'}
+        messages:
+          - {from: dep, to: db, label: '2300 paid orders wrongly cancelled', tone: bad}
+          - {from: eng, to: db, label: "UPDATE ... WHERE status = 'cancelled'", tone: warn, tip: 'The condition has no time window and no check for a paid payment.'}
+          - {at: db, note: '3100 rows changed, 800 wrongly', tone: bad, tip: 'The 800 orders that really were cancelled are now marked paid too. They might even get shipped.'}
+          - {at: eng, note: 'The old values are written nowhere', tone: bad, tip: 'Now there is no way to tell what each row held before.'}
+      - type: quote
+        body: 'A correction is a transaction too. Who, when, why, and what it was before: all of it gets written down.'
+    aside:
+      - type: story
+        title: 'Two weeks later'
+        body: |
+          The accounts team saw that the payment and order counts didn't match. Nobody could say who had changed what, or why. The console command left no log, and the values before the change were gone.
+      - type: problem
+        body: 'Correcting bad data is unavoidable. The question is how, so that the correction itself can be understood and reversed later.'
+    check:
+      q: 'Why did that UPDATE change 800 wrong rows as well?'
+      a: 'The condition was just `status = cancelled`. With no time window for the bad deploy and no check for a paid payment, orders that were genuinely cancelled matched too.'
+
+  - slug: correction-is-a-record
+    title: 'Corrections in red ink: four ways to fix data'
+    kind: concept
+    tldr: 'Fix by writing, not erasing: a reversing and a new entry in the ledger, a rule-following transition for state, a recompute for derived data, and an audited script for the rest.'
+    keywords: ['corrective entry', 'compensating action', 'reversing entry', 'audit log', 'recompute', 'correction']
+    blocks:
+      - type: metaphor
+        icon: book
+        title: 'Red ink in the shop''s credit ledger'
+        body: |
+          When a wrong amount is written in the ledger, a good shopkeeper doesn't rub it out. He writes a line in red ink, "wrong amount cancelled", then a new line with the correct amount below it, with the date and his name. Both the original mistake and the correction stay visible. This is exactly how data corrections should work in software.
+      - type: visual
+        kind: table
+        caption: 'How to fix each kind of data'
+        headers: ['Kind of data', 'How to fix it', 'Why']
+        rows:
+          - cells: ['Ledger (money)', 'Reversing entry + new correct entry', 'History intact, debit = credit']
+            tip: 'A money entry never changes. You write the opposite transaction to cancel its effect, then post the correct one.'
+          - cells: ['State (status)', 'A new rule-following transition + history', 'Keeps when and why it changed']
+            tip: 'Don''t just set the status. Changing it through a valid path builds a history with reasons.'
+          - cells: ['Derived (balance, cache)', 'Recompute from the source', 'Right source, rebuildable result']
+            tip: 'Never hand-edit a derived value; calculate it again from the entries.'
+          - cells: ['Everything else (address, profile)', 'Audited script + data_fix_log', 'Old values can be restored']
+            tip: 'The before and after of every row sits in the log, so the whole fix can be reversed if needed.'
+      - type: quote
+        body: 'Fix by writing, not erasing: the mistake stays and so does the correction.'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Compensating action', meaning: 'An opposite action that cancels the effect of an earlier one, rather than erasing it.'}
+          - {term: 'Data fix', meaning: 'A one-off, documented job that corrects wrong production data.'}
+      - type: refs
+        items:
+          - {to: 'ledgers/double-entry', label: 'Reversing entries'}
+          - {to: 'workflows/refunds-reversals', label: 'Refunds and reversals'}
+    check:
+      q: 'If a ledger holds an entry with a wrong amount, what is the right way to fix it, and why?'
+      a: 'Write a reversing entry to cancel the mistake''s effect, then write a new entry with the correct amount. History stays intact and debit = credit still holds.'
+
+  - slug: audited-data-fix
+    title: 'An audited data-fix script: count, record, then change'
+    kind: howto
+    tldr: 'A narrow condition, a check against the expected count, one transaction, each row''s before and after in data_fix_log, and nothing changing if you run it again.'
+    keywords: ['data_fix_log', 'dry-run', 'expected count', 'CTE UPDATE RETURNING', 'idempotent fix', 'peer review']
+    blocks:
+      - type: text
+        body: |
+          Instead of a hand-typed UPDATE in the console, write a small script named after the ticket number. First it counts how many rows would change. If that doesn't match your "expected count", it stops. If it does, it changes the rows in one transaction and writes each row's before and after values to a log. The condition should be such that running it again finds 0 rows.
+      - type: code
+        lang: sql
+        file: 'FIX-1042: paid orders wrongly cancelled'
+        variant: good
+        code: |
+          WITH bad AS (
+            SELECT o.id, o.status AS old_status
+              FROM orders o
+             WHERE o.updated_at >= '2026-11-20 13:00+06'
+               AND o.updated_at <  '2026-11-20 15:05+06'    -- window of the bad deploy
+               AND o.status = 'cancelled'
+               AND EXISTS (SELECT 1 FROM payment p
+                            WHERE p.order_id = o.id AND p.status = 'paid')
+               FOR UPDATE OF o
+          ), fixed AS (
+            UPDATE orders o SET status = 'paid', updated_at = now()
+              FROM bad WHERE o.id = bad.id
+            RETURNING o.id, bad.old_status, o.status AS new_status
+          )
+          INSERT INTO data_fix_log (fix_id, row_id, old_value, new_value)
+          SELECT 'FIX-1042', id, old_status, new_status FROM fixed;
+        marks:
+          - {line: 4, tip: 'Only rows inside the bad deploy''s time window. Genuinely cancelled orders from before or after are left alone.'}
+          - {line: 7, tip: 'Needs proof: this order really has a paid payment. The narrower the condition, the less room for error.'}
+          - {line: 11, tip: 'The UPDATE and the log are in one statement. A change without a log entry simply can''t happen.'}
+          - {line: 15, tip: 'Each row''s before and after values are written. If needed, the fix can be reversed from this.'}
+      - type: code
+        lang: php
+        file: 'src/Command/Fix1042Command.php'
+        variant: good
+        code: |
+          protected function execute(InputInterface $in, OutputInterface $out): int
+          {
+              $expect = (int) $in->getOption('expect');            // the number agreed in review
+              $count = (int) $this->db->fetchOne(self::COUNT_SQL);
+              $out->writeln("Affected: $count, expected: $expect");
+
+              if ($count !== $expect) {
+                  $out->writeln('<error>Count mismatch, nothing was changed</error>');
+
+                  return Command::FAILURE;
+              }
+              if ($in->getOption('dry-run')) {
+                  return Command::SUCCESS;                          // only counting
+              }
+
+              $fixed = $this->db->transactional(
+                  fn () => $this->db->executeStatement(self::FIX_SQL),
+              );
+              $out->writeln("$fixed fixed; recorded in data_fix_log");
+
+              return Command::SUCCESS;
+          }
+        marks:
+          - {line: 7, tip: 'If the counted number doesn''t match the expected one, nothing changes. A wrong condition, or surprising data, is caught right here.'}
+          - {line: 12, tip: '`--dry-run` only shows the number. A second person looks at this output and signs off.'}
+          - {line: 16, tip: 'Run it again and it finds 0 rows. `status = cancelled` no longer matches, so a double fix can''t happen.'}
+    aside:
+      - type: tips
+        items:
+          - 'Put the script through code review and attach the dry-run output to the ticket. Nothing goes into production without a second pair of eyes.'
+          - 'Take a snapshot of the affected rows before running; `data_fix_log` gives you a way to undo, and the backup is the last resort.'
+      - type: pitfalls
+        items:
+          - 'A data-fix script must never change a ledger money entry. Money mistakes are always fixed with a reversing entry.'
+      - type: refs
+        items:
+          - {to: 'recovery/bulk-reprocessing', label: 'Safe replays'}
+    check:
+      q: 'Why does the script change nothing when run again, and why is that good?'
+      a: 'After the fix, the condition `status = cancelled` no longer matches, so it finds 0 rows. Running it twice by mistake, or again after a crash, is safe.'
+
+  - slug: roll-back-or-forward
+    title: 'Code rolls back, data doesn''t: roll back or roll forward'
+    kind: compare
+    tldr: 'Rolling back restores code quickly but not the data the bad code wrote; when the schema or data has changed, roll forward plus a data fix is the way.'
+    keywords: ['roll back', 'roll forward', 'bad deploy', 'hotfix', 'revert', 'migration']
+    blocks:
+      - type: text
+        body: |
+          When a curry has too much salt, you have two options: throw the whole pot away and cook it again (roll back), or rescue it with potato and water (roll forward). A bad deploy is the same. But one thing is always true: even after the code goes back to the earlier version, the data the bad code already wrote doesn't fix itself.
+      - type: visual
+        kind: compare
+        caption: 'The two paths, and when to use which'
+        columns:
+          - title: 'Roll back'
+            tone: good
+            icon: history
+            tip: 'Go back to the previous version. Fast, when data and schema haven''t changed.'
+            items:
+              - 'The code changed, not the schema or data'
+              - 'Fast and simple: put the old version back'
+              - 'Risk: bad data already written stays'
+          - title: 'Roll forward'
+            tone: accent
+            icon: rocket
+            tip: 'Deploy a small fix and move ahead. For when going back is impossible or risky.'
+            items:
+              - 'A new column or data is already live'
+              - 'The fix is small and tested, the pipeline fast'
+              - 'Plus an audited data fix for the bad data'
+      - type: code
+        lang: bash
+        file: 'the two paths'
+        variant: neutral
+        code: |
+          # roll back: go to the previous version (the schema does not go back!)
+          kubectl rollout undo deployment/api
+
+          # roll forward: revert the bad commit and deploy again
+          git revert --no-edit 4f2a9c1 && git push origin main
+
+          # on either path, next: find the affected data and run an audited fix
+          php bin/console app:fix:1042 --dry-run --expect=2300
+        marks:
+          - {line: 2, tip: 'The code goes back. But if a migration dropped a column, the old code won''t run without it.'}
+          - {line: 8, tip: 'Whichever path you take, the bad data is still in the database. That is a separate job.'}
+      - type: quote
+        body: 'Rolling back the code doesn''t roll back the data the bad code wrote. That needs its own documented fix.'
+    aside:
+      - type: when
+        use:
+          - 'Roll back: only code changed, with no data change or destructive migration'
+          - 'Roll forward: data is already written in the new shape, or the fix is small and safe'
+        avoid:
+          - 'Rolling back code after a migration has dropped a column'
+      - type: refs
+        items:
+          - {to: 'data/zero-downtime-migrations', label: 'Zero-downtime migrations'}
+          - {to: 'resilience/zero-downtime-deploys', label: 'Safe deploys'}
+    check:
+      q: 'After the roll back, 2300 orders were still cancelled. Why, and what is the next step?'
+      a: 'A roll back restores only the code; the bad code had already changed the data. Next, run an audited data-fix script with a narrow condition to correct those rows.'
+
+flashcards:
+  - q: 'Why is running a direct UPDATE from the console in production risky?'
+    a: 'It leaves no evidence, loses the old values, and if the condition is too broad, changes the right rows along with the wrong ones.'
+    more: |
+      A condition written in a hurry is often too wide. With no before and after values recorded, spotting the mistake, reversing it, or explaining it to an auditor all become hard.
+    ref: silent-update-in-prod
+  - q: 'What is a corrective entry?'
+    a: 'A new, documented record of a correction, written instead of erasing the mistake; the original error stays in the history too.'
+    more: |
+      In a ledger it is a reversing entry followed by a new entry with the correct amount. That keeps debit = credit intact and lets an auditor see the whole story.
+    ref: correction-is-a-record
+  - q: 'How do you fix a money mistake in a ledger, and what do you never do?'
+    a: 'You do: a reversing entry plus a new correct entry. You never do: UPDATE or DELETE an old entry.'
+    more: |
+      A data-fix script doesn't change money entries in the ledger. Every money correction goes through the posting service as a transaction.
+    ref: correction-is-a-record
+  - q: 'Why does an audited data-fix script have an "expected count"?'
+    a: 'If the counted number of rows doesn''t match the expected one, the script changes nothing. A wrong condition is caught before it runs.'
+    more: |
+      In review everyone agrees "2300 rows will change." If 3100 turn up at run time, the condition is too broad, so it stops.
+    ref: audited-data-fix
+  - q: 'Why does a data-fix script write the UPDATE and the log in one statement?'
+    a: 'So that a change always comes with a log entry, and a change without one can''t happen. The before and after values also let you reverse the fix.'
+    more: |
+      In PostgreSQL, `WITH fixed AS (UPDATE ... RETURNING ...) INSERT INTO data_fix_log SELECT ...` is a single statement, so it all runs in one transaction.
+    ref: audited-data-fix
+  - q: 'What should happen if you run a data-fix script again?'
+    a: 'Nothing. The condition no longer matches the fixed rows, so 0 rows change.'
+    more: |
+      So running it twice by mistake, or again after a crash, doesn't cause a double fix. That is an idempotent fix, safe to run again.
+    ref: audited-data-fix
+  - q: 'What is the difference between roll back and roll forward?'
+    a: 'Roll back returns to the earlier version. Roll forward deploys a small fix and moves ahead.'
+    more: |
+      Rolling back is fast when only the code changed. If data or schema has changed (a column was dropped, say), going backwards is dangerous, so you roll forward.
+    ref: roll-back-or-forward
+  - q: 'Why doesn''t rolling back the code fix bad data?'
+    a: 'A roll back restores only the code. The data the bad code already wrote stays in the database.'
+    more: |
+      So fixing the deploy and correcting the data are two separate jobs. Do the second with an audited script and corrective entries, so that later you can understand what happened.
+    ref: roll-back-or-forward
+
+quiz:
+  - q: 'A bad deploy wrote the wrong `fee_minor` on 1200 payments. What is the best first step?'
+    hint: 'What must you count and write down before fixing anything?'
+    options:
+      - text: 'Find the affected rows with a narrow condition, do a dry run, agree the count in review, then run an audited script'
+        correct: true
+        why: 'Count, show, approve, then change. Every step is a chance to catch a mistake.'
+      - text: 'Run `UPDATE payment SET fee_minor = 1000` in the console'
+        correct: false
+        why: 'There is no condition, so every row changes, and no log is kept.'
+      - text: 'Restore the whole DB from a backup'
+        correct: false
+        why: 'You would lose the valid transactions that came after the mistake. A very heavy path.'
+      - text: 'Do nothing; the mistakes are small'
+        correct: false
+        why: 'A wrong fee affects the customer''s money, and the books won''t balance.'
+    ref: audited-data-fix
+  - q: 'In the ledger, 5000 taka was posted as a deposit instead of 500. What do you do?'
+    hint: 'A ledger entry never changes.'
+    options:
+      - text: 'Write a reversing entry for the wrong transaction and post a new correct one for 500 taka'
+        correct: true
+        why: 'History stays intact and debit = credit holds. The auditor gets the whole story.'
+      - text: '`UPDATE ledger_entry SET amount_minor = 50000` (500 taka)'
+        correct: false
+        why: 'Changing a ledger entry is forbidden, and changing one side breaks the balance between the two sides.'
+      - text: 'Delete the wrong entry and insert a new one'
+        correct: false
+        why: 'Deleting erases history; an audit could prove nothing.'
+      - text: 'Reduce the wallet''s balance column by 4500 taka'
+        correct: false
+        why: 'The balance is the result of the entries; changing it directly creates a mismatch with them.'
+    ref: correction-is-a-record
+  - q: 'What risk is there in this data-fix SQL?'
+    lang: sql
+    code: |
+      UPDATE orders
+         SET status = 'paid'
+       WHERE status = 'cancelled';
+    hint: 'Where are the time window, the reason and the log?'
+    options:
+      - text: 'Genuinely cancelled orders will change too, and the old values are written nowhere'
+        correct: true
+        why: 'The condition is far too broad, and there is no log or count check.'
+      - text: '`SET` should be written before `WHERE`'
+        correct: false
+        why: 'That is the normal SQL structure; the problem is how broad the condition is.'
+      - text: '`UPDATE` never runs in production'
+        correct: false
+        why: 'It does, but with a documented, narrow condition.'
+      - text: 'There is no risk'
+        correct: false
+        why: 'There is; a one-liner like this was the root cause of the incident.'
+    ref: silent-update-in-prod
+  - q: 'Which are features of a good data-fix script?'
+    hint: 'Think of three moments: before, during and after the run.'
+    options:
+      - text: 'It stops if the expected count doesn''t match'
+        correct: true
+        why: 'A wrong condition is caught before it runs.'
+      - text: 'It writes each row''s before and after values to a log'
+        correct: true
+        why: 'The basis for audit and, if needed, reversing it.'
+      - text: 'Running it again changes 0 rows'
+        correct: true
+        why: 'No double fix, and re-running after a crash is safe.'
+      - text: 'One person writes it and runs it straight in production without review'
+        correct: false
+        why: 'A second pair of eyes is the cheapest way to catch a wrong condition.'
+    ref: audited-data-fix
+  - q: 'The new release dropped the `phone` column and wrote data into a new `phone_e164` column, and now a bug is found. What is the safest path?'
+    hint: 'Can the old code run without the `phone` column?'
+    options:
+      - text: 'Roll forward: deploy a small fix, plus an audited data fix for the bad data'
+        correct: true
+        why: 'The column is gone, so going back to the old code would break. Fixing ahead is safer.'
+      - text: 'Roll the code back, and think about the column later'
+        correct: false
+        why: 'The old code will fail writing to the dropped column, and create fresh trouble.'
+      - text: 'Restore the whole DB from backup'
+        correct: false
+        why: 'You would lose many valid transactions. It is a last resort, not a first move.'
+      - text: 'Do nothing and wait'
+        correct: false
+        why: 'The bug will keep piling up more bad data.'
+    ref: roll-back-or-forward

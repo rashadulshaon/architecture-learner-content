@@ -1,0 +1,444 @@
+slides:
+  - slug: page-five-thousand
+    title: 'Page 5000 takes 3 seconds'
+    kind: story
+    tldr: 'Paginating with OFFSET gets slower the deeper you go, and when new data arrives the pages shift, so rows go missing or show up twice.'
+    keywords: ['pagination', 'offset', 'LIMIT OFFSET', 'deep page', 'slow query', 'paging']
+    blocks:
+      - type: text
+        body: |
+          Rahim's admin panel has 1 million orders, 20 per page. He wrote `LIMIT 20 OFFSET :page * 20`, and the first few pages were instant. But when the auditor opened page 5000, near the end, the query took several seconds. The reason: with an OFFSET of 100,000, the database first counts and throws away 100,000 rows, and only then hands over the 20.
+      - type: visual
+        kind: bars
+        caption: 'Example: how OFFSET query time grows with the page number (table of 1 million rows)'
+        items:
+          - {label: 'Page 1', value: 4, display: '4ms', tone: good, tip: 'The first page has almost nothing to skip. That is why everything feels fast in testing.'}
+          - {label: 'Page 100', value: 35, display: '35ms', tone: default, tip: 'It skips about 2,000 rows and then takes 20.'}
+          - {label: 'Page 1000', value: 340, display: '340ms', tone: warn, tip: 'It reads and discards about 20,000 rows. The time grows in a straight line with the page number.'}
+          - {label: 'Page 5000', value: 1700, display: '1700ms', tone: bad, tip: 'It reads and discards about 100,000 rows just to keep 20.'}
+      - type: quote
+        body: 'OFFSET N means: the database reads N rows, throws them away, then gives you yours. The deeper the page, the higher the cost.'
+    aside:
+      - type: story
+        title: 'The second danger: pages that shift'
+        body: |
+          Karim looked at page 1 and then clicked page 2, but in between 5 new orders came in. Every old row moved down by 5 places, so the last 5 orders of page 1 showed up again at the top of page 2. The other way round, if rows are deleted, some rows are skipped entirely.
+      - type: terms
+        items:
+          - {term: 'Pagination', meaning: 'Splitting a big list into small pages and serving it a little at a time.'}
+          - {term: 'Offset', meaning: 'The number of rows to skip from the start before you begin reading.'}
+    check:
+      q: 'Why is fetching a page with OFFSET 100000 slow, when only 20 rows come back?'
+      a: 'The database has to get through the first 100,000 rows and discard them before it returns 20. The cost matches the rows skipped, not the rows returned.'
+
+  - slug: bookmark-idea
+    title: 'A bookmark: start after the last row'
+    kind: concept
+    tldr: 'Cursor (keyset) pagination remembers the value of the last row you saw and asks for "the 20 after that one". The index jumps straight there, so every page is equally fast.'
+    keywords: ['cursor pagination', 'keyset pagination', 'seek method', 'bookmark', 'cursor', 'keyset']
+    blocks:
+      - type: metaphor
+        icon: book
+        title: 'A library book and a bookmark'
+        body: |
+          If someone says "keep reading after page 500" in a thick book, you won't count 500 pages from the start. You open it at the bookmark. Offset is counting pages, and a cursor is the bookmark. The last row is the bookmark: "give me the 20 after this row".
+      - type: visual
+        kind: compare
+        caption: 'Offset vs. cursor: the same list of 1 million rows'
+        columns:
+          - title: 'Offset pagination'
+            tone: bad
+            icon: cross
+            tip: 'Works by page number. Simple, but slow and unstable on big lists.'
+            items:
+              - 'Deep pages are slow: all the OFFSET rows must be read'
+              - 'New rows shift the pages: rows go missing or repeat'
+              - '"Jump to page 50" is easy'
+          - title: 'Cursor (keyset)'
+            tone: good
+            icon: check
+            tip: 'Works from the value of the last row. The right way for big lists that change often.'
+            items:
+              - 'Every page is equally fast, the index goes straight to the spot'
+              - 'New rows don''t shift the pages'
+              - '"Next" and "previous" are easy, "jump to page 50" is not'
+      - type: points
+        title: 'The three parts of a cursor'
+        style: number
+        items:
+          - 'The cursor is the sort value of the last row, such as created_at and id.'
+          - 'The query says: give me the rows "after" this value.'
+          - 'The response carries `nextCursor`; the client sends it back to get the next page.'
+    aside:
+      - type: when
+        use:
+          - 'Cursor: infinite scroll, feeds, logs, big or frequently changing lists, public APIs'
+          - 'Offset: small, stable tables (a few hundred rows) where you really need "jump to page 5"'
+        avoid:
+          - 'Offset on a list of millions of rows'
+      - type: pitfalls
+        items:
+          - 'Running COUNT(*) on a big table to show the total number of pages is slow as well. Cursor APIs usually just say whether there is more.'
+      - type: remember
+        body: 'Don''t count your way there, keep a bookmark.'
+    check:
+      q: 'Why does a cursor query run at the same speed on page 1 or page 5000?'
+      a: 'Because the database skips no rows. From the index it goes straight to the last row you saw and picks up 20.'
+
+  - slug: keyset-doctrine
+    title: 'A keyset query in Doctrine'
+    kind: howto
+    tldr: 'ORDER BY created_at DESC, id DESC, and the next-page condition (created_at < :at) OR (created_at = :at AND id < :id). Fetch one extra row to learn whether there is more.'
+    keywords: ['Doctrine QueryBuilder', 'keyset', 'cursor', 'setMaxResults', 'order by id', 'Doctrine']
+    blocks:
+      - type: text
+        body: |
+          We keep two values in the cursor: `createdAt` and `id`. We hand it to the client as an opaque string, so the client doesn't break if the internal structure changes. The query has one trick: we fetch `limit + 1` rows, and if the extra row shows up, we know there are more pages.
+      - type: code
+        lang: php
+        file: 'src/Pagination/Cursor.php'
+        variant: good
+        code: |
+          final readonly class Cursor
+          {
+              public function __construct(
+                  public DateTimeImmutable $createdAt,
+                  public int $id,
+              ) {
+              }
+
+              public function encode(): string
+              {
+                  $raw = $this->createdAt->format(DATE_ATOM).'|'.$this->id;
+
+                  return rtrim(strtr(base64_encode($raw), '+/', '-_'), '=');
+              }
+
+              public static function decode(string $token): self
+              {
+                  $raw = base64_decode(strtr($token, '-_', '+/'), true);
+                  if (false === $raw || !str_contains($raw, '|')) {
+                      throw new BadRequestHttpException('Invalid cursor');
+                  }
+                  [$at, $id] = explode('|', $raw, 2);
+
+                  return new self(new DateTimeImmutable($at), (int) $id);
+              }
+
+              public static function fromOrder(Order $order): self
+              {
+                  return new self($order->getCreatedAt(), $order->getId());
+              }
+          }
+        marks:
+          - {line: 13, tip: 'URL-safe base64 (+ and / replaced with - and _). The client sends it back as a meaningless string.'}
+          - {line: 20, tip: 'Return a 400 for a broken or forged cursor, never a 500. It is user input.'}
+      - type: code
+        lang: php
+        file: 'src/Repository/OrderRepository.php'
+        variant: good
+        code: |
+          public function page(?Cursor $after, int $limit): array
+          {
+              $qb = $this->createQueryBuilder('o')
+                  ->orderBy('o.createdAt', 'DESC')
+                  ->addOrderBy('o.id', 'DESC')          // tie-breaker
+                  ->setMaxResults($limit + 1);          // one extra: is there more?
+
+              if (null !== $after) {
+                  $qb->andWhere('o.createdAt < :at OR (o.createdAt = :at AND o.id < :id)')
+                      ->setParameter('at', $after->createdAt, Types::DATETIME_IMMUTABLE)
+                      ->setParameter('id', $after->id);
+              }
+
+              return $qb->getQuery()->getResult();
+          }
+        marks:
+          - {line: 5, tip: 'When created_at is equal, id settles the order. Without it, rows with the same timestamp can go missing (see the last slide).'}
+          - {line: 6, tip: 'limit + 1: if the extra row arrives, there is a next page. That is far cheaper than a separate COUNT query.'}
+          - {line: 9, tip: 'DQL can''t compare tuples, so the condition is spelled out with OR. The result is the same.'}
+    aside:
+      - type: tips
+        items:
+          - 'If you sort by something else (say price), put that column in the cursor too, and build an index on that column plus id.'
+          - 'Always enforce an upper bound on `limit` (say 100) on the server. Even if a client asks for a million, don''t give it.'
+      - type: refs
+        items:
+          - {to: 'data/indexing', label: 'Composite indexes: column order'}
+    check:
+      q: 'Why fetch `limit + 1` rows instead of `limit`?'
+      a: 'If the extra row arrives, there is a next page (and we drop that row). That saves a separate, slow COUNT query.'
+
+  - slug: controller-and-vue
+    title: 'From controller to Vue: passing the cursor along'
+    kind: howto
+    tldr: 'The controller returns items and nextCursor. Vue sends that nextCursor back as after in the next request, and stops when it gets null.'
+    keywords: ['MapQueryParameter', 'nextCursor', 'Vue', 'infinite scroll', 'load more', 'cursor']
+    blocks:
+      - type: text
+        body: |
+          The response has two things: the page's `items`, and `nextCursor`, which is `null` on the last page. The Vue app doesn't try to open the cursor and understand it. It just passes it along.
+      - type: code
+        lang: php
+        file: 'src/Controller/Api/V1/OrderController.php'
+        variant: good
+        code: |
+          #[Route('/api/v1/orders', methods: ['GET'])]
+          public function list(
+              OrderRepository $orders,
+              #[MapQueryParameter] ?string $after = null,
+              #[MapQueryParameter] int $limit = 20,
+          ): JsonResponse {
+              $limit = max(1, min($limit, 100));
+              $rows = $orders->page($after ? Cursor::decode($after) : null, $limit);
+
+              $hasMore = count($rows) > $limit;
+              $rows = array_slice($rows, 0, $limit);
+
+              return $this->json([
+                  'items' => array_map(OrderDto::from(...), $rows),
+                  'nextCursor' => $hasMore ? Cursor::fromOrder(end($rows))->encode() : null,
+              ]);
+          }
+        marks:
+          - {line: 7, tip: 'Whatever the client asks for, the value is clamped to between 1 and 100.'}
+          - {line: 10, tip: 'An extra row means there is a next page. Then it is cut off and never goes to the client.'}
+          - {line: 15, tip: 'On the last page nextCursor is null. The client reads that null as "no more".'}
+      - type: code
+        lang: vue
+        file: 'src/components/OrderList.vue'
+        variant: good
+        code: |
+          <script setup lang="ts">
+          import { ref } from 'vue'
+
+          type Order = { id: number; total: number }
+          type Page = { items: Order[]; nextCursor: string | null }
+
+          const orders = ref<Order[]>([])
+          const nextCursor = ref<string | null>(null)
+          const done = ref(false)
+          const loading = ref(false)
+
+          async function loadMore() {
+            if (loading.value || done.value) return
+            loading.value = true
+            try {
+              const qs = new URLSearchParams({ limit: '20' })
+              if (nextCursor.value) qs.set('after', nextCursor.value)
+              const res = await fetch(`/api/v1/orders?${qs}`)
+              if (!res.ok) throw new Error(`HTTP ${res.status}`)
+              const page: Page = await res.json()
+              orders.value.push(...page.items)
+              nextCursor.value = page.nextCursor
+              done.value = page.nextCursor === null
+            } finally {
+              loading.value = false
+            }
+          }
+          loadMore()
+          </script>
+        marks:
+          - {line: 14, tip: 'The loading flag stops a quick double click from fetching the same page twice.'}
+          - {line: 17, tip: 'The previous page''s nextCursor is this request''s after. The client never opens the cursor.'}
+          - {line: 23, tip: 'When null arrives, done = true and no more requests go out.'}
+    aside:
+      - type: tips
+        items:
+          - 'For infinite scroll in Vue, call loadMore() with an IntersectionObserver when the user reaches the end of the list.'
+          - 'Pick one convention, a `Link` header or a `nextCursor` field, and keep it. Don''t mix two styles in the same API.'
+      - type: refs
+        items:
+          - {to: 'api/contracts-versioning', label: 'Why a cursor''s structure is not part of the contract'}
+    check:
+      q: 'Why does the Vue app just pass the cursor string along instead of opening it up to understand it?'
+      a: 'The cursor''s internal structure is the server''s business. If the client never opens it, the server can change that structure later without breaking the client.'
+
+  - slug: tie-breaker-trap
+    title: 'When rows with the same timestamp vanish'
+    kind: pitfall
+    tldr: 'If the cursor is built on created_at alone, rows from the same second get lost at the page boundary. Add a unique tie-breaker (id) to the ordering.'
+    keywords: ['tie-breaker', 'stable ordering', 'unique order', 'cursor bug', 'row value comparison', 'stable order']
+    blocks:
+      - type: text
+        body: |
+          Say three orders came in together at 10:00:00. The page boundary falls right in the middle of them. The cursor now says `created_at < 10:00:00`, and the other two orders with the same time will never satisfy that condition. Rows vanish silently, with no error.
+      - type: visual
+        kind: table
+        caption: 'Which rows get lost when the cursor uses only created_at'
+        headers: ['id', 'created_at', 'What happens']
+        rows:
+          - cells: ['105', '10:00:00', 'Last row of page 1, the cursor sits here']
+            tip: 'This row''s created_at becomes the cursor: "give me the rows before 10:00:00".'
+          - cells: ['104', '10:00:00', 'Lost']
+            tip: 'The condition is created_at < 10:00:00. Row 104 has an equal created_at, not a smaller one, so it is skipped.'
+          - cells: ['103', '10:00:00', 'Lost']
+            tip: 'Skipped for the same reason. Nobody notices, because no error appears.'
+          - cells: ['102', '09:59:59', 'First row of page 2']
+            tip: 'This row satisfies the condition, so it comes through. That is why page 2 looks perfectly normal.'
+      - type: code
+        lang: sql
+        variant: bad
+        code: |
+          SELECT * FROM orders
+          WHERE created_at < :last_created_at
+          ORDER BY created_at DESC
+          LIMIT 20;
+        marks:
+          - {line: 2, tip: 'Rows with an equal created_at are dropped. The order isn''t unique either, so the same row''s position can change between two requests.'}
+      - type: code
+        lang: sql
+        file: 'migrations / psql'
+        variant: good
+        code: |
+          SELECT * FROM orders
+          WHERE (created_at, id) < (:last_created_at, :last_id)
+          ORDER BY created_at DESC, id DESC
+          LIMIT 20;
+
+          CREATE INDEX idx_orders_created_id ON orders (created_at, id);
+        marks:
+          - {line: 2, tip: 'A row-value comparison: the (created_at, id) pair is compared as a unit. It works in both PostgreSQL and MySQL.'}
+          - {line: 6, tip: 'An index matching the ORDER BY. Without it you lose the speed advantage of keyset.'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'If the sort column isn''t unique (created_at alone, price alone), a cursor on that order will go wrong. Always add id at the end.'
+          - 'If you mix ASC and DESC in the sort, the row-value comparison goes the wrong way. Keep the same direction on every column.'
+      - type: remember
+        body: 'A cursor''s ordering must be unique: id goes last.'
+      - type: refs
+        items:
+          - {to: 'data/id-generation', label: 'What your ID choice means (UUIDv7 keeps its order)'}
+    check:
+      q: 'Why do some rows from the same second get lost when the cursor uses only created_at, and what is the fix?'
+      a: 'The condition `created_at < last value` drops rows with an equal value. Add the unique id to the ordering and compare the (created_at, id) pair, and no row is lost.'
+
+flashcards:
+  - q: 'Why are OFFSET pages slow?'
+    a: 'The database reads every row up to the OFFSET and throws it away, then returns the rows you asked for. The deeper the page, the higher the cost.'
+    more: |
+      OFFSET 100000 LIMIT 20 returns 20 rows, but 100,020 have to be read. That is why page 1 is fast and page 5000 is slow. Even with an index, the skipped rows still have to be counted.
+    ref: page-five-thousand
+  - q: 'What goes wrong in offset pagination when new rows arrive?'
+    a: 'All the rows shift, so one row shows up on two pages, or a row is skipped.'
+    more: |
+      If 5 new rows come in at the top after you view page 1, page 2 shows the last 5 rows from before again. When rows are deleted it is the other way round: some rows are never seen. Cursor pagination moves on from the last row you saw, so it doesn't have this problem.
+    ref: page-five-thousand
+  - q: 'What is cursor (keyset) pagination in one line?'
+    a: 'Asking for "the next N rows after" the value of the last row you saw, not by page number.'
+    more: |
+      The query has a `WHERE (created_at, id) < (last value)` condition, and the index goes straight to that spot. So every page is equally fast. The price: "jump to page 50" is not easy.
+    ref: bookmark-idea
+  - q: 'When do you choose cursor pagination, and when is offset fine?'
+    a: 'Cursor for big or frequently changing lists (feeds, logs, infinite scroll). Offset for small, stable tables where you need to jump to a page number.'
+    more: |
+      For an admin panel list of 200 rows, offset is fine, for simplicity. But for lists of millions of rows or a public API, choose cursor, because it handles both deep pages and shifting pages.
+    ref: bookmark-idea
+  - q: 'Why does keyset pagination need a tie-breaker?'
+    a: 'If the sort column has equal values, rows get lost. Adding a unique id at the end makes the order completely deterministic.'
+    more: |
+      `ORDER BY created_at DESC, id DESC` with the condition `(created_at, id) < (:at, :id)`. With created_at alone, rows from the same second are silently dropped at the page boundary, with no error.
+    ref: tie-breaker-trap
+  - q: 'Why fetch `limit + 1` rows?'
+    a: 'If the extra row arrives, there is a next page. You drop it and build nextCursor, with no separate COUNT.'
+    more: |
+      COUNT(*) is itself slow on a big table. So cursor APIs usually just report whether there is more: if nextCursor is there, there is; if it is null, you have reached the end.
+    ref: keyset-doctrine
+  - q: 'Why doesn''t the client open up the cursor?'
+    a: 'The cursor is an opaque string. Its internal structure is the server''s business, so the client doesn''t break when the server changes it.'
+    more: |
+      The cursor holds created_at and id, but the client only picks up nextCursor each time and sends it back as `after`. A broken cursor should get a 400 from the server. You also have to enforce an upper bound on limit (say 100) on the server.
+    ref: controller-and-vue
+
+quiz:
+  - q: 'An admin panel pages through a list of 2 million orders with `OFFSET`. Pages near the end take 5 seconds. What is the most correct fix?'
+    hint: 'What is the real cause of the slowness: the rows skipped, or the rows returned?'
+    options:
+      - text: 'Add RAM to the server'
+        correct: false
+        why: 'More RAM may help a little, but the cost of skipping extra rows on every deeper page stays.'
+      - text: 'Move to cursor (keyset) pagination, so the index reaches the spot after the last row directly'
+        correct: true
+        why: 'It skips no rows, goes straight to the spot and picks up 20, so every page is equally fast.'
+      - text: 'Reduce the page size from 20 to 10'
+        correct: false
+        why: 'Smaller pages mean more pages, and the skipped rows of OFFSET only go deeper.'
+      - text: 'Run COUNT(*) every time to work out the last page'
+        correct: false
+        why: 'COUNT is itself slow on a big table, and it doesn''t fix the OFFSET problem.'
+    ref: bookmark-idea
+  - q: 'What is wrong with the code below?'
+    lang: php
+    code: |
+      $qb = $this->createQueryBuilder('o')
+          ->orderBy('o.createdAt', 'DESC')
+          ->setMaxResults($limit + 1);
+
+      if ($after) {
+          $qb->andWhere('o.createdAt < :at')
+              ->setParameter('at', $after->createdAt);
+      }
+    hint: 'What happens when many orders come in during the same second?'
+    options:
+      - text: 'limit + 1 in setMaxResults is wrong; it should be just limit'
+        correct: false
+        why: 'limit + 1 is right. It tells you whether there are more pages.'
+      - text: 'There is no tie-breaker (id), so rows with the same createdAt get lost at the page boundary'
+        correct: true
+        why: 'The condition `< :at` drops rows with an equal value. You need to add id to both the ordering and the condition.'
+      - text: 'DESC ordering doesn''t work with cursor pagination'
+        correct: false
+        why: 'DESC works fine. You just have to match the direction of the condition (<) to the ordering.'
+      - text: 'You can''t do keyset with QueryBuilder, you need native SQL'
+        correct: false
+        why: 'You can do it easily with QueryBuilder, with the condition spelled out using OR.'
+    ref: tie-breaker-trap
+  - q: 'In which of these cases is offset pagination still a fine choice?'
+    hint: 'How big is the list, and does the user jump straight to a page number?'
+    options:
+      - text: 'A fixed list of the 64 districts of the country, and the user wants to go to "page 3"'
+        correct: true
+        why: 'A small, stable list: the cost of OFFSET is negligible, and jumping to a page number is easy.'
+      - text: 'A timeline of 100 million rows with new rows arriving every second'
+        correct: false
+        why: 'Here very deep pages and shifting rows are both problems. You need a cursor.'
+      - text: 'An admin report of a few hundred rows, where "jump to page 5" is needed'
+        correct: true
+        why: 'Small size, and page numbers are needed. For simplicity, offset is fine.'
+      - text: 'An infinite-scroll feed in a mobile app'
+        correct: false
+        why: 'A feed changes constantly, and no jumping is needed beyond "next". A cursor is the natural fit.'
+    ref: bookmark-idea
+  - q: 'A Vue app opens every cursor and sorts its own list by the created_at inside. What is the future risk?'
+    hint: 'Whose job is it to decide the structure of the cursor?'
+    options:
+      - text: 'No risk, because the cursor''s structure never changes'
+        correct: false
+        why: 'If the server changes the ordering (say adding a new column next to id), the structure can change.'
+      - text: 'The client will break when the server changes the structure; the cursor should stay opaque'
+        correct: true
+        why: 'If the cursor is an opaque token, the server is free to change its insides.'
+      - text: 'The cursor will get too long and break the URL'
+        correct: false
+        why: 'The cursor is short, and that is not the main risk either.'
+      - text: 'Browsers can''t read base64'
+        correct: false
+        why: 'Browsers can. The problem isn''t technical, it is about who is responsible for what.'
+    ref: controller-and-vue
+  - q: 'Which index helps most for the condition (created_at, id) < (:at, :id) in Postgres?'
+    hint: 'The column order of the index has to match the ORDER BY.'
+    options:
+      - text: 'On id alone'
+        correct: false
+        why: 'Even with an index on id, sorting and filtering by created_at still need a separate sort.'
+      - text: 'On created_at alone'
+        correct: false
+        why: 'To order rows with an equal created_at, the database has to do extra work.'
+      - text: 'A composite index on the two columns (created_at, id)'
+        correct: true
+        why: 'It matches the order of both the ORDER BY and the WHERE, so the database follows the index straight to the spot after the last row.'
+      - text: 'A separate index on each column, so both are there'
+        correct: false
+        why: 'Two separate indexes can''t be used fully for a paired condition. A composite index is the right one.'
+    ref: tie-breaker-trap

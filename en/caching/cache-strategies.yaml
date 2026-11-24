@@ -1,0 +1,410 @@
+slides:
+  - slug: same-answer-again
+    title: 'The same calculation, 50,000 times a day'
+    kind: story
+    tldr: 'Recomputing an answer that barely changes on every request wastes time and servers; a cache keeps that answer on hand.'
+    keywords: ['cache', 'cache hit', 'cache miss', 'fast response', 'latency', 'caching basics']
+    blocks:
+      - type: metaphor
+        icon: shop
+        title: 'The counter at a biryani restaurant'
+        body: |
+          If the restaurant cooked a fresh biryani for every order, customers would sit for an hour. So the big pot is cooked before lunch and packed portions are lined up at the counter. A customer walks in, takes a packet and leaves. The kitchen is the database, and the packets on the counter are the **cache**.
+      - type: text
+        body: |
+          Rahim's homepage shows "the 10 best-selling products". The calculation takes 800ms in the database, and the page is opened 50,000 times a day. The answer barely changes in 10 minutes, yet it is cooked from scratch every time.
+      - type: visual
+        kind: bars
+        caption: 'The same answer: calculated in the database vs. fetched from the cache'
+        items:
+          - {label: 'Database query', value: 800, display: '800ms', tone: bad, tip: 'It runs a heavy join and group by, recalculating the answer on every request.'}
+          - {label: 'Cache hit', value: 3, display: '3ms', tone: good, tip: 'The answer stored in advance is handed over straight from memory, with no calculation.'}
+      - type: quote
+        body: 'An answer that is needed again and again but rarely changes is a candidate for caching.'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Cache hit', meaning: 'The requested answer was found in the cache, so the database wasn''t needed.'}
+          - {term: 'Cache miss', meaning: 'The answer isn''t in the cache, so it had to be fetched from the real source.'}
+      - type: problem
+        body: 'Stop rebuilding the result of heavy work over and over, so the database is under less pressure and users get answers faster.'
+    check:
+      q: 'Which kind of answer gains the most from caching?'
+      a: 'One that is requested many times, is heavy to build, and barely changes in a short time, such as the list of the top 10 products.'
+
+  - slug: cache-aside
+    title: 'Cache-aside: the app looks, and the app fills'
+    kind: concept
+    tldr: 'In cache-aside the app checks the cache first; on a miss it fetches from the database and stores the result itself. It is the most common strategy.'
+    keywords: ['cache-aside', 'lazy loading', 'cache miss', 'look-aside', 'caching strategy']
+    blocks:
+      - type: metaphor
+        icon: shop
+        title: 'The waiter checks the counter himself'
+        body: |
+          The waiter first looks at the counter for a packet. If there is one, he hands it over at once. If not, he fetches a portion from the kitchen, serves the customer, and leaves one more packet on the counter for the next person. The counter fetches nothing on its own; all the work is the waiter's, which means the app's.
+      - type: visual
+        kind: flow
+        caption: 'Cache-aside: on a miss the app fetches from the database and fills the cache'
+        nodes:
+          - {id: app, label: 'App', sub: 'Symfony service', icon: api, tone: accent, col: 0, row: 1, tip: 'The waiter. Checking the cache, going to the database and filling the cache are all this code''s jobs.'}
+          - {id: cache, label: 'Cache', sub: 'Redis', icon: cache, col: 2.5, row: 0, tip: 'The counter. It only stores things and hands them out on request; it doesn''t know how to fetch anything itself.'}
+          - {id: db, label: 'Database', sub: 'source of truth', icon: db, col: 2.5, row: 2, tip: 'The kitchen. Slow, but the correct answer is always here.'}
+        edges:
+          - {from: app, to: cache, label: 'The app looks in the cache first, using a key'}
+          - {from: cache, to: app, label: 'A miss: the cache says it doesn''t have it', dashed: true, tone: warn}
+          - {from: app, to: db, label: 'The app fetches the answer from the database itself'}
+          - {from: db, to: app, label: 'The database returns the answer', dashed: true}
+          - {from: app, to: cache, label: 'The app leaves the answer in the cache with an expiry', tone: good}
+      - type: quote
+        body: 'Cache-aside: cache first, then the database, then fill the cache.'
+    aside:
+      - type: when
+        use:
+          - 'Many reads, few writes: product pages, lists, settings.'
+          - 'The app should keep working off the database even when the cache is down.'
+        avoid:
+          - 'Data that changes every second and must never be shown wrong.'
+      - type: remember
+        body: 'The first request is slow (miss), all the later ones are fast (hit).'
+    check:
+      q: 'What does a cache-aside app do when the cache goes down?'
+      a: 'It treats every lookup as a miss and fetches from the database. The app gets slower but stays up, because the truth lives in the database.'
+
+  - slug: symfony-cache-get
+    title: 'Cache-aside in Symfony: a single get() call'
+    kind: howto
+    tldr: 'Symfony Cache contracts'' get(key, callback) looks up, runs the callback on a miss and stores the result; plug in Redis as the backend.'
+    keywords: ['CacheInterface', 'Symfony Cache', 'Redis', 'expiresAfter', 'ItemInterface', 'cache.adapter.redis']
+    blocks:
+      - type: text
+        body: |
+          In Symfony you pass the `get()` method of `CacheInterface` a key and a callback. If the key exists, the value comes straight back. If not, the callback runs, its result is stored and returned. You set the expiry with `$item->expiresAfter()`.
+      - type: code
+        lang: php
+        file: 'src/Catalog/TopProducts.php'
+        variant: good
+        code: |
+          final readonly class TopProducts
+          {
+              public function __construct(
+                  private CacheInterface $cache,
+                  private ProductRepository $products,
+              ) {
+              }
+
+              /** @return list<array{id: int, name: string, sold: int}> */
+              public function forHomepage(): array
+              {
+                  return $this->cache->get('top_products.v1', function (ItemInterface $item): array {
+                      $item->expiresAfter(600);      // stale after 10 minutes
+
+                      return $this->products->findTopSelling(10);   // slow query, only on a miss
+                  });
+              }
+          }
+        marks:
+          - {line: 12, tip: 'Pick a key that tells you what is inside at a glance. The v1 at the end will be useful later.'}
+          - {line: 13, tip: 'The callback runs only on a miss. On a hit this code is never touched.'}
+          - {line: 15, tip: 'Keep the returned value small and serializable: an array or a DTO, not a Doctrine entity.'}
+      - type: code
+        lang: yaml
+        file: 'config/packages/cache.yaml'
+        code: |
+          framework:
+              cache:
+                  prefix_seed: 'shop_prod'
+                  app: cache.adapter.redis
+                  default_redis_provider: '%env(REDIS_URL)%'
+        marks:
+          - {line: 3, tip: 'If several apps or environments share one Redis, their keys could collide; the prefix prevents that.'}
+          - {line: 4, tip: 'cache.app now writes to Redis. Autowiring CacheInterface gives you this pool.'}
+    aside:
+      - type: tips
+        items:
+          - 'Set maxmemory and an eviction policy (such as allkeys-lru) on Redis, or writes fail once memory is full.'
+          - 'Cache a small DTO or array, not an entity: serializing an entity drags in stale relations and a huge payload.'
+      - type: commands
+        title: 'Cache commands'
+        items:
+          - {cmd: 'php bin/console cache:pool:clear cache.app', desc: 'Empty the app''s whole cache'}
+          - {cmd: 'php bin/console cache:pool:delete cache.app top_products.v1', desc: 'Delete a single key'}
+      - type: refs
+        items:
+          - {to: 'caching/cache-invalidation', label: 'TTL and invalidation'}
+    check:
+      q: 'When does the callback of a get() call run, and when does it not?'
+      a: 'Only on a miss, meaning the key is missing or has expired. On a hit the stored value comes straight back.'
+
+  - slug: write-strategies
+    title: 'Three more strategies for reads and writes'
+    kind: concept
+    tldr: 'In read-through, write-through and write-behind the cache itself talks to the database; they differ in when a write reaches the database and where the risk sits.'
+    keywords: ['read-through', 'write-through', 'write-behind', 'write-back', 'cache strategy']
+    blocks:
+      - type: text
+        body: |
+          In cache-aside the waiter does everything. In the other three strategies the person at the counter talks to the kitchen directly. **Read-through**: the counter fetches from the kitchen itself. **Write-through**: the order book and the counter are written at the same time. **Write-behind**: it is noted on the counter first, and copied into the kitchen's book later.
+      - type: visual
+        kind: compare
+        caption: 'Who talks to the database in each of the three strategies'
+        columns:
+          - title: 'Read-through'
+            tone: default
+            icon: search
+            tip: 'A strategy for reads. The app only asks the cache, and on a miss the cache fetches from the source itself.'
+            items:
+              - 'On a miss the cache goes to the database itself'
+              - 'The app code stays small'
+              - 'A loader has to be plugged into the cache'
+          - title: 'Write-through'
+            tone: good
+            icon: check
+            tip: 'The write goes to both places at once and counts as done only when both finish. The cache stays fresh.'
+            items:
+              - 'Writes go to both cache and database'
+              - 'The cache is never stale'
+              - 'Every write gets slower'
+          - title: 'Write-behind'
+            tone: warn
+            icon: warning
+            tip: 'The write goes to the cache first and to the database later, in batches. Fast, but if the cache dies, unwritten data is lost.'
+            items:
+              - 'Write to the cache and answer immediately'
+              - 'The database gets it later, in batches'
+              - 'If the cache dies, writes are lost'
+      - type: quote
+        body: 'In write-behind, a write that hasn''t reached the database lives only in the cache. If the cache dies, it is gone for good.'
+    aside:
+      - type: tips
+        items:
+          - 'Symfony''s get(key, callback) looks like read-through, but it is really cache-aside: the callback is your app''s code, not the cache''s.'
+          - 'Almost nobody builds write-behind by hand in a PHP app, and certainly not for money or order data.'
+      - type: terms
+        items:
+          - {term: 'Loader', meaning: 'The code that fetches a value from the source on a miss; in read-through it lives inside the cache.'}
+    check:
+      q: 'In which strategy do you risk losing the most data if the cache dies, and why?'
+      a: 'Write-behind. Writes go to the cache first and to the database later, so if the cache dies before they reach the database, those writes are lost.'
+
+  - slug: what-not-to-cache
+    title: 'What not to cache, and one terrible mistake'
+    kind: pitfall
+    tldr: 'Caching per-user data under a shared key lets one person see another''s data; caching accuracy-critical data like money and stock is risky too.'
+    keywords: ['cache key', 'data leak', 'per-user cache', 'what to cache', 'what not to cache']
+    blocks:
+      - type: text
+        body: |
+          The most terrible mistake is storing one person's page under a key everyone shares. Put a packet labelled "Rahim's order" on the counter and the next customer will walk off with it. In the code below the key has no user in it, so whoever comes in first has their cart shown to everybody.
+      - type: code
+        lang: php
+        file: 'src/Cart/CartView.php'
+        variant: bad
+        code: |
+          public function mine(User $user): array
+          {
+              return $this->cache->get('cart', function (ItemInterface $item) use ($user): array {
+                  $item->expiresAfter(300);
+
+                  return $this->carts->summaryFor($user);
+              });
+          }
+        marks:
+          - {line: 3, tip: 'The key is just cart. The first user''s cart will be shown to everyone for 5 minutes.'}
+      - type: code
+        lang: php
+        file: 'src/Cart/CartView.php'
+        variant: good
+        code: |
+          public function mine(User $user): array
+          {
+              $key = 'cart.user.'.$user->getId();
+
+              return $this->cache->get($key, function (ItemInterface $item) use ($user): array {
+                  $item->expiresAfter(60);
+
+                  return $this->carts->summaryFor($user);
+              });
+          }
+        marks:
+          - {line: 3, tip: 'Whoever the answer differs for, put their identity in the key.'}
+          - {line: 6, tip: 'A short expiry is safer for personal data. Or better still, don''t cache such data at all.'}
+      - type: points
+        title: 'Don''t cache these'
+        style: cross
+        items:
+          - 'Account balances and checkout stock: a wrong value means direct loss.'
+          - 'Data that nobody asks for a second time.'
+          - 'Anything cheap to build, where the cache adds more hassle than it saves.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Hiding a slow query behind a cache instead of fixing it leaves the real problem (a missing index, N+1) in place.'
+      - type: remember
+        body: 'If the answer differs per person, that person''s identity must be in the key.'
+    check:
+      q: 'What can happen if the cache key doesn''t include the user ID?'
+      a: 'The first user''s private data can be seen by everyone after them. That is a direct data leak.'
+
+  - slug: strategy-compare
+    title: 'Which strategy, and when'
+    kind: compare
+    tldr: 'For most Symfony apps cache-aside is enough; use write-through when you need fresh values, and write-behind only for load-absorbing writes where loss is acceptable.'
+    keywords: ['strategy comparison', 'cache-aside vs write-through', 'which to choose', 'trade-off']
+    blocks:
+      - type: visual
+        kind: table
+        caption: 'The four strategies side by side'
+        headers: ['', 'Cache-aside', 'Read-through', 'Write-through', 'Write-behind']
+        rows:
+          - cells: ['Who goes to the database', 'The app', 'The cache', 'The app or the cache', 'The cache, later']
+            tip: 'In cache-aside the app has full control, so it is the simplest and most transparent.'
+          - cells: ['Can the cache go stale?', 'Yes, until the TTL', 'Yes, until the TTL', 'Almost never', 'No, but the database lags']
+            tip: 'To reduce staleness, use write-through; but every write gets slower.'
+          - cells: ['Write speed', 'Unchanged', 'Unchanged', 'Slower (two places)', 'Fast']
+            tip: 'Write-behind buys speed at the price of a risk of loss.'
+          - cells: ['Risk of losing data', 'None', 'None', 'None', 'Yes']
+            tip: 'Never use write-behind for money or order data.'
+          - cells: ['In Symfony', 'get(key, fn)', 'Build it yourself', 'set after the database write', 'Rarely built']
+            tip: 'The normal way of using Symfony Cache is cache-aside.'
+      - type: points
+        title: 'The decision rule'
+        style: number
+        items:
+          - 'When in doubt, cache-aside with a short TTL.'
+          - 'If you need a fresh value right after a write, update or delete the cache entry when you write.'
+          - 'Never use write-behind for data you can''t afford to lose.'
+    aside:
+      - type: refs
+        items:
+          - {to: 'caching/cache-invalidation', label: 'How to cure a stale cache'}
+          - {to: 'caching/cache-stampede', label: 'Preventing a storm of misses'}
+    check:
+      q: 'Which strategy would you start with for an ordinary product page, and why?'
+      a: 'Cache-aside with a short TTL. It is simple, it works with Symfony''s get(), and the app still runs off the database when the cache is down.'
+
+flashcards:
+  - q: 'What are a cache hit and a cache miss?'
+    a: 'Hit: the answer was found in the cache. Miss: it wasn''t there, so it had to be fetched from the real source (the database).'
+    more: |
+      The higher the hit rate, the more useful the cache. The first request for something is always a miss; after that miss the answer sits in the cache, and the following requests get hits.
+    ref: same-answer-again
+  - q: 'How does the cache-aside strategy work?'
+    a: 'The app looks in the cache first; if it isn''t there, the app fetches it from the database itself and stores it in the cache.'
+    more: |
+      The cache fetches nothing; looking up, fetching and filling all happen in the app's code. That is why the app keeps working when the cache is down, only slower. It is also called lazy loading, because the cache is filled only when something is asked for.
+    ref: cache-aside
+  - q: 'What does Symfony''s CacheInterface::get($key, $callback) do?'
+    a: 'If the key exists it returns the stored value; if not, it runs the callback, stores the result and returns it.'
+    more: |
+      Inside the callback you set the expiry with `$item->expiresAfter(600)`. This is Symfony's form of cache-aside. The three steps "look up, build if missing, store" happen in one call, and you don't write a separate if.
+    ref: symfony-cache-get
+  - q: 'How does a write travel in write-through?'
+    a: 'To both the cache and the database at once; it counts as done only when both finish.'
+    more: |
+      As a result the cache is almost never stale. The price: every write is slower, because it waits for two places. And caching data that nobody will read later wastes space for nothing.
+    ref: write-strategies
+  - q: 'What is the biggest risk of write-behind?'
+    a: 'Writes go to the cache first and the database later. If the cache dies before they reach the database, they are lost.'
+    more: |
+      You gain speed because the user doesn't wait for the database. But for money, orders or permissions you can't leave room for loss. So it is used only for load-absorbing writes where losing a little doesn't matter.
+    ref: write-strategies
+  - q: 'What must the key contain when you cache an answer that differs per user?'
+    a: 'The user''s ID or identity. Otherwise one person''s data is seen by another.'
+    more: |
+      For example `cart.user.42`, not `cart`. This isn't just a caching mistake but a security one: private data leaks. When in doubt, don't cache personal data, or give it a short expiry.
+    ref: what-not-to-cache
+  - q: 'What kind of data is better left uncached?'
+    a: 'Account balances, checkout stock, and anything cheap to build or never asked for twice.'
+    more: |
+      Caching means buying speed with the risk of staleness. For data where a wrong value causes direct loss, that trade doesn't pay. And for data that is cheap to build, the cache's complexity outweighs the gain.
+    ref: what-not-to-cache
+
+quiz:
+  - q: 'What is wrong with the code below?'
+    lang: php
+    code: |
+      return $this->cache->get('profile', function (ItemInterface $item) use ($user) {
+          $item->expiresAfter(600);
+
+          return $this->profiles->forUser($user);
+      });
+    hint: 'How many users share this one key?'
+    options:
+      - text: 'The key is the same for everyone, so one user''s profile will be shown to everybody for 10 minutes'
+        correct: true
+        why: 'The key for a per-user answer must carry the identity, such as profile.user.42.'
+      - text: 'expiresAfter(600) is too long; 60 would fix everything'
+        correct: false
+        why: 'A shorter expiry only shortens the leak, it doesn''t stop it. The real mistake is in the key.'
+      - text: 'You can''t run a database query inside the callback'
+        correct: false
+        why: 'You can. The callback exists to fetch from the real source on a miss.'
+      - text: 'This code won''t work without Redis'
+        correct: false
+        why: 'CacheInterface works with any adapter; the backend isn''t the problem.'
+    ref: what-not-to-cache
+  - q: 'In cache-aside, in exactly what order do things happen on a miss?'
+    hint: 'Where does the waiter look first, and where does he go next?'
+    options:
+      - text: 'Look in the cache, fetch from the database, store in the cache, answer'
+        correct: true
+        why: 'In this order, the next request gets its answer from the cache.'
+      - text: 'Write to the database, then look in the cache'
+        correct: false
+        why: 'That isn''t the read order, and without looking in the cache first, the cache is pointless.'
+      - text: 'The cache fetches from the database itself and hands it to the app'
+        correct: false
+        why: 'That is read-through. In cache-aside the app does the fetching.'
+      - text: 'Search the database and the cache at the same time and use whichever answers first'
+        correct: false
+        why: 'That doesn''t reduce the load on the database and defeats the purpose of the cache.'
+    ref: cache-aside
+  - q: 'Which data are good candidates for caching?'
+    hint: 'Asked again and again, heavy to build, and harmless if a little stale.'
+    options:
+      - text: 'The homepage list of the top 10 products'
+        correct: true
+        why: 'Many people want it, the calculation is heavy, and 10 minutes old does no harm.'
+      - text: 'The category list, which doesn''t change even once a day'
+        correct: true
+        why: 'Almost unchanging and read again and again: an ideal candidate.'
+      - text: 'The exact stock of a product at checkout'
+        correct: false
+        why: 'Showing stale stock leads to overselling; here accuracy matters more than speed.'
+      - text: 'A user''s balance, under one key shared by everyone'
+        correct: false
+        why: 'Money data is harmful when stale, and under a single key one person''s balance is shown to all.'
+    ref: what-not-to-cache
+  - q: 'In a game app, the "like" count goes up thousands of times per second. Losing a few likes doesn''t matter, but writes must be very fast. Which strategy fits best?'
+    hint: 'Loss is fine, but the database must be spared from every single write.'
+    options:
+      - text: 'Write-behind: count in the cache and flush to the database in batches'
+        correct: true
+        why: 'You get speed and less database load, and losing a few likes is acceptable here.'
+      - text: 'Write-through: every like goes to both the cache and the database'
+        correct: false
+        why: 'Every write still reaches the database, so the load doesn''t drop.'
+      - text: 'Cache-aside, deleting the cache entry on every like'
+        correct: false
+        why: 'Deleting thousands of times a second means there will hardly ever be a hit.'
+      - text: 'No cache, every like straight to the database'
+        correct: false
+        why: 'The need to absorb the load stays unsolved.'
+    ref: write-strategies
+  - q: 'Which statements about Symfony''s get(key, callback) are true?'
+    hint: 'It looks like read-through, but whose code is the callback?'
+    options:
+      - text: 'It is really a form of cache-aside'
+        correct: true
+        why: 'The callback is your app''s code; the responsibility for fetching stays with the app.'
+      - text: 'The callback runs only on a miss'
+        correct: true
+        why: 'On a hit the stored value is returned and the slow work never runs.'
+      - text: 'You can set the expiry inside the callback with $item->expiresAfter()'
+        correct: true
+        why: 'Through ItemInterface you can set the expiry or tags.'
+      - text: 'The cache knows the database and runs the loader itself'
+        correct: false
+        why: 'The cache doesn''t know the database; the callback has to say everything.'
+    ref: symfony-cache-get

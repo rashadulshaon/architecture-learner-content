@@ -1,0 +1,414 @@
+slides:
+  - slug: poisoned-sack
+    title: 'Adulterated rice in the sack: the libraries inside'
+    kind: story
+    tldr: '80 to 90 percent of your app''s code was written by someone else. If any one library is poisoned, it lands in your production on its own.'
+    keywords: ['supply chain attack', 'dependency', 'Packagist', 'typosquatting', 'transitive dependency', 'software supply chain']
+    blocks:
+      - type: metaphor
+        icon: box
+        title: 'A sack of rice bought from the wholesaler'
+        body: |
+          The cook at a wedding doesn't grow his own rice; he buys it from a wholesaler and cooks it. If someone mixes something bad into the wholesaler's sack, the cook unknowingly feeds it to a thousand guests. `composer require` is the same: you buy someone else's code and put it in your app, and the code that code depends on comes along too.
+      - type: visual
+        kind: flow
+        caption: 'How one poisoned new version reaches production'
+        nodes:
+          - {id: attacker, label: 'Attacker', sub: 'takes over the maintainer''s account', icon: bug, tone: bad, col: 0, row: 1, tip: 'Takes over a maintainer''s account through a mistake or a stolen password, or creates a fake package with a look-alike name (typosquatting).'}
+          - {id: registry, label: 'Packagist', sub: 'package registry', icon: archive, col: 1.5, row: 1, tip: 'Where everyone''s libraries are downloaded from. When a new version appears, it gets installed on trust.'}
+          - {id: ci, label: 'CI / deploy', sub: 'composer update', icon: gear, tone: warn, col: 3, row: 1, tip: 'If the lock file is ignored, this pulls the newest version, which means the poisoned one.'}
+          - {id: prod, label: 'Production', sub: 'your server', icon: server, tone: bad, col: 4, row: 0, tip: 'The malicious code now runs with your server''s permissions and can read your secrets too.'}
+        edges:
+          - {from: attacker, to: registry, label: 'Publishes a new version with malicious code mixed in', tone: bad}
+          - {from: registry, to: ci, label: 'CI pulls the new version because versions aren''t pinned', tone: warn}
+          - {from: ci, to: prod, label: 'The app, malicious code included, gets deployed', tone: bad}
+      - type: quote
+        body: 'You are responsible for code you didn''t write; a new library means new trust.'
+    aside:
+      - type: story
+        title: 'A small library, a big incident'
+        body: 'The owner of a popular JavaScript library got tired and handed the project to a stranger. The new owner slipped code into the next version that stole money from crypto wallets. It ran in the builds of hundreds of thousands of projects for several days.'
+      - type: terms
+        items:
+          - {term: 'Transitive dependency', meaning: 'Something the library you installed depends on: an indirect dependency you never knew about.'}
+          - {term: 'Typosquatting', meaning: 'Publishing a fake package with a name almost identical to a popular one, and waiting for someone to mistype.'}
+    check:
+      q: 'You installed only 10 packages, so why are there hundreds in vendor/, and why does that raise the risk?'
+      a: 'Each package brings its own dependencies (transitive ones). The more code comes from outside, the more people''s mistakes or vulnerabilities can reach your production.'
+
+  - slug: lock-and-audit
+    title: 'Lock files, audits and regular updates'
+    kind: howto
+    tldr: 'Commit composer.lock, run `install` (not `update`) in CI, run `composer audit` on every build, and update in small steps.'
+    keywords: ['composer.lock', 'composer audit', 'Dependabot', 'Renovate', 'yarn audit', 'lock file', 'vulnerability']
+    blocks:
+      - type: metaphor
+        icon: tag
+        title: 'The rice batch number'
+        body: |
+          A good shopkeeper keeps a batch number on every sack. When adulteration is discovered, he can trace which batch went to whom. `composer.lock` is that batch number: exactly which version, and which commit's code, was taken. Without it, every build brings in different rice nobody has inspected.
+      - type: points
+        title: 'Four rules'
+        style: check
+        items:
+          - 'Commit `composer.lock` and `yarn.lock`; what runs in production is exactly what CI tested.'
+          - 'In CI and deploys use `composer install` (it obeys the lock); `composer update` is for developers only, in a PR.'
+          - 'Run `composer audit` and Yarn''s audit on every build: if a known vulnerability turns up, the build breaks.'
+          - 'Use Dependabot or Renovate for small updates every week, not one giant update once a year.'
+      - type: code
+        lang: yaml
+        file: '.github/workflows/ci.yaml'
+        variant: good
+        code: |
+          name: ci
+          on: [pull_request]
+          permissions:
+            contents: read
+          jobs:
+            test:
+              runs-on: ubuntu-latest
+              steps:
+                - uses: actions/checkout@<full-commit-SHA>   # pinned by SHA, not by tag
+                - uses: shivammathur/setup-php@<full-commit-SHA>
+                  with:
+                    php-version: '8.3'
+                - run: composer install --no-interaction --prefer-dist
+                - run: composer audit --locked
+                - run: yarn install --immutable
+                - run: yarn audit --level high
+        marks:
+          - {line: 4, tip: 'The job''s default permission is read-only. Raise it only in the step that needs to write.'}
+          - {line: 9, tip: 'A tag (v4) can be moved to point at other code; a commit SHA can''t be changed. So pin even the actions inside CI by SHA.'}
+          - {line: 14, tip: '--locked checks the versions in the lock file without resolving anything new. If it finds a vulnerability the exit code is non-zero and the build breaks.'}
+          - {line: 15, tip: '--immutable doesn''t let the lock file change: if the versions drift, the build fails.'}
+      - type: quote
+        body: 'Install in CI, not update, and audit on every build.'
+    aside:
+      - type: commands
+        title: 'Composer security commands'
+        items:
+          - {cmd: 'composer audit', desc: 'lists known vulnerabilities (security advisories)'}
+          - {cmd: 'composer outdated --direct', desc: 'which of the packages you installed are out of date'}
+          - {cmd: 'composer why symfony/yaml', desc: 'who pulled this package in'}
+          - {cmd: 'composer install --no-dev --classmap-authoritative', desc: 'production install: no dev packages'}
+      - type: tips
+        items:
+          - 'Before adopting a new library, look at how many maintainers it has, when the last release was, and how many issues sit open. Then ask whether you need it at all.'
+          - 'Read a package name twice: symfony/yaml and symfony-yaml/yaml are not the same.'
+      - type: refs
+        items:
+          - {to: 'infra/ci-cd', label: 'The CI/CD pipeline'}
+    check:
+      q: 'What is the danger of running `composer update` in CI, and why is `composer install` better?'
+      a: '`update` pulls the newest versions at build time, so the code that was tested and the code that gets deployed can differ. `install` fetches exactly the versions in the lock file.'
+
+  - slug: ci-secrets
+    title: 'The CI pipeline is a key room too'
+    kind: pitfall
+    tldr: 'CI holds the deploy keys, so make those keys short-lived, narrowly scoped and available only on specific branches. No long-lived keys handed over directly.'
+    keywords: ['CI secrets', 'GitHub Actions', 'OIDC', 'least privilege', 'protected branch', 'pipeline security']
+    blocks:
+      - type: metaphor
+        icon: key
+        title: 'The key to the shop''s cash box'
+        body: |
+          When a new employee joins a shop, nobody gives them the master key to the cash box. They get a key for one day, for their own counter's box only. CI is that employee: it works all the time, but the code sent to it isn't always good. Someone can sneak an `echo $SECRET` into a PR.
+      - type: code
+        lang: yaml
+        file: '.github/workflows/deploy.yaml'
+        variant: bad
+        code: |
+          on: [push, pull_request]
+          jobs:
+            deploy:
+              runs-on: ubuntu-latest
+              steps:
+                - uses: actions/checkout@v4
+                - run: echo "key is ${{ secrets.AWS_SECRET_ACCESS_KEY }}"
+                - run: ./deploy.sh
+                  env:
+                    AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+                    AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        marks:
+          - {line: 1, tip: 'The deploy runs on every PR, so anyone can open a PR and run code that has access to the secrets.'}
+          - {line: 7, tip: 'Echoing a secret: there are many ways around masking (such as printing it base64-encoded), and it leaks into the log.'}
+          - {line: 11, tip: 'A long-lived access key: if stolen, it keeps working for years.'}
+      - type: code
+        lang: yaml
+        file: '.github/workflows/deploy.yaml'
+        variant: good
+        code: |
+          on:
+            push:
+              branches: [main]
+          permissions:
+            id-token: write
+            contents: read
+          jobs:
+            deploy:
+              environment: production
+              runs-on: ubuntu-latest
+              steps:
+                - uses: actions/checkout@<full-commit-SHA>
+                - uses: aws-actions/configure-aws-credentials@<full-commit-SHA>
+                  with:
+                    role-to-assume: arn:aws:iam::123456789012:role/shop-deploy
+                    aws-region: ap-southeast-1
+                - run: ./deploy.sh
+        marks:
+          - {line: 3, tip: 'Deploys only on a push to main; code from a PR or a fork never touches the secrets.'}
+          - {line: 5, tip: 'id-token: write means OIDC: GitHub issues a temporary proof for each run, and the cloud turns it into a credential good for about an hour.'}
+          - {line: 9, tip: 'With environment: production you can require manual approval and keep separate secrets.'}
+          - {line: 15, tip: 'The role can only deploy and nothing else. Least privilege.'}
+      - type: quote
+        body: 'The shorter-lived and smaller the key CI holds, the less damage a leak does.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Passing secrets to PRs from forks; unfamiliar code can read your secrets.'
+          - 'Calling a third-party action or script by tag (@v1); if the owner moves the tag, different code runs.'
+          - 'One admin-level token shared across every repository.'
+      - type: tips
+        items:
+          - 'Deploy to production only from a protected branch, with code review required there.'
+      - type: refs
+        items:
+          - {to: 'security/secrets-management', label: 'Secrets and rotation'}
+    check:
+      q: 'Why is "deploy on every PR and pass in the secrets" wrong?'
+      a: 'Anyone can open a PR and have their own code read or print the secrets. Give secrets only to the pipeline of a vetted (merged) branch.'
+
+  - slug: compliance-inputs
+    title: 'SOC 2, PCI DSS, GDPR, HIPAA: not rules, but design inputs'
+    kind: concept
+    tldr: 'Compliance is not paperwork added at the end. Which rules apply depends on the data you touch, and those rules tell you at the start what to build.'
+    keywords: ['SOC 2', 'PCI DSS', 'GDPR', 'HIPAA', 'compliance', 'audit']
+    blocks:
+      - type: metaphor
+        icon: receipt
+        title: 'A restaurant''s hygiene certificate'
+        body: |
+          To earn a food-safety certificate, you have to change the kitchen's design itself: separate boards for raw and cooked food, lids, a place to wash hands. Adding these after the kitchen is built is hard and expensive. Compliance is the same: if you learn the required rules first and design around them, it costs less.
+      - type: visual
+        kind: table
+        caption: 'Four frameworks: when they apply and what pressure they put on design'
+        headers: ['Framework', 'When it applies', 'Design pressure']
+        rows:
+          - cells: ['SOC 2', 'B2B customers ask for an audit report', 'Access reviews, audit logs, change rules']
+            tip: 'An independent auditor''s report on whether you have security controls. Type II needs proof that they actually ran for several months.'
+          - cells: ['PCI DSS', 'When you touch card data', 'Not touching cards, tokenization, isolated network']
+            tip: 'The easiest route is never to bring cards onto your own server (use the provider''s hosted form). That shrinks the scope of the rules.'
+          - cells: ['GDPR', 'Personal data of people in the EU', 'Erasure, export, consent, breach notice within 72 hours']
+            tip: 'User rights (to see, correct and delete their data) have to be built as features. A data breach must be reported to the authority within 72 hours.'
+          - cells: ['HIPAA', 'US health information (PHI)', 'Encryption, access logs, vendor contracts (BAA)']
+            tip: 'For US healthcare data. You need logs of who viewed which patient''s information, and contracts with every third party.'
+      - type: quote
+        body: 'The data you touch decides which rules apply; touch less data and fewer rules apply.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Compliant does not mean secure: a certificate means a checklist was met, not that attacks are guaranteed to fail.'
+          - 'Interpreting the law is not an engineer''s job. This gives general ideas; settle what applies to your case with your legal or compliance team.'
+      - type: terms
+        items:
+          - {term: 'SOC 2 Type I/II', meaning: 'Type I: are the controls in place on one day? Type II: have they run properly for several months?'}
+          - {term: 'PHI', meaning: 'Protected Health Information: health data that identifies a patient.'}
+      - type: refs
+        items:
+          - {to: 'security/data-protection', label: 'Encryption and PII'}
+    check:
+      q: 'What is the PCI benefit of using the provider''s hosted form instead of bringing card data onto your own server?'
+      a: 'Card numbers never enter our systems, so the scope of the PCI rules becomes much smaller. What we don''t touch, we are less responsible for.'
+
+  - slug: compliance-to-code
+    title: 'From rules to features: what you add to the design'
+    kind: recap
+    tldr: 'Almost all of the four frameworks boil down to a few common features: audit logs, access reviews, encryption, erasure and export, and a runbook for when a breach happens.'
+    keywords: ['audit log', 'right to erasure', 'data retention', 'anonymize', 'breach runbook', 'compliance controls']
+    blocks:
+      - type: visual
+        kind: steps
+        caption: 'Five common engineering features for meeting the rules'
+        steps:
+          - {title: '1. Audit log', body: 'Who did what and when, in a way that can''t be altered', tip: 'SOC 2, HIPAA and GDPR all want it. When something goes wrong, you must be able to say who did it.'}
+          - {title: '2. Access review', body: 'Every quarter, check who has which rights and trim', tip: 'Old access held by people who left or changed roles is the biggest gap.'}
+          - {title: '3. Encryption', body: 'In transit, on disk and in sensitive fields', tip: 'The rule says "don''t store it in plain text". Which layer you need depends on the kind of data.'}
+          - {title: '4. Erasure and export', body: 'Show a user their data, or delete it, on request', tip: 'A GDPR right. Legal records like a ledger can''t be deleted, so they get anonymized.'}
+          - {title: '5. Breach runbook', body: 'Who tells whom, and within what time', tip: 'GDPR gives 72 hours to notify the authority. Thinking it up on the night of the incident is too late, so write it in advance.'}
+      - type: code
+        lang: php
+        file: 'src/Privacy/UserEraser.php'
+        variant: good
+        code: |
+          public function erase(User $user, User $requestedBy): void
+          {
+              // Money transactions stay in the ledger (legal duty), but the person is erased
+              $user->anonymize();
+              $this->em->flush();
+
+              $this->auditLogger->info('user.erased', [
+                  'user_id' => $user->getId(),
+                  'requested_by' => $requestedBy->getId(),
+              ]);
+          }
+
+          // Inside the User entity
+          public function anonymize(): void
+          {
+              $this->email = sprintf('deleted-%d@invalid.example', $this->id);
+              $this->name = 'Deleted user';
+              $this->phone = null;
+              $this->erasedAt = new \DateTimeImmutable();
+          }
+        marks:
+          - {line: 4, tip: 'We don''t delete the row; we delete the identifying data. The foreign keys to orders and money records stay intact.'}
+          - {line: 7, tip: 'The erasure itself is recorded too: there must be proof of who asked for whose data to be deleted.'}
+          - {line: 16, tip: 'invalid.example is a reserved domain, so the email can never reach anyone.'}
+    aside:
+      - type: remember
+        body: 'Read the rule, build the feature: logs, access, encryption, erasure, a breach plan.'
+      - type: when
+        use:
+          - 'When a customer or the law demands compliance: first settle your data types, then pick the rules that apply.'
+        avoid:
+          - 'Trying to meet every framework at once; start with what the riskiest data requires.'
+      - type: refs
+        items:
+          - {to: 'recovery/corrective-actions', label: 'Corrective actions and audits'}
+    check:
+      q: 'A user says "delete my data", but the money records of their orders must legally be kept. What do you do?'
+      a: 'Don''t delete the row; anonymize identifying data like name, email and phone, and keep the money records. Write the erasure itself into the audit log too.'
+
+flashcards:
+  - q: 'What is a supply chain attack?'
+    a: 'An attempt to get into your system by slipping malicious code into an outside library or tool that you use.'
+    more: |
+      Instead of attacking your app directly, the attacker takes over someone in your dependencies' accounts or publishes a fake package. The malicious code then arrives in your app on its own with a new version. So adding a library means adding one more thing you trust.
+    ref: poisoned-sack
+  - q: 'What is a transitive dependency?'
+    a: 'A library that a library you installed depends on. You didn''t ask for it directly, yet it runs.'
+    more: |
+      When you `composer require` one package, its dependencies land in vendor/ too. `composer why <package>` tells you who pulled it in. To judge your risk, looking only at the list you installed yourself is not enough.
+    ref: poisoned-sack
+  - q: 'Why do you commit composer.lock?'
+    a: 'So every build, test and production uses exactly the same versions of each library.'
+    more: |
+      Without a lock file, `composer install` looks for the newest versions, and what you tested and what gets deployed can differ. By checking the versions in the lock file, you can find out which versions have vulnerabilities.
+    ref: lock-and-audit
+  - q: 'What is the difference between `composer install` and `composer update` in CI?'
+    a: '`install` fetches the versions in the lock file. `update` pulls the newest versions and changes the lock file.'
+    more: |
+      `update` should run on a developer's machine, in a separate PR where people can review the change. In CI and production deploys, always use `install`.
+    ref: lock-and-audit
+  - q: 'What does `composer audit` do?'
+    a: 'It checks the packages in the lock file against a list of known vulnerabilities (security advisories). If it finds any, the exit code is non-zero.'
+    more: |
+      Running `composer audit --locked` in CI breaks the build when a vulnerable package is present, so you learn about it at once. For the frontend, Yarn's audit has to be run separately. And an audit only catches known vulnerabilities, not new discoveries.
+    ref: lock-and-audit
+  - q: 'What are three rules for keeping CI pipeline secrets safe?'
+    a: 'Short-lived (OIDC) credentials, least privilege, and giving secrets only to protected branches.'
+    more: |
+      A long-lived access key kept in CI keeps working for years if it is stolen. With OIDC, each run gets a credential good for about an hour. Don't give secrets to PRs or code from forks, and never echo a secret.
+    ref: ci-secrets
+  - q: 'Why do you pin a GitHub Actions action by commit SHA?'
+    a: 'The owner can move a tag (like v4), but can''t change a SHA. A SHA always runs the same code.'
+    more: |
+      A third-party action runs in your CI with your secrets. If the owner's account is taken over, they can move the tag and put malicious code behind it. If you pin the SHA, you change it deliberately, and with your eyes open, when you update.
+    ref: ci-secrets
+  - q: 'Which two GDPR rules put the most pressure on design?'
+    a: 'Users'' right to have their data erased and exported, and reporting a breach to the authority within 72 hours.'
+    more: |
+      The first means you must know everywhere the data lives and build an anonymize or delete feature. The second means writing a breach runbook in advance. It is a condition of the law.
+    ref: compliance-inputs
+  - q: 'What is the easiest way to shrink the scope of PCI DSS?'
+    a: 'Don''t bring card data onto your own server: use the payment provider''s hosted form and tokens.'
+    more: |
+      Any system that touches card data falls under the PCI rules. So if you use the provider's form and take only a token on the server, your responsibility shrinks a lot. A CVV can never be stored after authorization.
+    ref: compliance-inputs
+
+quiz:
+  - q: 'What is the biggest problem in the CI script below?'
+    lang: bash
+    code: |
+      composer update --no-interaction
+      vendor/bin/phpunit
+      ./deploy.sh
+    hint: 'Is the code that was tested the same as the code that gets deployed?'
+    options:
+      - text: '`update` pulls the newest versions; the tested code can differ from the lock file''s, and a poisoned version could come in'
+        correct: true
+        why: 'In CI use `composer install` followed by `composer audit`; keep `update` for a PR.'
+      - text: 'deploy should run before phpunit'
+        correct: false
+        why: 'Testing first is right; the problem is how versions are decided.'
+      - text: '--no-interaction should be removed'
+        correct: false
+        why: 'No interaction is better in CI. The problem is elsewhere.'
+      - text: 'There is no problem; the newest version is the safest'
+        correct: false
+        why: 'New does not mean safe; supply chain attacks arrive in exactly the new versions.'
+    ref: lock-and-audit
+  - q: 'Which of these reduce supply chain risk?'
+    hint: 'Which ones pin versions or catch known vulnerabilities?'
+    options:
+      - text: 'Committing composer.lock and running `composer install` in CI'
+        correct: true
+        why: 'Every build uses exactly the same, vetted versions.'
+      - text: 'Running `composer audit --locked` on every build'
+        correct: true
+        why: 'If a known vulnerable package is found the build breaks, so you find out at once.'
+      - text: 'Setting every package''s version to "*" so you always get the newest'
+        correct: false
+        why: 'That lets any poisoned new version in by itself. It is the opposite of pinning versions.'
+      - text: 'Updating all packages together once a year'
+        correct: false
+        why: 'A giant update makes it hard to tell what broke, and vulnerabilities stay open for the whole year in between. Small steps are better.'
+    ref: lock-and-audit
+  - q: 'Dina''s deploy pipeline keeps a long-lived AWS access key as a secret. Which is the best improvement?'
+    hint: 'If it is stolen, how long will the key keep working?'
+    options:
+      - text: 'Use OIDC to get temporary credentials on each run, only on the main branch, through a role with narrow permissions'
+        correct: true
+        why: 'Even if stolen, it is useless within hours, and it can only do limited things.'
+      - text: 'Rename the secret to an obscure name'
+        correct: false
+        why: 'Hiding the name doesn''t make the value any safer.'
+      - text: 'Hardcode the key in the code and keep it in a private repository'
+        correct: false
+        why: 'Even worse: everyone with the code, and all of the history, gets the key.'
+      - text: 'Run the deploy on every PR so it is always verified'
+        correct: false
+        why: 'Anyone can open a PR and read the secrets. Deploy only on a vetted branch.'
+    ref: ci-secrets
+  - q: 'Which framework applies in which situation?'
+    hint: 'Look at which data you touch.'
+    options:
+      - text: 'GDPR, if you hold personal data of customers in Europe'
+        correct: true
+        why: 'Wherever the company is, touching EU residents'' data brings GDPR.'
+      - text: 'PCI DSS, if you touch or process card data'
+        correct: true
+        why: 'A system that touches cards is under PCI. If you don''t touch them, the scope is small.'
+      - text: 'A SOC 2 report, if B2B customers ask for proof of your security'
+        correct: true
+        why: 'Large corporate customers usually want to see a SOC 2 audit report.'
+      - text: 'HIPAA, certainly, for a school attendance app'
+        correct: false
+        why: 'HIPAA is for US health information; it doesn''t apply to an attendance app.'
+    ref: compliance-inputs
+  - q: 'Under GDPR a user asks to be deleted, but the money records of their purchases must legally be kept for 5 years. What do you do?'
+    hint: 'Can the money records be separated from the person''s identity?'
+    options:
+      - text: 'Delete the user row and all their orders'
+        correct: false
+        why: 'Legal records can''t be deleted, and the foreign keys would break too.'
+      - text: 'Refuse the request, because the records have to be kept'
+        correct: false
+        why: 'Identifying data can be deleted; refusing the whole request is wrong.'
+      - text: 'Anonymize the name, email and phone; keep the money records; write the event to the audit log'
+        correct: true
+        why: 'The person can''t be identified, yet the legal duty is met and the data relationships stay intact.'
+      - text: 'Just set a "deleted" flag and keep the real data'
+        correct: false
+        why: 'That isn''t deletion; if the data leaks, everything can still be read.'
+    ref: compliance-to-code

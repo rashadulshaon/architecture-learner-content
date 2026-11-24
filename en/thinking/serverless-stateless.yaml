@@ -1,0 +1,360 @@
+slides:
+  - slug: logged-out-randomly
+    title: 'Add a second server and users get logged out'
+    kind: story
+    tldr: 'If sessions and uploaded files live on one server''s disk, adding a second server means users are logged in one minute and logged out the next.'
+    keywords: ['stateless', 'session', 'sticky session', 'load balancer', 'random logout', 'multiple servers']
+    blocks:
+      - type: text
+        body: |
+          Rahim's app ran happily on one server. When traffic grew, he added a second server behind a load balancer. Soon the complaints started: "Sometimes I'm logged in, sometimes I'm not," and "I uploaded a photo and now it's gone." The reason: the session files and uploaded photos lived only on the first server's disk.
+      - type: visual
+        kind: sequence
+        caption: 'Log in on one server, send the next request to another'
+        actors:
+          - {id: user, label: 'User', icon: user, tip: 'Sends two requests from the same browser, but the load balancer routes them to different servers.'}
+          - {id: a, label: 'Server A', icon: server, tip: 'The login session file was created on its disk.'}
+          - {id: b, label: 'Server B', icon: server, tip: 'It has no copy of that session file, so it has no idea who this user is.'}
+        messages:
+          - {from: user, to: a, label: 'Logs in'}
+          - {at: a, note: 'Session file on A''s disk', tone: warn}
+          - {from: a, to: user, label: 'Login successful', dashed: true}
+          - {from: user, to: b, label: 'Wants to see their profile', tip: 'This time the load balancer picked the other server.'}
+          - {at: b, note: 'No session for this user', tone: bad}
+          - {from: b, to: user, label: 'Please log in again', dashed: true, tone: bad}
+      - type: quote
+        body: 'A server must never remember anything about a user on its own.'
+    aside:
+      - type: story
+        title: 'The uncle who kept the tab in his head'
+        body: |
+          If the tea stall owner keeps everyone's credit tab only in his head, it all vanishes the day he takes a holiday, and his nephew behind the counter can't tell anyone what they owe. Write it in a ledger and whoever sits at the counter sees the right numbers.
+      - type: refs
+        items:
+          - {to: 'scaling/horizontal-vertical', label: 'Horizontal scaling'}
+    check:
+      q: 'Why do users lose their login after a second server is added?'
+      a: 'The session file sits on one server''s disk. When the load balancer sends a request to the other server, it doesn''t recognise the user.'
+
+  - slug: state-goes-outside
+    title: 'Stateless means: memory lives outside the server'
+    kind: concept
+    tldr: 'A stateless server remembers nothing itself, so any server can handle any request; the memory lives in the database, Redis or object storage.'
+    keywords: ['stateless', 'Redis session', 'object storage', 'shared state', 'horizontal scaling', 'stateless server']
+    blocks:
+      - type: metaphor
+        icon: shop
+        title: 'The credit ledger on the counter'
+        body: |
+          Picture a shop with three counters and three clerks, none of whom remembers a customer's name or what they owe. Everything is written in one central ledger, and whoever is on duty opens it and looks. So any counter can serve any customer, and adding a fourth counter on a busy day is easy.
+      - type: visual
+        kind: table
+        caption: 'Where things on a server''s disk should move'
+        headers: ['What was on the server', 'The problem', 'Where it goes now']
+        rows:
+          - cells: ['Session files', 'Other servers can''t see them', 'Redis or the database']
+            tip: 'Every server reads sessions from the same Redis, so logins survive no matter which server gets the request.'
+          - cells: ['Uploaded images/files', 'Missing on other servers', 'Object storage (S3-style)']
+            tip: 'Files go to shared storage, not a server disk. They survive even when a server dies.'
+          - cells: ['Cache (APCu, files)', 'Separate per server, goes stale', 'Redis or Memcached']
+            tip: 'A cache in each server''s own memory shows different values on different servers. A shared cache gives everyone the same answer.'
+          - cells: ['Locks and counters', 'Don''t agree between servers', 'Redis or the database']
+            tip: 'Two separate locks on two servers means no lock at all. The lock has to live in one place that everyone shares.'
+          - cells: ['Log files', 'Lost when the server dies', 'stdout, then central logging']
+            tip: 'If the program writes logs to stdout, the platform can collect them all in one place.'
+      - type: points
+        title: 'What you gain'
+        style: check
+        items:
+          - 'Any server can handle any request, so adding servers adds capacity.'
+          - 'When a server dies no data is lost, and a fresh one picks up the work immediately.'
+          - 'You can replace servers one by one while deploying new code.'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Sticky session', meaning: 'The load balancer always sends the same user to the same server. Not a fix, just a hidden weakness.'}
+          - {term: 'Object storage', meaning: 'A separate service for storing files (S3, MinIO), where files are saved and fetched by key.'}
+    check:
+      q: 'Why are sticky sessions a poor fix for the login problem?'
+      a: 'If that server dies or is replaced during a deploy, its users lose their sessions, and load is spread unevenly. The real fix is moving sessions out of the server.'
+
+  - slug: stateless-symfony
+    title: 'Two steps to make Symfony stateless'
+    kind: howto
+    tldr: 'Send sessions to Redis with one line of config, and store uploads in object storage through Flysystem instead of on the local disk.'
+    keywords: ['framework.session handler_id', 'Redis', 'Flysystem', 'S3 upload', 'FilesystemOperator', 'file upload']
+    blocks:
+      - type: code
+        lang: yaml
+        file: 'config/packages/framework.yaml'
+        variant: good
+        code: |
+          framework:
+              session:
+                  # every server keeps its sessions in the same Redis
+                  handler_id: '%env(REDIS_URL)%'
+                  cookie_secure: auto
+                  cookie_samesite: lax
+        marks:
+          - {line: 4, tip: 'Give Symfony a Redis DSN and it writes sessions there. No code changes, just config.'}
+      - type: code
+        lang: php
+        file: 'src/Profile/AvatarUploader.php'
+        variant: good
+        code: |
+          final readonly class AvatarUploader
+          {
+              public function __construct(private FilesystemOperator $uploadsStorage)
+              {
+              }
+
+              public function store(UploadedFile $file): string
+              {
+                  $key = sprintf('avatars/%s.%s', Uuid::v7(), $file->guessExtension());
+
+                  $stream = fopen($file->getPathname(), 'r');
+                  $this->uploadsStorage->writeStream($key, $stream);
+                  fclose($stream);
+
+                  return $key; // store only this key in the database
+              }
+          }
+        marks:
+          - {line: 3, tip: 'The storage named `$uploadsStorage` is autowired. Whether it is S3 or local is decided in config.'}
+          - {line: 15, tip: 'Keep only the file''s key in the database, not the file itself. You can build the URL later.'}
+    aside:
+      - type: commands
+        items:
+          - {cmd: 'composer require league/flysystem-bundle league/flysystem-aws-s3-v3', desc: 'Flysystem and the S3 adapter'}
+          - {cmd: 'composer require symfony/uid', desc: 'Needed for Uuid::v7()'}
+      - type: tips
+        items:
+          - 'In local development use the local adapter with the same code; in production use S3. Only config changes.'
+          - 'Temporary working files (building a zip) can use the local disk, as long as they finish within the same request.'
+      - type: refs
+        items:
+          - {to: 'data/files-blobs', label: 'Storing files and blobs properly'}
+    check:
+      q: 'Why store only a key in the database instead of the uploaded file itself?'
+      a: 'The file lives in object storage that every server can reach, and the database holds just a small key. That keeps the database light, and you can switch storage without touching the code.'
+
+  - slug: serverless-what
+    title: 'Serverless: like a taxi, you pay per ride'
+    kind: concept
+    tldr: 'With serverless the platform runs the servers and you pay for what you use; in return you accept cold starts and limits.'
+    keywords: ['serverless', 'cold start', 'AWS Lambda', 'Bref', 'FaaS', 'pay per use']
+    blocks:
+      - type: metaphor
+        icon: truck
+        title: 'Your own car vs a ride-share'
+        body: |
+          If you own a car, you pay for the driver, fuel and garage whether you drive or not. With a ride-share you pay only for the trips you take, but after you call, the car takes a while to arrive. Serverless works the same way: your code runs when a request arrives and costs almost nothing when none does. That wait for the car is the cold start.
+      - type: visual
+        kind: sequence
+        caption: 'The first request after a long quiet spell: a cold start'
+        actors:
+          - {id: user, label: 'User', icon: user, tip: 'Sends the request. The first one waits longer, later ones don''t.'}
+          - {id: platform, label: 'Platform', icon: cloud, tip: 'A service like Lambda or Cloud Run that creates and shuts down places to run your code.'}
+          - {id: fn, label: 'Your code', icon: code, tip: 'Your function or Symfony app, running inside a container.'}
+        messages:
+          - {from: user, to: platform, label: 'A request arrives'}
+          - {at: platform, note: 'No running instance', tone: warn}
+          - {from: platform, to: fn, label: 'Start a new instance (cold start)', tone: warn, tip: 'Downloading the code and booting the runtime and framework. This is the delay.'}
+          - {from: platform, to: fn, label: 'Now hand over the request'}
+          - {from: fn, to: user, label: 'The response, a bit late', dashed: true}
+          - {from: user, to: fn, label: 'Next request: instance is warm, fast', tone: good}
+      - type: points
+        title: 'Three facts to remember'
+        items:
+          - 'Your code must be stateless, because an instance can be stopped or recreated at any moment.'
+          - 'Every call has a time limit (for example, 15 minutes at most on Lambda).'
+          - 'When many instances run at once, the number of database connections jumps with them.'
+    aside:
+      - type: tips
+        items:
+          - 'You can run a PHP/Symfony app on AWS Lambda with Bref. Services like Cloud Run run ordinary containers.'
+          - 'To shorten cold starts, warm the framework cache before deploying and drop big libraries you don''t need.'
+    check:
+      q: 'What is a cold start in serverless, and when does it hurt most?'
+      a: 'It is the wait for a new instance to start on the first request after a quiet period. It hurts most when every response must be very fast and traffic is spiky.'
+
+  - slug: serverless-fit
+    title: 'When serverless fits, and when it doesn''t'
+    kind: compare
+    tldr: 'For bursty or irregular work serverless is cheap and easy; for heavy, constant or long-running work your own servers or containers are better.'
+    keywords: ['serverless fit', 'event driven', 'cost', 'long running', 'WebSocket', 'when to use serverless']
+    blocks:
+      - type: visual
+        kind: compare
+        caption: 'Where serverless shines and where it hurts'
+        columns:
+          - title: 'Fits'
+            tone: good
+            icon: check
+            tip: 'When work is small, event-driven or irregular, pay-per-use is the cheapest option.'
+            items:
+              - 'Making thumbnails after an image upload'
+              - 'A report or cron job that runs once a night'
+              - 'Handling webhooks with irregular traffic'
+              - 'Prototypes with new, unknown traffic'
+          - title: 'Doesn''t fit'
+            tone: bad
+            icon: cross
+            tip: 'For constant, steady work pay-per-use gets expensive, and the limits get in the way.'
+            items:
+              - 'A busy API with steady heavy traffic'
+              - 'Jobs that run for hours (they hit the time limit)'
+              - 'WebSockets or other long-lived connections'
+              - 'Strict latency where cold starts are unacceptable'
+      - type: points
+        title: 'Three questions before you decide'
+        style: number
+        items:
+          - 'Is traffic irregular, or steady all day? If it is steady, servers are cheaper.'
+          - 'Does the job finish within the time limit, and can you live with the cold start delay?'
+          - 'Is your team willing to learn the platform''s limits and its new way of logging and debugging?'
+      - type: quote
+        body: 'Serverless removes machine chores but adds limits. Know the trade.'
+    aside:
+      - type: when
+        use:
+          - 'Irregular or event-driven work such as webhooks and file processing.'
+          - 'Small teams who want to avoid running servers.'
+        avoid:
+          - 'Constant heavy traffic, long jobs or strict latency.'
+      - type: refs
+        items:
+          - {to: 'infra/cloud-primitives', label: 'Core building blocks of the cloud'}
+          - {to: 'infra/finops', label: 'Working out the cost'}
+    check:
+      q: 'Why is serverless often expensive for an API that is busy all day?'
+      a: 'Pay-per-use is cheap for small jobs, but constant load ends up costing more than a server''s fixed monthly price. Cold starts and limits still apply too.'
+
+flashcards:
+  - q: 'What is a stateless server?'
+    a: 'A server that remembers nothing about the user between requests. All memory lives outside it.'
+    more: |
+      That means any server can handle any request. Adding servers, replacing them and swapping in a fresh one for a dead one all become easy.
+    ref: state-goes-outside
+  - q: 'What happens when session files sit on each server''s own disk and there are several servers?'
+    a: 'When the user hits a different server it can''t find their session, so they suddenly appear logged out.'
+    more: |
+      Disk sessions work fine on one server, but break once a load balancer splits the requests. The fix is to keep sessions in Redis or the database, where every server reads the same ledger.
+    ref: logged-out-randomly
+  - q: 'Why are sticky sessions not a good fix?'
+    a: 'If that server dies or is redeployed its users lose their sessions, and load is not spread evenly.'
+    more: |
+      Sticky sessions hide the problem rather than solve it. The real fix is to move state outside the servers, so it no longer matters which server gets the request.
+    ref: state-goes-outside
+  - q: 'With several servers, where should uploaded files be stored?'
+    a: 'In object storage (S3-style), not on a server''s local disk. The database holds only the file''s key.'
+    more: |
+      Files on a local disk are invisible to other servers and disappear when the server dies. In Symfony, Flysystem gives you one interface where you can swap the local and S3 adapters through config alone.
+    ref: stateless-symfony
+  - q: 'What does Symfony need to store sessions in Redis?'
+    a: 'Set `framework.session.handler_id` to the Redis DSN, for example `%env(REDIS_URL)%`.'
+    more: |
+      No code changes, only config. All servers read and write sessions in the same Redis. Redis is now a dependency too, so think about its backups and availability.
+    ref: stateless-symfony
+  - q: 'What is serverless?'
+    a: 'A model where the platform runs the servers, your code runs when requests arrive, and you pay for what you use.'
+    more: |
+      The servers still exist, you just don't run them. When no requests come in, instances are shut down; when they do, new ones start. Your code must be stateless, because an instance can be stopped or recreated at any moment.
+    ref: serverless-what
+  - q: 'What is a cold start?'
+    a: 'The wait for a new instance to boot on the first request after a quiet period, which makes that request slow.'
+    more: |
+      This is when the code is downloaded and the runtime and framework start up. Later requests reach a warm instance and are fast. It is a problem where every response must be consistently quick.
+    ref: serverless-what
+  - q: 'What kind of work suits serverless best?'
+    a: 'Small, irregular or event-driven jobs: webhooks, file processing, nightly tasks. Not constant heavy traffic.'
+    more: |
+      For work that sits idle most of the time and then arrives in bursts, pay-per-use is cheap. In a system that is busy all day, a fixed-price server or container is usually cheaper and more predictable.
+    ref: serverless-fit
+quiz:
+  - q: 'Which of these cause problems if kept on a server''s local disk when you run several servers?'
+    hint: 'Can another server see this thing?'
+    options:
+      - text: 'Profile photos uploaded by users'
+        correct: true
+        why: 'A request that lands on another server won''t find the photo. Keep it in object storage.'
+      - text: 'PHP session files'
+        correct: true
+        why: 'On another server the session isn''t recognised, and the user is logged out.'
+      - text: 'A temporary zip file created and deleted within a single request'
+        correct: false
+        why: 'The file lives and dies inside one request, so no other server ever needs to see it.'
+      - text: 'The deployed code, which is the same on every server'
+        correct: false
+        why: 'The code is deployed identically everywhere; it is not state.'
+    ref: state-goes-outside
+  - q: 'What is wrong with the config below if the app runs on two servers?'
+    lang: yaml
+    code: |
+      framework:
+          session:
+              handler_id: null
+              save_path: '%kernel.project_dir%/var/sessions'
+    hint: 'Where are session files written, and can the other server read them?'
+    options:
+      - text: 'Session files sit on each server''s own disk, so the other server doesn''t recognise them'
+        correct: true
+        why: 'The `var/sessions` folder is local to the server. Fix it by keeping sessions in Redis or the database.'
+      - text: 'Setting handler_id to null stops sessions from working at all'
+        correct: false
+        why: 'File-based sessions work fine. The problem is that they aren''t shared between servers.'
+      - text: '%kernel.project_dir% is invalid syntax'
+        correct: false
+        why: 'The syntax is fine. The problem is conceptual.'
+      - text: 'Nothing, because the files are safe'
+        correct: false
+        why: 'They are safe on one server, but behind a load balancer you will get the logout problem.'
+    ref: stateless-symfony
+  - q: 'Asif''s app builds a 20-minute report once a night at 2 a.m. and does nothing the rest of the day. Which option fits best?'
+    hint: 'Most of the time there is no work, and the work is short.'
+    options:
+      - text: 'Serverless or a scale-to-zero container, so you pay only while the job runs'
+        correct: true
+        why: 'For irregular, short-lived work, pay-per-use is cheap.'
+      - text: 'A big server running all day just for this job'
+        correct: false
+        why: 'It sits idle for more than 23 hours a day and still costs money.'
+      - text: 'Building the report inside a user''s request'
+        correct: false
+        why: 'Holding a request open for 20 minutes will time out. This belongs in a queue or a scheduled job.'
+      - text: 'Dropping the report'
+        correct: false
+        why: 'Dropping work the business needs isn''t a solution.'
+    ref: serverless-fit
+  - q: 'A Lambda-based Symfony app suddenly gets 1,000 users at once. What problem is most likely?'
+    hint: 'What do many instances do to the database all at the same time?'
+    options:
+      - text: 'Many instances start together and exceed the database''s connection limit'
+        correct: true
+        why: 'Each instance opens its own connection. Without a connection pool or proxy, the database gets overwhelmed.'
+      - text: 'All requests get stuck on a single instance'
+        correct: false
+        why: 'A serverless platform does the opposite: it creates more instances.'
+      - text: 'The code turns from PHP into another language'
+        correct: false
+        why: 'The language never changes.'
+      - text: 'Nothing, because serverless means unlimited capacity'
+        correct: false
+        why: 'The database, outside APIs and the platform itself all have limits.'
+    ref: serverless-what
+  - q: 'Which is the strongest argument for making the app stateless instead of using sticky sessions?'
+    hint: 'What happens when a server dies or is replaced in a deploy?'
+    options:
+      - text: 'Users don''t lose their sessions when a server dies or is replaced'
+        correct: true
+        why: 'When state lives outside, any server can read it, so work carries on even if one server dies.'
+      - text: 'Sticky sessions cost more because they don''t use Redis'
+        correct: false
+        why: 'Cost isn''t the point; sticky sessions are less reliable.'
+      - text: 'A stateless app needs less code'
+        correct: false
+        why: 'The aim is less fragility, not less code.'
+      - text: 'A stateless app doesn''t need a database'
+        correct: false
+        why: 'The database matters more, because that is where the state goes.'
+    ref: state-goes-outside

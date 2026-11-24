@@ -1,0 +1,477 @@
+slides:
+  - slug: average-lies
+    title: 'The average says fine, the customers say slow'
+    kind: story
+    tldr: 'An average response time hides the few slow requests, so measure real experience with percentiles (p90, p99) and metrics collected continuously.'
+    keywords: ['metrics', 'average vs percentile', 'p99', 'latency', 'monitoring']
+    blocks:
+      - type: metaphor
+        icon: heart
+        title: 'The doctor''s vital signs'
+        body: |
+          A nurse measures a patient's temperature, pulse and blood pressure on a schedule and writes them on a chart. You tell whether the patient is doing well from the trend in the numbers, not from the look on their face. A metric is your app's chart: a number measured every minute, piling up over time.
+      - type: visual
+        kind: bars
+        caption: 'Response times for the same 100 customers: average vs percentiles'
+        items:
+          - {label: 'Average', value: 120, display: '120ms', tone: good, tip: 'Add everything up and divide. A few very slow requests drown in the average, so it looks great.'}
+          - {label: 'p50', value: 80, display: '80ms', tone: good, tip: 'The middle customer: half of your customers got an answer faster than this.'}
+          - {label: 'p90', value: 150, display: '150ms', tone: default, tip: '90 of 100 customers got an answer within this time. The other 10 waited longer.'}
+          - {label: 'p99', value: 2400, display: '2400ms', tone: bad, tip: 'One customer in 100 sat there for 2.4 seconds. They may well be your biggest spender, because big carts make the heaviest pages.'}
+      - type: quote
+        body: 'You can''t measure experience with an average. Look at p90 and p99, your slowest customers.'
+    aside:
+      - type: story
+        title: 'Monday''s complaints'
+        body: 'Imon''s dashboard showed a green 120ms average. Yet support got "checkout hangs" complaints every day. Once he looked at p99, it turned out customers with big carts were waiting 2 to 3 seconds and many gave up. The average never mentioned them.'
+      - type: terms
+        items:
+          - {term: 'Percentile (p99)', meaning: 'p99 is the time within which 99 out of 100 customers got their answer: everyone except the slowest 1%.'}
+          - {term: 'Metric', meaning: 'A number measured regularly over time: request count, errors, response time.'}
+    check:
+      q: 'The average response time is 120ms, yet p99 is 2.4 seconds. What does that mean?'
+      a: 'Most customers get fast answers, but about 1 in 100 has a much slower experience. The average hid it.'
+
+  - slug: three-metric-types
+    title: 'Three kinds of metric: counter, gauge, histogram'
+    kind: concept
+    tldr: 'A counter only goes up (how many), a gauge moves up and down (how much now), a histogram drops values into buckets (how many took how long). Percentiles come from histograms.'
+    keywords: ['counter', 'gauge', 'histogram', 'Prometheus', 'label cardinality', 'buckets', 'metric type']
+    blocks:
+      - type: metaphor
+        icon: ticket
+        title: 'A bus conductor''s three tallies'
+        body: |
+          The conductor's ticket counter only goes up: how many tickets sold today (a counter). The number of passengers on the bus right now rises and falls (a gauge). And how long each passenger took to reach the stop he sorts into bins like "within 10 minutes, within 20 minutes" and counts them (a histogram).
+      - type: visual
+        kind: table
+        caption: 'Three metrics: which one when'
+        headers: ['Type', 'Behavior', 'Examples']
+        rows:
+          - cells: ['Counter', 'Only goes up; resets to zero on restart', 'http_requests_total, orders_failed_total']
+            tip: 'For running totals. The useful figure (how many per second) comes from rate(), not from the raw number.'
+          - cells: ['Gauge', 'Goes up and down', 'queue_depth, active_connections']
+            tip: 'The state right now: how many messages are waiting in the queue, how many connections are open.'
+          - cells: ['Histogram', 'Counts values into buckets', 'http_request_duration_seconds']
+            tip: 'Counts which bucket each value fell into. It gives you p50, p90 and p99, and you can combine the values of many servers.'
+      - type: points
+        title: 'Rules for labels'
+        style: cross
+        items:
+          - 'Never label by user_id, order_id or a full URL (/orders/5512): every distinct value is a new time series and the count explodes.'
+          - 'Labels should come from a short, bounded list: method, route name, status.'
+          - 'No personal data or tokens in labels.'
+      - type: quote
+        body: 'Keep label values bounded. Make an ID a label and the metrics system itself falls over.'
+    aside:
+      - type: remember
+        body: 'Counter: how many. Gauge: how much right now. Histogram: how fast.'
+      - type: pitfalls
+        items:
+          - 'Reading a counter''s raw value: it restarts from zero when the server restarts. Always use rate().'
+          - 'Wrong histogram buckets give wrong percentiles. Put buckets around your SLO threshold (say 0.5 seconds).'
+      - type: terms
+        items:
+          - {term: 'Cardinality', meaning: 'How many distinct time series a metric''s label combinations produce. The more there are, the more it costs.'}
+    check:
+      q: 'Why is a route name fine as a metric label but user_id is not?'
+      a: 'There are only a few routes, but user_id has millions of values. Each distinct value is a separate time series, so user_id would blow up the metrics system''s memory and cost.'
+
+  - slug: red-and-use
+    title: 'What to measure: RED and USE'
+    kind: concept
+    tldr: 'RED (Rate, Errors, Duration) for services, USE (Utilization, Saturation, Errors) for machines. Measure these six and you catch most problems.'
+    keywords: ['RED method', 'USE method', 'golden signals', 'saturation', 'utilization', 'monitoring']
+    blocks:
+      - type: metaphor
+        icon: building
+        title: 'The restaurant''s customers and its kitchen'
+        body: |
+          You can judge a restaurant from two sides. From the customer's side: how many orders per hour, how many orders came out wrong, how many minutes the food took (RED). From the kitchen's side: what share of the time the stove is on, how long the order line is, which equipment is broken (USE).
+      - type: visual
+        kind: compare
+        caption: 'RED through the service''s eyes, USE through the machine''s eyes'
+        columns:
+          - title: 'RED: for a service (API)'
+            tone: accent
+            icon: chart
+            tip: 'Measures what the user feels. It tells you what is broken.'
+            items:
+              - 'Rate: requests per second'
+              - 'Errors: the share that fail (5xx)'
+              - 'Duration: how long it takes (p50, p99)'
+          - title: 'USE: for a machine (CPU, DB, queue)'
+            tone: warn
+            icon: cpu
+            tip: 'Measures the machine''s health. It tells you why it is broken.'
+            items:
+              - 'Utilization: the share of time it is busy'
+              - 'Saturation: how much work is waiting in line'
+              - 'Errors: how often the machine failed'
+      - type: code
+        lang: text
+        file: 'PromQL: three queries for RED'
+        variant: good
+        code: |
+          # Rate: requests per second
+          sum(rate(shop_http_requests_total[5m]))
+
+          # Errors: the share of 5xx
+          sum(rate(shop_http_requests_total{status=~"5.."}[5m]))
+            / sum(rate(shop_http_requests_total[5m]))
+
+          # Duration: p99
+          histogram_quantile(0.99,
+            sum by (le) (rate(shop_http_request_duration_seconds_bucket[5m])))
+        marks:
+          - {line: 2, tip: 'rate() turns a counter into "how many per second"; [5m] means the trend over the last 5 minutes.'}
+          - {line: 5, tip: 'A ratio, not a count: 10 failures in 100 requests is dangerous, in a million it is not.'}
+      - type: quote
+        body: 'Watch RED on services and USE on machines; saturation shows up first.'
+    aside:
+      - type: tips
+        items:
+          - 'Build the RED dashboard the same way for every service and for each important endpoint (checkout, login).'
+          - 'Queue depth (saturation) is often the first hint of trouble: the CPU is calm, but work is piling up.'
+      - type: terms
+        items:
+          - {term: 'Saturation', meaning: 'Whether more work is arriving than the machine can handle and is queuing up. A pile-up means delays are coming.'}
+      - type: refs
+        items:
+          - {to: 'scaling/load-latency', label: 'Load and latency'}
+    check:
+      q: 'The API''s error rate is fine, but 10,000 messages sit in the queue. Which measure would have caught it?'
+      a: 'USE''s saturation, meaning queue depth. The RED numbers look good because the API is answering; the piled-up work is stuck behind it.'
+
+  - slug: instrument-symfony
+    title: 'Adding metrics to Symfony'
+    kind: howto
+    tldr: 'A listener bumps a counter and a histogram on every request, and a /metrics endpoint shows them to Prometheus. Label by route name, not URL.'
+    keywords: ['promphp', 'Prometheus', 'CollectorRegistry', 'metrics endpoint', 'event listener', 'Symfony metrics']
+    blocks:
+      - type: text
+        body: |
+          The `promphp/prometheus_client_php` package lets you create counters and histograms. In PHP-FPM every request is a separate process, so you need Redis or APCu storage to keep the metrics between requests. Prometheus visits the `/metrics` page every 15 seconds and collects the numbers.
+      - type: code
+        lang: php
+        file: 'src/Metrics/RequestMetricsListener.php'
+        variant: good
+        code: |
+          final class RequestMetricsListener
+          {
+              public function __construct(private readonly CollectorRegistry $registry)
+              {
+              }
+
+              #[AsEventListener(priority: 1024)]
+              public function onRequest(RequestEvent $event): void
+              {
+                  $event->getRequest()->attributes->set('_started', microtime(true));
+              }
+
+              #[AsEventListener]
+              public function onTerminate(TerminateEvent $event): void
+              {
+                  $request = $event->getRequest();
+                  $route = (string) $request->attributes->get('_route', 'unknown');
+                  $status = (string) $event->getResponse()->getStatusCode();
+                  $seconds = microtime(true) - (float) $request->attributes->get('_started');
+
+                  $this->registry
+                      ->getOrRegisterCounter('shop', 'http_requests_total', 'Requests',
+                          ['method', 'route', 'status'])
+                      ->inc([$request->getMethod(), $route, $status]);
+
+                  $this->registry
+                      ->getOrRegisterHistogram('shop', 'http_request_duration_seconds', 'Latency',
+                          ['route'], [0.05, 0.1, 0.25, 0.5, 1, 2.5])
+                      ->observe($seconds, [$route]);
+              }
+          }
+        marks:
+          - {line: 17, tip: '_route is the route''s name (order_show), not the URL. Names are bounded, URLs are not; this is what saves your cardinality.'}
+          - {line: 23, tip: 'Status is a label too, so you can compute the share of 5xx.'}
+          - {line: 28, tip: 'Put a bucket boundary (0.5 seconds) near your SLO. Then "what percent finished within 0.5 seconds" comes straight out.'}
+      - type: code
+        lang: php
+        file: 'src/Controller/MetricsController.php'
+        variant: good
+        code: |
+          #[Route('/metrics', methods: ['GET'])]
+          public function metrics(CollectorRegistry $registry): Response
+          {
+              $text = (new RenderTextFormat())->render($registry->getMetricFamilySamples());
+
+              return new Response($text, 200, ['Content-Type' => RenderTextFormat::MIME_TYPE]);
+          }
+        marks:
+          - {line: 1, tip: 'Keep this page open only on the internal network (firewall or an nginx allow rule), never on the internet.'}
+    aside:
+      - type: tips
+        items:
+          - 'Measure business metrics too: orders_placed_total, payments_failed_total. Technical metrics can look fine while orders are at zero.'
+          - 'A gauge for the queue: set the number of messages waiting in Messenger every minute.'
+          - 'Back the CollectorRegistry service with Redis storage (Prometheus\Storage\Redis), or every request starts from zero.'
+      - type: refs
+        items:
+          - {to: 'observability/logging-tracing', label: 'Logs and traces'}
+    check:
+      q: 'What happens if you label by the full URL instead of the route name?'
+      a: '/orders/1, /orders/2 and so on each become a separate time series. The count explodes, the metrics system''s memory and cost grow, and the dashboard becomes unreadable.'
+
+  - slug: sli-slo
+    title: 'SLI and SLO: exactly how good is "good"?'
+    kind: concept
+    tldr: 'An SLI is a measured ratio (good requests / all requests); an SLO is its target (say 99.9% over 30 days). 100% is never the target.'
+    keywords: ['SLI', 'SLO', 'SLA', 'availability', 'nines', 'service level objective', 'target']
+    blocks:
+      - type: metaphor
+        icon: school
+        title: 'The school attendance rule'
+        body: |
+          A school rule says you can sit the exam if you attended at least 75% of classes. Classes attended / total classes is a ratio: that's the SLI. The 75% is the target: that's the SLO. And the 25% you are allowed to miss is the error budget.
+      - type: points
+        title: 'Three terms'
+        style: number
+        items:
+          - 'SLI: good events / all events. For example: checkout requests answered within 500ms without a 5xx / all checkout requests.'
+          - 'SLO: the target for that ratio over a time window. For example: 99.9% over 30 days.'
+          - 'SLA: a contract with the customer, with penalties if broken. Set looser than the SLO so you get a warning before you break it.'
+      - type: visual
+        kind: table
+        caption: 'How much failure fits inside the SLO over 30 days'
+        headers: ['SLO', 'Allowed failure', 'Per 1 million requests']
+        rows:
+          - cells: ['99%', '1% of the time, about 7.2 hours', '10,000 failed']
+            tip: 'Can be enough for an internal tool or a low-priority service.'
+          - cells: ['99.5%', 'About 3.6 hours', '5,000 failed']
+            tip: 'A common target for an ordinary web app.'
+          - cells: ['99.9%', 'About 43 minutes', '1,000 failed']
+            tip: 'For critical paths like checkout or payment. Every extra 9 multiplies the cost.'
+          - cells: ['99.99%', 'About 4 minutes 20 seconds', '100 failed']
+            tip: 'There is no time for a human to handle an incident; everything must be automatic, which makes it very expensive.'
+      - type: quote
+        body: 'An SLO is never 100%. It sits between what customers will feel and what you can afford.'
+    aside:
+      - type: tips
+        items:
+          - 'Pick SLIs from the customer''s side: not "server up" but "checkout succeeded within 500ms". CPU usage is not an SLI.'
+          - 'Give critical paths (login, checkout) a different SLO from low-priority ones (reports).'
+      - type: terms
+        items:
+          - {term: 'Rolling window', meaning: 'Always measured over "the last 30 days", not over a calendar month.'}
+      - type: remember
+        body: 'SLI = measured. SLO = target. SLA = contract.'
+    check:
+      q: 'A team says "our target is 100% uptime". Why is that a bad SLO?'
+      a: '100% is impossible, and chasing it makes cost explode. It also leaves no room for changes or deploys, since every change carries some risk.'
+
+  - slug: error-budget
+    title: 'Error budget: how much risk can we take?'
+    kind: howto
+    tldr: 'The failure your SLO tolerates is your budget. While budget remains, ship features fast; when it runs low, focus on stability. Numbers decide, not arguments.'
+    keywords: ['error budget', 'burn rate', 'feature freeze', 'release policy', 'SRE', 'prioritization']
+    blocks:
+      - type: metaphor
+        icon: wallet
+        title: 'The monthly leave ledger'
+        body: |
+          If you get 3 days of leave a month, you can spend them as you like: travel, try something new. Once they're gone, no more; you stay at the office. An error budget is that ledger: as long as some room for failure remains, you can ship new features quickly.
+      - type: visual
+        kind: compare
+        caption: 'The team''s rules by how much budget is left (99.9% SLO, 30 days, 43-minute budget)'
+        columns:
+          - title: 'More than 50% left'
+            tone: good
+            icon: rocket
+            tip: 'Plenty of budget means the system is running better than the SLO. There is room to take risks.'
+            items:
+              - 'Deploy features fast, several times if needed'
+              - 'Experimental changes and risky migrations are fine'
+          - title: '10-50% left'
+            tone: warn
+            icon: warning
+            tip: 'The budget is shrinking. Time for more caution and closer watching.'
+            items:
+              - 'Risky changes in small steps'
+              - 'Find what is spending the budget and fix it'
+          - title: 'Used up'
+            tone: bad
+            icon: cross
+            tip: 'This rule is written down in advance, with the team''s and managers'' agreement, so nobody argues during a crisis.'
+            items:
+              - 'No new features, only stability work'
+              - 'Until the budget recovers, or the cause is fixed'
+      - type: code
+        lang: text
+        file: 'PromQL: burn-rate alert (99.9% SLO over 30 days)'
+        variant: good
+        code: |
+          # Over the last hour, is failure eating the budget 14.4x faster than allowed?
+          (
+            sum(rate(shop_http_requests_total{route="checkout",status=~"5.."}[1h]))
+            / sum(rate(shop_http_requests_total{route="checkout"}[1h]))
+          ) > (14.4 * 0.001)
+        marks:
+          - {line: 5, tip: '0.001 = 1 - 0.999, the allowed failure rate. At 14.4 times that rate, one hour burns about 2% of the 30-day budget.'}
+      - type: quote
+        body: 'Budget left: take risks. Budget gone: stabilize. Numbers decide, not moods.'
+    aside:
+      - type: problem
+        body: 'Developers say "we need more features", operations says "we need more stability", and the argument turns into a fight of opinions. An error budget gives both sides one shared number.'
+      - type: tips
+        items:
+          - 'Look at who ate the budget: one big outage, or small daily failures? The cures differ.'
+          - 'Two tiers of burn-rate alert: fast burn (14.4x, 1 hour) pages someone, slow burn (6x, 6 hours) files a ticket.'
+      - type: refs
+        items:
+          - {to: 'observability/health-alerts', label: 'How to design alerts'}
+    check:
+      q: 'This month''s error budget is gone, but the manager wants to ship a big feature. What should happen?'
+      a: 'Follow the rule written in advance: pause new features and do stability work. If you must make an exception, do it consciously, with agreement, and knowing the risk.'
+
+flashcards:
+  - q: 'Why isn''t average response time enough?'
+    a: 'An average hides a few very slow requests. p90 and p99 show the experience of your slowest customers.'
+    more: |
+      If 99 of 100 customers get 100ms and one gets 3 seconds, the average is about 130ms, which looks lovely. Yet that one customer may be the one with the biggest cart. So always measure latency with percentiles.
+    ref: average-lies
+  - q: 'What does p99 latency mean?'
+    a: 'The time within which 99 out of 100 customers got their answer. The remaining 1 waited longer.'
+    more: |
+      p50 is the middle customer's experience, p99 is close to the slowest customer's. In a large system one page load makes many requests, so p99 is often the normal experience for a given user.
+    ref: average-lies
+  - q: 'What is the difference between a counter, a gauge and a histogram?'
+    a: 'A counter only goes up, a gauge goes up and down, and a histogram counts values into buckets so you can get percentiles.'
+    more: |
+      Counter: total requests. Gauge: how many messages are in the queue right now. Histogram: how long requests took, split into buckets. You rarely read a counter's raw value; you use `rate()` to see "how many per second".
+    ref: three-metric-types
+  - q: 'What goes wrong if you put user_id in a metric label?'
+    a: 'A cardinality explosion: each user becomes a separate time series, so memory and cost blow up.'
+    more: |
+      Every distinct combination of label values is its own time series. A route (a few dozen) is fine; a user_id (millions) is not. Following one particular user is a job for logs or traces, not metrics.
+    ref: three-metric-types
+  - q: 'What are RED and USE?'
+    a: 'RED for services: Rate, Errors, Duration. USE for machines: Utilization, Saturation, Errors.'
+    more: |
+      RED measures the user's experience: how many requests, how many fail, how slow. USE measures the health of a resource: how busy the CPU is, how long the queue is, how often it failed. RED tells you what is broken, USE tells you why.
+    ref: red-and-use
+  - q: 'What is saturation and why does it matter?'
+    a: 'More work is waiting in line than the machine can handle. It is an early warning of delays.'
+    more: |
+      The CPU can show 40% busy while 10,000 messages sit in the queue because there are too few workers. That piled-up work (saturation) later comes back as delay for users. So always measure queue depth and connection pool waits.
+    ref: red-and-use
+  - q: 'What is the difference between SLI, SLO and SLA?'
+    a: 'SLI: a measured ratio. SLO: its target. SLA: a contract with the customer, with penalties if broken.'
+    more: |
+      An SLI is, say, "successful checkouts within 500ms / all checkouts". An SLO is, say, "99.9% over 30 days". An SLA is usually looser than the SLO, so you get a warning before you break your own target.
+    ref: sli-slo
+  - q: 'What is the error budget for a 99.9% SLO over 30 days?'
+    a: 'About 43 minutes of failure, or 1,000 failed requests per million.'
+    more: |
+      The math: 30 days = 43,200 minutes. 0.1% = 43.2 minutes. At 99.99% it is only about 4 minutes. Each extra 9 costs many times more, so giving every service the same high SLO is wasteful.
+    ref: sli-slo
+  - q: 'How does an error budget help you make decisions?'
+    a: 'While budget remains, ship features fast; when it runs low, pause features and work on stability. The rule is written in advance.'
+    more: |
+      Features vs stability turns into a fight of opinions. A budget gives both sides one shared number. With a rule agreed on beforehand, the decision during a crisis needs no argument.
+    ref: error-budget
+
+quiz:
+  - q: 'Miraj''s dashboard shows a green 100ms average latency, yet some customers say checkout "hangs". Which measure should he look at first?'
+    hint: 'Which measure catches the few slowest customers?'
+    options:
+      - text: 'p99 latency of the checkout route'
+        correct: true
+        why: 'It shows the experience of the slowest 1% of customers, which drowns in the average.'
+      - text: 'The server''s average CPU'
+        correct: false
+        why: 'The CPU can be low while requests are slow because they wait on an outside API or a lock.'
+      - text: 'The total request count'
+        correct: false
+        why: 'A count tells you about traffic, not slowness.'
+      - text: 'The average again, over a longer period'
+        correct: false
+        why: 'However long the period, an average keeps hiding the few slow customers.'
+    ref: average-lies
+  - q: 'Which of these pairs a measure with the right metric type?'
+    hint: 'Which one only goes up, and which one moves up and down?'
+    options:
+      - text: 'orders_placed_total: counter'
+        correct: true
+        why: 'Total orders only go up; rate() gives you the rate.'
+      - text: 'queue_depth: gauge'
+        correct: true
+        why: 'The number of messages waiting right now rises and falls.'
+      - text: 'request_duration_seconds: histogram'
+        correct: true
+        why: 'Durations are counted into buckets so you can get percentiles.'
+      - text: 'active_connections: counter'
+        correct: false
+        why: 'Connections open and close, so the value goes down too. That is a gauge.'
+    ref: three-metric-types
+  - q: 'What is the problem with this metric code?'
+    lang: php
+    code: |
+      $counter->inc([
+          $request->getMethod(),
+          $request->getPathInfo(),   // /orders/5512
+          $userId,
+      ]);
+    hint: 'How many different values could these labels take?'
+    options:
+      - text: 'The full path and userId as labels: countless time series, cardinality will explode'
+        correct: true
+        why: 'Label bounded values like the route name (order_show) and status; never IDs.'
+      - text: 'inc() should be incBy()'
+        correct: false
+        why: 'inc and incBy are both fine. The problem is the label values.'
+      - text: 'There should be no method label'
+        correct: false
+        why: 'method is bounded (GET, POST...), so it is safe as a label.'
+    ref: three-metric-types
+  - q: 'The RED dashboard is all green, yet emails aren''t arriving because a worker is stuck. Which metric would have caught it first?'
+    hint: 'The API is answering, but where is the work piling up?'
+    options:
+      - text: 'Queue depth (saturation) and the age of the oldest message'
+        correct: true
+        why: 'Piled-up work is the direct sign of something stuck.'
+      - text: 'The API''s p50 latency'
+        correct: false
+        why: 'The API answers fast because it just drops the job on the queue. The problem is behind it.'
+      - text: 'The total request count'
+        correct: false
+        why: 'That shows traffic, not stuck work.'
+      - text: 'Total disk space'
+        correct: false
+        why: 'Space isn''t the problem here; the worker process is.'
+    ref: red-and-use
+  - q: 'The team sets checkout''s SLO at 99.9% (30 days). This month 40 minutes of failure have already happened. What should they do?'
+    hint: 'How big is the budget, and how much has been spent?'
+    options:
+      - text: 'The budget is about 43 minutes and nearly all is gone. Pause risky features and focus on stability'
+        correct: true
+        why: 'By the rule agreed in advance, when the budget runs out you reduce risk.'
+      - text: 'Nothing; 40 minutes is less than an hour'
+        correct: false
+        why: 'The limit is 43 minutes, so only 3 minutes remain.'
+      - text: 'Change the SLO to 99% so there is budget again'
+        correct: false
+        why: 'Lowering the target after missing it hides the real problem. A target comes from what customers need.'
+      - text: 'Shut the whole service down until the month ends'
+        correct: false
+        why: 'Shutting down causes even more failure. The goal is to reduce risk, not to stop the service.'
+    ref: error-budget
+  - q: 'Which of these make good SLIs?'
+    hint: 'Does this number capture the customer''s experience?'
+    options:
+      - text: 'Checkout requests answered within 500ms without a 5xx / all checkout requests'
+        correct: true
+        why: 'It directly captures the success and speed the customer sees, as one ratio.'
+      - text: 'The share of time the server''s CPU stays under 80%'
+        correct: false
+        why: 'CPU is a machine measure; customers can fail even while the CPU is low.'
+      - text: 'Successful logins / all valid login attempts'
+        correct: true
+        why: 'It counts valid attempts only, leaving out wrong passwords and bots, so the ratio is honest.'
+    ref: sli-slo

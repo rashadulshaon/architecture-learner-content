@@ -1,0 +1,365 @@
+slides:
+  - slug: replay-all-at-once
+    title: 'Fixed it, so replay everything: and the second disaster'
+    kind: story
+    tldr: 'Replaying 4000 failed events in one go causes double processing and overloads your own systems; the recovery itself becomes a second incident.'
+    keywords: ['replay', 'reprocessing', 'bulk retry', 'dead letter', 'incident', 'recovery']
+    blocks:
+      - type: text
+        body: |
+          For 6 hours a bug made the payment webhook handler fail, and 4000 events piled up. The bug was fixed, and an engineer ran a one-line script: push every event back onto the queue. Of those 4000, 600 had actually been partly processed, and they credited money a second time. And 4000 jobs arriving at once put the database and the gateway under heavy strain.
+      - type: visual
+        kind: sequence
+        caption: 'The attempt to fix things became a second disaster'
+        actors:
+          - {id: eng, label: 'Engineer', icon: user, tip: 'Ran the script with good intentions, but with no limit, no rehearsal and no safety net.'}
+          - {id: q, label: 'Queue', icon: queue, tip: 'Accepts whatever arrives, even 4000 jobs at once.'}
+          - {id: sys, label: 'DB and gateway', icon: db, tip: 'Not built to take this much pressure all at once.'}
+        messages:
+          - {from: eng, to: q, label: 'Push all 4000 events again', tone: warn}
+          - {from: q, to: sys, label: '4000 jobs at once', tone: bad}
+          - {at: sys, note: 'DB connections exhausted, gateway returns 429', tone: bad, tip: 'On an already slow system, new retries add even more load.'}
+          - {at: sys, note: '600 events doubled: customers credited twice', tone: bad, tip: 'This happened because events already partly processed ran a second time.'}
+      - type: quote
+        body: 'A replay is not new work, it is old work done again. So it must be idempotent, slow and rehearsed first.'
+    aside:
+      - type: problem
+        body: 'You have no choice but to run failed work again, but done carelessly it causes a bigger disaster than the original one.'
+      - type: terms
+        items:
+          - {term: 'Replay', meaning: 'Running events or jobs again that failed or were lost earlier.'}
+    check:
+      q: 'Why were 600 events processed twice in the replay?'
+      a: 'They had already been partly processed, and the handler had no way of knowing which. With no idempotent guard, it did the work a second time.'
+
+  - slug: four-safeguards
+    title: 'The backlog of letters: four safeguards'
+    kind: concept
+    tldr: 'Four safeguards for a safe replay: an idempotent handler, a throttle, a dry run and a checkpoint. All four, together.'
+    keywords: ['idempotent replay', 'throttle', 'dry run', 'checkpoint', 'resumable', 'safe replay']
+    blocks:
+      - type: metaphor
+        icon: mail
+        title: 'The mail backlog after a postal strike'
+        body: |
+          After a strike, 10,000 letters have piled up at the post office. The postman first counts the list (dry run). He checks each letter's receipt and doesn't deliver again if it was already delivered (idempotent). He delivers 200 a day and doesn't flood the neighbourhood (throttle). And he marks the bundle "done up to here" (checkpoint), so if he falls ill, someone else can pick up from that point.
+      - type: visual
+        kind: table
+        caption: 'The four safeguards: what each prevents, and how'
+        headers: ['Safeguard', 'What it prevents', 'How']
+        rows:
+          - cells: ['Idempotent handler', 'The same work happening twice', 'Unique key in processed_event']
+            tip: 'The handler itself remembers which events it has already handled, and does nothing when one arrives again.'
+          - cells: ['Throttle', 'Crushing your own system', '20 per second, separate transport']
+            tip: 'A pace at which the system can handle normal work and the recovery together.'
+          - cells: ['Dry run', 'Running the wrong thing', 'Only count and sample first']
+            tip: 'Says how many jobs would run and which ones, without running anything. A wrong filter gets caught early.'
+          - cells: ['Checkpoint', 'Starting over after a mid-run stop', 'Save the last id, resume from it']
+            tip: 'If the command crashes or is stopped, the next run picks up where it left off.'
+      - type: quote
+        body: 'Count before you run. Run slowly. If you stop, resume where you stopped.'
+    aside:
+      - type: remember
+        body: 'Count, look, run slowly, mark the spot.'
+      - type: terms
+        items:
+          - {term: 'Checkpoint', meaning: 'A saved marker of how far the work has got, such as the last processed id.'}
+          - {term: 'Dry run', meaning: 'A rehearsal of the whole job that changes nothing real and just shows the result.'}
+    check:
+      q: 'How do a dry run and a checkpoint do different jobs?'
+      a: 'A dry run catches mistakes before running (how many, which ones). A checkpoint remembers where to resume if you stop partway through.'
+
+  - slug: replay-command
+    title: 'A Symfony console command: slowly, with a bookmark'
+    kind: howto
+    tldr: 'A console command with `--dry-run`, `--rate` and a checkpoint: it takes events in batches, dispatches slowly and saves the last id after each batch.'
+    keywords: ['console command', 'Messenger dispatch', 'keyset pagination', 'checkpoint table', 'dry-run option', 'usleep']
+    blocks:
+      - type: text
+        body: |
+          Don't load the whole list into memory. Fetch batches of 100, and instead of `OFFSET`, fetch from just after the last id (**keyset pagination**). Save a checkpoint at the end of each batch. With `--dry-run`, skip both the dispatch and the checkpoint.
+      - type: code
+        lang: php
+        file: 'src/Command/ReplayEventsCommand.php'
+        variant: good
+        code: |
+          protected function configure(): void
+          {
+              $this->addOption('dry-run', null, InputOption::VALUE_NONE, 'Only count and show')
+                  ->addOption('rate', null, InputOption::VALUE_REQUIRED, 'How many per second', '20')
+                  ->addOption('job', null, InputOption::VALUE_REQUIRED, 'Checkpoint name', 'replay');
+          }
+
+          protected function execute(InputInterface $in, OutputInterface $out): int
+          {
+              $job = $in->getOption('job');
+              $dry = (bool) $in->getOption('dry-run');
+              $pause = intdiv(1_000_000, max(1, (int) $in->getOption('rate')));
+              $after = $this->checkpoints->get($job);
+              $done = 0;
+
+              while ($batch = $this->failed->after($after, 100)) {
+                  foreach ($batch as $e) {
+                      if (!$dry) {
+                          $this->bus->dispatch(new ProcessPayment($e->id, $e->payload));
+                          usleep($pause);                  // slow: capped per second
+                      }
+                      $after = $e->id;
+                      ++$done;
+                  }
+                  if (!$dry) {
+                      $this->checkpoints->save($job, $after);   // done up to here
+                  }
+                  $out->writeln("$done done, last id: $after");
+              }
+
+              return Command::SUCCESS;
+          }
+        marks:
+          - {line: 3, tip: 'With `--dry-run` nothing is dispatched; it only counts how many jobs there would be.'}
+          - {line: 13, tip: 'Starts from wherever the previous run stopped. 0 the first time.'}
+          - {line: 20, tip: 'A pause after every dispatch. At 20 per second, that is 50,000 microseconds.'}
+          - {line: 26, tip: 'A marker after each batch. If the command crashes, at most one batch repeats, and since the handler is idempotent, no harm is done.'}
+      - type: code
+        lang: sql
+        file: 'migrations: checkpoint and the next batch'
+        variant: good
+        code: |
+          CREATE TABLE replay_checkpoint (
+            job        text PRIMARY KEY,
+            last_id    bigint NOT NULL,
+            updated_at timestamptz NOT NULL DEFAULT now()
+          );
+
+          -- save the checkpoint (upsert)
+          INSERT INTO replay_checkpoint (job, last_id) VALUES (:job, :id)
+          ON CONFLICT (job) DO UPDATE
+             SET last_id = EXCLUDED.last_id, updated_at = now();
+
+          -- next batch: not OFFSET, but from just after the last id
+          SELECT id, payload FROM failed_event
+           WHERE id > :after AND status = 'failed'
+           ORDER BY id LIMIT 100;
+        marks:
+          - {line: 8, tip: 'One row per job. Saving again and again just updates that same row.'}
+          - {line: 14, tip: '`id > :after` jumps straight there through the index. With a large OFFSET the database must skip every earlier row each time, which is slow.'}
+    aside:
+      - type: commands
+        title: 'Steps to run it'
+        items:
+          - {cmd: 'php bin/console app:events:replay --dry-run', desc: 'count first, run nothing'}
+          - {cmd: 'php bin/console app:events:replay --rate=10', desc: 'the real run, slowly'}
+          - {cmd: 'php bin/console messenger:consume replay --limit=500', desc: 'a limited worker on a separate transport'}
+      - type: tips
+        items:
+          - 'Send replay work to its own `replay` transport and run few workers there, so normal work isn''t slowed down.'
+          - 'Don''t just raise the rate. Raise it while watching the dashboard, and only if CPU, DB connections and error rate stay normal.'
+    check:
+      q: 'Why use `id > :after` instead of `OFFSET` to fetch the batches of 100?'
+      a: 'With a large OFFSET, the database must skip all the earlier rows every time, which is slow. `id > :after` jumps straight there through the index, and it matches the checkpoint too.'
+
+  - slug: replay-twice-safe
+    title: 'Run twice, nothing happens: and no second email'
+    kind: pitfall
+    tldr: 'Make the replay handler idempotent, and keep outside side effects such as emails or SMS switched off during a replay.'
+    keywords: ['idempotent handler', 'processed_event', 'side effects', 'duplicate email', 'replay flag', 'exactly once']
+    blocks:
+      - type: text
+        body: |
+          The most dangerous handler is one that does its work every time it runs. And work that leaves your system (emails, SMS, calls to outside APIs) can't be taken back. So the handler remembers which events it has already handled, and during a replay it sends nothing outside.
+      - type: code
+        lang: php
+        file: 'the wrong handler'
+        variant: bad
+        code: |
+          #[AsMessageHandler]
+          public function __invoke(ProcessPayment $m): void
+          {
+              $this->wallet->credit($m->userId, $m->amount);      // arrives twice, credited twice
+              $this->mailer->send(new ReceiptEmail($m->userId));  // a thousand receipts again
+          }
+        marks:
+          - {line: 4, tip: 'Nobody checks whether this event was processed before. The second time, the money is credited again.'}
+          - {line: 5, tip: 'The customer gets the email again. A sent email can''t be recalled.'}
+      - type: code
+        lang: php
+        file: 'the right handler'
+        variant: good
+        code: |
+          #[AsMessageHandler]
+          public function __invoke(ProcessPayment $m): void
+          {
+              $applied = $this->db->transactional(function () use ($m): bool {
+                  $new = $this->db->executeStatement(
+                      'INSERT INTO processed_event (event_id) VALUES (?) ON CONFLICT DO NOTHING',
+                      [$m->eventId],
+                  );
+                  if (0 === $new) {
+                      return false;                          // already done
+                  }
+                  $this->wallet->credit($m->userId, $m->amount);
+
+                  return true;
+              });
+
+              if ($applied && !$m->isReplay) {
+                  $this->mailer->send(new ReceiptEmail($m->userId));
+              }
+          }
+        marks:
+          - {line: 4, tip: 'The event_id INSERT and the credit are in one transaction. Either both happen or neither does.'}
+          - {line: 10, tip: '0 rows means this event was already processed. This time it does nothing and returns.'}
+          - {line: 17, tip: 'The email goes out only if it was newly processed and this is not a replay. A replay sends nothing outside.'}
+      - type: visual
+        kind: table
+        caption: 'How each kind of work should behave in a replay'
+        headers: ['Action', 'Risk', 'In a replay']
+        rows:
+          - cells: ['Credit/debit money', 'Double credit', 'processed_event guard']
+            tip: 'Writes to the ledger or wallet must be idempotent. This is the main protection.'
+          - cells: ['Email/SMS', 'Annoyed customers', 'Don''t send during a replay']
+            tip: 'Once it has gone out it can''t be recalled. Keeping it off in a replay is the safe choice.'
+          - cells: ['Call to an outside API', 'Double charge', 'The same Idempotency-Key']
+            tip: 'Send the original transaction''s key again, so the other side also treats it as one.'
+          - cells: ['Cache/Search index', 'No harm', 'As many times as you like']
+            tip: 'These are "set" operations by nature, so running twice gives the same result.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Don''t trust an old event''s payload to reverse today''s state. Decide by looking at the current state.'
+      - type: refs
+        items:
+          - {to: 'payments/idempotency-keys', label: 'Idempotency keys'}
+          - {to: 'messaging/dlq-retries', label: 'Idempotent consumers'}
+    check:
+      q: 'Why is sending email switched off in a replay while crediting money still runs?'
+      a: 'The credit has a guard, so one already done is skipped and does no harm. An email can''t be recalled once sent, and sending it again would annoy the customer.'
+
+flashcards:
+  - q: 'Which four safeguards should be in place before a bulk replay?'
+    a: 'An idempotent handler, a throttle (a speed limit), a dry run and a checkpoint.'
+    more: |
+      You need all four together. Miss one and you risk double processing, overloading your own system, running the wrong thing, or starting over when you stop partway.
+    ref: four-safeguards
+  - q: 'Why can a replay itself become a second incident?'
+    a: 'Pouring every failed job in at once hits the system hard, and jobs that were partly done run twice.'
+    more: |
+      4000 failed jobs arriving at once is extra load on top of normal traffic, with gateway 429s and exhausted DB connections. Recovery too has to be planned, slow and safe.
+    ref: replay-all-at-once
+  - q: 'What is a dry run, and what is it for?'
+    a: 'It only counts how many jobs would run, without running anything. A wrong filter or assumption is caught early.'
+    more: |
+      With `--dry-run` the command doesn't dispatch and doesn't save a checkpoint. You look at the output (how many, what limits, a few samples) and only then do the real run.
+    ref: four-safeguards
+  - q: 'What does a checkpoint do in a replay?'
+    a: 'It saves the last processed id, so after a stop or crash the run resumes from there.'
+    more: |
+      Without a checkpoint you restart from the beginning after a crash, and work already done runs again. After each batch, an upsert goes into the `replay_checkpoint` table.
+    ref: replay-command
+  - q: 'How is speed limited in a replay?'
+    a: 'A pause after every dispatch (20 per second), and few workers on a separate transport for replay.'
+    more: |
+      The aim is to run the recovery without slowing normal work. You raise the speed gradually while watching CPU, DB connections and error rate on the dashboard.
+    ref: replay-command
+  - q: 'Why fetch batches with `id > :after` instead of OFFSET?'
+    a: 'With a large OFFSET, every earlier row must be skipped each time, which is slow. `id > :after` jumps straight there through the index.'
+    more: |
+      This is called keyset pagination. The last id is our checkpoint too, so one thing does both jobs.
+    ref: replay-command
+  - q: 'Why aren''t emails or SMS sent during a replay?'
+    a: 'Once sent, they can''t be recalled. A thousand customers getting the same receipt again would be annoyed, so they are switched off using a replay flag.'
+    more: |
+      Money writes are safe thanks to the guard, but outside actions aren't safe by themselves. Put an `isReplay` marker on the message, and the handler skips outside actions when it sees it.
+    ref: replay-twice-safe
+  - q: 'What is the simple way to make a handler idempotent?'
+    a: 'Keep a UNIQUE `processed_event(event_id)`, INSERT in the same transaction as the work, and if 0 rows were inserted, do nothing and return.'
+    more: |
+      With the INSERT and the real write in one transaction, after a crash either both exist or neither does. So running again does the work exactly once.
+    ref: replay-twice-safe
+
+quiz:
+  - q: 'You must rerun 3000 failed jobs, and the handler has no guard. What is the first thing to do?'
+    hint: 'What must be fixed before running anything?'
+    options:
+      - text: 'Make the handler idempotent and count with a dry run'
+        correct: true
+        why: 'Without a guard, partly done jobs will double. Make it safe first, count, then run slowly.'
+      - text: 'Dispatch everything at once, so it finishes quickly'
+        correct: false
+        why: 'You risk both double processing and overloading the system.'
+      - text: 'Increase the number of workers tenfold'
+        correct: false
+        why: 'It is faster, but the doubling and the load both get worse.'
+      - text: 'Run it at night when nobody is looking'
+        correct: false
+        why: 'The risk doesn''t shrink with the clock; a double credit is just as double at night.'
+    ref: four-safeguards
+  - q: 'The replay command crashes at event 2500. A checkpoint is saved at the end of each batch (100 events). What happens when you run it again?'
+    hint: 'Where is the last saved checkpoint?'
+    options:
+      - text: 'It resumes from 2400; events 2401-2500 may run again, so the handler must be idempotent'
+        correct: true
+        why: 'The checkpoint is saved at the end of a batch. The batch that crashed runs again, and the guard makes that harmless.'
+      - text: 'From the very start (1)'
+        correct: false
+        why: 'The checkpoint exists to avoid exactly this.'
+      - text: 'From 2501, and nothing repeats'
+        correct: false
+        why: 'No checkpoint was saved up to 2500; it only goes up to 2400.'
+      - text: 'Nothing will run until you delete the checkpoint by hand'
+        correct: false
+        why: 'You don''t need to delete anything; the command reads the checkpoint itself.'
+    ref: replay-command
+  - q: 'What is the most dangerous flaw in this command?'
+    lang: php
+    code: |
+      foreach ($this->failed->all() as $e) {
+          $this->bus->dispatch(new ProcessPayment($e->id, $e->payload));
+      }
+    hint: 'Where are the limit, the rehearsal and the bookmark?'
+    options:
+      - text: 'No throttle, no dry run, no checkpoint: everything is dispatched at once, and a crash means starting over'
+        correct: true
+        why: 'Three of the four safeguards are missing, and we don''t know whether the handler is idempotent either.'
+      - text: 'The name `all()` is poor'
+        correct: false
+        why: 'The name doesn''t matter; the problem is the behaviour.'
+      - text: 'It should be `array_map` instead of `foreach`'
+        correct: false
+        why: 'The kind of loop isn''t the problem.'
+      - text: 'No problem; it is short code, so it is safe'
+        correct: false
+        why: 'Short code can do great damage; the lack of safeguards is the problem.'
+    ref: replay-command
+  - q: 'Which of these are safe ways to handle a replay?'
+    hint: 'Think about money, email and outside APIs.'
+    options:
+      - text: 'Money writes in one transaction with a UNIQUE processed_event guard'
+        correct: true
+        why: 'On a second arrival, 0 rows are inserted and nothing happens.'
+      - text: 'Skipping email/SMS when the replay flag is set'
+        correct: true
+        why: 'Once sent, they can''t be recalled, so they stay off during a replay.'
+      - text: 'Sending the original transaction''s Idempotency-Key again to an outside API'
+        correct: true
+        why: 'The other side recognises the same work and does it only once.'
+      - text: 'Generating a fresh Idempotency-Key for every call'
+        correct: false
+        why: 'A new key means new work on the other side, so you get a double charge.'
+    ref: replay-twice-safe
+  - q: 'During a replay, DB CPU goes above 80% and user pages become slow. What should you do?'
+    hint: 'Normal service comes before recovery.'
+    options:
+      - text: 'Lower the replay rate or pause it; thanks to the checkpoint you can resume from there later'
+        correct: true
+        why: 'Normal service comes first. With the checkpoint and the idempotent guard, stopping is safe.'
+      - text: 'Raise the rate even more to finish sooner'
+        correct: false
+        why: 'The load grows further, and so does the users'' pain.'
+      - text: 'Drop every index in the database'
+        correct: false
+        why: 'That would make everything slower.'
+      - text: 'Stop the replay and delete the failed events'
+        correct: false
+        why: 'Once the events are deleted, the lost work can''t be recovered.'
+    ref: four-safeguards

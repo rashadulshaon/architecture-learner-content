@@ -1,0 +1,379 @@
+slides:
+  - slug: herd-at-the-counter
+    title: 'The entry expired, and a thousand people rushed in'
+    kind: story
+    tldr: 'When a popular cache entry expires, a thousand requests miss at once and all send the same heavy query to the database; this storm is called a cache stampede.'
+    keywords: ['cache stampede', 'thundering herd', 'dogpile', 'miss storm', 'hard expiry']
+    blocks:
+      - type: metaphor
+        icon: ticket
+        title: 'The train timetable board at the station'
+        body: |
+          Before Eid, the train times are written on a board at the station, so nobody goes to the ticket counter. Then the board is suddenly wiped. Within a second, a thousand passengers rush to the counter and ask the same thing: "When does it leave?" One clerk can't handle a thousand people. The board is the cache, and the counter is the database.
+      - type: visual
+        kind: flow
+        caption: 'Exactly what happens when an entry expires'
+        nodes:
+          - {id: users, label: '1,000 requests', sub: 'in one second', icon: users, col: 0, row: 1, tip: 'About a thousand users opening the homepage, all asking for the same key.'}
+          - {id: app, label: 'App', sub: 'Symfony', icon: api, col: 1.5, row: 1, tip: 'Each request checks the cache on its own, and none of them knows the others are doing the same.'}
+          - {id: cache, label: 'Cache', sub: 'expired', icon: cache, tone: warn, col: 3, row: 0, tip: 'The entry has just died. Every lookup is now a miss.'}
+          - {id: db, label: 'Database', sub: '800ms query', icon: db, tone: bad, col: 3, row: 2, tip: 'Run a heavy query 1,000 times at once and the CPU is gone, and every other request gets stuck too.'}
+        edges:
+          - {from: users, to: app, label: '1,000 requests ask for the same page in one second'}
+          - {from: app, to: cache, label: 'Every request checks the cache first'}
+          - {from: cache, to: app, label: 'The entry has just expired, so everyone gets a miss', dashed: true, tone: warn}
+          - {from: app, to: db, label: 'A thousand requests send the same heavy query to the database', tone: bad}
+          - {from: db, to: app, label: 'The database gasps and answers slowly', dashed: true, tone: bad}
+      - type: quote
+        body: 'The database survived because the cache was working. When the cache fails all at once, the database fails with it.'
+    aside:
+      - type: story
+        title: 'The midnight homepage'
+        body: 'One site''s homepage cache had an expiry of exactly 1 hour, set at 12 a.m. Every night at 1 a.m. the site slowed to a crawl, because when the entry expired, all requests rushed to the database together.'
+      - type: terms
+        items:
+          - {term: 'Cache stampede', meaning: 'When a popular entry dies and many requests rush to rebuild it at the same time.'}
+          - {term: 'Thundering herd', meaning: 'Many processes waking up on the same event and pouncing on the same resource.'}
+    check:
+      q: 'Why does the database run the query a thousand times instead of once when a cache entry dies?'
+      a: 'Because each request gets its own miss and nobody knows someone else is doing the same work, so they all run the query on their own at the same moment.'
+
+  - slug: one-rebuilds
+    title: 'One person cooks, the rest wait'
+    kind: concept
+    tldr: 'The core of stopping a stampede: for one key only one request rebuilds the value at a time (a lock), and the rest wait or show the stale value.'
+    keywords: ['lock', 'request coalescing', 'single flight', 'mutex', 'lock-based rebuild', 'one rebuilds']
+    blocks:
+      - type: metaphor
+        icon: lock
+        title: 'The one big pot at a wedding'
+        body: |
+          When the biryani runs out at a wedding, one cook sits down to make a fresh pot. The other 100 guests don't each put their own pot on the stove. They wait, or they scrape what is left at the bottom. The "key to the pot" is the **lock**.
+      - type: visual
+        kind: flow
+        caption: 'With a lock, one request goes to the database instead of 1,000'
+        nodes:
+          - {id: app, label: 'App', sub: '1,000 requests', icon: api, col: 0, row: 1, tip: 'Everyone got a miss. Now the question is: who does the calculation?'}
+          - {id: lock, label: 'Lock', sub: 'only one gets it', icon: lock, tone: accent, col: 1.5, row: 0, tip: 'A separate lock per key. Whoever gets it is the cook; the rest don''t.'}
+          - {id: db, label: 'Database', sub: 'just 1 query', icon: db, col: 3, row: 2, tip: 'Now one heavy query arrives, not a thousand.'}
+          - {id: cache, label: 'Cache', sub: 'new value', icon: cache, tone: good, col: 3, row: 0, tip: 'The cook puts the finished value here; after that everyone gets a hit.'}
+        edges:
+          - {from: app, to: lock, label: 'After a miss everyone asks for the lock, and only one gets it'}
+          - {from: lock, to: db, label: 'Only the one who got the lock runs the heavy query'}
+          - {from: db, to: cache, label: 'The result is stored in the cache', tone: good}
+          - {from: cache, to: app, label: 'The others wait, or take the stale value and then get the new one', dashed: true, tone: good}
+      - type: points
+        title: 'The two paths for those who didn''t get the lock'
+        style: dot
+        items:
+          - 'Wait briefly: check the cache again after 200ms. By then the cook has probably finished.'
+          - 'Stale value: show the previous (slightly old) value straight away. No waiting at all.'
+      - type: quote
+        body: 'For one key, only one request calculates at a time. The rest wait or take the stale value.'
+    aside:
+      - type: problem
+        body: 'Reducing a thousand identical heavy jobs to a single job. It is also called request coalescing.'
+      - type: remember
+        body: 'One key, one cook.'
+    check:
+      q: 'What can the requests that didn''t get the lock do, so the database isn''t put under extra load?'
+      a: 'They can wait briefly and check the cache again, or immediately show the stale (old) value.'
+
+  - slug: jitter-and-early-expiry
+    title: 'Spread out the expiry: jitter and early expiration'
+    kind: howto
+    tldr: 'Adding a random few seconds to the expiry (jitter) stops many entries dying together; and Symfony''s beta parameter lets one request rebuild the value slightly before it expires.'
+    keywords: ['jitter', 'probabilistic early expiration', 'beta', 'XFetch', 'LockRegistry', 'Symfony Cache get']
+    blocks:
+      - type: text
+        body: |
+          Entries that are all set at the same moment die at the same moment. So add a little random time (**jitter**) to the expiry. Go one step further: the `beta` parameter of Symfony's `get()` asks, shortly before expiry and with a small probability, for some request to rebuild the value ahead of time. The closer the expiry, the higher the probability. So usually somebody has already rebuilt it, and no storm rises at the moment of expiry.
+      - type: code
+        lang: php
+        file: 'src/Catalog/TopProducts.php'
+        variant: good
+        code: |
+          public function forHomepage(): array
+          {
+              return $this->cache->get(
+                  'top_products.v1',
+                  function (ItemInterface $item): array {
+                      // jitter: 600 seconds + a random 0 to 120 seconds
+                      $item->expiresAfter(600 + random_int(0, 120));
+
+                      return $this->products->findTopSelling(10);
+                  },
+                  beta: 1.0,    // early expiration; 0 turns it off, \INF rebuilds right now
+              );
+          }
+        marks:
+          - {line: 7, tip: 'Even entries built at the same moment die at different times, so many keys together can''t make a storm.'}
+          - {line: 11, tip: '1.0 is the default. A higher value starts trying earlier, but costs more extra cooking.'}
+      - type: visual
+        kind: table
+        caption: 'Four protections: what each one stops'
+        headers: ['Technique', 'How it helps', 'The price']
+        rows:
+          - cells: ['Jitter', 'Many entries don''t die together', 'Some entries die a little early']
+            tip: 'Almost free, and worth adding every time.'
+          - cells: ['Early expiration (beta)', 'Someone rebuilds before the expiry', 'Occasional extra calculation']
+            tip: 'Symfony does this itself; no code needed.'
+          - cells: ['Lock', 'Only one rebuilds', 'The others wait or get a stale value']
+            tip: 'Symfony''s LockRegistry works within one server; across several servers you add your own lock.'
+          - cells: ['Stale-while-revalidate', 'Show stale, rebuild behind the scenes', 'A slightly old value for a while']
+            tip: 'The next slide has the code for this.'
+    aside:
+      - type: tips
+        items:
+          - 'Symfony''s own LockRegistry stops several simultaneous calculations of one key on a single server. With many servers each keeps its own lock, so you need a shared lock there.'
+          - 'Making the jitter range 10 to 20 percent of the base TTL is a good start.'
+      - type: refs
+        items:
+          - {to: 'caching/cache-invalidation', label: 'Choosing a TTL'}
+    check:
+      q: 'Jitter and beta both play with the expiry. What is the difference in what they do?'
+      a: 'Jitter spreads the expiry of many entries over different moments, so they don''t all die together. Beta makes someone rebuild a single entry before its expiry arrives.'
+
+  - slug: stale-while-revalidate
+    title: 'Show the stale one, build the new one behind'
+    kind: howto
+    tldr: 'Give an entry a soft expiry and a hard expiry; once the soft one passes, one request takes a lock and rebuilds, while the rest get the old value.'
+    keywords: ['stale-while-revalidate', 'LockFactory', 'soft ttl', 'hard ttl', 'stale value', 'revalidate']
+    blocks:
+      - type: text
+        body: |
+          With this technique the user never waits. An entry has two times: **soft** (5 minutes, after which it is "nearly stale") and **hard** (1 hour, after which the cache itself deletes it). Once the soft time passes, the first request to get the lock builds the new value, while everyone else immediately gets the old one.
+      - type: code
+        lang: php
+        file: 'src/Catalog/TopProductsSwr.php'
+        variant: good
+        code: |
+          public function get(): array
+          {
+              $entry = $this->cache->get('top.v1', $this->fresh(...));
+              if ($entry['soft'] > time()) {
+                  return $entry['data'];
+              }
+
+              $lock = $this->locks->createLock('refresh.top.v1', 30);
+              if ($lock->acquire()) {          // not blocking: either I got it or I didn't
+                  try {
+                      $entry = $this->cache->get('top.v1', $this->fresh(...), beta: \INF);
+                  } finally {
+                      $lock->release();
+                  }
+              }
+
+              return $entry['data'];           // without the lock, the nearly stale value will do
+          }
+
+          private function fresh(ItemInterface $item): array
+          {
+              $item->expiresAfter(3600);       // hard TTL
+              $data = $this->products->findTopSelling(10);
+
+              return ['soft' => time() + 300, 'data' => $data];   // soft TTL
+          }
+        marks:
+          - {line: 4, tip: 'If soft time remains, return straight away. Most requests end right here.'}
+          - {line: 9, tip: 'By default acquire() doesn''t wait; it returns true or false at once. So nobody gets stuck.'}
+          - {line: 11, tip: 'beta: INF means "rebuild now", even though the cache entry hasn''t expired.'}
+          - {line: 13, tip: 'Always release the lock in finally. If you don''t, the others stay in limbo for at least 30 seconds (the lock''s TTL).'}
+      - type: quote
+        body: 'Giving the user a 10-minute-old answer is often better than making them sit through 800ms.'
+    aside:
+      - type: when
+        use:
+          - 'Homepages, lists, reports: places where a value a few minutes old is fine.'
+        avoid:
+          - 'Accuracy-critical data such as money or stock.'
+      - type: tips
+        items:
+          - 'In bigger systems, don''t do the refresh inside the request; send a Messenger message and let a worker do it, so no user is ever slowed.'
+      - type: refs
+        items:
+          - {to: 'caching/http-caching', label: 'HTTP has stale-while-revalidate too'}
+    check:
+      q: 'If 100 requests arrive together after the soft expiry has passed, how many will build the new value, and what do the rest get?'
+      a: 'Just one, the request that gets the lock. The other 99 don''t get the lock and immediately receive the old (nearly stale) value.'
+
+  - slug: blocking-lock-trap
+    title: 'The lock itself can become a new danger'
+    kind: pitfall
+    tldr: 'A lock without an expiry, or waiting forever, leaves everyone stuck if the holder dies and runs the PHP workers out; give the lock a TTL and put a limit on waiting.'
+    keywords: ['lock ttl', 'blocking lock', 'deadlock', 'php-fpm workers', 'timeout', 'lock pitfall']
+    blocks:
+      - type: text
+        body: |
+          If the cook takes the key to the pot and goes home, the other 100 people wait forever. The same happens in code: the request holding the lock crashes, and the rest sit in `acquire(true)`. Every waiting request holds on to a PHP worker, so soon the workers run out and the whole site stops.
+      - type: code
+        lang: php
+        file: 'src/Catalog/Rebuild.php'
+        variant: bad
+        code: |
+          $lock = $this->locks->createLock('rebuild.top');
+          $lock->acquire(true);                 // if it can't get it, it waits forever
+
+          $value = $this->products->findTopSelling(10);
+          $this->cache->get('top.v1', fn () => $value);
+          $lock->release();                     // never reached if an exception is thrown
+        marks:
+          - {line: 1, tip: 'The default lock TTL is 300 seconds. If the holder crashes, nobody can get in for 5 minutes.'}
+          - {line: 2, tip: 'true means blocking. Every waiting request holds a worker.'}
+          - {line: 6, tip: 'If an exception is thrown, release() never runs. Without try/finally, the lock hangs.'}
+      - type: code
+        lang: php
+        file: 'src/Catalog/Rebuild.php'
+        variant: good
+        code: |
+          $lock = $this->locks->createLock('rebuild.top', ttl: 30);
+
+          if (!$lock->acquire()) {
+              return $this->staleCopy->get() ?? $this->waitBriefly();   // brief wait or stale value
+          }
+
+          try {
+              return $this->rebuildAndStore();
+          } finally {
+              $lock->release();
+          }
+        marks:
+          - {line: 1, tip: 'A short TTL: even if the holder dies, the lock frees itself after 30 seconds. If the job needs longer, you have to call refresh().'}
+          - {line: 3, tip: 'Non-blocking: if you don''t get it, take the alternative path straight away.'}
+          - {line: 10, tip: 'A guarantee that the lock is released, whatever happens.'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'Don''t make the waiters simply fail; keep a fallback, such as the stale value, or a short wait and then calculating it themselves.'
+          - 'Make the lock TTL a bit longer than the longest the calculation can take, or the lock will let go while the work is still running.'
+      - type: remember
+        body: 'A lock without a TTL and a release without try/finally: both are homes of the hanging lock.'
+    check:
+      q: 'If the request holding the lock crashes, what happens if the lock has a TTL, and what would happen if it didn''t?'
+      a: 'With a TTL, the lock frees itself when it expires and the others carry on. Without one (or with a very long one), everyone sits waiting and the PHP workers run out.'
+
+flashcards:
+  - q: 'What is a cache stampede?'
+    a: 'When a popular entry expires, many requests miss at once and send the same heavy query to the database.'
+    more: |
+      Each request gets its own miss, and none knows the others are doing the same job. The database suddenly takes a thousand times the load. The cache had been keeping the database alive, so when the cache fails, the database falls over too.
+    ref: herd-at-the-counter
+  - q: 'Are a thundering herd and a cache stampede different?'
+    a: 'Nearly the same thing: many processes waking up and pouncing on one resource together. In the cache context it is called a stampede.'
+    more: |
+      "Thundering herd" is a broader term: everyone waking at once when a lock is released, or all clients retrying together when a server comes back. In caching, its form is the stampede (dogpile).
+    ref: herd-at-the-counter
+  - q: 'How does a lock stop a stampede?'
+    a: 'For one key, only one request takes the lock and builds the new value; the rest wait or take the stale value.'
+    more: |
+      So one heavy query runs instead of 1,000. This is also called request coalescing. Whoever didn't get the lock has two paths: wait briefly and check the cache again, or show the old value immediately.
+    ref: one-rebuilds
+  - q: 'What is jitter, and why is it needed?'
+    a: 'Adding a random few seconds to a TTL so many entries don''t die together.'
+    more: |
+      If many entries filled at the same moment get the same TTL, they die at the same moment. With `expiresAfter(600 + random_int(0, 120))` the expiry is spread out. It costs almost nothing, so it is good to add every time.
+    ref: jitter-and-early-expiry
+  - q: 'How does probabilistic early expiration work?'
+    a: 'Before the expiry, with a higher probability the closer it gets, some request rebuilds the value ahead of time.'
+    more: |
+      Symfony Cache's `get($key, $callback, beta: 1.0)` does this by itself. Raising beta starts the attempts earlier. beta: 0 turns it off, and `\INF` rebuilds right now.
+    ref: jitter-and-early-expiry
+  - q: 'What is stale-while-revalidate?'
+    a: 'Serving the old value immediately even after it has expired, while one request builds the new value behind the scenes.'
+    more: |
+      The entry has two times: soft (after which it should be rebuilt) and hard (after which it is deleted). After the soft time, one request takes a lock and rebuilds, and the rest get the old value. The user never waits; the price is a slightly old value for a while.
+    ref: stale-while-revalidate
+  - q: 'Why does a cache-rebuild lock need a TTL and try/finally?'
+    a: 'Otherwise, if the lock holder crashes, the lock hangs forever and every other request gets stuck and uses up the PHP workers.'
+    more: |
+      A short lock TTL (say 30 seconds) guarantees the lock frees itself even if the holder dies. Calling release() in finally frees the lock even when an exception is thrown. For the waiters, always keep a fallback: the stale value or a short wait.
+    ref: blocking-lock-trap
+
+quiz:
+  - q: 'At 12 a.m., a thousand product-cache entries were all set with a 1-hour expiry. At 1 a.m. the site slows to a crawl. What is the simplest prevention?'
+    hint: 'Why are all the entries dying at the same moment?'
+    options:
+      - text: 'Add random time (jitter) to the TTL so the entries die at different times'
+        correct: true
+        why: 'When the expiry is spread out, there is no storm of a thousand misses at once.'
+      - text: 'Add more memory to Redis'
+        correct: false
+        why: 'The problem isn''t space; it is that they all die at the same time.'
+      - text: 'Raise the TTL from 1 hour to 5 hours'
+        correct: false
+        why: 'The storm just comes 5 hours later, and still all together.'
+      - text: 'Open more connections to the database'
+        correct: false
+        why: 'Running more heavy queries at once makes the database even slower.'
+    ref: jitter-and-early-expiry
+  - q: 'When the homepage cache dies, 1,000 requests go to the database together. Which solution sends just one query to the database?'
+    hint: 'Let one request do the job; what should the others do?'
+    options:
+      - text: 'Take a lock for the key; whoever gets it rebuilds, and the rest wait or take the stale value'
+        correct: true
+        why: 'The heavy work runs just once at a time.'
+      - text: 'Delete the cache on every request'
+        correct: false
+        why: 'There would be even more misses, and the storm would get worse.'
+      - text: 'Every request runs its own query and writes to the cache, and the last one wins'
+        correct: false
+        why: 'That is the stampede itself; a thousand queries run.'
+      - text: 'Cut the TTL to 1 second'
+        correct: false
+        why: 'The entry would die more often, making even more storms.'
+    ref: one-rebuilds
+  - q: 'What is the danger in the code below?'
+    lang: php
+    code: |
+      $lock = $this->locks->createLock('rebuild.top');
+      $lock->acquire(true);
+
+      $this->rebuild();
+      $lock->release();
+    hint: 'What if rebuild() throws an exception or the process dies?'
+    options:
+      - text: 'If the lock holder crashes, the other requests stay stuck for a long time and the PHP workers run out'
+        correct: true
+        why: 'The default TTL is 300 seconds, and a blocking acquire holds every worker.'
+      - text: 'Calling release() isn''t actually needed'
+        correct: false
+        why: 'It is needed; without it the lock hangs until the TTL.'
+      - text: 'LockFactory doesn''t work without Redis'
+        correct: false
+        why: 'Symfony Lock works with many stores (flock, Redis, database).'
+      - text: 'acquire() never returns true'
+        correct: false
+        why: 'It does; the problem is the endless wait.'
+    ref: blocking-lock-trap
+  - q: 'What are the benefits when stale-while-revalidate works properly?'
+    hint: 'When does the user wait?'
+    options:
+      - text: 'Users almost never get a slow response'
+        correct: true
+        why: 'Even after the soft expiry, they get the old value immediately.'
+      - text: 'Only one request builds the new value at a time'
+        correct: true
+        why: 'The lock guarantees it, so the database takes no extra load.'
+      - text: 'The cache never shows a value even a few seconds old'
+        correct: false
+        why: 'On the contrary: the price of this technique is showing a slightly old value for a while.'
+      - text: 'It is the best approach for an account balance'
+        correct: false
+        why: 'A stale value is not acceptable for a balance; avoid caching it altogether.'
+    ref: stale-while-revalidate
+  - q: 'Which is true about Symfony''s get($key, $cb, beta: 1.0)?'
+    hint: 'When does beta act, and for whom?'
+    options:
+      - text: 'Shortly before the expiry, some request may, with a small probability, rebuild the value early'
+        correct: true
+        why: 'This is probabilistic early expiration; it avoids a storm at the moment of expiry.'
+      - text: 'Setting beta: 0 turns this early renewal off'
+        correct: true
+        why: 'beta 0 means no early renewal; a miss happens only once the entry has expired.'
+      - text: 'beta decides how many years the data stays in the cache'
+        correct: false
+        why: 'expiresAfter() sets the lifetime; beta is only the tendency toward early renewal.'
+      - text: 'Symfony cache doesn''t work without beta'
+        correct: false
+        why: 'beta is optional; the default is 1.0.'
+    ref: jitter-and-early-expiry

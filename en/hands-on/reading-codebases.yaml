@@ -1,0 +1,341 @@
+slides:
+  - slug: lost-in-five-hundred-files
+    title: 'Facing 500 files on day one'
+    kind: story
+    tldr: 'Read an unfamiliar codebase file by file and you get lost. The fast way is to pick one entry point and follow one job all the way through.'
+    keywords: ['legacy code', 'onboarding', 'codebase', 'unfamiliar code', 'new project', 'reading code']
+    blocks:
+      - type: text
+        body: |
+          Sumi joins a new company. The project has more than 500 PHP files, and her first task is: "Refund emails aren't going out when a payment fails. Have a look." She starts reading `src/` alphabetically, from the first file. Three hours later she has read 20 files, her head is heavy, and she still doesn't know where the refund code lives.
+      - type: visual
+        kind: compare
+        caption: 'Sumi''s first approach versus the experienced way'
+        columns:
+          - title: 'Reading file by file'
+            tone: bad
+            icon: cross
+            tip: 'Code isn''t written in alphabetical order; the order of the files and the order of the work are different things.'
+            items: ['Alphabetically, start to finish', 'Understand everything, then work', '20 files in three hours, no idea where', 'Tired and confused']
+          - title: 'One job from an entry point'
+            tone: good
+            icon: check
+            tip: 'Read only the files that the refund path passes through.'
+            items: ['Find the entry point (route/command/handler)', 'Follow one request to the end', '5 files in 15 minutes, a clear path', 'Close to the answer to the question']
+    aside:
+      - type: problem
+        body: 'A codebase isn''t a book to read from the start; it is a city to learn by its routes. Main roads first, side streets later.'
+    check:
+      q: 'Why didn''t Sumi''s read-every-file method work?'
+      a: 'The order of the files isn''t the path of the work. In three hours she read files that aren''t on the refund path. Following one job from an entry point brings in only the files you need.'
+
+  - slug: entry-points-one-request
+    title: 'Find the entry points, then ride one bus to the end'
+    kind: concept
+    tldr: 'Entry points are routes, console commands, message handlers, event listeners and the scheduler. Follow one request from an entry point to the end and the whole structure starts to make sense.'
+    keywords: ['entry points', 'follow a request', 'route', 'console command', 'message handler', 'trace', 'request flow']
+    blocks:
+      - type: metaphor
+        icon: map
+        title: 'Bus routes in an unfamiliar city'
+        body: |
+          Arrive in Dhaka for the first time and wander the side streets and you will get lost. Instead, learn the **main roads** (the entry points), then board one bus and ride it **all the way** from Mirpur to Motijheel (follow one request). Each stop on the way is a file: the router, the controller, the service, the database. Know one route and you start to understand the shape of the city.
+      - type: visual
+        kind: flow
+        caption: 'The stops one Symfony request passes through'
+        nodes:
+          - {id: front, label: 'public/index.php', sub: 'entry', icon: home, col: 0, row: 0, tip: 'The only front door for web requests. The Kernel starts up from here.'}
+          - {id: router, label: 'Router', sub: 'URL → controller', icon: map, col: 1, row: 0, tip: 'Looks at the URL and decides which controller runs. `debug:router` shows exactly this list.'}
+          - {id: ctrl, label: 'Controller', sub: 'thin', icon: code, col: 2, row: 0, tip: 'Takes the user''s request and calls a service. Start reading from here.'}
+          - {id: svc, label: 'Service', sub: 'the real work', icon: gear, tone: accent, col: 3, row: 0, tip: 'The business rules live here. Most of your questions are answered here.'}
+          - {id: db, label: 'Doctrine / DB', sub: 'data', icon: db, col: 4, row: 0, tip: 'Reading and writing data. Entities and repositories live here.'}
+          - {id: resp, label: 'JSON response', sub: 'sent back', icon: send, tone: good, col: 3, row: 1.5, tip: 'The result goes back to the browser as JSON.'}
+        edges:
+          - {from: front, to: router, label: 'The request comes in and goes to the Router'}
+          - {from: router, to: ctrl, label: 'The URL is matched and a controller is chosen'}
+          - {from: ctrl, to: svc, label: 'The controller hands the job to a service'}
+          - {from: svc, to: db, label: 'The service reads or writes data'}
+          - {from: svc, to: resp, label: 'The result goes back as JSON', dashed: true, tone: good}
+      - type: points
+        title: 'The entry points of a Symfony app'
+        style: dot
+        items: ['HTTP route: a controller with `#[Route]`', 'Console command: `#[AsCommand]`, called from cron', 'Message handler: `#[AsMessageHandler]`, fed from a queue', 'Event listener and scheduler: `#[AsEventListener]`, clock-driven jobs']
+    aside:
+      - type: tips
+        items:
+          - 'Make the question specific: "When does the refund email go out?" Then you can also work backwards from the email-sending code, asking who calls it.'
+          - 'At each stop ask one thing: what does this file take in, what does it return, and who does it call?'
+    check:
+      q: 'To find out why the refund email isn''t sent, which two ways can you start?'
+      a: 'From the front: follow the refund route or command forward. Or from the back: find the email-sending code and see who calls it (a handler or a listener). Both are the two ends of the same path.'
+
+  - slug: debug-commands
+    title: 'Symfony tells you itself: the debug commands'
+    kind: howto
+    tldr: '`debug:router`, `debug:container`, `debug:autowiring`, `debug:event-dispatcher`, `debug:messenger`: get a list of the app''s structure without reading any code.'
+    keywords: ['debug:router', 'debug:container', 'debug:autowiring', 'debug:event-dispatcher', 'debug:messenger', 'bin/console', 'service container']
+    blocks:
+      - type: text
+        body: |
+          With Google Maps in an unfamiliar city, nobody wanders around looking for the road. Symfony's `debug:*` commands are that map: which URL goes to which controller, which service depends on what, who is listening to which event, who handles which message. Run these first, then open the code.
+      - type: visual
+        kind: table
+        caption: 'Which command answers which question'
+        headers: ['Question', 'Command']
+        rows:
+          - cells: ['Which controller does this URL run?', 'debug:router --show-controllers']
+            tip: 'A list of all routes with path, method and controller. For one route, `debug:router app_refund` gives the details.'
+          - cells: ['What does this service get, and from whom?', 'debug:container PaymentService']
+            tip: 'Shows the service''s class, its configuration, tags and aliases.'
+          - cells: ['Which types can I inject?', 'debug:autowiring Mailer']
+            tip: 'Search by name and you get the interfaces and classes that can be autowired.'
+          - cells: ['Who listens to this event?', 'debug:event-dispatcher kernel.request']
+            tip: 'The listeners in priority order. It shows which code runs before and after the request.'
+          - cells: ['Who handles this message?', 'debug:messenger']
+            tip: 'For each bus, which handler exists for which message.'
+      - type: code
+        lang: bash
+        file: 'terminal'
+        code: |
+          php bin/console debug:router --show-controllers | grep -i refund
+          php bin/console debug:container 'App\Service\RefundService'
+          php bin/console debug:event-dispatcher App\Event\RefundIssued
+          php bin/console debug:messenger
+          php bin/console list app          # the project's own console commands
+          php bin/console debug:config security access_control
+        marks:
+          - {line: 1, tip: 'Use grep to filter just the refund routes. See which controller and which method.'}
+          - {line: 3, tip: 'Which listeners run when RefundIssued happens (sending the email is probably here).'}
+          - {line: 5, tip: 'Commands called from cron or the background are entry points.'}
+    aside:
+      - type: commands
+        items:
+          - {cmd: 'php bin/console debug:scheduler', desc: 'The list of scheduled (clock-driven) jobs'}
+          - {cmd: 'php bin/console debug:twig', desc: 'Twig functions, filters and template paths'}
+          - {cmd: 'php bin/console about', desc: 'Symfony/PHP versions and the environment'}
+    check:
+      q: 'When a refund finishes, which listeners run? How do you find out without reading the code?'
+      a: 'Run `php bin/console debug:event-dispatcher App\Event\RefundIssued`. Every listener on that event comes out, in priority order.'
+
+  - slug: tests-and-history
+    title: 'Tests and git history: the code''s written memory'
+    kind: howto
+    tldr: 'Tests tell you what the code is supposed to do; git blame and log -S tell you why it is this way and who knows it. Run it as well and you can be sure.'
+    keywords: ['git blame', 'git log -S', 'testdox', 'tests as documentation', 'git history', 'pickaxe', 'hot files']
+    blocks:
+      - type: text
+        body: |
+          Code tells you *what* is happening, but not *why*. The answer to "why" is in two places: the **tests** (the behaviour the code is meant to have) and the **git history** (who changed what, when and for which reason). And when you doubt what the code does, the most honest answer is to run it and see.
+      - type: code
+        lang: bash
+        file: 'terminal'
+        code: |
+          # read the tests to get a list of behaviours
+          php bin/phpunit --testdox --filter RefundService
+
+          # which files change the most (a hint of risk and complexity)
+          git log --since='6 months ago' --name-only --pretty=format: | sort | uniq -c | sort -rn | head
+
+          # who wrote this line, and why
+          git blame -L 40,60 src/Service/RefundService.php
+
+          # the commit where the word `retryCount` appeared or disappeared
+          git log -S'retryCount' --oneline -- src/
+
+          # who knows this area best
+          git shortlog -sn -- src/Billing
+        marks:
+          - {line: 2, tip: '--testdox turns test names into plain language: "refund fails when already refunded". It is a living document of behaviour.'}
+          - {line: 5, tip: 'The files that change most often are where bugs and complexity pile up.'}
+          - {line: 8, tip: 'Get the commit from blame, then look for the "why" in the commit message and PR with `git show <hash>`.'}
+          - {line: 11, tip: 'Pickaxe (-S): when a word was added or removed. The answer to a baffling "why is there a retry here?" is often found this way.'}
+    aside:
+      - type: tips
+        items:
+          - 'Write or change a small test and see: if changing something scares you, that shows where the code has dependencies.'
+          - 'Use Xdebug or `dump()` to look at values in the middle of a request; a value is more trustworthy than a guess.'
+      - type: pitfalls
+        items:
+          - 'Don''t take a commit message or comment as truth: the code may have changed while the comment stayed old. The code has the last word.'
+    check:
+      q: 'You see a strange `sleep(2)` in the code. Which git commands do you use to find out why it is there?'
+      a: '`git blame` to get the line''s commit, then `git show` or `git log -S"sleep(2)"` to see when it was added and read the reason in the commit message.'
+
+  - slug: draw-the-map
+    title: 'Draw a one-page map'
+    kind: recap
+    tldr: 'Write down what you have understood: entry points, main services, where data lives, outside dependencies. Drawing your own map is what proves you understand.'
+    keywords: ['architecture map', 'sketch', 'mental model', 'diagram', 'onboarding notes', 'map']
+    blocks:
+      - type: text
+        body: |
+          Draw by hand what you have understood. Wherever you get stuck while drawing is a gap in your understanding, and the next question lives there. The map doesn't need to be big; boxes and arrows on one page are enough.
+      - type: visual
+        kind: steps
+        caption: 'Five steps to draw the map'
+        steps:
+          - {title: '1. Entry points', body: 'routes, commands, handlers, cron', tip: 'Put everything that feeds work into the system on the left.'}
+          - {title: '2. Main services', body: 'Where the business rules live', tip: 'Pick the 3-5 most-called classes, not all of them.'}
+          - {title: '3. Data', body: 'Which tables, which caches, which files', tip: 'Mark where the truth is kept (the source of truth).'}
+          - {title: '4. Outside dependencies', body: 'Payment, email, other services', tip: 'Failures happen most here. Draw them in a different colour.'}
+          - {title: '5. Write the questions', body: 'A list of what you haven''t understood', tip: 'The questions beside the map are your preparation for asking a colleague, better than asking unprepared.'}
+      - type: code
+        lang: text
+        file: 'notes/refund-map.txt'
+        code: |
+          entry:    POST /api/refunds (RefundController)    cron: app:refund:retry
+          core:     RefundService -> PaymentGateway, RefundRepository
+          data:     refunds (Postgres), idempotency key (Redis)
+          outside:  bKash gateway (retried on failure), Mailer
+          events:   RefundIssued -> SendRefundEmailListener  <-- the email is sent here
+          question: does RefundIssued go through a queue, or is it direct?
+        marks:
+          - {line: 5, tip: 'This one line answers Sumi''s real question: the email is sent in a listener.'}
+          - {line: 6, tip: 'Write down the question you still can''t answer; it is the reason to run debug:messenger next.'}
+      - type: quote
+        body: 'Read code with a question, from an entry point, one request to the end, and draw what you learn.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Starting to change code before you understand it. First the map and one small test, then the change.'
+          - 'Taking names and comments as truth. A `PaymentService` may really only send emails; check by running it or with the debug commands.'
+      - type: refs
+        items:
+          - {to: 'thinking/documentation', label: 'Turning the map into lasting documentation'}
+    check:
+      q: 'While drawing the map you can''t decide where one arrow goes from and to. What do you do?'
+      a: 'That is exactly the gap in your understanding. Follow one request from there, or run a debug command, then draw the arrow and cross the question off.'
+
+flashcards:
+  - q: 'Where do you start reading an unfamiliar codebase?'
+    a: 'At an entry point: a route, console command, message handler, listener or scheduler. Not at the alphabetical list of files.'
+    more: |
+      The path of the work and the order of the files are different. Follow one request from one entry point to the end and the files you need come out by themselves.
+    ref: entry-points-one-request
+  - q: 'What are the entry points in a Symfony app?'
+    a: 'HTTP routes (`#[Route]`), console commands (`#[AsCommand]`), message handlers (`#[AsMessageHandler]`), event listeners and the scheduler.'
+    more: |
+      All of them use PHP attributes, so you can search with `grep -R "AsMessageHandler" src/`. But the debug commands hand you the list directly.
+    ref: entry-points-one-request
+  - q: 'How do you find out which controller a URL runs?'
+    a: '`php bin/console debug:router --show-controllers`. For one route, `debug:router <name>` gives the details.'
+    more: |
+      Filter with `grep` (`| grep -i refund`) to get only the relevant routes. Next to each you see the path, the method and the controller class.
+    ref: debug-commands
+  - q: 'What does `debug:container` tell you about a service?'
+    a: 'The service''s class, its dependencies (arguments), tags and aliases. `debug:autowiring` tells you which types can be injected.'
+    more: |
+      Run `php bin/console debug:container 'App\Service\RefundService'` to see its configuration. A command like `debug:autowiring Mailer` tells you which interface will be autowired.
+    ref: debug-commands
+  - q: 'How do you see which listeners run on an event?'
+    a: '`php bin/console debug:event-dispatcher <event-name>`. You get the listeners in priority order.'
+    more: |
+      A question like "who sends the email when a refund happens?" is usually answered right here. To find a message handler, use `debug:messenger`.
+    ref: debug-commands
+  - q: 'What do you gain from reading the tests?'
+    a: 'A list of the behaviour the code is meant to have. `phpunit --testdox` shows it in plain language.'
+    more: |
+      Tests are living documents: comments go stale, but a test that keeps running tells the truth. A missing test is information too: be careful changing that part.
+    ref: tests-and-history
+  - q: 'How do you use git to find out why a line was written?'
+    a: 'Get the commit with `git blame -L start,end file`, then `git show`. To see when a word appeared, use `git log -S''word''`.'
+    more: |
+      The "why" lives in commit messages and PR discussions. `git log -S` (pickaxe) tells you which commit added or removed a word.
+    ref: tests-and-history
+  - q: 'Why is drawing the map by hand a good idea?'
+    a: 'Wherever you get stuck while drawing is a gap in your understanding. So the map is also a test of your understanding.'
+    more: |
+      One page with entry points, main services, data, outside dependencies and the questions you can't answer yet. The map also prepares you to ask a colleague.
+    ref: draw-the-map
+
+quiz:
+  - q: 'In a new project you are asked to look into "refund emails aren''t going out". What is the best first step?'
+    hint: 'Not the whole code, one specific path.'
+    options:
+      - text: 'Read every file in the `src/` folder from the start'
+        correct: false
+        why: 'The order of the files isn''t the path of the work; it takes a long time and you can''t pick out the part that matters.'
+      - text: 'Find the refund route or command, and follow one request from there'
+        correct: true
+        why: 'Starting from an entry point means reading only the files of that job.'
+      - text: 'Change the email-sending code and see what happens'
+        correct: false
+        why: 'Change before understanding and you touch the wrong place.'
+      - text: 'Call the previous developer and ask for a full explanation'
+        correct: false
+        why: 'First build your own map and a specific question; then asking a colleague saves time.'
+    ref: lost-in-five-hundred-files
+  - q: 'Which command tells you which listeners run when `App\Event\RefundIssued` happens?'
+    hint: 'An event and its listeners: which debug command?'
+    options:
+      - text: 'php bin/console debug:router'
+        correct: false
+        why: 'It lists URLs and controllers, not events.'
+      - text: 'php bin/console debug:event-dispatcher App\Event\RefundIssued'
+        correct: true
+        why: 'It shows every listener on that event, in priority order.'
+      - text: 'php bin/console debug:autowiring'
+        correct: false
+        why: 'It shows the list of types you can autowire.'
+      - text: 'php bin/console about'
+        correct: false
+        why: 'It shows the Symfony version and the environment.'
+    ref: debug-commands
+  - q: 'The code has a strange `usleep(500000)`, with a comment saying "to avoid the gateway rate limit". What is the best thing to do now?'
+    hint: 'Is a comment always true?'
+    options:
+      - text: 'Trust the comment and leave it alone'
+        correct: false
+        why: 'The comment may be out of date; the gateway''s rules may have changed since.'
+      - text: 'Read why it was added with `git blame` and `git show`, and check whether it is still needed'
+        correct: true
+        why: 'History tells you the reason, and running it or testing it shows the truth today.'
+      - text: 'Delete it straight away'
+        correct: false
+        why: 'Delete it without knowing and the rate limit may start failing again.'
+    ref: tests-and-history
+  - q: 'Which of these are good ways to understand an unfamiliar codebase?'
+    hint: 'Entry points, running it, history, a map.'
+    options:
+      - text: 'Run `php bin/phpunit --testdox` and read the list of behaviours'
+        correct: true
+        why: 'Test names describe the code''s expected behaviour in plain language.'
+      - text: 'Draw a one-page map of entry points, services, data and dependencies'
+        correct: true
+        why: 'Drawing shows you the gaps in your understanding.'
+      - text: 'Assume what each class does from its name'
+        correct: false
+        why: 'Names can mislead; check against the code or the debug commands.'
+      - text: 'Start a big refactor before you understand it'
+        correct: false
+        why: 'Refactor without understanding and you break behaviour.'
+    ref: tests-and-history
+  - q: 'Which of these questions does `debug:messenger` answer?'
+    hint: 'Queues and handlers.'
+    options:
+      - text: 'Which controller a URL runs'
+        correct: false
+        why: 'That is `debug:router`.'
+      - text: 'Which handler exists for which message class'
+        correct: true
+        why: 'It shows the messages and their handlers for each bus.'
+      - text: 'Which parameters a service receives'
+        correct: false
+        why: 'That is `debug:container`.'
+    ref: debug-commands
+  - q: 'What belongs on a one-page map?'
+    hint: 'From entry to data, and what you don''t know.'
+    options:
+      - text: 'The entry points and the main services'
+        correct: true
+        why: 'Where work comes in and where the real rules live is the core of the structure.'
+      - text: 'Where the data lives and the outside dependencies'
+        correct: true
+        why: 'Failures usually happen at the boundary with data and outside systems.'
+      - text: 'Every method of every file'
+        correct: false
+        why: 'A map that detailed stops being a map; the 3-5 main parts are enough.'
+      - text: 'The questions you still haven''t understood'
+        correct: true
+        why: 'The list of questions is the basis for your next investigation and for asking a colleague.'
+    ref: draw-the-map

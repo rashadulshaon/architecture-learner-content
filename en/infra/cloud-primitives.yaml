@@ -1,0 +1,359 @@
+slides:
+  - slug: open-door-database
+    title: 'The database door open to the whole world'
+    kind: story
+    tldr: 'In the cloud one click gets you a server, and one wrong line leaves your database exposed to the internet.'
+    keywords: ['cloud', 'security group', 'public database', 'open port', '0.0.0.0/0']
+    blocks:
+      - type: text
+        body: |
+          Rakib was in a hurry when he created a database in the cloud. It wouldn't connect, so he added a rule that said "open to everyone". It worked, and Rakib went to bed. Two days later a stranger had wiped the tables and was demanding a ransom of 500,000 taka.
+      - type: code
+        lang: text
+        file: 'network.tf (HCL)'
+        variant: bad
+        code: |
+          resource "aws_security_group_rule" "db_open" {
+            type              = "ingress"
+            from_port         = 3306
+            to_port           = 3306
+            protocol          = "tcp"
+            cidr_blocks       = ["0.0.0.0/0"]
+            security_group_id = aws_security_group.db.id
+          }
+        marks:
+          - {line: 3, tip: '3306 is the MySQL door. The only thing that should ever come through it is the app server.'}
+          - {line: 6, tip: '0.0.0.0/0 means every address on the internet. Anyone in the world can knock on this door.'}
+      - type: quote
+        body: 'A database must never be reachable directly from the internet.'
+    aside:
+      - type: problem
+        body: 'The cloud spares you the hassle of buying hardware, but deciding who may go where is still your job. This segment introduces the basic building blocks for writing those rules.'
+      - type: story
+        title: 'What an open database costs'
+        body: |
+          Scanner bots sweep every address on the internet for open ports, around the clock. A freshly created, publicly open database usually gets noticed within a few hours.
+    check:
+      q: 'Why is it dangerous to add 0.0.0.0/0 just because the connection fails?'
+      a: 'Because it opens the door to the entire internet. The right rule lets only the app server''s security group reach that port.'
+
+  - slug: vpc-subnets-sg
+    title: 'VPC, subnets and security groups'
+    kind: concept
+    tldr: 'A VPC is your own private network. Only the front door (the load balancer) sits in the public subnet; the app and database stay in private subnets.'
+    keywords: ['VPC', 'subnet', 'security group', 'private subnet', 'networking']
+    blocks:
+      - type: metaphor
+        icon: building
+        title: 'The rooms on a rented floor'
+        body: |
+          The cloud is a huge office building, and you rent one floor of it. That floor is your **VPC** (Virtual Private Cloud, your own closed network). The reception area at the front is the **public subnet**; the strongroom at the back is the **private subnet**. A guard sits at every door: that's the **security group**, and his list says who he may let in.
+      - type: visual
+        kind: flow
+        caption: 'The internet has exactly one way in, the load balancer, and everything else sits behind it'
+        nodes:
+          - {id: user, label: 'User', sub: 'internet', icon: user, col: 0, row: 1, tip: 'The outside world. All it can reach is the door of the public subnet.'}
+          - {id: lb, label: 'Load balancer', sub: 'public subnet', icon: lb, tone: accent, col: 1.5, row: 1, tip: 'The only reception area. Port 443 is open to everyone, and nothing else is visible from outside.'}
+          - {id: app, label: 'Symfony app', sub: 'private subnet', icon: server, col: 3, row: 1, tip: 'The app server has no public IP of its own. Its security group accepts requests only from the load balancer.'}
+          - {id: db, label: 'Database', sub: 'private subnet', icon: db, col: 4, row: 2.5, tip: 'The strongroom. Its guard''s list contains just one name: the app''s security group.'}
+        edges:
+          - {from: user, to: lb, label: 'The user calls the load balancer over HTTPS on port 443'}
+          - {from: lb, to: app, label: 'The load balancer forwards the request to the private app server'}
+          - {from: app, to: db, label: 'The app queries the database on port 3306', tone: good}
+      - type: points
+        title: 'The guards'' lists (security groups)'
+        style: check
+        items:
+          - 'Load balancer: 443 from everyone, nothing else'
+          - 'App: port 8080, only from the load balancer''s group'
+          - 'Database: port 3306, only from the app''s group'
+      - type: quote
+        body: 'Write rules with group names, not IPs: the rules stay the same as the app grows.'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Subnet', meaning: 'A smaller address range inside the VPC, living in one availability zone.'}
+          - {term: 'NAT gateway', meaning: 'Lets servers in a private subnet reach out (to download updates, say) without letting anyone in from outside.'}
+          - {term: 'Availability zone', meaning: 'A separate building in the same city with its own power. Run servers in two zones and the site survives losing one building.'}
+      - type: tips
+        items:
+          - 'Create a subnet in every availability zone, so the others keep running if one zone fails.'
+          - 'Security groups are "stateful": the reply to an allowed incoming request goes back out automatically, with no extra rule.'
+    check:
+      q: 'What is the safest source to put in the database''s security group, and why?'
+      a: 'The name of the app''s security group. Only servers in that group can get in, and a new app server is covered automatically with no rule change.'
+
+  - slug: iam-least-privilege
+    title: 'IAM: who holds which key'
+    kind: howto
+    tldr: 'IAM decides who may do what on which resource. Give the app a role, and allow only the actions and resources it needs.'
+    keywords: ['IAM', 'role', 'policy', 'least privilege', 'access key', 'permissions']
+    blocks:
+      - type: metaphor
+        icon: key
+        title: 'Key cards, not a master key'
+        body: |
+          The building's security desk issues everyone a different card: the courier can open only the mail room, the accountant only the records cabinet. **IAM** (Identity and Access Management) is that card system. Lose the master key and the whole floor is gone, which is why nobody is given one.
+      - type: code
+        lang: json
+        file: 'policy-bad.json'
+        variant: bad
+        code: |
+          {
+            "Effect": "Allow",
+            "Action": "*",
+            "Resource": "*"
+          }
+        marks:
+          - {line: 3, tip: 'Every kind of action: deleting, creating new servers, changing other people''s permissions, all of it.'}
+          - {line: 4, tip: 'On every resource. One bug or one leaked key and the whole account is gone.'}
+      - type: code
+        lang: json
+        file: 'policy-good.json'
+        variant: good
+        code: |
+          {
+            "Effect": "Allow",
+            "Action": ["s3:GetObject", "s3:PutObject"],
+            "Resource": "arn:aws:s3:::shop-invoices-prod/invoices/*"
+          }
+        marks:
+          - {line: 3, tip: 'Read and write only. There is no permission to delete, so even a buggy app can''t destroy invoices.'}
+          - {line: 4, tip: 'One folder in one bucket. This app has no way to reach any other data.'}
+      - type: quote
+        body: 'Give each one exactly the permission they need, not an inch more.'
+        by: 'Least privilege'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Never commit an access key in code or in a .env file. Attach a role to the app server and you need no key at all.'
+          - 'Use separate users for people and roles for apps. Don''t mix the two.'
+          - 'Turn on MFA for the root account, and never use root for day-to-day work.'
+      - type: terms
+        items:
+          - {term: 'Role', meaning: 'An identity that belongs to no person. An app or service puts it on temporarily, like a borrowed badge.'}
+          - {term: 'Policy', meaning: 'A list of permissions: which action, on which resource, allowed or denied.'}
+      - type: refs
+        items:
+          - {to: 'security/secrets-management', label: 'The right place to keep secrets'}
+    check:
+      q: 'Why is giving the app a role better than creating an access key and putting it in .env?'
+      a: 'A role''s temporary credentials rotate automatically and are never written down anywhere, so there is nothing to leak. A key in .env is permanent, and if it''s stolen the danger remains.'
+
+  - slug: compute-and-managed
+    title: 'Three kinds of compute, and managed services'
+    kind: compare
+    tldr: 'With VMs, containers and serverless, your responsibility shrinks step by step. Managed services (RDS, S3, SQS) hand even more work to the cloud.'
+    keywords: ['compute', 'VM', 'EC2', 'serverless', 'managed service', 'RDS']
+    blocks:
+      - type: metaphor
+        icon: home
+        title: 'Cooking at home, a hotel room and food delivery'
+        body: |
+          Cook at home and the stove, the gas and the shopping are all yours (a VM). In a hotel room the bed and walls are ready and you just bring your own things (a container). Order delivery and you pay only for what you eat (serverless). A **managed service** is ready-cooked food: the cloud runs the database, the queue or the file storage for you.
+      - type: visual
+        kind: table
+        caption: 'Three kinds of compute: who handles what'
+        headers: ['', 'VM (EC2)', 'Container', 'Serverless']
+        rows:
+          - cells: ['You manage', 'OS, runtime, code', 'Just the image and code', 'Just the function code']
+            tip: 'Moving right, your responsibility shrinks, and so does your control.'
+          - cells: ['Time to start', 'Minutes', 'Seconds', 'Milliseconds (cold start aside)']
+            tip: 'After a long idle spell, the first serverless call is slow. That is called a cold start.'
+          - cells: ['Billed by', 'Hours the VM is on', 'Hours the node is on', 'How many times it runs']
+            tip: 'Serverless is cheaper for light use; a VM or container is cheaper if it runs flat out all day.'
+          - cells: ['Good for', 'Legacy apps, special needs', 'A typical Symfony API', 'Sudden small jobs']
+            tip: 'For most new Symfony apps, containers are the default choice.'
+      - type: points
+        title: 'When to choose a managed service'
+        style: check
+        items:
+          - 'Databases, caches, queues, file storage: running them yourself isn''t worth it'
+          - 'They handle backups, patching and failover; you just turn them on and test them'
+          - 'Slightly pricier, but nobody wakes you at 3 a.m.'
+    aside:
+      - type: when
+        use: ['Whatever isn''t your business''s specialty, take it managed', 'Small teams with few people for operations']
+        avoid: ['When you need a very special configuration the managed service doesn''t offer']
+      - type: terms
+        items:
+          - {term: 'RDS', meaning: 'AWS''s managed relational database. They run the backups and failover.'}
+          - {term: 'S3', meaning: 'A managed place for files (object storage) with almost unlimited space.'}
+          - {term: 'SQS', meaning: 'A managed queue. It holds the messages and you run the workers.'}
+    check:
+      q: 'Usage is very low at night, but now and then you suddenly need to resize images. Which compute fits?'
+      a: 'Serverless. The bill is zero while idle and it runs when work arrives, so you don''t pay hourly for a VM sitting on all day.'
+
+  - slug: shared-responsibility
+    title: 'Shared responsibility: whose job is it?'
+    kind: pitfall
+    tldr: 'The cloud looks after the building and the machines. Your data, access and configuration are always yours, even on managed services.'
+    keywords: ['shared responsibility', 'cloud security', 'backup', 'responsibility model']
+    blocks:
+      - type: text
+        body: |
+          Rent a floor and the landlord still won't put a lock on your door; that's your job. The cloud works the same way. **The cloud is responsible "of the cloud"** (building, power, hardware) and **you are responsible "in the cloud"** (data, access, configuration). The more managed a service is, the more of the load shifts to the cloud, but it never reaches zero.
+      - type: visual
+        kind: table
+        caption: 'Whose job is it, across three setups'
+        headers: ['', 'Own DB on a VM', 'Managed DB', 'Serverless']
+        rows:
+          - cells: ['Building, power, hardware', 'Cloud', 'Cloud', 'Cloud']
+            tip: 'This layer is never yours in any setup.'
+          - cells: ['OS and DB patching', 'You', 'Cloud', 'Cloud']
+            tip: 'Forgotten patches on VMs are a major reason old servers get hacked.'
+          - cells: ['Turning on backups and testing restores', 'You', 'You', 'You']
+            tip: 'Even when it''s managed, choosing retention and running a restore to check it is your job.'
+          - cells: ['Network rules, IAM', 'You', 'You', 'You']
+            tip: 'You can''t blame the cloud for an open security group or over-broad permissions.'
+          - cells: ['Data and code security', 'You', 'You', 'You']
+            tip: 'SQL injection or a leaked password is a flaw in your code.'
+      - type: quote
+        body: 'Managed doesn''t mean "not my job". It means "less of my job".'
+    aside:
+      - type: story
+        title: 'A managed DB, and the data was still lost'
+        body: |
+          One team felt safe on a managed database, but its backup retention was set to just 1 day. A bad migration went unnoticed for three days, and by then no older backup existed.
+      - type: pitfalls
+        items:
+          - 'Assuming "the cloud keeps backups itself" and never testing a restore.'
+          - 'Leaving default passwords or public access switched on for a managed service.'
+      - type: refs
+        items:
+          - {to: 'recovery/backups-restore', label: 'Backups and restore testing'}
+    check:
+      q: 'Which two jobs are still yours even with a managed database?'
+      a: 'Setting backup retention and testing restores, and keeping the network and IAM rules right. Patching and failover are the cloud''s.'
+
+flashcards:
+  - q: 'What is a VPC in the cloud?'
+    a: 'Your own closed, isolated network in the cloud. Inside it you create subnets and rules.'
+    more: |
+      It's like renting one floor of a building: the floor is yours, and other tenants can't walk in. Your servers, databases and load balancers all live inside the VPC.
+    ref: vpc-subnets-sg
+  - q: 'What is the difference between a public and a private subnet?'
+    a: 'Servers in a public subnet can be reached directly from the internet. A private subnet has no direct route from outside.'
+    more: |
+      The usual layout is the load balancer in a public subnet and the app and database in private ones. A private server that needs to go out to the internet needs a NAT gateway.
+    ref: vpc-subnets-sg
+  - q: 'What does a security group do?'
+    a: 'It is the guard at a server''s door: a list of which sources may reach which ports.'
+    more: |
+      Security groups are stateful, so the reply to an allowed incoming request leaves automatically. A rule can name another security group instead of an IP, which is both safer and simpler.
+    ref: vpc-subnets-sg
+  - q: 'What happens if you put 0.0.0.0/0 on a database''s security group?'
+    a: 'The whole internet can knock on the database port. Bots find it within hours and start guessing passwords.'
+    more: |
+      The right way is to keep the database in a private subnet and allow only the app's security group. If you need to connect yourself, use a VPN or a bastion host.
+    ref: open-door-database
+  - q: 'What is the principle of least privilege?'
+    a: 'Give each user or app only the permissions its job truly requires, and nothing more.'
+    more: |
+      Limit both the action and the resource: instead of "s3:*" and "*", name the specific actions and the specific bucket path. Then even a leaked key or a bug does limited damage.
+    ref: iam-least-privilege
+  - q: 'For an app, which is better: an IAM role or an access key?'
+    a: 'A role. Its temporary credentials rotate automatically and never have to sit in code or in a file.'
+    more: |
+      An access key is a permanent secret, and it's a disaster if it lands in git or a log. Attach a role to the app server or container and the SDK fetches temporary credentials by itself.
+    ref: iam-least-privilege
+  - q: 'What is the main difference between VMs, containers and serverless?'
+    a: 'Your responsibility shrinks in that order: a VM down to the OS, a container just the image and code, serverless just the function code.'
+    more: |
+      Less responsibility also means less control. Billing differs too: a VM is billed for the hours it is on, serverless only for the time it actually runs. For most Symfony APIs, containers are a good middle ground.
+    ref: compute-and-managed
+  - q: 'In the shared responsibility model, what is the cloud''s job and what is yours?'
+    a: 'The cloud: the building, hardware and hypervisor. You: data, IAM, network rules and backup testing.'
+    more: |
+      The more managed a service, the more layers the cloud handles (OS patches, DB patches). But responsibility for your data and access never becomes the cloud's.
+    ref: shared-responsibility
+
+quiz:
+  - q: 'A new project has three servers: a load balancer, a Symfony app and a database. Which should go in the public subnet?'
+    hint: 'Who needs to be reachable straight from the internet, and who doesn''t?'
+    options:
+      - text: 'All three, to make connecting easy'
+        correct: false
+        why: 'A public app and database widen the attack surface. You can''t trade away security for convenience.'
+      - text: 'Only the load balancer; the app and database go in private subnets'
+        correct: true
+        why: 'Only the front door faces the internet and everything inside stays hidden. That is the accepted design.'
+      - text: 'The load balancer and the app; the database goes in a private subnet'
+        correct: false
+        why: 'The app doesn''t need to be public, because the load balancer can deliver requests to it.'
+    ref: vpc-subnets-sg
+  - q: 'The app can''t connect to Rakib''s database. Which fix is the safest?'
+    hint: 'Instead of opening the door to everyone, who should it open for?'
+    options:
+      - text: 'Set the source of port 3306 in the security group to 0.0.0.0/0'
+        correct: false
+        why: 'It will connect, but for the entire internet. That is the road to a ransom demand.'
+      - text: 'Add the app''s security group as the source in the database''s security group'
+        correct: true
+        why: 'Only servers in that group can get in, and the rule needs no change when the app adds servers.'
+      - text: 'Delete all the security rules'
+        correct: false
+        why: 'Without default-deny there is no protection at all. The job is to fix the rules, not remove them.'
+    ref: open-door-database
+  - q: 'Which statements about the policy below are correct?'
+    lang: json
+    code: |
+      {
+        "Effect": "Allow",
+        "Action": "s3:*",
+        "Resource": "*"
+      }
+    hint: 'The app''s only job is to write PDFs into the invoices folder.'
+    options:
+      - text: 'The app can delete files in any bucket'
+        correct: true
+        why: 'Resource "*" with Action "s3:*" means every action on every bucket, delete included.'
+      - text: 'It follows least privilege'
+        correct: false
+        why: 'Quite the opposite. All it needs is PutObject on one bucket path, so this is far too much.'
+      - text: 'It should be fixed by naming the specific bucket path in Resource and only the one or two needed actions in Action'
+        correct: true
+        why: 'Then even a bug or a leaked key can only hurt that one folder.'
+    ref: iam-least-privilege
+  - q: 'Sumi put the access key of an IAM user into .env on the app server to use S3. What is the better option?'
+    hint: 'A key that is never written down anywhere can''t be stolen from anywhere.'
+    options:
+      - text: 'Hard-code the key in the code so .env isn''t needed'
+        correct: false
+        why: 'It is worse: the key stays in the git history forever.'
+      - text: 'Attach an IAM role to the server and let the SDK pick up temporary credentials'
+        correct: true
+        why: 'No secret is written anywhere and the credentials rotate by themselves, so there is almost nothing to steal.'
+      - text: 'Rename the key'
+        correct: false
+        why: 'Renaming doesn''t change what the key can do. If it''s stolen, the danger is the same.'
+    ref: iam-least-privilege
+  - q: 'Once a day you need to build a report that takes 10 minutes, and nothing runs the rest of the time. Which compute is likely the cheapest?'
+    hint: 'What is the bill based on: being switched on, or actually running?'
+    options:
+      - text: 'A big VM that stays on all day'
+        correct: false
+        why: 'You would pay for the 23 hours and 50 minutes it sits idle.'
+      - text: 'A serverless function or a scheduled container job'
+        correct: true
+        why: 'You are billed only while the job runs, so the idle cost is close to zero.'
+      - text: 'Three containers that are always on'
+        correct: false
+        why: 'There is no work to do, yet the meter keeps running.'
+    ref: compute-and-managed
+  - q: 'If you use a managed database, which of these are still your responsibility?'
+    hint: 'Who owns the data and the access to it?'
+    options:
+      - text: 'Testing restores and setting backup retention'
+        correct: true
+        why: 'The cloud takes the backups, but whether they work and how long they are kept is your decision and your responsibility.'
+      - text: 'Keeping the database''s security group and IAM rules right'
+        correct: true
+        why: 'The rules about who can get in are always yours.'
+      - text: 'Installing security patches for the database engine'
+        correct: false
+        why: 'That is the core job of a managed service. The cloud does it in the maintenance window.'
+      - text: 'The data center''s power and hardware'
+        correct: false
+        why: 'This layer always belongs to the cloud.'
+    ref: shared-responsibility

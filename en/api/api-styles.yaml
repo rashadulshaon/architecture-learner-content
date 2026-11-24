@@ -1,0 +1,402 @@
+slides:
+  - slug: too-much-too-little
+    title: 'One phone screen, five requests'
+    kind: story
+    tldr: 'No single API style fits every job. On a small mobile screen you sometimes get far more data than you need, and sometimes have to call again and again for one screen.'
+    keywords: ['over-fetching', 'under-fetching', 'round trip', 'API style', 'mobile', 'extra data']
+    blocks:
+      - type: text
+        body: |
+          The profile screen in Rahim's mobile app needs only a name, a photo and the last three orders. But `GET /api/users/7` returns 40 fields, most of which the screen never uses. To get the orders he has to make more separate requests. On a slow mobile network, every extra round trip means more waiting.
+      - type: visual
+        kind: sequence
+        caption: 'How many calls the mobile app makes to draw one screen'
+        actors:
+          - {id: app, label: 'Mobile app', icon: mobile, tip: 'It wants to show the profile screen: name, photo, last three orders.'}
+          - {id: api, label: 'REST API', icon: api, tip: 'A separate URL for each resource, and each URL returns its own full shape.'}
+        messages:
+          - {from: app, to: api, label: 'GET /users/7'}
+          - {from: api, to: app, label: '40 fields, 2 needed', dashed: true, tone: warn, tip: 'This is called over-fetching: receiving more data than you need, and carrying that extra weight across the network.'}
+          - {from: app, to: api, label: 'GET /users/7/orders'}
+          - {from: api, to: app, label: 'All orders, 3 needed', dashed: true, tone: warn}
+          - {from: app, to: api, label: 'GET /orders/91/items ...'}
+          - {at: app, note: 'Waits 5 times to draw one screen', tone: bad, tip: 'This is called under-fetching: one call doesn''t return enough data, so you have to make another, and another.'}
+      - type: quote
+        body: 'No API style is best for everyone. First find where it hurts, then pick the style.'
+    aside:
+      - type: problem
+        body: 'One API serves the web, mobile and partners. The three need three different things, but there is only one shape.'
+      - type: terms
+        items:
+          - {term: 'Round trip', meaning: 'One full loop: a request goes from the client to the server and the answer comes back.'}
+          - {term: 'Over-fetching', meaning: 'Getting more data than you need.'}
+          - {term: 'Under-fetching', meaning: 'Not getting enough data in one go, so you have to call again and again.'}
+    check:
+      q: 'A mobile screen needs 5 separate requests to show a profile. What kind of problem is that, and why is it bad?'
+      a: 'It is under-fetching. Every request costs a network round trip, so on a slow network the screen takes a long time to draw.'
+
+  - slug: four-styles
+    title: 'Four ways to order food'
+    kind: concept
+    tldr: 'REST is a fixed menu, GraphQL is building your own plate, gRPC is a walkie-talkie to the kitchen, and a message is leaving a note: four styles, four different strengths.'
+    keywords: ['REST', 'GraphQL', 'gRPC', 'async messaging', 'API style', 'comparison']
+    blocks:
+      - type: metaphor
+        icon: shop
+        title: 'Ordering at a restaurant'
+        body: |
+          **REST** is the printed menu: every item has a name and a price, and you get what is listed. **GraphQL** is building your own plate: "a little rice, two pieces of fish, no dal", all in one order. **gRPC** is the walkie-talkie between the waiter and the kitchen, coded in advance: fast, but a customer from outside doesn't speak that language. A **message** is leaving a note: the customer doesn't stand waiting for an answer, and gets called when the food is ready.
+      - type: visual
+        kind: table
+        caption: 'The strength and the price of each of the four styles'
+        headers: ['Style', 'How it talks', 'Best for', 'Price']
+        rows:
+          - cells: ['REST', 'HTTP + JSON, by resource', 'Public APIs, plain CRUD', 'Too much or too little data']
+            tip: 'Everybody knows it, and HTTP caching and tooling are the most mature. The default choice for most APIs.'
+          - cells: ['GraphQL', 'One endpoint, the client writes a query', 'Many clients, complex screens', 'Hard to cache, complex server']
+            tip: 'The client says which fields it wants, so over-fetching and repeated calls go down. In exchange, the server gets more complex.'
+          - cells: ['gRPC', 'Binary (Protobuf), HTTP/2', 'Between internal services', 'Not directly from a browser']
+            tip: 'Fast, with precise types, but a browser can''t speak gRPC directly: you need gRPC-Web or a proxy in between.'
+          - cells: ['Async message', 'A message in a queue or broker', 'Slow or deferred work', 'No immediate answer']
+            tip: 'The client moves on without waiting. To learn the result, it checks a status later or listens for an event signal.'
+      - type: quote
+        body: 'Default to REST. The other three are cures for specific pains, not everyday food.'
+    aside:
+      - type: remember
+        body: 'Menu (REST), your own plate (GraphQL), walkie-talkie (gRPC), note (message).'
+      - type: terms
+        items:
+          - {term: 'Protobuf', meaning: 'The compact binary format gRPC sends data in; the shape is written in a .proto file.'}
+          - {term: 'HTTP/2', meaning: 'A newer version of HTTP in which many requests share one connection at the same time.'}
+      - type: refs
+        items:
+          - {to: 'messaging/events-vs-commands', label: 'Messages: event or command'}
+    check:
+      q: 'Of the four, which is the easiest to call directly from a Vue app running in a browser, and which is not direct?'
+      a: 'REST (and GraphQL) work over HTTP and JSON, so a browser can call them directly. gRPC can''t run straight from a browser: you need gRPC-Web or a proxy.'
+
+  - slug: graphql-grpc-shape
+    title: 'What GraphQL and gRPC look like'
+    kind: howto
+    tldr: 'In GraphQL the client writes exactly what it wants and fetches it in one go. In gRPC the .proto file is the contract, and a field''s number can never change.'
+    keywords: ['GraphQL query', 'protobuf', 'proto file', 'schema', 'query', 'field number']
+    blocks:
+      - type: text
+        body: |
+          The profile screen from the first story takes just one request in GraphQL: the client writes which fields it wants. In gRPC the shape lives in a `.proto` file, and both sides generate their own code from it. Look at the two side by side.
+      - type: code
+        lang: graphql
+        file: 'ProfileScreen.graphql'
+        variant: good
+        code: |
+          query ProfileScreen($id: ID!) {
+            user(id: $id) {
+              name
+              avatarUrl
+              orders(first: 3) {
+                id
+                total
+              }
+            }
+          }
+        marks:
+          - {line: 3, tip: 'Only these two fields come back. Not 40: over-fetching is gone.'}
+          - {line: 5, tip: 'The user and their last 3 orders in the same request. No separate round trip needed.'}
+      - type: code
+        lang: protobuf
+        file: 'proto/order.proto'
+        variant: good
+        code: |
+          syntax = "proto3";
+
+          service OrderService {
+            rpc GetOrder (GetOrderRequest) returns (Order);
+          }
+
+          message GetOrderRequest { string id = 1; }
+
+          message Order {
+            string id = 1;
+            int64 total_paisa = 2;
+          }
+        marks:
+          - {line: 4, tip: 'Typed code is generated from this service for both client and server. Send the wrong type and the compiler catches it.'}
+          - {line: 11, tip: '= 2 is the field number. This number goes over the wire, not the name. So changing the number is a breaking change.'}
+      - type: visual
+        kind: compare
+        caption: 'The same screen, REST vs. GraphQL'
+        columns:
+          - title: 'REST'
+            tone: warn
+            icon: list
+            tip: 'A separate URL for each resource. The simplest approach, but when a screen gets complex you have to call again and again.'
+            items:
+              - '3 separate requests'
+              - 'The full shape of each resource'
+              - 'URL-based HTTP caching is easy'
+          - title: 'GraphQL'
+            tone: good
+            icon: filter
+            tip: 'The client writes the shape it needs. The server returns only that.'
+            items:
+              - '1 request'
+              - 'Only the requested fields'
+              - 'Usually all POST, so caching is hard'
+    aside:
+      - type: pitfalls
+        items:
+          - 'In GraphQL a client can write a query as deep or as heavy as it likes. Without depth and cost limits, a single query can bring the server down.'
+          - 'If every nested field goes to the database separately, you get N+1. Plan a batching technique (DataLoader) ahead of time.'
+      - type: refs
+        items:
+          - {to: 'data/n-plus-one', label: 'The N+1 query problem'}
+    check:
+      q: 'In protobuf, why can''t the `= 2` in `int64 total_paisa = 2;` be changed?'
+      a: 'That number is what identifies the field on the wire. If you change it, old clients read a different field, so it is a breaking change.'
+
+  - slug: async-202
+    title: 'The style that doesn''t make you wait: 202 Accepted'
+    kind: howto
+    tldr: 'For slow work, take the request, answer at once with 202 and a status URL; a Messenger worker does the job in the background and the client asks later.'
+    keywords: ['202 Accepted', 'Messenger', 'async', 'polling', 'Location header', 'background work']
+    blocks:
+      - type: text
+        body: |
+          Say a monthly report takes 20 seconds to build. Making the user sit for 20 seconds risks a timeout as well. The note-leaving style does it differently: the API puts the job on a queue and immediately answers `202 Accepted`, along with a URL where the report's status can be checked. The client asks that URL now and then.
+      - type: visual
+        kind: sequence
+        caption: 'Building a report: leave a note, check back later'
+        actors:
+          - {id: client, label: 'Vue app', icon: browser, tip: 'It asked for a report, but doesn''t sit there blocked.'}
+          - {id: api, label: 'API', icon: api, tip: 'It only puts the job on the queue and hands back a receipt. It doesn''t do the heavy work itself.'}
+          - {id: worker, label: 'Worker', icon: worker, tip: 'It sits in the background, picks jobs off the queue and builds the report.'}
+        messages:
+          - {from: client, to: api, label: 'POST /api/v1/reports'}
+          - {from: api, to: client, label: '202 Accepted, Location: /reports/9', dashed: true, tip: 'The receipt: the job has been accepted but not finished. Location is the address where you can look at that receipt.'}
+          - {at: worker, note: 'Building the report in the background', tone: warn}
+          - {from: client, to: api, label: 'GET /reports/9'}
+          - {from: api, to: client, label: '200 {"status": "pending"}', dashed: true}
+          - {from: client, to: api, label: 'GET /reports/9 (a little later)'}
+          - {from: api, to: client, label: '200 {"status": "done", "url": "..."}', dashed: true, tone: good}
+      - type: code
+        lang: php
+        file: 'src/Controller/Api/V1/ReportController.php'
+        variant: good
+        code: |
+          #[Route('/api/v1/reports', methods: ['POST'])]
+          public function create(
+              #[MapRequestPayload] CreateReportRequest $dto,
+              EntityManagerInterface $em,
+              MessageBusInterface $bus,
+          ): JsonResponse {
+              $report = new Report($dto->month);       // starts with status = pending
+              $em->persist($report);
+              $em->flush();
+
+              $bus->dispatch(new GenerateReport($report->getId()->toRfc4122()));
+
+              return $this->json(['status' => 'pending'], Response::HTTP_ACCEPTED, [
+                  'Location' => $this->generateUrl(
+                      'api_report_show',
+                      ['id' => $report->getId()->toRfc4122()],
+                  ),
+              ]);
+          }
+        marks:
+          - {line: 8, tip: 'First a report row in the database, with status pending. The client needs something real to be pointed at.'}
+          - {line: 11, tip: 'dispatch only puts the message on the queue. The heavy work runs in the GenerateReport handler, inside the worker.'}
+          - {line: 13, tip: '202 means accepted, work not finished yet. Answering 200 or 201 would make the client think the report exists.'}
+    aside:
+      - type: commands
+        items:
+          - {cmd: 'php bin/console messenger:consume async -vv', desc: 'Start a worker to pick up jobs from the queue'}
+      - type: tips
+        items:
+          - 'When the status endpoint says done, give the result URL, and when it says failed, give the reason. With only pending and done, a failed job stays "pending" forever.'
+          - 'Leave two or three seconds between polls. Calling every 100ms puts load on your own API.'
+      - type: refs
+        items:
+          - {to: 'messaging/background-jobs', label: 'Running background jobs properly'}
+    check:
+      q: 'Why return `202 Accepted` instead of `200 OK` for slow work?'
+      a: '200 makes the client think the work is finished. 202 says honestly: the work was accepted but isn''t done, check the Location URL for the result.'
+
+  - slug: decision-guide
+    title: 'Which one, and when: a decision chart'
+    kind: compare
+    tldr: 'Choose by situation: REST for public and ordinary work, GraphQL for complex screens across many clients, gRPC between internal services, messages for slow work.'
+    keywords: ['REST vs GraphQL', 'gRPC vs REST', 'decision guide', 'which to choose', 'API choice']
+    blocks:
+      - type: text
+        body: |
+          The question when picking a style isn't "which one is modern?" but "where does it hurt?". Where nothing hurts, a new style only adds complexity. The chart below points to the straight path by situation.
+      - type: visual
+        kind: table
+        caption: 'Choosing a style by situation'
+        headers: ['Situation', 'Choose']
+        rows:
+          - cells: ['An outside partner or a public API', 'REST']
+            tip: 'Everyone knows it, you can try it with curl, and caching and tooling are mature.'
+          - cells: ['A plain CRUD app from one team', 'REST']
+            tip: 'Nothing hurts, so the straight path is best. Learning and running another style is cost for no reason.'
+          - cells: ['Web, mobile, TV: many clients, different screens', 'GraphQL']
+            tip: 'Each client wants the shape it needs. Otherwise you would have to build a separate endpoint for each.'
+          - cells: ['Your own internal services, lots of calls, speed matters', 'gRPC']
+            tip: 'You control both sides, so sharing the .proto file is easy. The binary format gives extra speed.'
+          - cells: ['Slow work that can happen later', 'Async message']
+            tip: 'There is no need to keep the user waiting. The queue holds the work and a worker does it later.'
+          - cells: ['One event many parties will hear (an order was placed)', 'Event message']
+            tip: 'The sender doesn''t even know who is listening. Adding a new listener doesn''t change the sender''s code.'
+      - type: points
+        title: 'Ask before you pick a style'
+        style: number
+        items:
+          - 'Does the pain really exist, or do you just feel like trying something new?'
+          - 'Who are the clients: your own, or unknown people outside?'
+          - 'Does anyone on the team know how to run and fix it?'
+          - 'Does the user need the answer right now?'
+      - type: quote
+        body: 'Mixing styles in one system is fine: REST outside, gRPC inside, messages for slow work.'
+    aside:
+      - type: when
+        use:
+          - 'GraphQL: when you have many kinds of clients and screens that change often'
+          - 'gRPC: when both sides are yours, and you need speed and a typed contract'
+        avoid:
+          - 'GraphQL: in a small CRUD app, just because it is "modern"'
+          - 'gRPC: when handing an API directly to outside partners, especially browser clients'
+      - type: refs
+        items:
+          - {to: 'api/contracts-versioning', label: 'Whatever the style, protect the contract'}
+          - {to: 'messaging/events-vs-commands', label: 'Events vs. commands'}
+    check:
+      q: 'A small app with one Vue frontend and one Symfony backend. What should you ask yourself before bringing in GraphQL?'
+      a: 'Where does it hurt, and does it hurt at all? With a single client there is almost no over-fetching or repeated-call problem, so plain REST is enough.'
+
+flashcards:
+  - q: 'What are over-fetching and under-fetching?'
+    a: 'Over-fetching: getting more data than you need. Under-fetching: not getting enough in one go, so you have to call again and again.'
+    more: |
+      Both come from REST's fixed-shape resources. On a slow mobile network, both extra data and extra round trips cost a lot. GraphQL was built for exactly these two problems.
+    ref: too-much-too-little
+  - q: 'Which style is the usual default, and why?'
+    a: 'REST. Everybody knows it, HTTP caching and tooling are mature, and it is the easiest for outside partners.'
+    more: |
+      The other styles are cures for specific pains. Bring them in without the pain and you only add the cost of learning, running and debugging them. So start with REST and move when you know where it hurts.
+    ref: four-styles
+  - q: 'What problem does GraphQL solve, and what does it cost?'
+    a: 'The client fetches exactly what it wants in one go. The cost: caching is hard, the server is more complex, and heavy queries need limits.'
+    more: |
+      There is usually a single POST endpoint, so you can't use HTTP caching by URL. Separate database calls for each nested field can cause N+1. Without depth and cost limits, a single query can put pressure on the server.
+    ref: graphql-grpc-shape
+  - q: 'Where is gRPC at its best, and where not?'
+    a: 'Between internal services: fast and typed. Not good for browsers or outside partners.'
+    more: |
+      gRPC uses Protobuf and HTTP/2, so it is compact and fast. But a browser can't speak gRPC directly and needs gRPC-Web or a proxy. It is awkward for outside partners too, because they can't try it with curl.
+    ref: four-styles
+  - q: 'Why can''t a field number in Protobuf (= 2) be changed?'
+    a: 'On the wire a field is identified by that number, not its name. Change the number and old clients read a different field.'
+    more: |
+      Renaming a field is relatively safe, but changing or reusing its number is a breaking change. The number of a deleted field is marked `reserved`, so nobody reuses it by mistake.
+    ref: graphql-grpc-shape
+  - q: 'What status does an API return for slow work, and with what?'
+    a: '`202 Accepted` plus a `Location` header where the job''s status can be checked. The work runs in the background in a queue worker.'
+    more: |
+      202 honestly says the work was accepted and isn't finished. The client asks that Location now and then to see whether it is pending or done. It is important that a failed job shows as failed, with a reason, in the status, or it stays pending forever.
+    ref: async-202
+  - q: 'What should be the first question when picking a style?'
+    a: 'Where does it hurt, and does it really hurt? If there is no pain, plain REST is right.'
+    more: |
+      Not "which is modern" but "which problem must I solve". Look at who the clients are, whether the user needs the answer right now, and whether the team can run the style. Mixing styles in one system is fine too: REST outside, gRPC inside.
+    ref: decision-guide
+
+quiz:
+  - q: 'Rahim''s company has web, iOS, Android and smart TV apps on one backend. Each screen needs something different, and with REST he has to build a separate endpoint for each. Which style fixes this pain?'
+    hint: 'Who decides which fields come back: the server or the client?'
+    options:
+      - text: 'gRPC, because it is the fastest'
+        correct: false
+        why: 'Speed isn''t the pain here. And bringing gRPC straight to TV or browser clients is hard too.'
+      - text: 'GraphQL, where each client writes out the fields it needs'
+        correct: true
+        why: 'Each client asks one general endpoint for the shape it needs, so there is no need for separate endpoints.'
+      - text: 'Async messages, because the client doesn''t wait'
+        correct: false
+        why: 'A screen needs its data right now. A message doesn''t give you an immediate answer.'
+      - text: 'No style change; let every client accept the same response'
+        correct: false
+        why: 'Over-fetching and under-fetching would carry on, and the pain would grow.'
+    ref: decision-guide
+  - q: 'What is wrong with the response of POST /reports in the code below?'
+    lang: php
+    code: |
+      $report = new Report($dto->month);
+      $em->persist($report);
+      $em->flush();
+
+      $bus->dispatch(new GenerateReport($report->getId()->toRfc4122()));
+
+      return $this->json(['status' => 'done'], 200);
+    hint: 'Has the report really been built at this moment?'
+    options:
+      - text: 'The work is running in the background, yet the response says done and 200. The client will be misled'
+        correct: true
+        why: 'For unfinished work you should return 202 with status pending, plus a Location header.'
+      - text: 'It is wrong to flush before calling dispatch'
+        correct: false
+        why: 'Flushing first is actually correct. Otherwise the worker wouldn''t find the report row in the database.'
+      - text: 'The controller should build the report itself, without Messenger'
+        correct: false
+        why: 'That would make the user sit for 20 seconds, and could time out as well.'
+      - text: 'It should return HTML instead of JSON'
+        correct: false
+        why: 'The format isn''t the problem. The problem is lying about the state of the work.'
+    ref: async-202
+  - q: 'In which of these cases is gRPC a good choice?'
+    hint: 'Do you control both sides, and who is calling?'
+    options:
+      - text: 'Thousands of calls per second between two internal Symfony services'
+        correct: true
+        why: 'Both sides are yours, Protobuf is compact and HTTP/2 is fast. Typed code reduces mistakes too.'
+      - text: 'Giving a small outside partner a simple API to try with curl'
+        correct: false
+        why: 'A binary format isn''t easy to try with curl. REST is the straightforward choice here.'
+      - text: 'Sharing a .proto file between services in two different languages (PHP and Go) to keep a typed contract'
+        correct: true
+        why: 'Code for each language can be generated from the .proto, so the contract lives in one place.'
+      - text: 'Directly from a Vue app in the browser, with no proxy'
+        correct: false
+        why: 'A browser can''t speak native gRPC. You need gRPC-Web or a proxy in between.'
+    ref: four-styles
+  - q: 'A small blog app: one Vue frontend, one Symfony API, a team of three. Someone proposes adding GraphQL, "because everyone does it now". What is the best answer?'
+    hint: 'What was the pain?'
+    options:
+      - text: 'Good idea, GraphQL is always better than REST'
+        correct: false
+        why: 'Not better or worse, just different. Without the pain, extra complexity is only cost.'
+      - text: 'First let''s check whether we really have over-fetching or repeated calls. If not, REST is right'
+        correct: true
+        why: 'With one client and a small team this pain is usually almost absent, while GraphQL brings caching and security complexity.'
+      - text: 'If we add GraphQL we should add gRPC too, so we have every style'
+        correct: false
+        why: 'The more styles you have, the heavier the burden of running and learning them.'
+      - text: 'REST is right, because GraphQL never works in production'
+        correct: false
+        why: 'GraphQL runs at many large companies. The question is whether this app needs it.'
+    ref: decision-guide
+  - q: 'Why is caching harder in GraphQL than in REST?'
+    hint: 'What does an HTTP cache build its cache key from?'
+    options:
+      - text: 'GraphQL usually talks through POST to a single URL, so HTTP caching by URL doesn''t work'
+        correct: true
+        why: 'In REST every resource has its own URL and a GET, so browsers and CDNs cache it easily.'
+      - text: 'GraphQL responses are always encrypted'
+        correct: false
+        why: 'Encryption has nothing to do with it; the reason is the URL and the method.'
+      - text: 'Database queries are slower in GraphQL'
+        correct: false
+        why: 'Database speed doesn''t depend on the style. Caching is harder because of the shape of the request.'
+      - text: 'Caching GraphQL is forbidden'
+        correct: false
+        why: 'It isn''t forbidden, but you have to do it differently, on the server or in the client library.'
+    ref: graphql-grpc-shape

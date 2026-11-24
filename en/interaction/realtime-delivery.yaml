@@ -1,0 +1,361 @@
+slides:
+  - slug: are-we-there-yet
+    title: '"Is it ready?" "Not yet." Every two seconds'
+    kind: story
+    tldr: 'If every client asks the server about an order''s status every 2 seconds, almost every request comes back empty, yet each one costs the server full price.'
+    keywords: ['polling', 'real-time', 'push', 'server load', 'live updates']
+    blocks:
+      - type: metaphor
+        icon: shop
+        title: 'Asking again and again at the tea stall'
+        body: |
+          Fifteen customers walk up to the counter every minute asking "is my tea ready?". The person at the counter is worn out answering, and the real work stalls. If the stall simply called out token numbers or rang a bell, nobody would need to ask. Polling is the first way; **push** is the second.
+      - type: visual
+        kind: bars
+        caption: '10,000 users, each with an order that changes 3 times an hour'
+        items:
+          - {label: 'Polling (2s)', value: 5000, display: '5,000/sec', tone: bad, tip: '10,000 users / 2 seconds. Almost all of these are "nothing changed" answers.'}
+          - {label: 'Push', value: 8, display: '~8/sec', tone: good, tip: '10,000 x 3 changes / 3,600 seconds. A message goes out only on a real change.'}
+      - type: quote
+        body: 'Instead of asking again and again, let the server tell you when something changes.'
+    aside:
+      - type: story
+        title: 'Live scores on match night'
+        body: |
+          A sports site polled every second for live scores. In the final match traffic grew 20 times, the database buckled, and the site went down at the very moment the score changed.
+      - type: terms
+        items:
+          - {term: 'Polling', meaning: 'The client asks the server at fixed intervals.'}
+          - {term: 'Push', meaning: 'The server tells the client on its own whenever something changes.'}
+    check:
+      q: 'If 10,000 users poll every 2 seconds, how many requests per second reach the server, and why is that wasteful?'
+      a: '5,000 per second. Almost all are "nothing changed" answers, yet the server runs the full request for each one.'
+
+  - slug: four-ways
+    title: 'Polling, long-polling, SSE, WebSocket'
+    kind: compare
+    tldr: 'For one-way news from server to browser, SSE is simple and enough. Reach for WebSocket only when both sides talk a lot.'
+    keywords: ['SSE', 'WebSocket', 'long polling', 'Server-Sent Events', 'push notification', 'real-time']
+    blocks:
+      - type: metaphor
+        icon: phone
+        title: 'Four ways the tea stall gives news'
+        body: |
+          **Polling**: the customer keeps asking. **Long-polling**: the customer says "call me when the tea's ready" and stands waiting, then stands there again after being called. **SSE**: the stall's radio; the server broadcasts one way. **WebSocket**: a phone call, where both sides can speak any time.
+      - type: visual
+        kind: table
+        caption: 'The four connection types side by side'
+        headers: ['', 'Polling', 'Long-polling', 'SSE', 'WebSocket']
+        rows:
+          - cells: ['Direction', 'The client asks', 'The server holds the reply', 'Server to client', 'Both ways']
+            tip: 'SSE goes one way only: server to browser. To send from browser to server, an ordinary POST does the job.'
+          - cells: ['Connection', 'New every time', 'New after each reply', 'One open HTTP connection', 'One, upgraded from HTTP']
+            tip: 'SSE is plain HTTP, so proxies, auth and load balancers work as before. WebSocket brings a separate protocol.'
+          - cells: ['Reconnect', 'Automatic (the next poll)', 'You write it in code', 'The browser does it, with Last-Event-ID', 'You write it in code']
+            tip: 'When an SSE connection drops, the browser reconnects itself and sends the last event id, so missed messages come back.'
+          - cells: ['Where it fits', 'Few updates, light load', 'Old environments, fallback', 'Status, feeds, notifications', 'Chat, games, collaborative editors']
+            tip: 'Most business apps need the "server will tell you" kind, where SSE is enough.'
+      - type: points
+        title: 'Which to pick'
+        style: check
+        items:
+          - 'The server only announces (order status, feeds, notifications): SSE.'
+          - 'Frequent messages in both directions (chat, games, co-editing): WebSocket.'
+          - 'The user isn''t in the app: push notification (FCM or Web Push), since there is no open connection then.'
+    aside:
+      - type: when
+        use: ['SSE: on HTTP/2 or HTTP/3, dozens of connections are no problem']
+        avoid: ['WebSocket: overkill just to say "your order was created"']
+      - type: pitfalls
+        items:
+          - 'On HTTP/1.1 a browser allows only 6 connections per domain; open 6 SSE tabs and everything stalls. HTTP/2 fixes this.'
+    check:
+      q: 'You need to push an order''s status from server to browser. SSE or WebSocket, and why?'
+      a: 'SSE. The messages flow one way (server to browser), it runs over plain HTTP, and the browser handles reconnect and Last-Event-ID itself. WebSocket''s complexity would be extra here.'
+
+  - slug: mercure-publish
+    title: 'Symfony Mercure: publishing from the server'
+    kind: howto
+    tldr: 'A Mercure hub holds the SSE connections. Symfony just publishes an Update through HubInterface, and a cookie grants access to private topics.'
+    keywords: ['Mercure', 'HubInterface', 'Update', 'private update', 'JWT', 'setCookie']
+    blocks:
+      - type: text
+        body: |
+          PHP-FPM wasn't built to keep many connections open. So a separate **Mercure hub** (written in Go, also built into FrankenPHP) holds them. Symfony only tells the hub "send this data on this topic", and the hub passes it to every subscriber. For personal data, mark the update `private` and authorize each user only for their own topic.
+      - type: code
+        lang: php
+        file: 'src/MessageHandler/PublishOrderStatusHandler.php'
+        variant: good
+        code: |
+          #[AsMessageHandler]
+          final readonly class PublishOrderStatusHandler
+          {
+              public function __construct(private HubInterface $hub) {}
+
+              public function __invoke(OrderStatusChanged $e): void
+              {
+                  $this->hub->publish(new Update(
+                      topics: 'https://shop.example/orders/'.$e->orderId,
+                      data: json_encode(['status' => $e->status], JSON_THROW_ON_ERROR),
+                      private: true,
+                  ));
+              }
+          }
+        marks:
+          - {line: 9, tip: 'A topic is a URL-style name. Only those who subscribed to this name receive the update.'}
+          - {line: 11, tip: '`private: true` means only authorized subscribers get it; nobody without a JWT can see it.'}
+      - type: code
+        lang: php
+        file: 'src/Controller/OrderLiveController.php'
+        variant: good
+        code: |
+          #[Route('/orders/{id}/live', methods: ['GET'])]
+          #[IsGranted('VIEW', subject: 'order')]
+          public function live(
+              Order $order,
+              Request $request,
+              Authorization $authorization,
+              HubInterface $hub,
+          ): JsonResponse {
+              $topic = 'https://shop.example/orders/'.$order->getId();
+              $authorization->setCookie($request, [$topic]);   // permission to listen to this topic only
+
+              return $this->json(['hub' => $hub->getPublicUrl(), 'topic' => $topic]);
+          }
+        marks:
+          - {line: 2, tip: 'First, Symfony''s own voter checks: does this order belong to this user?'}
+          - {line: 10, tip: 'The subscriber JWT goes into a cookie. It grants access to this one topic only.'}
+    aside:
+      - type: tips
+        items:
+          - 'Publish only after the main transaction has committed. That is why this lives in a Messenger handler.'
+          - 'If the SPA runs on a different domain, set the cookie''s domain and `SameSite` right, or the hub won''t receive the cookie.'
+      - type: refs
+        items:
+          - {to: 'messaging/events-vs-commands', label: 'Messenger and events'}
+    check:
+      q: 'What can happen if you publish a Mercure update without `private: true`?'
+      a: 'Anyone who knows the topic name can subscribe and watch other people''s order updates. With private, the hub checks that the subscriber''s JWT grants access to the topic.'
+
+  - slug: vue-eventsource
+    title: 'EventSource in Vue: listen, and don''t forget to close'
+    kind: howto
+    tldr: 'First fetch the current state with a plain GET, then listen to live changes with EventSource. Call close() on unmount so connections don''t pile up.'
+    keywords: ['EventSource', 'Vue 3', 'Last-Event-ID', 'onBeforeUnmount', 'withCredentials', 'script setup']
+    blocks:
+      - type: text
+        body: |
+          When the page opens, a plain GET first brings in the order's current state, and then `EventSource` listens for new changes only. You need both, because a change that happened before the connection was made never shows up in the live stream. And when the component goes away, you must close the connection yourself.
+      - type: code
+        lang: vue
+        file: 'src/components/OrderLiveStatus.vue'
+        variant: good
+        code: |
+          <script setup lang="ts">
+          import { ref, onMounted, onBeforeUnmount } from 'vue'
+
+          const props = defineProps<{ orderId: number; initialStatus: string }>()
+          const status = ref(props.initialStatus)   // the current state fetched from the server first
+          const live = ref(false)
+          let source: EventSource | null = null
+
+          onMounted(async () => {
+            const res = await fetch(`/orders/${props.orderId}/live`, { credentials: 'include' })
+            const { hub, topic } = await res.json()
+
+            const url = new URL(hub)
+            url.searchParams.append('topic', topic)
+
+            source = new EventSource(url, { withCredentials: true })
+            source.onopen = () => (live.value = true)
+            source.onerror = () => (live.value = false)   // the browser reconnects by itself
+            source.onmessage = (e) => (status.value = JSON.parse(e.data).status)
+          })
+
+          onBeforeUnmount(() => source?.close())
+          </script>
+
+          <template>
+            <p>Status: {{ status }} <small v-if="!live">(reconnecting…)</small></p>
+          </template>
+        marks:
+          - {line: 5, tip: 'Even if messages are lost before or during the live connection, the user sees the current state, not a stale one.'}
+          - {line: 16, tip: 'Without `withCredentials` the browser doesn''t send the cookie, and the private topic isn''t authorized.'}
+          - {line: 18, tip: 'If the connection drops, the browser reconnects itself and sends Last-Event-ID; the hub replays missed updates.'}
+          - {line: 22, tip: 'Without close(), the connection stays open after the page changes and they keep piling up.'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'Forget `close()` on unmount and every visit to the page leaves one more connection behind.'
+          - 'Don''t rely on EventSource alone; to cover lost messages, fetch the current state first.'
+      - type: tips
+        items:
+          - 'To listen to several topics, add the `topic` parameter more than once; you still need only one connection.'
+    check:
+      q: 'What happens if you don''t call `source.close()` when the component unmounts?'
+      a: 'The connection stays open after the user leaves the page, and each visit adds another. Both the browser''s limit and the server''s memory get eaten away.'
+
+  - slug: scale-presence-push
+    title: 'The price of connections: scaling, presence and push'
+    kind: concept
+    tldr: 'Every open connection costs server resources. The hub receives once and sends to many. Presence is a heartbeat plus a TTL, and push notifications cover users outside the app.'
+    keywords: ['connection scaling', 'presence', 'heartbeat', 'push notification', 'FCM', 'Web Push', 'online status']
+    blocks:
+      - type: visual
+        kind: flow
+        caption: 'Publish once, and the hub spreads it over thousands of connections'
+        nodes:
+          - {id: app, label: 'Symfony app', sub: 'Messenger handler', icon: code, col: 0, row: 0, tip: 'On a domain event it informs the hub once. Holding connections open is not its job.'}
+          - {id: hub, label: 'Mercure hub', sub: 'holds connections', icon: bolt, tone: accent, col: 1.5, row: 0, tip: 'Lightweight and efficient with concurrent connections. It keeps thousands of them in a single process.'}
+          - {id: web, label: 'Browsers', sub: '10,000 connections', icon: users, col: 3, row: 0, tip: 'Each browser holds one open HTTP connection.'}
+          - {id: presence, label: 'Redis', sub: 'online or not', icon: cache, col: 1.5, row: 1.5, tip: 'The record of who is online, with a TTL.'}
+          - {id: push, label: 'FCM / Web Push', sub: 'if not in the app', icon: bell, col: 3, row: 1.5, tip: 'There is no connection, so the message goes through the phone OS''s own channel.'}
+        edges:
+          - {from: app, to: hub, label: 'The app publishes once, with a topic'}
+          - {from: hub, to: web, label: 'The hub sends the message to every subscribed browser'}
+          - {from: web, to: presence, label: 'Each browser sends a heartbeat every 30s; the key''s TTL is 60s', dashed: true}
+          - {from: app, to: push, label: 'If the user is offline, it sends through a push provider', dashed: true, tone: warn}
+      - type: points
+        title: 'Three calculations'
+        style: number
+        items:
+          - '**Scaling**: every connection uses a socket and memory. Give the holding of connections to the hub, not to PHP-FPM.'
+          - '**Presence**: who is online, via heartbeats. When the TTL runs out the key disappears, and the server assumes the user is gone.'
+          - '**Push notification**: if the user is out of the app there is no connection, so go through the OS with FCM or Web Push.'
+      - type: quote
+        body: 'Holding connections and doing the work are separate duties. Keep them on separate servers.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Don''t measure presence by "is the connection open" alone. On mobile, connections die silently, so you need a heartbeat and a TTL.'
+          - 'Even after a push notification, fetch the current state from the server when the user opens the app; don''t trust the push message.'
+      - type: refs
+        items:
+          - {to: 'messaging/notifications', label: 'Notification systems'}
+          - {to: 'interaction/fan-out', label: 'From one to many'}
+    check:
+      q: 'Why isn''t checking whether the connection is open enough to know if a user is online?'
+      a: 'A mobile network can drop silently while the server still thinks the connection is open. With a heartbeat and a TTL, no regular reply means "offline".'
+
+flashcards:
+  - q: 'Why is polling expensive at scale?'
+    a: 'Every user sends a request at a fixed interval, and most come back "nothing changed". The server pays full price even when nothing has changed.'
+    more: |
+      If 10,000 users poll every 2 seconds, that is 5,000 requests per second. The status may change only about three times an hour, so push needs just a few messages per second.
+    ref: are-we-there-yet
+  - q: 'What is SSE (Server-Sent Events)?'
+    a: 'One-way messages from server to browser over a single open HTTP connection. The browser listens with `EventSource`.'
+    more: |
+      Because it is plain HTTP, there is less trouble with proxies, auth and load balancers. If the connection drops, the browser reconnects by itself. To send from browser to server, you still need a separate POST.
+    ref: four-ways
+  - q: 'How do you choose between SSE and WebSocket?'
+    a: 'If the server only sends news, use SSE. If both sides talk a lot, as in chat, games or collaborative editors, use WebSocket.'
+    more: |
+      WebSocket is a separate protocol, so you handle reconnect, auth and scaling yourself. Most business apps need "tell me when the status changes", which SSE does easily.
+    ref: four-ways
+  - q: 'What is long-polling?'
+    a: 'The client sends a request and the server holds the reply until something new arrives. After getting it, the client sends another request.'
+    more: |
+      Fewer empty requests go out than with plain polling. But every change needs a new connection, and you write the reconnect code yourself. Before SSE arrived, this was the usual route.
+    ref: four-ways
+  - q: 'What is Mercure, and what is Symfony''s role?'
+    a: 'Mercure is a hub that holds the SSE connections. Symfony just calls `HubInterface::publish(new Update(...))` to hand it a message.'
+    more: |
+      Holding the connections is the hub's job, so PHP-FPM doesn't have to carry many open connections. For personal data, `private: true` makes the hub check that the subscriber's JWT grants access to the topic.
+    ref: mercure-publish
+  - q: 'What are the three precautions when using EventSource in Vue?'
+    a: 'Fetch the current state first, pass `withCredentials: true` for private topics, and call `close()` on unmount.'
+    more: |
+      Messages can be lost before or during the live connection, so first fetch the true state with a plain GET. Without `close()`, every visit to the page leaves one more connection behind.
+    ref: vue-eventsource
+  - q: 'How do you measure presence (who is online) reliably?'
+    a: 'The client sends a regular heartbeat and the server keeps a Redis key with a TTL. When the TTL runs out the key vanishes, and the user counts as offline.'
+    more: |
+      Looking only at "is the connection open" gives wrong answers, because mobile connections die silently and the server doesn't notice. Keep the heartbeat interval at about half the TTL, so losing one beat is survivable.
+    ref: scale-presence-push
+  - q: 'How do you reach a user who has the app closed?'
+    a: 'With a push notification (FCM or Web Push). It needs no open connection; the message travels through the phone''s OS.'
+    more: |
+      Keep push messages short, and when the user opens the app, fetch the current state from the server. The message only rings the bell; it isn't the source of truth.
+    ref: scale-presence-push
+
+quiz:
+  - q: 'On an order-tracking page, you want to tell the user the moment the status changes. Which is the best fit?'
+    hint: 'Which way do the messages flow?'
+    options:
+      - text: 'Poll every second'
+        correct: false
+        why: 'With thousands of users it is hugely wasteful, and it still delays by up to a second.'
+      - text: 'SSE, with Symfony Mercure'
+        correct: true
+        why: 'One-way news, plain HTTP, and the browser reconnects by itself.'
+      - text: 'WebSocket, because it is the most modern'
+        correct: false
+        why: 'No frequent messages go from the browser here, so WebSocket''s extra complexity is pointless.'
+    ref: four-ways
+  - q: 'Which of these statements are correct?'
+    hint: 'Think about what each technology was made for.'
+    options:
+      - text: 'SSE goes only from server to client'
+        correct: true
+        why: 'To send from browser to server you use an ordinary POST.'
+      - text: 'With WebSocket, messages go both ways'
+        correct: true
+        why: 'Over the same connection, client and server can both send at any time.'
+      - text: 'EventSource never reconnects once the connection drops'
+        correct: false
+        why: 'The browser reconnects by itself and sends Last-Event-ID.'
+      - text: 'In long-polling the server never holds the reply'
+        correct: false
+        why: 'Holding is the whole trick: the reply is held until something new arrives.'
+    ref: four-ways
+  - q: 'What is wrong with this Vue code?'
+    lang: ts
+    code: |
+      onMounted(() => {
+        const source = new EventSource('/hub?topic=orders/' + props.orderId)
+        source.onmessage = (e) => {
+          status.value = JSON.parse(e.data).status
+        }
+      })
+    hint: 'What happens to the connection after the user leaves the page? And what if the topic is private?'
+    options:
+      - text: 'There is no source.close() on unmount, so connections keep piling up'
+        correct: true
+        why: 'The `source` variable also lives inside onMounted, so there is no way to close it from outside.'
+      - text: 'For a private topic, `withCredentials: true` is missing, so the browser won''t send the cookie'
+        correct: true
+        why: 'To send the cookie to a hub on another origin you need `withCredentials`, or authorization fails.'
+      - text: 'The current state isn''t fetched first, so the user misses changes made before connecting'
+        correct: true
+        why: 'A live stream brings only new changes. First fetch the true state with a plain GET.'
+      - text: 'You can''t use `JSON.parse`'
+        correct: false
+        why: 'e.data is a string, so JSON.parse is exactly right.'
+    ref: vue-eventsource
+  - q: 'The user has the phone app closed and the order arrives. How do you tell them?'
+    hint: 'Is there an open connection?'
+    options:
+      - text: 'Send it over the SSE connection'
+        correct: false
+        why: 'The app is closed, so there is no open connection at all.'
+      - text: 'Send a push notification (FCM/Web Push), and fetch the status from the server when the app opens'
+        correct: true
+        why: 'The OS push channel arrives without a connection, and the current state should come from the server.'
+      - text: 'Poll every second'
+        correct: false
+        why: 'With the app closed, there is nobody to poll.'
+    ref: scale-presence-push
+  - q: 'What is the problem with holding SSE connections in PHP-FPM, and what is the fix?'
+    hint: 'What does each open connection tie up?'
+    options:
+      - text: 'Each connection ties up an FPM worker; keep the connections in a separate hub (Mercure)'
+        correct: true
+        why: 'The number of workers is limited, so with thousands of connections even ordinary requests get stuck.'
+      - text: 'No problem, PHP-FPM holds thousands of connections easily'
+        correct: false
+        why: 'In FPM each request takes one worker, so open connections use up the workers fast.'
+      - text: 'Just adding more RAM fixes it'
+        correct: false
+        why: 'The limit is the number of workers; more RAM only raises cost while the structural problem remains.'
+    ref: mercure-publish

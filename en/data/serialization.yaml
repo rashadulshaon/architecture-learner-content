@@ -1,0 +1,374 @@
+slides:
+  - slug: renamed-field-broke-app
+    title: 'One renamed field broke the mobile app'
+    kind: story
+    tldr: 'Change the shape (schema) of an API or message and every reader that expects the old shape breaks. Both sides never deploy at the same moment, so changes must be made carefully.'
+    keywords: ['schema evolution', 'breaking change', 'serialization', 'compatibility', 'rename field', 'api versioning']
+    blocks:
+      - type: metaphor
+        icon: mail
+        title: 'The courier''s form'
+        body: |
+          Imagine a courier office quietly renames the "Phone" box on its form to "Mobile". A clerk holding an old form can't find the box, and the parcel gets stuck. The people who print the forms and the people who read them are different, and they switch at different times. So any change has to leave both the old and the new form readable.
+      - type: text
+        body: |
+          Rahim's team renamed `phone` to `mobile` in an API response. The web app was fixed the same day, but the old mobile app sitting in the Play Store would keep looking for `phone` for another two weeks. During that gap it showed an empty number.
+      - type: visual
+        kind: sequence
+        caption: 'The rename: new server, old app'
+        actors:
+          - {id: old, label: 'Old mobile app', icon: mobile, tip: 'This keeps running until users update it. We have no control over it.'}
+          - {id: api, label: 'New API', icon: api, tip: 'We own the server, so a deploy here takes effect instantly.'}
+        messages:
+          - {from: old, to: api, label: 'Give me my profile'}
+          - {from: api, to: old, label: '{"mobile": "01711..."}', dashed: true, tip: 'The new name. The old app doesn''t recognise it.'}
+          - {at: old, note: 'user.phone = null, phone box empty', tone: bad, tip: 'With luck you just get an empty box; with bad luck, a crash.'}
+      - type: quote
+        body: 'Readers and writers never change at the same moment. Make every change work in both directions.'
+    aside:
+      - type: story
+        title: 'The user who never updates'
+        body: |
+          Plenty of users go months without updating an app. On the day your server changes, old versions are still out there running. Changing an API's shape is like walking into a house that is half renovated.
+      - type: terms
+        items:
+          - {term: 'Serialization', meaning: 'Turning an in-memory object into JSON or binary bytes so it can be sent or stored.'}
+          - {term: 'Schema', meaning: 'The shape of the data: which fields exist, their types, and which are required.'}
+    check:
+      q: 'Why is renaming the server field `phone` to `mobile` dangerous, even if the web app is fixed at the same time?'
+      a: 'The old mobile app, messages already in a queue and other teams'' consumers all still read the old name. They don''t change at the same moment, so they break.'
+
+  - slug: json-protobuf-avro
+    title: 'JSON, Protobuf, Avro: how each one writes data'
+    kind: concept
+    tldr: 'JSON is human-readable but bulky; Protobuf and Avro are compact and schema-driven. Protobuf identifies fields by number, while Avro carries the writer''s schema alongside.'
+    keywords: ['JSON', 'Protobuf', 'Avro', 'binary format', 'field number', 'format comparison']
+    blocks:
+      - type: text
+        body: |
+          Picture three ways to write a letter: full sentences in plain language (JSON), short codes keyed to box numbers on a form (Protobuf), or a letter with a page attached that lists what each box means (Avro). JSON writes every field name into every message, so it's big. Protobuf sends a **field number** (`= 1`, `= 2`) instead of a name, so it's small, and that number is the field's real identity. Avro data carries no names at all; to read it you need the schema it was written with.
+      - type: visual
+        kind: table
+        caption: 'The three formats side by side'
+        headers: ['', 'JSON', 'Protobuf', 'Avro']
+        rows:
+          - cells: ['Size', 'Large', 'Small', 'Small']
+            tip: 'Binary formats don''t repeat field names in every message.'
+          - cells: ['Human-readable', 'Yes', 'No', 'No']
+            tip: 'JSON is the easiest to debug; binary formats need tooling.'
+          - cells: ['Schema', 'Optional', 'Required (.proto)', 'Required (.avsc)']
+            tip: 'With a schema, a compiler or registry catches breaking changes early.'
+          - cells: ['Identifies fields by', 'Name', 'Number', 'Schema order']
+            tip: 'In Protobuf, renaming a field is safe and changing its number is disastrous.'
+          - cells: ['Typically used for', 'Public APIs, browsers', 'gRPC, service to service', 'Kafka, data pipelines']
+            tip: 'Each has its place; for browsers, JSON is almost always the answer.'
+      - type: code
+        lang: protobuf
+        file: 'proto/order.proto'
+        variant: good
+        code: |
+          syntax = "proto3";
+
+          message OrderPlaced {
+            int64  order_id     = 1;   // number 1 = the field's permanent identity
+            int64  total_amount = 2;
+            string currency     = 3;
+          }
+        marks:
+          - {line: 4, tip: 'On the wire this travels as `1: <value>`. The name `order_id` is never sent, so changing the number turns it into a different field.'}
+    aside:
+      - type: remember
+        body: 'In JSON the name is the identity; in Protobuf the number is.'
+      - type: when
+        use:
+          - 'JSON: browser-facing APIs, or when easy debugging matters'
+          - 'Protobuf/Avro: huge message volumes between services, where small size and a strict schema are needed'
+        avoid:
+          - 'Picking a binary format only because it sounds "fast"; measure first'
+    check:
+      q: 'In Protobuf, renaming a field is safe but changing its number is not. Why?'
+      a: 'Names never go over the wire, only numbers do. Change a number and old readers will interpret that data as the value of a different field.'
+
+  - slug: safe-schema-changes
+    title: 'Safe changes: adding, removing and renaming fields'
+    kind: howto
+    tldr: 'Add new fields as optional or with a default. Stop using a field before you remove it. A rename is an add, then a later remove of the old one.'
+    keywords: ['backward compatible', 'forward compatible', 'optional field', 'default value', 'Messenger serializer', 'tolerant reader']
+    blocks:
+      - type: text
+        body: |
+          The goal is that both the old and the new shape stay readable. The rules are simple. **Adding** a field is safe if a reader that doesn't find it falls back to a default. **Removing** a field is safe only once nobody reads it any more. A **rename** is really an add and a remove, done in two separate steps. Symfony Messenger queues hold old messages for a while, so the same rules apply there.
+      - type: code
+        lang: php
+        file: 'src/Message/OrderPlaced.php'
+        variant: good
+        code: |
+          final readonly class OrderPlaced
+          {
+              public function __construct(
+                  public int $orderId,
+                  public int $totalAmount,
+                  // added in v2: old messages lack it, so it has a default
+                  public string $currency = 'BDT',
+                  public ?string $couponCode = null,
+              ) {
+              }
+          }
+        marks:
+          - {line: 7, tip: 'Even if v1 messages are still sitting in the queue, the object can be built without this field because it has a default.'}
+          - {line: 8, tip: '`?string` with a `null` default: "absent" is a valid state.'}
+      - type: code
+        lang: yaml
+        file: 'config/packages/messenger.yaml'
+        variant: good
+        code: |
+          framework:
+              messenger:
+                  serializer:
+                      default_serializer: messenger.transport.symfony_serializer
+                      symfony_serializer:
+                          format: json
+          # Not PHP's native serialize(): old messages become hard to read once the class changes
+        marks:
+          - {line: 4, tip: 'With JSON messages, everything except a class rename is easy to handle, and consumers in other languages can read them too.'}
+      - type: visual
+        kind: table
+        caption: 'Which changes are safe'
+        headers: ['Change', 'Safe?', 'How']
+        rows:
+          - cells: ['Add a field with a default', 'Yes', 'Old readers ignore the new field']
+            tip: 'Build your API assuming readers ignore unknown fields (a tolerant reader).'
+          - cells: ['Add a required field', 'No', 'Optional first, required later']
+            tip: 'Old senders don''t send the field, so new readers fail.'
+          - cells: ['Remove a field', 'In stages', 'Stop using it, then remove it']
+            tip: 'Check logs or metrics to confirm nobody still reads it.'
+          - cells: ['Rename a field', 'Two steps', 'Add the new name, send both, drop the old']
+            tip: 'Sending the data under both names keeps both kinds of reader working.'
+          - cells: ['Change a field''s type', 'No', 'Create a new field']
+            tip: 'Going from `int` to `string` breaks every reader. Add a new field under a new name instead.'
+    aside:
+      - type: tips
+        items:
+          - 'Loosen strict validation in consumers: ignore unknown fields. That is the tolerant reader.'
+          - 'A `version` field or header in a public API makes it easier to tell which readers are affected during a change.'
+      - type: refs
+        items:
+          - {to: 'api/contracts-versioning', label: 'API contracts and versioning'}
+          - {to: 'messaging/events-vs-commands', label: 'Events and messages'}
+    check:
+      q: 'What steps would you take to move the `phone` field to the name `mobile`?'
+      a: 'First add `mobile` and send both fields. Once every reader has switched to the new one, remove `phone`.'
+
+  - slug: reuse-field-number
+    title: 'The trap of reused numbers and required fields'
+    kind: pitfall
+    tldr: 'Reuse the number or name of a removed field and old data gets read with the wrong meaning. Use reserved to forbid it.'
+    keywords: ['reserved', 'protobuf', 'field number reuse', 'required field', 'breaking change']
+    blocks:
+      - type: text
+        body: |
+          The `phone` field (number 4) was removed. A few months later someone gives the same number 4 to a new field, `discount_percent`. But old messages are still on disk or in a queue, and in them 4 means a phone number. The new reader will happily treat that phone number as a discount rate, with no error at all. It's a mistake of meaning, not of spelling, which makes it the most dangerous kind.
+      - type: code
+        lang: protobuf
+        file: 'proto/order.proto'
+        variant: bad
+        code: |
+          message OrderPlaced {
+            int64  order_id         = 1;
+            int64  total_amount     = 2;
+            string currency         = 3;
+            // phone = 4 was removed; number 4 is now free
+            int32  discount_percent = 4;   // old data has a phone number here!
+          }
+        marks:
+          - {line: 6, tip: 'In old messages, 4 is a phone number (a string). Reading it as an int32 gives a wrong or meaningless value.'}
+      - type: code
+        lang: protobuf
+        file: 'proto/order.proto'
+        variant: good
+        code: |
+          message OrderPlaced {
+            reserved 4;
+            reserved "phone";
+
+            int64  order_id         = 1;
+            int64  total_amount     = 2;
+            string currency         = 3;
+            int32  discount_percent = 5;   // a new field gets a new number
+          }
+        marks:
+          - {line: 2, tip: 'With `reserved`, the compiler refuses to let that number or name be used again. The mistake is caught before deploy.'}
+      - type: quote
+        body: 'Never reuse the number or name of a removed field.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Adding a new required field makes messages from old senders get rejected. This is why proto3 dropped `required`.'
+          - 'When you add a new enum value, old readers don''t recognise it; decide up front what they should do with an unknown value.'
+      - type: remember
+        body: 'Bury a field number; never resurrect it.'
+    check:
+      q: 'What do you gain by writing `reserved` for a removed field''s number?'
+      a: 'If someone later gives that number or name to a new field, the compiler errors immediately. Old data can''t be read with the wrong meaning.'
+
+  - slug: schema-registry
+    title: 'Schema registry: the guardian of changes'
+    kind: concept
+    tldr: 'A schema registry stores every schema version, checks compatibility before a new schema is accepted, and messages carry only a schema id.'
+    keywords: ['schema registry', 'Avro', 'compatibility mode', 'BACKWARD', 'Kafka', 'schema id']
+    blocks:
+      - type: text
+        body: |
+          When many teams share one queue or Kafka topic, any of them can change a schema without asking the others. A **schema registry** is a central ledger that stores every version of every schema. When you submit a new version, it first checks whether it fits with the old ones. If it doesn't, the registry refuses it, so a breaking schema can't reach production. Instead of embedding the whole schema in each message, the message carries just a small **schema id**.
+      - type: visual
+        kind: flow
+        caption: 'Producer to consumer: where the registry sits'
+        nodes:
+          - {id: prod, label: 'Producer', sub: 'new schema v2', icon: send, col: 0, row: 1, tip: 'Registers its schema with the registry before sending messages.'}
+          - {id: reg, label: 'Schema registry', sub: 'stores v1, v2', icon: book, tone: accent, col: 1.5, row: 0, tip: 'Keeps the history of every schema and enforces the compatibility rules.'}
+          - {id: topic, label: 'Kafka topic', sub: 'messages with schema id', icon: queue, col: 1.5, row: 2, tip: 'Messages hold only the `schema id` and the binary data, not the whole schema.'}
+          - {id: cons, label: 'Consumer', sub: 'its own schema v1', icon: worker, col: 3, row: 1, tip: 'Uses the message''s schema id to fetch the writer''s schema from the registry, then reconciles it with its own.'}
+        edges:
+          - {from: prod, to: reg, label: 'Submits v2; the registry checks that it is compatible with v1', tone: good}
+          - {from: prod, to: topic, label: 'Puts the schema id in the message and sends it to the topic'}
+          - {from: topic, to: cons, label: 'The consumer picks up the message and looks up the id in the registry', dashed: true}
+          - {from: reg, to: cons, label: 'It reads with the writer''s schema, reconciled against its own', dashed: true}
+      - type: points
+        title: 'Compatibility modes'
+        style: dot
+        items:
+          - '**BACKWARD**: the new schema can read old messages (consumers upgrade first).'
+          - '**FORWARD**: the old schema can read new messages (producers upgrade first).'
+          - '**FULL**: both. The safest choice between teams that don''t know each other.'
+    aside:
+      - type: tips
+        items:
+          - 'The idea works even without a registry: keep schema files in git and run a compatibility check in CI (for example `buf breaking`).'
+      - type: terms
+        items:
+          - {term: 'Schema registry', meaning: 'A service that stores every version of a schema and checks compatibility.'}
+          - {term: 'Schema id', meaning: 'A small number sent with each message that identifies one schema version in the registry.'}
+      - type: refs
+        items:
+          - {to: 'workflows/outbox-inbox', label: 'Reliable ways to send messages'}
+    check:
+      q: 'Which risk grows without a registry, and how does a registry reduce it?'
+      a: 'Anyone can release a breaking schema without telling anyone. The registry checks compatibility before accepting a schema, so a broken one is stopped.'
+
+flashcards:
+  - q: 'What is schema evolution?'
+    a: 'Changing the shape of data (its fields) over time so that old and new readers and writers keep working together.'
+    more: |
+      APIs, queue messages and files all follow a schema. But the parties don't all deploy at once. So a change has to be made in a way that nobody breaks in between.
+    ref: renamed-field-broke-app
+  - q: 'Why is Protobuf smaller than JSON?'
+    a: 'It sends a small number instead of the field name, and writes numbers in a compact binary form.'
+    more: |
+      JSON writes `"total_amount"` into every message. Protobuf sends only the field number and the value. The price is that you need tooling to read it, and both sides must have the schema file.
+    ref: json-protobuf-avro
+  - q: 'In Protobuf, which is safe to change: a field''s name or its number?'
+    a: 'The name is safe, the number is not. Only numbers go over the wire, so changing one makes old data read as the wrong field.'
+    more: |
+      The name only matters in code; the number is the data's identity. So never change or reuse a number in a .proto file. When you remove a field, mark it `reserved`.
+    ref: reuse-field-number
+  - q: 'What is the safe rule for adding a new field?'
+    a: 'Make it optional or give it a default, so a reader doesn''t break when an old sender''s message lacks it.'
+    more: |
+      In PHP, a default on a constructor parameter (`string $currency = 'BDT'`) lets you read old messages still in the queue. If you want a required field, add it as optional first, and make it required once everyone sends it.
+    ref: safe-schema-changes
+  - q: 'What are the steps for safely renaming a field?'
+    a: 'Add the field under the new name, send both for a while, then remove the old one once everyone reads the new one.'
+    more: |
+      A rename is really one add and one remove. The period when you send both names bridges old and new readers. Before removing, check the logs to confirm nobody still reads the old one.
+    ref: safe-schema-changes
+  - q: 'What is a tolerant reader?'
+    a: 'A reader that ignores fields it doesn''t recognise and assumes defaults for fields that are missing.'
+    more: |
+      A strict reader breaks the moment a sender adds a field. Read only what you need and ignore the rest. That leaves the sender free to evolve.
+    ref: safe-schema-changes
+  - q: 'What does a schema registry do?'
+    a: 'It stores every schema version and checks compatibility before a new schema is accepted, so breaking schemas are stopped.'
+    more: |
+      Messages carry a small schema id rather than the whole schema; the consumer uses it to fetch the schema from the registry. The rules can be set to BACKWARD, FORWARD or FULL mode.
+    ref: schema-registry
+quiz:
+  - q: 'Thousands of `OrderPlaced` messages are sitting in the queue. A new deploy adds a required `string $currency` (no default) to the constructor. What happens?'
+    hint: 'The old messages have no `currency` field.'
+    options:
+      - text: 'Deserialising the old messages fails, because `currency` can''t be found'
+        correct: true
+        why: 'Without a default the object can''t be built. Adding it as optional, with a default, is the right way.'
+      - text: 'Everything works; PHP fills in an empty string itself'
+        correct: false
+        why: 'PHP fills in nothing; a typed property with no value is an error.'
+      - text: 'Only new messages are affected'
+        correct: false
+        why: 'The old messages are the ones that break: the new code needs the field and they don''t have it.'
+      - text: 'The queue deletes the old messages itself'
+        correct: false
+        why: 'A queue knows nothing about schemas; the messages will be retried and eventually land in failed.'
+    ref: safe-schema-changes
+  - q: 'Which of these are usually safe changes (old readers don''t break)?'
+    hint: 'Adding differs from changing; what could a reader fail on if it doesn''t know about it?'
+    options:
+      - text: 'Adding a new optional field with a default to a JSON response'
+        correct: true
+        why: 'A tolerant reader ignores fields it doesn''t recognise.'
+      - text: 'Adding a new field in Protobuf under a new number'
+        correct: true
+        why: 'Old readers don''t recognise the new number, so they ignore it.'
+      - text: 'Changing the type of `total_amount` from `int` to `string`'
+        correct: false
+        why: 'Every reader parses by type, so changing it breaks them. Add a new field instead.'
+      - text: 'Reusing the number of a removed field for a new field'
+        correct: false
+        why: 'Old data would be read as the value of the new field, which is wrong.'
+    ref: reuse-field-number
+  - q: 'Someone changes a field''s number in the `.proto` from 2 to 7 "to keep the order tidy". What''s the problem?'
+    hint: 'Only the number goes over the wire.'
+    options:
+      - text: 'Old messages and old readers will read that data as a different field''s value, silently wrong'
+        correct: true
+        why: 'The number is the field''s identity. Changing the number means changing the field.'
+      - text: 'Nothing; the number only affects ordering'
+        correct: false
+        why: 'It isn''t ordering, it''s identity.'
+      - text: 'It won''t compile'
+        correct: false
+        why: 'It compiles fine, and that is the problem: the mistake is silent.'
+      - text: 'The data gets bigger'
+        correct: false
+        why: 'The size may shift slightly, but the real damage is the change of meaning.'
+    ref: reuse-field-number
+  - q: 'The mobile app and the server deploy at different times. The server is adding a new `mobile` field. What is the best sequence?'
+    hint: 'The old app still reads `phone`.'
+    options:
+      - text: 'Send both `phone` and `mobile` for a while, then remove `phone`'
+        correct: true
+        why: 'Both app versions keep working.'
+      - text: 'Send only `mobile` and ask users to update'
+        correct: false
+        why: 'The app breaks for anyone who doesn''t update.'
+      - text: 'Deploy the app and the API at exactly the same moment'
+        correct: false
+        why: 'That is impossible for an app already in the store.'
+      - text: 'Shut down the old app'
+        correct: false
+        why: 'That means losing customers; a safe change avoids the whole problem.'
+    ref: renamed-field-broke-app
+  - q: 'What problem does a schema registry solve?'
+    hint: 'Many teams use the same topic.'
+    options:
+      - text: 'Someone releasing a breaking schema without telling anyone'
+        correct: true
+        why: 'The registry checks compatibility before accepting a schema.'
+      - text: 'Having to send the full schema with every message'
+        correct: true
+        why: 'A message carries only a small schema id; the schema lives in the registry.'
+      - text: 'Slow indexes in the database'
+        correct: false
+        why: 'A registry has nothing to do with indexes.'
+      - text: 'Adding rate limits to an API'
+        correct: false
+        why: 'That is the job of an API gateway, not a registry.'
+    ref: schema-registry

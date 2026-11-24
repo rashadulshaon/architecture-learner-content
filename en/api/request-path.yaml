@@ -1,0 +1,430 @@
+slides:
+  - slug: empty-log-site-down
+    title: 'Empty logs, site down'
+    kind: story
+    tldr: 'A request passes through many hands before it reaches your Symfony code. If it breaks along the way, your log knows nothing about it.'
+    keywords: ['request path', 'request lifecycle', '502', 'site down', 'empty log', 'bad gateway']
+    blocks:
+      - type: text
+        body: |
+          At 11 pm customers start calling: the site won't load. Rahim logs into the server and opens `var/log/prod.log`. Not a single error. He decides the problem must be on the customers' side. In fact the requests never reached his Symfony app at all: the load balancer was turning them away with a `502` somewhere along the way.
+      - type: visual
+        kind: compare
+        caption: 'The road a request takes: what Rahim pictured vs. what really happens'
+        columns:
+          - title: 'The picture in Rahim''s head'
+            tone: bad
+            icon: cross
+            tip: 'This is what it looks like when you work on localhost, so it is the picture most CRUD developers carry around.'
+            items:
+              - 'The browser calls Symfony directly'
+              - 'Symfony reads the database and answers'
+              - 'If anything breaks, it will be in my log'
+          - title: 'The real road in production'
+            tone: good
+            icon: map
+            tip: 'In production several separate machines sit in front of your code. Each one can break on its own.'
+            items:
+              - 'The browser first looks up the address in DNS'
+              - 'Then it passes a CDN and a load balancer'
+              - 'Then Symfony, and last of all the database'
+              - 'If it breaks midway, Symfony''s log stays empty'
+      - type: quote
+        body: 'Your log only sees the requests that reached your code.'
+    aside:
+      - type: story
+        title: 'The expired domain'
+        body: |
+          One morning an organisation's website vanished completely. The servers were running, the code was fine, the database was fine. The cause: nobody had paid the domain renewal fee, so DNS no longer recognised the name. For three hours everyone hunted for a bug in the code.
+      - type: terms
+        items:
+          - {term: 'Hop', meaning: 'One step on a request''s road: the jump from one machine to the next.'}
+          - {term: 'Load balancer', meaning: 'A machine in front of your app servers that spreads incoming requests across them.'}
+    check:
+      q: 'The site is down, yet Symfony''s log shows no errors. What does that most likely mean?'
+      a: 'The request never reached the app. The problem is at an earlier step: DNS, the CDN or the load balancer.'
+
+  - slug: six-hops
+    title: 'Six hops before the answer'
+    kind: concept
+    tldr: 'Client → DNS → CDN → load balancer → service → datastore. Each hop has its own job, and the answer comes back along the same road in reverse.'
+    keywords: ['DNS', 'CDN', 'load balancer', 'API gateway', 'hop', 'request journey', 'six steps']
+    blocks:
+      - type: metaphor
+        icon: shop
+        title: 'Going out for biryani'
+        body: |
+          You want kacchi biryani. First you ask someone which lane the restaurant is in: that's **DNS**. The branch at the corner keeps borhani and firni ready-made, so you don't have to go to the main restaurant for those: that's the **CDN**. At the main restaurant's door a manager sees which waiter is free and sends you to him: that's the **load balancer**. The waiter takes your order (the **service**) and lifts the food out of the pot (the **datastore**).
+      - type: visual
+        kind: flow
+        caption: 'The six hops of a request, and the answer coming back'
+        nodes:
+          - {id: client, label: 'Client', sub: 'browser or mobile app', icon: browser, col: 0, row: 0, tip: 'You, the hungry customer. Your Vue app sends the request from here and waits for the answer.'}
+          - {id: dns, label: 'DNS', sub: 'name to IP address', icon: dns, col: 0, row: 1.5, tip: 'The person who gives directions. It turns a name like shop.example into an IP like 203.0.113.10, and the answer is remembered for a while (the TTL).'}
+          - {id: cdn, label: 'CDN', sub: 'nearby edge server', icon: cdn, col: 1, row: 0, tip: 'The corner branch. It serves ready-made things such as JS, CSS and images from a server near the user, and forwards everything else to your origin.'}
+          - {id: lb, label: 'Load balancer', sub: 'or API gateway', icon: lb, col: 2, row: 0, tip: 'The manager at the door. It checks which app server is healthy and free, and spreads requests across them. A gateway also checks auth and rate limits.'}
+          - {id: app, label: 'Service', sub: 'nginx + PHP-FPM + Symfony', icon: api, tone: accent, col: 3, row: 0, tip: 'The waiter: the code you wrote. Only requests that get here show up in your log.'}
+          - {id: db, label: 'Datastore', sub: 'PostgreSQL, Redis', icon: db, col: 4, row: 0, tip: 'The pot and the pantry. The real data lives here. If it is slow, everyone in front of it ends up waiting.'}
+        edges:
+          - {from: client, to: dns, label: 'The browser asks: what is the IP of shop.example?'}
+          - {from: dns, to: client, label: 'DNS tells it the address (the IP)', dashed: true}
+          - {from: client, to: cdn, label: 'The request goes to that address and reaches the CDN first'}
+          - {from: cdn, to: lb, label: 'If it is not a ready-made file, the CDN forwards it toward your origin'}
+          - {from: lb, to: app, label: 'The load balancer picks a healthy app server'}
+          - {from: app, to: db, label: 'Symfony runs a query against the database'}
+          - {from: db, to: app, label: 'The data comes back', dashed: true}
+          - {from: app, to: lb, label: 'The answer walks the same road backward to the user', dashed: true, tone: good}
+    aside:
+      - type: terms
+        items:
+          - {term: 'DNS', meaning: 'The internet''s address book: it finds the IP address for a domain name.'}
+          - {term: 'CDN', meaning: 'Servers spread across many cities that serve ready-made files from near the user.'}
+          - {term: 'Origin', meaning: 'Your own main server, the one a CDN sits in front of.'}
+          - {term: 'API gateway', meaning: 'A door like a load balancer, but it also handles auth, rate limits and routing.'}
+      - type: tips
+        items:
+          - 'Not every system has all six hops. A small app may have no CDN or load balancer, but DNS is always there.'
+          - 'Every connection also starts with a TLS (HTTPS) handshake. If the certificate has expired, the browser shows a red warning.'
+      - type: refs
+        items:
+          - {to: 'scaling/load-balancing', label: 'How load balancing works'}
+          - {to: 'caching/http-caching', label: 'HTTP caching and CDNs'}
+    check:
+      q: 'Which hops does a request pass between the client and the datastore? Say them in order.'
+      a: 'Client → DNS (address lookup) → CDN → load balancer or gateway → service (Symfony) → datastore. The answer returns along the reverse road.'
+
+  - slug: what-breaks-where
+    title: 'What the user sees when each hop breaks'
+    kind: concept
+    tldr: 'Every hop breaks in its own way: name not found, 502/503/504, 500 or an endless spinner. The symptom tells you which hop failed.'
+    keywords: ['502 bad gateway', '503', '504 gateway timeout', '500', 'DNS error', 'where it broke', 'status code']
+    blocks:
+      - type: text
+        body: |
+          If you go to a restaurant and get no food, the reason depends on where things went wrong: you never found the lane, the gate was locked, or the waiter says the pot is empty. Requests are the same. The error's shape carries the mark of the hop that broke, and **who sent the answer** is the biggest clue of all.
+      - type: visual
+        kind: table
+        caption: 'Where it breaks and what it looks like'
+        headers: ['Broken hop', 'What happens', 'What the user sees']
+        rows:
+          - cells: ['Network', 'No internet, or the connection drops', 'No response at all; fetch throws an error']
+            tip: 'The request never left the device. There is no status code at all: in Vue, fetch throws a TypeError.'
+          - cells: ['DNS', 'The name has no address', 'The browser says the site can''t be found']
+            tip: 'The browser shows ERR_NAME_NOT_RESOLVED. It happens with an expired domain or a wrong DNS record. Old answers stay cached until the TTL runs out, so not everyone breaks at the same moment.'
+          - cells: ['CDN', 'Serves stale files, or can''t reach the origin', 'An old page, or the CDN''s own error page']
+            tip: 'If the CDN serves cached old JS, it won''t match the new API. If it can''t reach the origin, it shows a 5xx page that it generates itself.'
+          - cells: ['Load balancer', 'Finds no healthy app server', '502 or 503']
+            tip: '502 Bad Gateway: the server behind it refused the connection or sent back garbage. 503 Service Unavailable: there is no healthy server to send to.'
+          - cells: ['Service (slow)', 'Your code doesn''t answer in time', '504, or an endless spinner']
+            tip: '504 Gateway Timeout: the load balancer waited as long as it was willing to and gave up. Your code may still be working on the request.'
+          - cells: ['Service (bug)', 'An exception in your code', '500']
+            tip: '500 Internal Server Error comes from your own app. It means the request did reach your code, and the stack trace is in your log.'
+          - cells: ['Datastore', 'Out of connections, or a slow query', '500, 503 or 504']
+            tip: 'The database never answers the user directly. Its failure passes through Symfony and becomes a 500 or 503, or, if it is slow, reaches the user as the load balancer''s 504.'
+      - type: quote
+        body: '502, 503 and 504 usually say: the doorman in the middle could not reach the server behind him. A 500 says: your own code broke.'
+    aside:
+      - type: remember
+        body: 'When you see a 5xx, first ask: who sent this answer, my app or someone in front of it?'
+      - type: tips
+        items:
+          - 'Look at the response''s `Server` and `Via` headers. They often say who answered.'
+          - 'One problem can look two ways: when the database is slow, some users get a 500 and others get a 504.'
+      - type: refs
+        items:
+          - {to: 'api/error-design', label: 'Error design and retry rules'}
+          - {to: 'resilience/containing-failure', label: 'A timeout on every network call'}
+    check:
+      q: 'A user sees 504 Gateway Timeout. Who sent that answer, and what does it mean?'
+      a: 'The load balancer or gateway did. It waited for the app server behind it until its time limit ran out, so the app or the database is very slow.'
+
+  - slug: find-the-broken-hop
+    title: 'Spotting the broken hop in client code'
+    kind: howto
+    tldr: 'In the Vue client, sort failures into no response, timeout, gateway 5xx, app 5xx and your own mistake, and show a different message for each.'
+    keywords: ['fetch', 'timeout', 'AbortSignal', 'curl', 'dig', 'error handling', 'finding the broken hop']
+    blocks:
+      - type: text
+        body: |
+          If every failure shows the same "Something went wrong", users can't tell whether to wait or to check their own internet. The client can recognise the kind of failure itself, because a break at each hop looks different to `fetch`. The small wrapper below does that sorting, and it also puts a time limit on every request.
+      - type: code
+        lang: ts
+        file: 'src/api/http.ts'
+        variant: good
+        code: |
+          export type Failure = 'offline' | 'timeout' | 'gateway' | 'server' | 'client'
+
+          export class ApiError extends Error {
+            constructor(public kind: Failure, public status = 0) {
+              super(`${kind} ${status}`)
+            }
+          }
+
+          export async function apiGet<T>(path: string): Promise<T> {
+            let res: Response
+            try {
+              // No answer within 10 seconds? Stop waiting. No endless spinner
+              res = await fetch(path, { signal: AbortSignal.timeout(10_000) })
+            } catch (e) {
+              // No response at all: internet, DNS or TLS. Or the time limit ran out
+              const timedOut = e instanceof DOMException && e.name === 'TimeoutError'
+              throw new ApiError(timedOut ? 'timeout' : 'offline')
+            }
+
+            if ([502, 503, 504].includes(res.status)) {
+              throw new ApiError('gateway', res.status) // someone in front of the app answered
+            }
+            if (res.status >= 500) throw new ApiError('server', res.status)
+            if (!res.ok) throw new ApiError('client', res.status)
+
+            return (await res.json()) as T // read the JSON only after checking the status
+          }
+        marks:
+          - {line: 13, tip: 'Without a time limit, fetch can hang forever. AbortSignal.timeout cancels the request on its own when time is up.'}
+          - {line: 14, tip: 'fetch throws only when no response comes back at all. It does not throw on a 404 or a 500.'}
+          - {line: 20, tip: 'These three codes usually come from a load balancer or gateway, and the problem is more likely to be temporary.'}
+          - {line: 26, tip: 'The body of a gateway''s 502 page is usually HTML. Calling json() first would throw a SyntaxError and hide the real cause.'}
+      - type: visual
+        kind: table
+        caption: 'What to tell the user for each kind of failure'
+        headers: ['kind', 'Which hop', 'What to tell the user']
+        rows:
+          - cells: ['offline', 'Network or DNS', 'Check your internet connection']
+            tip: 'No response came back. Before blaming the server, the honest message is to ask users to check their own connection.'
+          - cells: ['timeout', 'Slow service or datastore', 'This is taking longer than usual, try again']
+            tip: 'You don''t know whether the work was done. Blindly resending a request that moves money, for example, is dangerous.'
+          - cells: ['gateway', 'Load balancer or CDN', 'A temporary problem on our side, try again shortly']
+            tip: 'The app server is down, a deploy is running or the load is too high. It usually clears up within seconds to minutes.'
+          - cells: ['server', 'Your Symfony code', 'Our mistake, the team has been notified']
+            tip: 'A bug in the code. The user can''t do anything about it, and trying again will usually give the same result.'
+          - cells: ['client', 'The request itself is wrong (4xx)', 'Show what needs fixing']
+            tip: 'Bad input, not logged in or no permission. Show the user the reason the server sent.'
+    aside:
+      - type: commands
+        title: 'Testing hop by hop from outside'
+        items:
+          - cmd: 'dig +short shop.example'
+            desc: 'Which IP DNS returns for this name'
+          - cmd: 'curl -sI https://shop.example/api/products'
+            desc: 'See the status and headers: who answered (Server, Via)'
+          - cmd: |
+              curl -so /dev/null https://shop.example \
+                -w '%{time_namelookup} %{time_connect} %{time_starttransfer}\n'
+            desc: 'Time to DNS, connection and first byte: which hop is slow'
+          - cmd: 'tail -f var/log/prod.log'
+            desc: 'Is the request reaching the app at all?'
+      - type: tips
+        items:
+          - 'Test from the outside in: DNS → CDN and load balancer → app → database. The hop after the last healthy one is the suspect.'
+      - type: refs
+        items:
+          - {to: 'observability/logging-tracing', label: 'Joining the whole road with a correlation ID'}
+    check:
+      q: 'The body of a gateway''s 502 response is usually HTML. What happens if the client calls `res.json()` first, and what is the right order?'
+      a: 'JSON parsing throws a SyntaxError and hides the real cause. Check the status first, decide the kind of failure, and read the JSON only on success.'
+
+  - slug: everyone-has-same-ip
+    title: 'Every user shows the same IP'
+    kind: pitfall
+    tldr: 'Behind a load balancer, Symfony can''t see the real client IP or HTTPS unless you tell it, with trusted_proxies, whom to believe.'
+    keywords: ['trusted proxies', 'X-Forwarded-For', 'X-Forwarded-Proto', 'client IP', 'getClientIp', 'behind a load balancer']
+    blocks:
+      - type: text
+        body: |
+          When a new hand joins the road, the world looks different from where your code sits. The waiter gets orders from the manager, so unless he asks, he doesn't know who the real customer is. Symfony likewise sees a request that came from the load balancer's IP, over plain HTTP. The result: `getClientIp()` returns the same IP for everyone, and if you rate limit by IP, one person's misbehaviour blocks everybody.
+      - type: visual
+        kind: sequence
+        caption: 'Whose IP Symfony sees after the load balancer'
+        actors:
+          - {id: client, label: 'User', icon: user, tip: 'The real customer. Their IP is 103.4.5.6, and they are talking over HTTPS.'}
+          - {id: lb, label: 'Load balancer', icon: lb, tip: 'HTTPS ends here. It opens a fresh connection to the app behind it, from its own IP (10.0.0.5).'}
+          - {id: app, label: 'Symfony', icon: api, tip: 'It only knows the IP of whoever connected to it directly. The rest has to come from headers, and only if it is allowed to trust them.'}
+        messages:
+          - {from: client, to: lb, label: 'HTTPS request, IP 103.4.5.6'}
+          - {from: lb, to: app, label: 'HTTP request, IP 10.0.0.5', tip: 'The load balancer opens the new connection itself, so the sender address Symfony sees is the load balancer''s.'}
+          - {from: lb, to: app, label: 'X-Forwarded-For: 103.4.5.6', tip: 'It writes the real customer''s identity into a header. X-Forwarded-Proto: https comes along with it.'}
+          - {at: app, note: 'Headers not trusted: everyone is 10.0.0.5', tone: bad, tip: 'By default Symfony ignores these headers, because anyone can forge a header like that.'}
+          - {at: app, note: 'trusted_proxies set: IP is 103.4.5.6', tone: good, tip: 'If the load balancer''s address is on the trusted list, Symfony takes the real IP from the headers it wrote.'}
+      - type: code
+        lang: yaml
+        file: 'config/packages/framework.yaml'
+        variant: good
+        code: |
+          framework:
+              # Only your own load balancer's address, never the whole internet
+              trusted_proxies: '%env(TRUSTED_PROXIES)%'   # e.g. 10.0.0.0/8
+              trusted_headers:
+                  - 'x-forwarded-for'      # the real client's IP
+                  - 'x-forwarded-proto'    # whether it was really https
+                  - 'x-forwarded-host'
+                  - 'x-forwarded-port'
+        marks:
+          - {line: 3, tip: 'Only requests from this IP range get their X-Forwarded-* headers believed. Headers from anyone else are ignored.'}
+          - {line: 6, tip: 'Without this, Symfony thinks the connection is HTTP. Generated links become http://, and redirects to HTTPS loop forever.'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'Don''t make every IP trusted. Then anyone can set `X-Forwarded-For` themselves, pose as any IP and dodge your rate limit.'
+          - 'If you have both a CDN and a load balancer, both of their addresses belong on the trusted list.'
+      - type: commands
+        items:
+          - {cmd: 'php bin/console debug:config framework trusted_proxies', desc: 'Which proxies are trusted right now'}
+      - type: refs
+        items:
+          - {to: 'api/rate-limiting', label: 'Rate limits, quotas and backoff'}
+    check:
+      q: 'Behind a load balancer, `$request->getClientIp()` returns 10.0.0.5 for everyone. Why, and what is the fix?'
+      a: 'Symfony sees the IP of whoever connected directly, which is the load balancer. Put the load balancer''s address in `trusted_proxies` and it will take the real IP from `X-Forwarded-For`.'
+
+flashcards:
+  - q: 'Which six hops does a web request pass between the client and the data?'
+    a: 'Client → DNS → CDN → load balancer or gateway → service → datastore. The answer returns along the same road in reverse.'
+    more: |
+      Think of the biryani restaurant: first learn the address (DNS), take ready-made things from the corner branch (CDN), meet the manager at the door (load balancer), then the waiter (your Symfony code) and the pot (the database). A small system may skip the CDN or load balancer, but each hop can break on its own.
+    ref: six-hops
+  - q: 'What does DNS do?'
+    a: 'It finds the server''s IP address for a domain name such as shop.example.'
+    more: |
+      A browser can't find a server by name, it needs an IP. DNS is the address book. Answers are cached for a set time (the TTL), so when you change a DNS record it takes a while to reach every user. If DNS breaks, nobody can reach the site even though the servers are healthy.
+    ref: six-hops
+  - q: 'What does a CDN do?'
+    a: 'It serves ready-made files such as JS, CSS and images from a server near the user, and forwards everything else to your origin server.'
+    more: |
+      A CDN has servers in many cities, so files travel a shorter distance and your origin carries less load. There is a risk too: if the CDN caches an old file, users get stale JS. More in [[caching/http-caching|HTTP caching and CDNs]].
+    ref: six-hops
+  - q: 'What does a load balancer do?'
+    a: 'It sits in front of several app servers, spreads requests across them and avoids sending any to an unhealthy one.'
+    more: |
+      It runs health checks to see which servers are responding. If it finds no healthy server it returns a 502 or 503 itself, and if the server behind it takes too long it returns a 504. An API gateway sits in the same place and also handles auth and rate limits.
+    ref: six-hops
+  - q: 'What is the difference between 502 Bad Gateway and 504 Gateway Timeout?'
+    a: '502: the server behind the proxy refused the connection or sent back a bad answer. 504: it did not answer in time.'
+    more: |
+      Both are sent by the load balancer or gateway in the middle, not by your app. A 502 usually means the app server is down or restarting. A 504 means the app is up but very slow, often because of a slow database query or an external service.
+    ref: what-breaks-where
+  - q: 'Which tells you the request reached your code: 500, or 502/503/504?'
+    a: '500. Your own app sends that. 502/503/504 usually come from the load balancer or gateway in front of it.'
+    more: |
+      With a 500, Symfony's log holds the exception and stack trace, so start there. With a 502/503/504, first check whether the app server is running and what the load balancer's health check says. Knowing who answered cuts the search in half.
+    ref: what-breaks-where
+  - q: 'The site is down but the app''s log shows no errors. Where do you look?'
+    a: 'At the hops before the app: DNS, CDN, the load balancer. The request never reached the app.'
+    more: |
+      The app's log only sees requests that reached its code. Test from the outside in: `dig` for DNS, `curl -I` to see who answers, then the load balancer's health check. An empty log does not mean there is no problem.
+    ref: empty-log-site-down
+  - q: 'When does JavaScript''s fetch throw an exception, and when does it not?'
+    a: 'It throws when no response comes back (network, DNS, timeout). It does not throw on a 404 or 500: `res.ok` is just false.'
+    more: |
+      So catching errors with try/catch alone makes you treat a 500 as a success. Always check `res.ok` or `res.status`, and read the JSON only after that, because a gateway's error page is usually HTML.
+    ref: find-the-broken-hop
+  - q: 'Why does Symfony need trusted_proxies?'
+    a: 'To learn the real client IP and HTTPS behind a load balancer. Otherwise every request seems to come from the load balancer''s IP, over HTTP.'
+    more: |
+      The load balancer writes the real details into the `X-Forwarded-For` and `X-Forwarded-Proto` headers. Symfony believes them only when the sender's IP is on the `trusted_proxies` list. If you trust everyone, anyone can forge a header and pose as a fake IP.
+    ref: everyone-has-same-ip
+
+quiz:
+  - q: 'Users see nginx''s "502 Bad Gateway" page. Symfony''s log shows no errors for that time. What is the most likely cause?'
+    hint: 'Who sent the answer: the app, or someone in front of it?'
+    options:
+      - text: 'An exception in a controller'
+        correct: false
+        why: 'Then the app itself would have answered, with a 500, and the stack trace would be in the log.'
+      - text: 'PHP-FPM or the app server is down, so the proxy in front can''t connect'
+        correct: true
+        why: 'A 502 means the proxy in the middle got no connection or no valid answer from the server behind it. The request never reached the code, which is why the log is empty.'
+      - text: 'A wrong DNS record'
+        correct: false
+        why: 'With wrong DNS the browser would never reach the server, so there would be no nginx 502 page to see.'
+      - text: 'The users'' internet connection is bad'
+        correct: false
+        why: 'With no connection no response would come at all. A 502 page arrived, so the request did reach the server''s door.'
+    ref: what-breaks-where
+  - q: 'In which of these failures will the Symfony app''s log show nothing at all?'
+    hint: 'In which cases does the request never reach your code?'
+    options:
+      - text: 'The domain''s DNS record was deleted'
+        correct: true
+        why: 'The browser can''t find the server''s address, so no request reaches the app.'
+      - text: 'All of the load balancer''s health checks fail and it returns 503'
+        correct: true
+        why: 'The load balancer is answering by itself; requests are not being sent to the app server at all.'
+      - text: 'A method is called on null inside a controller'
+        correct: false
+        why: 'That is an exception inside the app. Symfony returns a 500 and writes the full stack trace to the log.'
+      - text: 'Mobile data is switched off on the user''s phone'
+        correct: true
+        why: 'The request never leaves the phone, so no hop on the server side sees anything.'
+    ref: empty-log-site-down
+  - q: 'If a gateway returns a 502 with an HTML body, what happens in the Vue code below?'
+    lang: ts
+    code: |
+      const res = await fetch('/api/orders')
+      const data = await res.json()
+
+      if (!res.ok) {
+        showError(data.message)
+      }
+    hint: 'The body of a 502 page is not JSON. Which line runs first?'
+    options:
+      - text: 'fetch itself sees the 502 and throws an exception'
+        correct: false
+        why: 'fetch throws only when no response arrives. A 502 is a valid response, so nothing is thrown.'
+      - text: 'res.json() throws a SyntaxError trying to parse HTML, and showError is never reached'
+        correct: true
+        why: 'The JSON is read before the status is checked. Check res.ok first, then read the body.'
+      - text: 'data.message will contain "Bad Gateway"'
+        correct: false
+        why: 'An HTML page can''t be read as JSON, so data is never created.'
+      - text: 'The code is fine'
+        correct: false
+        why: 'It only works when errors also arrive as JSON. Machines in the middle of the road don''t follow that rule.'
+    ref: find-the-broken-hop
+  - q: 'Karim put a load balancer in front of his app. Since then his IP-based rate limiter blocks all users at once every few minutes. Why?'
+    hint: 'Whose IP does Symfony see now?'
+    options:
+      - text: 'The rate limiter''s limit is set too low'
+        correct: false
+        why: 'The limit is what it was before. What changed is that everyone is now counted as one person.'
+      - text: 'The load balancer sends every request twice'
+        correct: false
+        why: 'A load balancer doesn''t duplicate requests. It just forwards them from its own IP.'
+      - text: 'Every request seems to come from the load balancer''s IP, because trusted_proxies isn''t set up'
+        correct: true
+        why: 'With everyone sharing one IP, all requests are counted in the same bucket. With trusted_proxies set, Symfony takes the real IP from X-Forwarded-For.'
+      - text: 'The database is running out of connections'
+        correct: false
+        why: 'That would show up as a 500 or 503, not as the rate limiter''s 429.'
+    ref: everyone-has-same-ip
+  - q: 'After the DNS record was changed to the new server''s IP, some users were still reaching the old server half an hour later. Why?'
+    hint: 'Is the DNS answer asked for afresh every time?'
+    options:
+      - text: 'Old DNS answers stay cached until the TTL runs out'
+        correct: true
+        why: 'Browsers, operating systems and internet providers remember a DNS answer for the TTL; until then they don''t ask for the new address.'
+      - text: 'The load balancer is using sticky sessions'
+        correct: false
+        why: 'Sticky sessions are about choosing a server behind one load balancer. Here users are going to the wrong address in the first place.'
+      - text: 'Symfony''s cache has not been cleared'
+        correct: false
+        why: 'Which server a user reaches is decided long before the app is involved. The app''s cache plays no part.'
+      - text: 'Those users have old browsers'
+        correct: false
+        why: 'New or old, every browser caches a DNS answer for the TTL.'
+    ref: six-hops
+  - q: 'A user stared at a spinner for 60 seconds and then got a 504. Which statements are correct?'
+    hint: 'Who sends a 504? And what happens to the code behind it after it gives up?'
+    options:
+      - text: 'The answer came from the load balancer or gateway, not the app'
+        correct: true
+        why: 'A 504 means the proxy in the middle waited for the server behind it until its time limit ran out.'
+      - text: 'The app or its database was very slow'
+        correct: true
+        why: 'A 504 happens when the server behind the proxy doesn''t answer in time, usually because of a slow query or a slow external service.'
+      - text: 'The work definitely wasn''t done, so it is safe to resend it'
+        correct: false
+        why: 'Even after the proxy gives up, the app may finish the job. The outcome is unknown, and blindly resending can do it twice.'
+      - text: 'DNS returned the wrong address'
+        correct: false
+        why: 'With wrong DNS you would never have reached the load balancer, and no 504 would have come back.'
+    ref: what-breaks-where

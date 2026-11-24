@@ -1,0 +1,329 @@
+slides:
+  - slug: fired-but-still-in
+    title: 'Fired, but the token still works'
+    kind: story
+    tldr: 'Once a self-contained JWT is issued, the server can''t take it back before it expires. That is the revocation problem.'
+    keywords: ['JWT', 'revocation', 'logout', 'token expiry', 'revoke token', 'session']
+    blocks:
+      - type: text
+        body: |
+          Logging in to the admin panel of Rahim's company gives you a 30-day JWT. Today employee Sumi is let go, and the admin sets her account to `disabled`. But the token in Sumi's browser says "Sumi, valid for 30 days", and the server only checks its signature without asking the database. So Sumi could keep getting in for another 29 days.
+      - type: visual
+        kind: sequence
+        caption: 'The account is disabled, yet the old token still gets through'
+        actors:
+          - {id: sumi, label: 'Sumi', icon: user, tip: 'The dismissed employee. Her browser still holds a 30-day JWT.'}
+          - {id: api, label: 'API', icon: api, tip: 'It only checks the JWT''s signature and exp date; it never looks the user up in the database.'}
+          - {id: db, label: 'Database', icon: db, tip: 'Here Sumi''s account is disabled. But the API never asks for this information.'}
+        messages:
+          - {at: db, note: 'Admin disables Sumi', tone: good, tip: 'The server side has acted, but the news never reached the token.'}
+          - {from: sumi, to: api, label: 'GET /api/reports + old JWT', tip: 'The token still has 29 days left.'}
+          - {at: api, note: 'Signature fine, not expired: pass', tone: warn, tip: 'The whole check is just math: does the signature match? The database is never touched.'}
+          - {from: api, to: sumi, label: '200 OK with company reports', dashed: true, tone: bad, tip: 'The dismissed employee is still receiving confidential reports.'}
+    aside:
+      - type: problem
+        body: 'When a token is self-contained, the server doesn''t have to remember anything, which makes scaling easy. But that is also the price: there is no way to take a token back.'
+      - type: terms
+        items:
+          - {term: 'JWT', meaning: 'JSON Web Token: a self-contained token that packs the user''s details and a signature together.'}
+          - {term: 'Revocation', meaning: 'Making an already-issued token useless before its expiry.'}
+    check:
+      q: 'Why did Sumi''s JWT keep working after her account was disabled?'
+      a: 'The API only checked the signature and expiry, never the account status in the database. The token proves itself, so the server can''t take it back before it expires.'
+
+  - slug: session-vs-jwt
+    title: 'A name in a register, or a printed ticket?'
+    kind: concept
+    tldr: 'A session keeps state on the server (easy to revoke). A JWT carries state in the token (stateless, but hard to revoke).'
+    keywords: ['session vs jwt', 'stateful', 'stateless', 'opaque token', 'session', 'token']
+    blocks:
+      - type: metaphor
+        icon: ticket
+        title: 'The bus ticket'
+        body: |
+          A **session** is the register at the counter: you only hold a slip with a number on it (the session id), and the real details sit in the register. When the manager strikes your name out, the slip is dead. A **JWT** is a printed ticket: the date and seat are written on it, and the conductor just checks the stamp without opening any register. So it works with no register, but once a ticket is handed out, you can't pull it back.
+      - type: visual
+        kind: compare
+        caption: 'Session versus JWT: what you get, and what you give up'
+        columns:
+          - title: 'Server-side session'
+            tone: good
+            icon: db
+            tip: 'State lives on the server (in Redis or the database). The client holds only a random id.'
+            items: ['Dead the moment you log out or ban', 'One store lookup on every request', 'Needs a shared store across many servers', 'Simplest and safest for browsers']
+          - title: 'JWT (self-contained)'
+            tone: warn
+            icon: key
+            tip: 'The user''s details and a signature live in the token itself. The server only verifies the signature and remembers nothing.'
+            items: ['Verified with no lookup', 'Works easily across many servers and services', 'Hard to cancel before it expires', 'Payload is encoded, not encrypted: anyone can read it']
+      - type: quote
+        body: 'A JWT payload is only base64-encoded, not secret. Never put passwords or confidential data in it.'
+    aside:
+      - type: when
+        use: ['A session, for your own browser-based app', 'Short-lived tokens for several services or a mobile API']
+        avoid: ['Long-lived JWTs you have no way to revoke']
+      - type: tips
+        items:
+          - 'Symfony''s default firewall runs a session: you get cookie-based sessions without doing anything.'
+          - '"JWT is modern, sessions are old" is a myth. Each is right in the right place.'
+    check:
+      q: 'For an app that serves only a browser frontend, session or JWT, and why?'
+      a: 'A session. It is easy to revoke, the browser handles the cookie itself, and the stateless benefit of a JWT isn''t needed here.'
+
+  - slug: access-refresh
+    title: 'Short-lived access tokens and refresh tokens'
+    kind: howto
+    tldr: 'The access token lasts 15 minutes. The refresh token lasts long, is single-use and stored hashed in the database, so a theft does limited damage.'
+    keywords: ['access token', 'refresh token', 'rotation', 'reuse detection', 'access_token handler', 'token renewal']
+    blocks:
+      - type: text
+        body: |
+          The fix is two kinds of token. The **access token** lasts 15 minutes, so a stolen one does limited harm. The **refresh token** lasts a long time, is only used to fetch a new access token, and can be revoked because it lives in the database. Each refresh consumes the old one and issues a new one (rotation).
+      - type: visual
+        kind: flow
+        caption: 'When the access token goes stale, the refresh token gets a fresh pair'
+        nodes:
+          - {id: app, label: 'Vue app', sub: 'browser', icon: browser, col: 0, row: 0, tip: 'The user''s browser. It calls the API with the access token.'}
+          - {id: api, label: 'API', sub: 'access_token firewall', icon: api, col: 2, row: 0, tip: 'Verifies the access token on every request.'}
+          - {id: refresh, label: '/api/token/refresh', sub: 'rotation', icon: repeat, tone: accent, col: 2, row: 1.5, tip: 'Takes the old refresh token and returns a new access and refresh pair.'}
+          - {id: db, label: 'Database', sub: 'token hashes', icon: db, col: 4, row: 1.5, tip: 'Holds the refresh token''s SHA-256 hash, expiry and used flag. The real token is not stored.'}
+        edges:
+          - {from: app, to: api, label: 'A request goes out with a valid access token'}
+          - {from: api, to: app, label: 'After 15 minutes: 401, the access token is dead', dashed: true, tone: bad}
+          - {from: app, to: refresh, label: 'It sends the refresh token (in a cookie)'}
+          - {from: refresh, to: db, label: 'Checks the hash: valid and not yet used'}
+          - {from: refresh, to: app, label: 'Returns a new pair; the old refresh token is spent', dashed: true, tone: good}
+      - type: code
+        lang: php
+        file: 'src/Security/AccessTokenHandler.php'
+        variant: good
+        code: |
+          final class AccessTokenHandler implements AccessTokenHandlerInterface
+          {
+              public function __construct(private AccessTokenRepository $tokens) {}
+
+              public function getUserBadgeFrom(#[\SensitiveParameter] string $accessToken): UserBadge
+              {
+                  // the database holds a hash of the token, not the token itself
+                  $row = $this->tokens->findActiveByHash(hash('sha256', $accessToken));
+                  if (null === $row) {
+                      throw new BadCredentialsException('Invalid credentials.');
+                  }
+
+                  return new UserBadge($row->getUser()->getUserIdentifier());
+              }
+          }
+        marks:
+          - {line: 8, tip: 'Even if the database is stolen, the real token can''t be rebuilt from the hash.'}
+          - {line: 9, tip: 'Revoked or expired tokens are rejected right here, so a ban takes effect immediately.'}
+      - type: code
+        lang: yaml
+        file: 'config/packages/security.yaml'
+        code: |
+          security:
+              firewalls:
+                  api:
+                      pattern: ^/api
+                      stateless: true
+                      access_token:
+                          token_handler: App\Security\AccessTokenHandler
+        marks:
+          - {line: 5, tip: 'stateless: true means Symfony creates no session; the token on each request is the identity.'}
+    aside:
+      - type: tips
+        items:
+          - 'Add reuse detection to refresh tokens: if a spent token shows up again, revoke all of that user''s tokens, because someone stole one.'
+          - 'Make refresh tokens opaque random strings from random_bytes(32), and never pack any data into them.'
+      - type: refs
+        items:
+          - {to: 'security/account-recovery', label: 'Revoking every session when the password changes'}
+    check:
+      q: 'Why is the refresh token stored hashed in the database, and what does rotation give you?'
+      a: 'If the database leaks, the hash doesn''t reveal the real token. With rotation every refresh issues a new token, so a spent one showing up again exposes a theft.'
+
+  - slug: where-to-store
+    title: 'Where to keep the token: not localStorage'
+    kind: pitfall
+    tldr: 'Any XSS can read a token in localStorage. An HttpOnly + Secure + SameSite cookie is out of JavaScript''s reach.'
+    keywords: ['localStorage', 'HttpOnly cookie', 'XSS', 'SameSite', 'CSRF', 'token storage', 'browser token']
+    blocks:
+      - type: text
+        body: |
+          Many people keep the token in `localStorage` because it's easy. The problem is that one XSS hole on the page lets an attacker's script read that token and send it to their own server. JavaScript can't read an `HttpOnly` cookie; the browser just attaches it to requests by itself.
+      - type: code
+        lang: ts
+        file: 'src/auth/login.ts'
+        variant: bad
+        code: |
+          const { accessToken } = await api.post('/api/login', creds)
+          // any XSS script can read this
+          localStorage.setItem('token', accessToken)
+        marks:
+          - {line: 3, tip: 'Every value in localStorage is readable by any JavaScript on the page, including third-party scripts.'}
+      - type: code
+        lang: php
+        file: 'src/Controller/AuthController.php'
+        variant: good
+        code: |
+          $response = new JsonResponse(['expiresIn' => 900]);
+          $response->headers->setCookie(
+              Cookie::create('refresh_token')
+                  ->withValue($refreshToken)
+                  ->withHttpOnly(true)            // JS can't read it
+                  ->withSecure(true)              // HTTPS only
+                  ->withSameSite(Cookie::SAMESITE_STRICT)
+                  ->withPath('/api/token')        // sent only to the refresh route
+                  ->withExpiresAt(new \DateTimeImmutable('+30 days')),
+          );
+        marks:
+          - {line: 5, tip: 'HttpOnly: even with XSS, a script can''t see this cookie''s value.'}
+          - {line: 7, tip: 'SameSite=Strict keeps the cookie off requests that come from other sites, a shield against CSRF.'}
+          - {line: 8, tip: 'Limiting the path means the cookie goes only to the refresh route, not with other requests.'}
+      - type: quote
+        body: 'Never put a token in localStorage. The refresh token belongs in an HttpOnly, Secure, SameSite cookie.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Keeping the access token in a cookie brings CSRF risk, so set SameSite and think about CSRF tokens on state-changing requests.'
+          - 'The access token can live in Vue''s memory (Pinia state). After a page reload, fetch a new one using the refresh cookie.'
+      - type: refs
+        items:
+          - {to: 'security/input-validation', label: 'How to prevent XSS'}
+    check:
+      q: 'An HttpOnly cookie doesn''t make XSS harmless. So why is it still better to keep the refresh token there?'
+      a: 'A script can still send requests, but it can''t steal the token to a server of its own and use it from elsewhere indefinitely. The damage is limited to the time the user is on that page.'
+
+flashcards:
+  - q: 'What is the core difference between a session and a JWT?'
+    a: 'A session keeps state on the server, and the client holds only an id. A JWT carries the data and a signature in the token itself, and the server remembers nothing.'
+    more: |
+      Think of the bus counter's register versus a printed ticket. Strike the name out of the register and the slip is dead (session). Once a printed ticket has been handed out, you can't take it back (JWT).
+    ref: session-vs-jwt
+  - q: 'What is the biggest problem with JWTs?'
+    a: 'They are hard to revoke before they expire, because the server only checks the signature and remembers nothing.'
+    more: |
+      Even after a user is banned or logs out, an old JWT keeps working until it expires. That's why JWT lifetimes are kept short, and why a denylist or a token checked against the database is used when revocation is needed.
+    ref: fired-but-still-in
+  - q: 'Is a JWT payload secret?'
+    a: 'No. The payload is only base64-encoded, not encrypted, so anyone can read it. Never put confidential data in it.'
+    more: |
+      The signature only proves the data wasn't changed; it doesn't hide it. Paste any JWT into jwt.io and the payload is right there. Keep it to harmless data such as a user id and an expiry.
+    ref: session-vs-jwt
+  - q: 'What lifetimes do access and refresh tokens usually get?'
+    a: 'Access token: 5 to 15 minutes. Refresh token: a few days up to 30 days, stored hashed in the database and revocable.'
+    more: |
+      A short access token keeps the window of damage small if it's stolen. The long-lived refresh token lives in the database, so you can delete it directly on logout or ban.
+    ref: access-refresh
+  - q: 'What is refresh token rotation?'
+    a: 'Each refresh spends the old token and issues a new pair. If a spent token appears again, it was probably stolen.'
+    more: |
+      When reuse is detected, all of that user's tokens are revoked. The thief and the real user are both logged out, and the real user simply logs in again. This is the most common way to catch a stolen refresh token.
+    ref: access-refresh
+  - q: 'Why is a refresh token stored hashed in the database?'
+    a: 'If the database leaks, the hash doesn''t reveal the real token, just like a password.'
+    more: |
+      When the token is long and random enough (`random_bytes(32)`), a fast SHA-256 is enough and you don't need bcrypt. Passwords need a slow hash only because they have low entropy.
+    ref: access-refresh
+  - q: 'Where should tokens be kept in the browser?'
+    a: 'The refresh token goes in an HttpOnly, Secure, SameSite cookie. Not in localStorage, because an XSS script can read it.'
+    more: |
+      If you like, keep the access token in JavaScript memory (Pinia state); after a page reload, get a new one with the refresh token in the cookie. That leaves nothing on disk for a script to read.
+    ref: where-to-store
+  - q: 'What does the SameSite=Strict cookie attribute prevent?'
+    a: 'The cookie is not sent on requests that start from another site, which makes CSRF attacks harder.'
+    more: |
+      With Strict, even the first request arriving from an outside link carries no cookie; Lax sends it on safe GET navigations. For state-changing requests, use at least Lax.
+    ref: where-to-store
+
+quiz:
+  - q: 'A company wants a banned user''s access cut off immediately. Which design gives that most easily?'
+    hint: 'Does the server look anything up on each request?'
+    options:
+      - text: 'A self-contained JWT valid for 30 days'
+        correct: false
+        why: 'The server only checks signature and expiry, so the token would keep working for 30 days even after the ban.'
+      - text: 'A server-side session, or an opaque token checked against the database'
+        correct: true
+        why: 'The store is consulted on every request; delete the row and the token is dead.'
+      - text: 'Writing `banned: false` in the JWT payload'
+        correct: false
+        why: 'The payload of a token that has already been issued can''t be changed.'
+      - text: 'Asking the user to log out themselves'
+        correct: false
+        why: 'A ban is the server''s decision; you can''t depend on the user''s cooperation.'
+    ref: fired-but-still-in
+  - q: 'This JWT has the payload `{"sub":"42","email":"a@x.com","password":"1234","exp":1893456000}`. What is wrong?'
+    hint: 'Who can read a JWT payload?'
+    options:
+      - text: 'Nothing, a JWT is signed'
+        correct: false
+        why: 'A signature prevents tampering; it provides no confidentiality.'
+      - text: 'The payload is only base64-encoded, so anyone can read the password'
+        correct: true
+        why: 'Whoever gets the token can decode the payload and see the password. Nothing confidential belongs in a payload.'
+      - text: 'It should contain only the `exp` field and nothing else'
+        correct: false
+        why: 'Harmless fields like sub and exp are fine; the problem is only the confidential data.'
+    ref: session-vs-jwt
+  - q: 'Which of these are benefits of the access + refresh token design?'
+    hint: 'Which ones shrink the window of damage and make revocation possible?'
+    options:
+      - text: 'If an access token is stolen, the damage window is limited to 15 minutes'
+        correct: true
+        why: 'Because the lifetime is short, a thief doesn''t hold a working token for long.'
+      - text: 'The refresh token lives in the database, so logout or a ban can revoke it'
+        correct: true
+        why: 'Delete the row and no new access token can be obtained.'
+      - text: 'The server never has to remember any state again'
+        correct: false
+        why: 'Revocation is possible precisely because the refresh token is remembered; the design is not fully stateless.'
+      - text: 'Token theft becomes impossible'
+        correct: false
+        why: 'Theft isn''t prevented; only the damage is limited.'
+    ref: access-refresh
+  - q: 'Which piece of code puts a developer''s users at the most risk?'
+    lang: ts
+    code: |
+      const res = await api.post('/api/login', creds)
+      localStorage.setItem('refreshToken', res.refreshToken)
+    hint: 'If the page has an XSS hole, who can read this?'
+    options:
+      - text: 'The refresh token is in localStorage, where an XSS script can read it and send it to its own server'
+        correct: true
+        why: 'Any script on the page can read everything in localStorage, so a long-lived token can be stolen.'
+      - text: 'It should use GET instead of POST'
+        correct: false
+        why: 'Using GET for login would put the password in the URL and logs, which is even worse.'
+      - text: 'Using async/await is the problem'
+        correct: false
+        why: 'That has nothing to do with security.'
+    ref: where-to-store
+  - q: 'Someone calls `/api/token/refresh` with a refresh token that was already spent. What should the server do?'
+    hint: 'What could it mean that one token shows up twice?'
+    options:
+      - text: 'Quietly issue new tokens'
+        correct: false
+        why: 'Then a thief could keep refreshing indefinitely.'
+      - text: 'Reject only that one request with a 401 and do nothing else'
+        correct: false
+        why: 'You can''t tell the real user from the thief; unless you cut off the whole token family, the thief can carry on through another branch.'
+      - text: 'Revoke all of that user''s refresh tokens and require a fresh login'
+        correct: true
+        why: 'Reuse means the token family has leaked; revoking everything shuts the thief out, and the real user logs in again.'
+    ref: access-refresh
+  - q: 'Which of these reduce the damage from token theft?'
+    hint: 'Which ones keep JavaScript away from the token or shrink the window?'
+    options:
+      - text: 'Keeping the refresh token in an HttpOnly cookie'
+        correct: true
+        why: 'An XSS script can''t read it.'
+      - text: 'Giving the access token a 15-minute lifetime'
+        correct: true
+        why: 'Even if stolen, it works for only a short time.'
+      - text: 'Keeping the token in localStorage because it''s simpler than a cookie'
+        correct: false
+        why: 'It is simpler, but any XSS can read it.'
+      - text: 'Making the token last 1 year so users aren''t annoyed'
+        correct: false
+        why: 'A long lifetime makes the damage window huge.'
+    ref: where-to-store

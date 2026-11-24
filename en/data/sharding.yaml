@@ -1,0 +1,356 @@
+slides:
+  - slug: last-resort
+    title: 'Sharding is the last resort, not the first'
+    kind: story
+    tldr: 'Sharding splits data across several servers. It adds huge complexity, so exhaust indexes, caching, a bigger server, replicas and partitioning first.'
+    keywords: ['sharding', 'partitioning', 'scale out', 'vertical scaling', 'when to shard']
+    blocks:
+      - type: metaphor
+        icon: truck
+        title: 'A courier''s district warehouses'
+        body: |
+          A courier company keeps every parcel in one warehouse in Dhaka. The warehouse fills up, and someone suggests opening one warehouse per district. That buys space, but now finding a Sylhet parcel from Dhaka takes a phone call, totalling stock across two districts is hard, and opening yet another warehouse means moving parcels around. They should have asked first whether the one warehouse could be organised better.
+      - type: visual
+        kind: steps
+        caption: 'The rungs to climb before sharding'
+        steps:
+          - {title: '1. Fix queries and indexes', body: 'Measure slow queries, add indexes, remove N+1.', tip: 'Most "the database can''t cope" problems end right here. It is the cheapest step.'}
+          - {title: '2. Add a cache', body: 'Answer repeated reads before they reach the database.', tip: 'A large share of the read load moves into the cache.'}
+          - {title: '3. Get a bigger server', body: 'More RAM, faster disks (vertical scaling).', tip: 'Today''s big servers handle a lot of data. You buy time without touching code.'}
+          - {title: '4. Add read replicas', body: 'Move reads to followers; the leader only writes.', tip: 'This helps with read load. It does nothing for write load.'}
+          - {title: '5. Partition and archive', body: 'Split big tables on one server, move old data out.', tip: 'The table is cut into smaller pieces inside one database. The app doesn''t change.'}
+          - {title: '6. Then shard', body: 'Only when one server''s write limit is truly exceeded.', tone: accent, tip: 'From here on the app has to know which server holds the data. Complexity jumps.'}
+      - type: quote
+        body: 'Sharding is the last resort. Never shard before every simpler step is exhausted.'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Partitioning', meaning: 'Splitting one table into smaller pieces, usually on the same database server.'}
+          - {term: 'Sharding', meaning: 'Putting those pieces on separate servers, so each server handles one slice of the data.'}
+      - type: refs
+        items:
+          - {to: 'scaling/horizontal-vertical', label: 'Bigger server vs more servers'}
+          - {to: 'data/replication', label: 'Replication for read load'}
+    check:
+      q: 'Your database write load keeps growing. Which steps do you try before sharding?'
+      a: 'Fix slow queries and indexes, add a cache, buy a bigger server, cut heavy writes, and archive or partition old data. Only if that still isn''t enough, shard.'
+
+  - slug: how-shards-work
+    title: 'The shard key and the router'
+    kind: concept
+    tldr: 'Every row has a shard key. A router computes which shard the row lives on, and the app talks straight to that shard.'
+    keywords: ['shard key', 'router', 'hash sharding', 'range sharding', 'lookup', 'shard routing']
+    blocks:
+      - type: metaphor
+        icon: truck
+        title: 'The district code picks the warehouse'
+        body: |
+          Every parcel carries a district code: 01 Dhaka, 02 Chattogram, 03 Sylhet. The desk reads the code and says which warehouse the parcel goes to, and the same desk sends you to the same warehouse when you come looking for it. The code is the shard key, the desk is the router, and each warehouse is a shard. Pick the codes badly and one warehouse overflows.
+      - type: visual
+        kind: flow
+        caption: 'Picking one of 3 shards by customer_id'
+        nodes:
+          - {id: app, label: 'Symfony app', icon: api, col: 0, row: 1, tip: 'The request carries a customer_id, and that is the shard key.'}
+          - {id: router, label: 'ShardRouter', sub: 'hash(key) % 3', icon: shuffle, tone: accent, col: 1.5, row: 1, tip: 'Computes the shard from the key. It can live inside the app or run as a separate proxy.'}
+          - {id: s0, label: 'shard 0', sub: 'customer 7, 19...', icon: db, col: 3.5, row: 0, tip: 'One third of the data, on its own database server.'}
+          - {id: s1, label: 'shard 1', sub: 'customer 12, 33...', icon: db, col: 3.5, row: 1, tip: 'Another third.'}
+          - {id: s2, label: 'shard 2', sub: 'customer 42, 55...', icon: db, col: 3.5, row: 2, tip: 'The rest. All of customer 42''s orders live here.'}
+        edges:
+          - {from: app, to: router, label: 'The app says: I need customer 42''s orders'}
+          - {from: router, to: s2, label: 'The router computes that 42 belongs on shard 2'}
+          - {from: s2, to: router, label: 'Only shard 2 answers; the other two are never touched', dashed: true, tone: good}
+      - type: points
+        title: 'Three ways to split'
+        style: dot
+        items:
+          - 'Range: by key ranges (1 to 1,000,000 goes to shard 0).'
+          - 'Hash: hash(key) % N, which spreads rows evenly.'
+          - 'Lookup: a separate table records which key lives on which shard.'
+    aside:
+      - type: remember
+        body: 'Shard key = the district code on the parcel. Get the code wrong and one warehouse is stuffed while the rest sit empty.'
+      - type: tips
+        items:
+          - 'A query that includes the shard key goes to one shard. Without the key it has to visit every shard.'
+    check:
+      q: 'How does the app know which shard holds customer 42''s orders?'
+      a: 'The router computes it from the shard key (customer_id), for example hash(key) % number of shards. The same key always maps to the same shard, so reads go there too.'
+
+  - slug: choosing-shard-key
+    title: 'The wrong key: one shard takes all the load'
+    kind: pitfall
+    tldr: 'A good shard key spreads load evenly, appears in most queries and never changes. A bad one (country, date) piles everything on one hot shard.'
+    keywords: ['shard key', 'hot shard', 'hot spot', 'cardinality', 'skew', 'celebrity problem']
+    blocks:
+      - type: text
+        body: |
+          An e-commerce app has 4 shards, and the team chose the customer's country as the shard key. But 72% of customers are in Bangladesh, so one shard burns while three sleep. They bought four servers and only one is doing any work.
+      - type: visual
+        kind: bars
+        caption: 'Shard key = country: share of the load on each shard'
+        items:
+          - {label: 'shard 0 (BD)', value: 72, display: '72%', tone: bad, tip: 'The hot shard: nearly every read and write lands here. If it slows down, the whole app slows down.'}
+          - {label: 'shard 1 (IN)', value: 15, display: '15%', tone: muted, tip: 'Customers from India. Idle most of the time.'}
+          - {label: 'shard 2 (US)', value: 8, display: '8%', tone: muted, tip: 'Barely working.'}
+          - {label: 'shard 3 (other)', value: 5, display: '5%', tone: muted, tip: 'Almost unused.'}
+      - type: points
+        title: 'Four traits of a good shard key'
+        style: check
+        items:
+          - 'Many distinct values (high cardinality): customer_id is good, country is bad.'
+          - 'Load spreads evenly: no single value is hugely popular.'
+          - 'It appears in most queries, so one shard can finish the job.'
+          - 'Once set, it never changes.'
+      - type: visual
+        kind: table
+        caption: 'Strengths and risks of the three strategies'
+        headers: ['Strategy', 'Strength', 'Risk']
+        rows:
+          - cells: ['Range (dates or ID ranges)', 'Range queries are easy', 'All new data hits the latest shard: hot shard']
+            tip: 'With a date key, every write today lands on one shard while the older ones become read-only.'
+          - cells: ['Hash (hash(key) % N)', 'Spreads rows evenly', 'Range queries hit every shard; changing N moves nearly all data']
+            tip: 'The most common choice. But changing N directly is brutal, which is why you need virtual buckets.'
+          - cells: ['Lookup table', 'Any key can move to any shard', 'The lookup table becomes a new bottleneck and single point of failure']
+            tip: 'Flexible, but every request consults it first, so you have to cache and replicate it.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'The celebrity problem: even with customer_id as the key, one huge customer (or tenant) can fill a shard alone. Give big tenants their own shard.'
+          - 'Changing the shard key later means moving all the data. Think through the access patterns up front.'
+      - type: refs
+        items:
+          - {to: 'security/multi-tenancy', label: 'Splitting by tenant_id'}
+    check:
+      q: 'One shard carries 72% of the load. What could replace country as the shard key?'
+      a: 'A hash of customer_id. It has many distinct values, so load spreads evenly, and since most queries include customer_id, one shard can do the whole job.'
+
+  - slug: partition-and-router-code
+    title: 'In code: partitions and a shard router'
+    kind: howto
+    tldr: 'Start with PostgreSQL declarative partitions on one server. For real sharding, give Doctrine one connection per shard and a router built on virtual buckets.'
+    keywords: ['PostgreSQL partition', 'declarative partitioning', 'ManagerRegistry', 'virtual bucket', 'shard router', 'Doctrine connections']
+    blocks:
+      - type: code
+        lang: sql
+        file: 'Step 5: partition on one server (PostgreSQL)'
+        code: |
+          CREATE TABLE click_event (
+            id          bigint GENERATED ALWAYS AS IDENTITY,
+            customer_id bigint      NOT NULL,
+            created_at  timestamptz NOT NULL,
+            PRIMARY KEY (id, created_at)
+          ) PARTITION BY RANGE (created_at);
+
+          CREATE TABLE click_event_2026_01 PARTITION OF click_event
+            FOR VALUES FROM ('2026-01-01') TO ('2026-02-01');
+        marks:
+          - {line: 5, tip: 'The partition key (created_at) must be part of the primary key.'}
+          - {line: 6, tip: 'Split by month: you can DETACH an old month and archive it, and queries only touch the partitions they need.'}
+      - type: code
+        lang: php
+        file: 'src/Sharding/ShardRouter.php'
+        variant: good
+        code: |
+          final readonly class ShardRouter
+          {
+              private const BUCKETS = 1024;
+
+              /** @param array<int, string> $bucketToShard bucket -> 'shard_0' */
+              public function __construct(
+                  private ManagerRegistry $registry,
+                  private array $bucketToShard,
+              ) {}
+
+              public function connectionFor(int $customerId): Connection
+              {
+                  $bucket = crc32((string) $customerId) % self::BUCKETS;
+
+                  return $this->registry->getConnection($this->bucketToShard[$bucket]);
+              }
+          }
+        marks:
+          - {line: 3, tip: '1024 virtual buckets to avoid a painful reshard: the key maps to a bucket first, and the bucket maps to a shard.'}
+          - {line: 15, tip: 'To move data you change only the bucket-to-shard map, never the bucket calculation, so the hashing stays put.'}
+      - type: text
+        body: |
+          In `config/packages/doctrine.yaml`, name one connection per shard under `doctrine.dbal.connections` (`shard_0`, `shard_1`) and read each `url` from its own env variable. Then `$registry->getConnection('shard_0')` returns the DBAL connection for that shard.
+    aside:
+      - type: tips
+        items:
+          - 'You would need a separate ORM EntityManager per shard. To keep things simple, use the DBAL Connection on shards.'
+          - 'Migrations must run on every shard separately. If you don''t automate that, the shards drift into different schemas.'
+      - type: refs
+        items:
+          - {to: 'scaling/consistent-hashing', label: 'Moving less data when N changes'}
+    check:
+      q: 'What do 1024 virtual buckets buy you compared with plain hash % N?'
+      a: 'Changing the number of shards doesn''t change the hash calculation. You only edit the bucket-to-shard map and move some buckets to another shard, so not all the data moves.'
+
+  - slug: cross-shard-and-resharding
+    title: 'Cross-shard queries and resharding'
+    kind: pitfall
+    tldr: 'A query without the shard key fans out to every shard (scatter-gather) and is slow. Joins and transactions across shards are hard, and resharding is painful, so plan ahead.'
+    keywords: ['cross-shard query', 'scatter gather', 'resharding', 'distributed transaction', 'cross shard join']
+    blocks:
+      - type: visual
+        kind: flow
+        caption: 'A query without the shard key: ask every shard, then stitch the answers together'
+        nodes:
+          - {id: app, label: 'App', sub: 'WHERE email = ?', icon: api, col: 0, row: 1, tip: 'The query has no customer_id, so the app can''t tell which shard holds the data.'}
+          - {id: s0, label: 'shard 0', icon: db, col: 2, row: 0, tip: 'Has to be searched too; it may have no match.'}
+          - {id: s1, label: 'shard 1', icon: db, col: 2, row: 1, tip: 'The same question goes here as well.'}
+          - {id: s2, label: 'shard 2', icon: db, col: 2, row: 2, tip: 'And here. The slowest shard sets the time for the whole query.'}
+        edges:
+          - {from: app, to: s0, label: 'The app sends the same question to shard 0'}
+          - {from: app, to: s1, label: 'The same question goes to shard 1 too'}
+          - {from: app, to: s2, label: 'And to shard 2', tip: 'The app has to wait for the slowest shard.'}
+          - {from: s2, to: app, label: 'The app merges all the answers into one result', dashed: true, tone: warn}
+      - type: points
+        title: 'What gets hard once you shard'
+        style: cross
+        items:
+          - 'Joins across shards: the database no longer does them, so the app must.'
+          - 'Transactions across shards: instead of ACID you need sagas or another approach.'
+          - 'Unique constraints across shards (such as email) stop working beyond one shard.'
+          - 'Reports and aggregates: collect data from every shard into a separate database first.'
+      - type: quote
+        body: 'Split the data so that most queries finish on exactly one shard.'
+    aside:
+      - type: story
+        title: 'The resharding weekend'
+        body: 'A company filled its 4 shards and wanted to go to 8. Switching from hash % 4 to % 8 moved about half the data. It took weeks of copying and verifying. Now they use virtual buckets from day one.'
+      - type: tips
+        items:
+          - 'When resharding, write to both old and new places (dual write), verify, then switch over. It is big work, so plan it.'
+          - 'If you need a very large database, consider a managed or distributed SQL system (CockroachDB, Vitess) that handles sharding for you.'
+      - type: refs
+        items:
+          - {to: 'workflows/sagas', label: 'Coordinating work across shards'}
+          - {to: 'concurrency/distributed-transactions', label: 'The price of distributed transactions'}
+    check:
+      q: 'Why is a query without the shard key so slow, and how do you avoid it?'
+      a: 'Nobody knows which shard holds the data, so the query goes to all of them and the results are merged. Avoid it by choosing the key from your access patterns and adding a separate index or lookup table for other kinds of search.'
+
+flashcards:
+  - q: 'What is the difference between partitioning and sharding?'
+    a: 'Partitioning splits a table into smaller pieces, usually on one server. Sharding puts those pieces on separate servers.'
+    more: |
+      Partitioning is simple and barely touches the app: it makes archiving old data and some queries faster. Sharding scales write capacity across servers, but the app has to know where the data lives.
+    ref: last-resort
+  - q: 'What should you try before sharding?'
+    a: 'Fix indexes and queries, add a cache, buy a bigger server, add read replicas, then partition and archive.'
+    more: |
+      Every one of these steps is cheaper and less risky than sharding. Most apps run for years on them. You only shard when a single server's write limit is truly exceeded.
+    ref: last-resort
+  - q: 'What is a shard key?'
+    a: 'The column whose value decides which shard a row lives on, such as customer_id.'
+    more: |
+      The router computes the shard from that value, and the same key always lands on the same shard. With the right key, most queries finish on a single shard.
+    ref: how-shards-work
+  - q: 'What makes a good shard key?'
+    a: 'Many distinct values, an even spread of load, presence in most queries, and a value that never changes.'
+    more: |
+      customer_id is often a good fit: many values, even spread, and it appears in queries. Country or status is bad because it has few values and a lopsided spread. Dates are risky too: all new data piles onto one shard.
+    ref: choosing-shard-key
+  - q: 'What is a hot shard and what causes it?'
+    a: 'A shard that carries far more load than the rest. Causes: a bad shard key (country, date) or one huge user.'
+    more: |
+      When one shard is slow, every query that goes there is slow while the other shards sit idle, so adding servers doesn't help. The fixes: a better key, a separate shard for big tenants, or hashing the key.
+    ref: choosing-shard-key
+  - q: 'What is scatter-gather and why is it slow?'
+    a: 'Sending a query without the shard key to every shard and merging the results. The slowest shard sets the time for the whole query.'
+    more: |
+      The cost grows with every shard you add, and one slow shard slows everything. Joins and unique constraints also stop working across shards. That is why you design the split around your access patterns.
+    ref: cross-shard-and-resharding
+  - q: 'Why do virtual buckets make resharding easier?'
+    a: 'A key maps to one of about 1024 buckets, and each bucket maps to a shard. Adding shards changes only the bucket-to-shard map, not the hash.'
+    more: |
+      With plain hash % N, changing N moves nearly all the data. With buckets you move just some buckets to the new shard, so resharding can happen step by step.
+    ref: partition-and-router-code
+
+quiz:
+  - q: 'Rahim''s database is seeing more reads and more writes. What should he do first?'
+    hint: 'Which step is cheapest?'
+    options:
+      - text: 'Split the data across 4 shards straight away'
+        correct: false
+        why: 'This is the most complex and riskiest step. If simpler fixes work, you never need it.'
+      - text: 'Measure slow queries and add indexes, then look at a cache and read replicas'
+        correct: true
+        why: 'These are cheap and safe, and most problems end here. Only if they fall short do you move to the next step.'
+      - text: 'Move the whole app to a new NoSQL database'
+        correct: false
+        why: 'That brings a migration and fresh risks, and the real cause of the problem has not even been measured.'
+      - text: 'Do nothing and wait'
+        correct: false
+        why: 'The problem won''t fix itself. Measure first, then try the simple steps.'
+    ref: last-resort
+  - q: 'An app uses shard key = created_at (monthly ranges). What happens?'
+    hint: 'Which shard does today''s write go to?'
+    options:
+      - text: 'Writes spread evenly across all shards'
+        correct: false
+        why: 'A new row always has today''s date, so every new row goes to the same shard.'
+      - text: 'All writes hit the latest shard (a hot shard) while the older ones sit nearly idle'
+        correct: true
+        why: 'Over time, writes always land in the newest range. That is the classic trap of using a date as a range key.'
+      - text: 'No problem, because range queries are easy'
+        correct: false
+        why: 'Range queries are easy, but the write load piling onto one shard is the real problem.'
+      - text: 'The database will balance the shards by itself'
+        correct: false
+        why: 'The database does not balance load on its own; the kind of key decides that.'
+    ref: choosing-shard-key
+  - q: 'What is wrong with this code?'
+    lang: php
+    code: |
+      $shard = $customerId % 4;           // direct shard choice
+      $conn  = $registry->getConnection('shard_' . $shard);
+      // ... later the shard count goes from 4 to 8
+    hint: 'When % 4 becomes % 8, which shard does the same customer_id go to?'
+    options:
+      - text: 'When the shard count changes, most customers map to a different shard, so nearly all data has to move'
+        correct: true
+        why: 'With a direct % N, changing N changes the calculation itself. With virtual buckets only some buckets move.'
+      - text: 'getConnection() can''t be called like this'
+        correct: false
+        why: 'ManagerRegistry::getConnection(name) works fine.'
+      - text: 'customerId should be a string, not an int'
+        correct: false
+        why: 'The type isn''t the problem; the calculation changing during resharding is.'
+      - text: 'Nothing is wrong'
+        correct: false
+        why: 'There is a problem: changing N moves nearly all the data.'
+    ref: partition-and-router-code
+  - q: 'Which tasks get harder in a sharded app?'
+    hint: 'Think of tasks that need data from several shards at once.'
+    options:
+      - text: 'Joining rows that live on two different shards'
+        correct: true
+        why: 'The database can''t join tables on separate servers, so the app has to do it.'
+      - text: 'Reading all of one customer''s orders (shard key = customer_id)'
+        correct: false
+        why: 'These all sit on one shard, so it''s easy.'
+      - text: 'Changing balances in one transaction across two shards'
+        correct: true
+        why: 'An ordinary ACID transaction doesn''t span shards; you need a saga or another approach.'
+      - text: 'Keeping emails unique across the whole system'
+        correct: true
+        why: 'A UNIQUE constraint only works within one shard; across the system you need a separate mechanism.'
+    ref: cross-shard-and-resharding
+  - q: 'A SaaS app has 10,000 tenants, but one tenant''s data equals all the others combined. It is sharded by tenant_id. What is the problem and the fix?'
+    hint: 'Which shard does one enormous tenant land on?'
+    options:
+      - text: 'No problem, hashing spreads everything evenly'
+        correct: false
+        why: 'Hashing spreads tenants evenly, but one tenant''s data stays on a single shard, so that shard balloons.'
+      - text: 'That tenant''s shard will run hot; a lookup table can put the giant tenant on its own dedicated shard'
+        correct: true
+        why: 'A lookup (directory) strategy lets you place any tenant on any shard. That is the answer to the celebrity problem.'
+      - text: 'Change the key to created_at'
+        correct: false
+        why: 'Then all new writes go to one shard, and tenant-based queries have to visit every shard.'
+      - text: 'Move all tenants back onto one shard'
+        correct: false
+        why: 'That throws away the whole point of sharding.'
+    ref: choosing-shard-key

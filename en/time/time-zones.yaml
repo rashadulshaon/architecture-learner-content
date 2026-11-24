@@ -1,0 +1,393 @@
+slides:
+  - slug: meeting-moved
+    title: 'The meeting suddenly moved by an hour'
+    kind: story
+    tldr: 'Store a London user''s "every Monday at 10 am" meeting in UTC and it slides to 11 am after the DST change, with no bug in the code.'
+    keywords: ['DST', 'daylight saving', 'UTC', 'recurring meeting', 'time zone', 'summer time']
+    blocks:
+      - type: text
+        body: |
+          Sumi, in London, creates a weekly meeting in February: "every Monday at 10 am". The app stores the first date in UTC and builds every later Monday by adding exactly 7 days (168 hours). On 29 March the clocks in London go forward an hour (DST begins), and the meeting suddenly shows up at 11 am in Sumi's calendar. The UTC time is still correct, but it isn't what Sumi asked for.
+      - type: visual
+        kind: table
+        caption: 'The same UTC time looks different on London clocks in February and April'
+        headers: ['Date', 'Stored UTC', 'Shows in London', 'What Sumi wanted']
+        rows:
+          - cells: ['2 February', '10:00 UTC', '10:00 (GMT)', '10:00']
+            tip: 'In winter London time equals UTC (GMT), so everything looks right here.'
+          - cells: ['23 March', '10:00 UTC', '10:00 (GMT)', '10:00']
+            tip: 'The last Monday before DST begins. Still no trouble.'
+          - cells: ['6 April', '10:00 UTC', '11:00 (BST)', '10:00']
+            tip: 'London is now UTC+1 hour (BST, British Summer Time). The same UTC time shows the meeting at 11, an hour off without Sumi ever agreeing to it.'
+      - type: quote
+        body: 'For a future local event, store "I want 10 am", not UTC.'
+    aside:
+      - type: story
+        title: 'The medicine reminder'
+        body: |
+          A health app stored its "medicine every night at 9" reminder in UTC. On the day the country changed its clocks, the reminder moved to 10 pm, and users complained about their medication times.
+      - type: tips
+        items:
+          - 'Bangladesh has no DST right now (a fixed UTC+6), so you won''t notice this problem sitting here. A user in Europe or America will.'
+    check:
+      q: 'You store the reminder "every night at 9" in UTC and add 24 hours each day. What happens after the DST change, and why?'
+      a: 'The time shifts by an hour on the user''s clock. UTC has no DST, but the user''s local clock moves forward or back an hour.'
+
+  - slug: instant-vs-wall
+    title: 'Two kinds of time: the instant and the wall clock'
+    kind: concept
+    tldr: 'Store a moment that has happened in UTC. Store a future local event as the local time plus the zone name (Europe/London), not as an offset.'
+    keywords: ['instant', 'wall time', 'timestamptz', 'IANA time zone', 'UTC', 'offset']
+    blocks:
+      - type: metaphor
+        icon: globe
+        title: 'A video call with your brother abroad'
+        body: |
+          A brother in Dhaka and a brother in London talked yesterday at one exact moment. The moment was one, yet their clocks showed different times. That is "a moment in the past", and it is stored in UTC. But "a call every Monday at 10 am London time next month" is a wall-clock time plus a place's rules. That is stored just as it is: local time and place.
+      - type: visual
+        kind: compare
+        caption: 'How to store each kind of time'
+        columns:
+          - title: 'A moment that happened'
+            tone: good
+            icon: history
+            tip: 'Order created, payment, login, logs. It happened once, so it is one fixed instant.'
+            items:
+              - 'Store in UTC: timestamptz'
+              - 'Convert to the user''s zone when displaying'
+              - 'Examples: paid_at, created_at'
+          - title: 'A future local event'
+            tone: accent
+            icon: calendar
+            tip: 'A meeting, a reminder, a shop''s opening time. It follows people''s clocks, and the rules can change later.'
+            items:
+              - 'Local time (no zone) + the zone name'
+              - 'Work out the UTC each time, using the rules of that day'
+              - 'Example: 10:00 + Europe/London'
+      - type: quote
+        body: 'The past: UTC. A future local event: local time + zone name.'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Offset', meaning: 'The difference in hours from UTC, such as +01:00. It is true for one moment only.'}
+          - {term: 'IANA zone', meaning: 'A place name that carries the complete rules, like Europe/London or Asia/Dhaka. It holds the DST history and future rules.'}
+      - type: pitfalls
+        items:
+          - '"+01:00" is not a stored zone. When DST ends London''s offset changes, but the stored "+01:00" stays.'
+          - 'Governments sometimes change DST rules. If you store the zone name, a tzdata update fixes future events too.'
+    check:
+      q: 'Which should be stored in UTC and which as "local time + zone": (a) a payment was made, (b) a meeting every Monday at 10 am in London?'
+      a: '(a) UTC, because it is a moment that has happened. (b) Local 10:00 plus the name Europe/London, because a future local event follows the DST rules.'
+
+  - slug: dst-gap-overlap
+    title: 'The DST gap and the doubled hour'
+    kind: pitfall
+    tldr: 'In spring one hour of local time doesn''t exist (a gap); in autumn one hour happens twice (an overlap). Put an event in that time and the code quietly picks one.'
+    keywords: ['DST gap', 'DST overlap', 'ambiguous time', 'nonexistent time', 'Europe/London', 'PHP DateTime']
+    blocks:
+      - type: text
+        body: |
+          In London on 29 March 2026, at 1 am the clock jumps straight to 2 am. So **01:30 simply doesn't exist**. On 25 October the clock goes from 2 am back to 1 am, so **01:30 happens twice**. Ask for something to happen in those moments, and the code either moves it by guesswork or picks the earlier or the later one.
+      - type: visual
+        kind: table
+        caption: 'The two DST boundaries in London, 2026'
+        headers: ['Date', 'What the clock does', 'Status of local 01:30']
+        rows:
+          - cells: ['29 March', 'Jumps 01:00 → 02:00', 'Doesn''t exist (gap)']
+            tip: 'In spring the clocks go forward. Every local time between 01:00 and 02:00 is nonexistent.'
+          - cells: ['25 October', 'Falls back 02:00 → 01:00', 'Happens twice (overlap)']
+            tip: 'In autumn the clocks go back. 01:00-02:00 happens once in BST and again in GMT: the same numbers, two different moments.'
+      - type: code
+        lang: php
+        file: 'Behaviour at DST boundaries'
+        variant: bad
+        code: |
+          $london = new DateTimeZone('Europe/London');
+
+          // gap: 01:30 doesn't exist, PHP quietly makes it 02:30 BST
+          $a = new DateTimeImmutable('2026-03-29 01:30', $london);
+          echo $a->format('H:i T');       // 02:30 BST
+
+          // overlap: two 01:30s, PHP picks one (usually the earlier)
+          $b = new DateTimeImmutable('2026-10-25 01:30', $london);
+          echo $b->format('H:i T P');     // 01:30 BST +01:00
+        marks:
+          - {line: 4, tip: 'Invalid input raises no error; the time just moves an hour. The user never knows.'}
+          - {line: 8, tip: 'It picks one of the two possible moments, silently. The other can never come out.'}
+      - type: points
+        title: 'What to do'
+        style: check
+        items:
+          - 'For a gap, decide the rule: usually move to the next valid time (02:00).'
+          - 'For an overlap, decide which one you want (earlier or later) and store that in UTC.'
+          - 'For daily jobs, don''t use "+24 hours"; use `modify(''+1 day'')` in the local zone.'
+    aside:
+      - type: remember
+        body: 'Adding hours to a local time is one thing; adding days is another. Do day arithmetic in the local zone.'
+      - type: tips
+        items:
+          - 'In tests, keep at least two cases for 01:30 on 29 March and on 25 October.'
+    check:
+      q: 'Why is "01:30" on 25 October 2026 in London ambiguous, and how does storing UTC settle it?'
+      a: 'That day 01:00-02:00 happens twice (BST and GMT). In UTC they become two distinct moments (00:30 or 01:30 UTC), so it is clear which one you mean.'
+
+  - slug: store-and-compute
+    title: 'Storing and computing: SQL and PHP'
+    kind: howto
+    tldr: 'Past moments go in timestamptz. Future events get the local time plus the zone name, and a separately computed next_run_at (UTC) for the scheduler.'
+    keywords: ['timestamptz', 'DateTimeImmutable', 'DateTimeZone', 'next_run_at', 'recurring', 'Doctrine']
+    blocks:
+      - type: code
+        lang: sql
+        file: 'migration (PostgreSQL)'
+        code: |
+          -- a past moment: timestamptz, UTC inside
+          CREATE TABLE payment (
+              id       BIGSERIAL PRIMARY KEY,
+              paid_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+          );
+
+          -- a future local event: wall-clock time + zone name
+          CREATE TABLE meeting (
+              id           BIGSERIAL PRIMARY KEY,
+              local_start  TIMESTAMP NOT NULL,       -- no zone, e.g. 10:00
+              timezone     VARCHAR(40) NOT NULL,     -- 'Europe/London'
+              next_run_at  TIMESTAMPTZ NOT NULL      -- computed UTC
+          );
+        marks:
+          - {line: 4, tip: 'timestamptz stores UTC internally and displays it in the session''s zone. The name is misleading: it doesn''t actually store a zone.'}
+          - {line: 11, tip: 'Never put +01:00 in this column; put the place name. The name gives you the correct offset for any date.'}
+          - {line: 12, tip: 'Useful for the scheduler. It is always a value computed from local_start and timezone.'}
+      - type: code
+        lang: php
+        file: 'src/Entity/Meeting.php'
+        code: |
+          public function occurrenceUtc(int $weeksAhead): DateTimeImmutable
+          {
+              // turn the stored wall-clock time into a time in the given zone
+              $local = new DateTimeImmutable(
+                  $this->localStart->format('Y-m-d H:i:s'),
+                  new DateTimeZone($this->timezone),
+              );
+
+              // +N weeks in the local zone: the wall clock stays 10:00, even across DST
+              return $local->modify("+{$weeksAhead} weeks")
+                  ->setTimezone(new DateTimeZone('UTC'));
+          }
+        marks:
+          - {line: 4, tip: 'Attaching the zone name to the time makes PHP pick the right offset (GMT or BST) for that date.'}
+          - {line: 10, tip: 'modify() works in the local zone, so the wall clock doesn''t change. Adding 168 hours in UTC would have shifted across DST.'}
+          - {line: 11, tip: 'Convert to UTC at the very end, and write that to next_run_at. The scheduler compares only against UTC.'}
+    aside:
+      - type: tips
+        items:
+          - 'Keep PHP''s default timezone at UTC (`date.timezone = UTC`) and pass an explicit DateTimeZone wherever you need a zone.'
+          - 'After each run, compute the next one from that moment and rewrite next_run_at.'
+          - 'Validate the zone name: `in_array($z, DateTimeZone::listIdentifiers(), true)`.'
+      - type: refs
+        items:
+          - {to: 'time/clocks-lie', label: 'Symfony Clock and testable time'}
+          - {to: 'data/temporal-data', label: 'Data models for time'}
+    check:
+      q: 'To find the next date of a weekly local meeting, why add `+1 week` in the local zone rather than 168 hours in UTC?'
+      a: 'Adding in the local zone keeps the wall clock (10:00) intact, even when DST changes. Adding hours in UTC shifts the local time by an hour after DST.'
+
+  - slug: show-in-vue
+    title: 'Displaying: in the user''s zone, in Vue'
+    kind: howto
+    tldr: 'The API sends UTC (ISO 8601, ending in Z); in Vue, Intl.DateTimeFormat formats it in the user''s own zone. For an event elsewhere, show the event''s own zone too.'
+    keywords: ['Intl.DateTimeFormat', 'Vue', 'ISO 8601', 'user timezone', 'Symfony Serializer', 'display']
+    blocks:
+      - type: text
+        body: |
+          Let the server always send times in one format: ISO 8601 in UTC, ending in `Z`. The browser knows where the user is, so display is the client's job. `Intl.DateTimeFormat` follows DST rules by itself. For an event in another city (say a London meeting), show both zones side by side so nobody gets confused.
+      - type: code
+        lang: vue
+        file: 'src/components/EventTime.vue'
+        code: |
+          <script setup lang="ts">
+          import { computed } from 'vue'
+
+          // startsAtUtc: '2026-04-06T09:00:00Z' — the UTC value from the server
+          const props = defineProps<{ startsAtUtc: string; eventZone: string }>()
+
+          const fmt = (timeZone: string) =>
+            new Intl.DateTimeFormat('en-GB', {
+              dateStyle: 'medium', timeStyle: 'short', timeZone,
+            }).format(new Date(props.startsAtUtc))
+
+          const myZone = Intl.DateTimeFormat().resolvedOptions().timeZone
+          const mine = computed(() => fmt(myZone))
+          const theirs = computed(() => fmt(props.eventZone))
+          </script>
+
+          <template>
+            <p>Your time: {{ mine }} ({{ myZone }})</p>
+            <p>Where it happens: {{ theirs }} ({{ eventZone }})</p>
+          </template>
+        marks:
+          - {line: 5, tip: 'The UTC string from the API. Without the trailing Z, the browser will wrongly take it as local time.'}
+          - {line: 9, tip: 'Passing timeZone makes Intl follow that zone''s DST rules and give the right local time. No adding or subtracting hours by hand.'}
+          - {line: 12, tip: 'The user''s browser zone, such as Asia/Dhaka. You can also store it on the server as a separate setting.'}
+      - type: points
+        title: 'Rules for sending from Symfony'
+        style: check
+        items:
+          - 'Entity times are DateTimeImmutable; before export, call `setTimezone(new DateTimeZone(''UTC''))`.'
+          - 'In JSON use RFC 3339 / ISO 8601 (the Serializer''s default). Don''t build date strings by hand.'
+          - 'In emails or SMS, format the time in the user''s zone and include the zone name.'
+    aside:
+      - type: pitfalls
+        items:
+          - '`new Date(''2026-04-06 09:00'')`, a string without a zone, is assumed to be in the browser''s local zone. Always send a string with `Z` or an offset.'
+          - 'Writing email times in the server''s timezone gives users in other countries the wrong time.'
+      - type: tips
+        items:
+          - 'For schedules like cron, the server''s zone (usually UTC) is a separate matter: for a user''s local event, drive it from next_run_at in UTC.'
+    check:
+      q: 'What can go wrong in Vue if the API sends the time as `2026-04-06 09:00`, without the trailing Z?'
+      a: 'The browser treats it as the user''s own local time, not UTC, so the displayed time is wrong. To say UTC, you must add `Z` or an offset.'
+
+flashcards:
+  - q: 'Where should you store the time of a past event?'
+    a: 'In UTC, meaning PostgreSQL''s timestamptz. Convert it to the user''s zone when you display it.'
+    more: |
+      A past event (a payment, a login, an order) is one fixed moment. Stored in UTC, it stays the same moment wherever the server or the user is, and DST doesn't change it.
+    ref: instant-vs-wall
+  - q: 'How do you store a future local event, such as a meeting every Monday at 10 am?'
+    a: 'The local time (no zone) plus the zone name (Europe/London), and compute the UTC each time by that date''s rules.'
+    more: |
+      Store only UTC and the meeting slides an hour when DST changes. Storing only "+01:00" doesn't help either, because the offset changes next season. The name gives you the right offset for every date.
+    ref: instant-vs-wall
+  - q: 'What is the difference between an offset and an IANA time zone?'
+    a: 'An offset (+01:00) is the UTC difference at one moment. An IANA zone (Europe/London) is all the rules for that place, DST included.'
+    more: |
+      London is +00:00 in winter and +01:00 in summer. Store "+01:00" and a winter meeting will be wrong. Store the zone name and tzdata works out the right offset, and if a government changes the rules, an update fixes it.
+    ref: instant-vs-wall
+  - q: 'What is a DST gap?'
+    a: 'When the clocks go forward in spring, one hour of local time doesn''t exist. In London on 29 March 2026, 01:00-02:00 does not exist.'
+    more: |
+      If you try to place an event in that time, the code quietly moves it, in PHP to 02:30. Decide the rule: move to the next valid time, or tell the user.
+    ref: dst-gap-overlap
+  - q: 'What is a DST overlap?'
+    a: 'When the clocks go back in autumn, one hour of local time happens twice. In London on 25 October 2026, 01:30 is two different moments.'
+    more: |
+      The local time becomes ambiguous. PHP picks one, and the user doesn't know which. Store UTC and the ambiguity disappears, because the two moments have different UTC times.
+    ref: dst-gap-overlap
+  - q: 'What is the right way to compute "next week" for a weekly local event?'
+    a: 'Add `+1 week` in the local zone, then convert to UTC. Adding 168 hours in UTC shifts the time by an hour across DST.'
+    more: |
+      PHP's `DateTimeImmutable::modify('+1 week')` works in that object's zone, so the wall clock stays right. When the calculation is done, call `setTimezone(UTC)` and write the result to next_run_at.
+    ref: store-and-compute
+  - q: 'Why keep a next_run_at for a future local event with a scheduler?'
+    a: 'A scheduler compares only against UTC. Keeping the UTC computed from local time and zone in its own column makes the query simple and fast.'
+    more: |
+      `WHERE next_run_at <= now()` can use an index directly. After the event runs, the next date is computed again by the local rules and next_run_at is rewritten.
+    ref: store-and-compute
+  - q: 'What is the right format for sending a time from an API?'
+    a: 'ISO 8601 in UTC, ending in Z (for example 2026-04-06T09:00:00Z). Without Z or an offset, a browser assumes local time.'
+    more: |
+      Symfony's Serializer outputs DateTimeImmutable as RFC 3339 by default. Convert to UTC before exporting. In Vue, use `Intl.DateTimeFormat` with `timeZone` to show it in the user's zone.
+    ref: show-in-vue
+  - q: 'How do you get the user''s browser time zone in Vue?'
+    a: '`Intl.DateTimeFormat().resolvedOptions().timeZone` (for example Asia/Dhaka). Pass it as the `timeZone` option of `Intl.DateTimeFormat` to format times.'
+    more: |
+      Intl follows DST rules itself, so you never add or subtract hours by hand. For an event in another city, also show the time in the event's zone, so nobody gets confused.
+    ref: show-in-vue
+
+quiz:
+  - q: 'An app sends a user in Dhaka a report "every Sunday at 9 pm". The user moves to London and changes zone. Which design is right?'
+    hint: 'What does the user want: one UTC moment, or 9 o''clock on their own clock?'
+    options:
+      - text: 'Store the user''s local 9 pm and their zone name; compute the UTC each time'
+        correct: true
+        why: 'The user wants 9 by their own clock. When the zone changes you only change the name, and the calculation fixes itself.'
+      - text: 'Store the UTC hour computed once (say 15:00 UTC) forever'
+        correct: false
+        why: 'When DST changes, or the zone does, that time slides on the user''s clock.'
+      - text: '9 pm in the server''s zone'
+        correct: false
+        why: 'Where the server is means nothing to the user.'
+      - text: 'Store the offset "+06:00"'
+        correct: false
+        why: 'The offset is wrong once the user goes to London, or across a DST change.'
+    ref: instant-vs-wall
+  - q: 'Which of these should be stored in UTC (timestamptz)?'
+    hint: 'Which are moments that happened once?'
+    options:
+      - text: 'The time a payment succeeded'
+        correct: true
+        why: 'A fixed moment; it stays unchanged in UTC.'
+      - text: 'The time a user logged in'
+        correct: true
+        why: 'A past event; you change the zone only when displaying it.'
+      - text: 'The original time of next Monday''s 10 am meeting in London'
+        correct: false
+        why: 'This is a future local event. Local time plus the zone name should be the primary data.'
+      - text: 'A schedule like "the shop opens at 8 am every day"'
+        correct: false
+        why: 'It is a wall-clock rule, not a fixed moment.'
+    ref: instant-vs-wall
+  - q: 'What will `$next` hold in this code?'
+    lang: php
+    code: |
+      $london = new DateTimeZone('Europe/London');
+      $mon = new DateTimeImmutable('2026-03-23 10:00', $london);
+      $next = $mon->modify('+2 weeks');
+    hint: 'DST begins in London on 29 March 2026. Which zone does modify work in?'
+    options:
+      - text: '2026-04-06 10:00 BST: the same wall clock, and 09:00 in UTC'
+        correct: true
+        why: 'modify() works in that object''s zone, so local 10:00 stays intact and the UTC time shifts by an hour.'
+      - text: '2026-04-06 11:00 BST'
+        correct: false
+        why: 'Adding 168×2 hours would give that, but modify(''+2 weeks'') counts days.'
+      - text: 'An exception'
+        correct: false
+        why: 'Crossing a DST change raises no exception.'
+    ref: store-and-compute
+  - q: 'A job is scheduled for 01:30 local time in London on 29 March 2026. What happens?'
+    hint: 'Where does the clock jump to from 01:00 that day?'
+    options:
+      - text: 'That time doesn''t exist (a gap); PHP quietly moves it to 02:30 BST'
+        correct: true
+        why: 'A local time inside the spring DST gap is invalid. Moving it silently is dangerous, so set your own rule.'
+      - text: 'The job runs at exactly 01:30'
+        correct: false
+        why: 'That local time never appears on the clock.'
+      - text: 'The job runs twice'
+        correct: false
+        why: 'Appearing twice happens in the autumn overlap, not in spring.'
+      - text: 'PHP throws an exception'
+        correct: false
+        why: 'PHP''s DateTimeImmutable raises no error here; it just shifts the time.'
+    ref: dst-gap-overlap
+  - q: 'Which of these are good practices?'
+    hint: 'Think about ways to reduce ambiguity.'
+    options:
+      - text: 'Sending times from the API as ISO 8601 UTC (ending in Z)'
+        correct: true
+        why: 'It means the same moment to everyone, and the client shows it in its own zone.'
+      - text: 'Storing the zone name, not an offset, for future events'
+        correct: true
+        why: 'The name lets you work out the right offset for each date.'
+      - text: 'Setting the server''s timezone to match the user''s timezone'
+        correct: false
+        why: 'Users are in thousands of zones. Servers normally stay on UTC.'
+      - text: 'Sending the time string "2026-04-06 09:00" without a zone'
+        correct: false
+        why: 'The client will assume local time and get it wrong.'
+    ref: show-in-vue
+  - q: 'In the browser of a user in Asia/Dhaka, what will `new Date(''2026-04-06T09:00:00Z'')` correspond to, as the correct local time?'
+    hint: 'Dhaka is UTC+6.'
+    options:
+      - text: '15:00 (3 pm) in Dhaka'
+        correct: true
+        why: '09:00 UTC + 6 hours = 15:00 in Dhaka. This is what Intl does.'
+      - text: '09:00 in the morning'
+        correct: false
+        why: 'That is UTC, not the user''s local time.'
+      - text: '03:00 at night'
+        correct: false
+        why: 'That subtracts 6 hours. Dhaka is ahead of UTC.'
+    ref: show-in-vue

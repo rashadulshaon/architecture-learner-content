@@ -1,0 +1,417 @@
+slides:
+  - slug: phone-clock-otp
+    title: 'The phone''s clock said the OTP had expired'
+    kind: story
+    tldr: 'If expiry is decided by the client''s clock, a fast clock cancels a valid code and a slow clock lets an expired one through. The server decides.'
+    keywords: ['OTP expiry', 'client clock', 'server authority', 'expires_at', 'expiry', 'clock skew']
+    blocks:
+      - type: metaphor
+        icon: ticket
+        title: 'The train ticket and the station clock'
+        body: |
+          The ticket says "train leaves 10:05". Whatever the passenger's wristwatch says, the train leaves by the station's clock. The passenger thinks "there's still time", but the stationmaster closes the gate. Expiry works the same way: the server's clock decides what is still valid.
+      - type: visual
+        kind: sequence
+        caption: 'The phone''s clock is an hour fast: a fresh OTP is "expired" to the phone'
+        actors:
+          - {id: phone, label: 'User''s phone', icon: phone, tip: 'Its clock is wrong, an hour ahead of real time.'}
+          - {id: server, label: 'Server', icon: server, tip: 'Its clock is synced via NTP. It is the real authority on expiry.'}
+        messages:
+          - {from: server, to: phone, label: 'OTP 4821, valid until 10:05', tip: 'Issued at 10:00 real time. It is valid for 5 minutes.'}
+          - {at: phone, note: 'Phone clock 11:01 > 10:05', tone: bad, tip: 'The phone thinks it expired 56 minutes ago. The real time is 10:01.'}
+          - {at: phone, note: 'Shows "code expired", never sends it to the server', tone: bad, tip: 'The app never gave the server a chance. The user is stuck.'}
+          - {at: server, note: 'In fact 4 more minutes remain', tone: warn, tip: 'A valid code was wasted by a decision made on the client''s clock.'}
+      - type: quote
+        body: 'Expiry is decided on the server''s clock. The client only displays.'
+    aside:
+      - type: story
+        title: 'The user changed "today''s date"'
+        body: |
+          A trial app counted 30 days from the phone's date. Anyone who set the phone's date back could use the trial forever. The reverse happens too: if the phone's date is wrong, an innocent user's trial ends early.
+      - type: remember
+        body: 'The client''s clock is untrustworthy, so never use it for a security decision.'
+    check:
+      q: 'Why does the app say the OTP has "expired" before the server does when the phone''s clock runs fast, and what is the right design?'
+      a: 'The app computes expiry from its own wrong clock. In the right design the server checks expiry, and the client just shows a countdown from the remaining time the server gave it.'
+
+  - slug: deadline-vs-duration
+    title: 'Deadline vs duration: what to store, what to count'
+    kind: concept
+    tldr: 'Store expiry as a fixed moment (a deadline, expires_at). To count down or measure a wait, use a duration and a monotonic timer.'
+    keywords: ['deadline', 'duration', 'TTL', 'expires_at', 'monotonic', 'countdown']
+    blocks:
+      - type: text
+        body: |
+          Expiry can be expressed in two different ways. A **deadline** is a fixed moment: "invalid after 10:05:00 UTC". A **duration** is a length of time: "300 seconds". A deadline is better for storing expiry, because everyone sees the same moment. Store a duration and you must also remember separately when it started. For counting down or measuring a timeout, on the other hand, a duration and a monotonic timer are the right tools.
+      - type: visual
+        kind: table
+        caption: 'Deadline vs duration: which goes where'
+        headers: ['', 'Deadline (a moment)', 'Duration (a length)']
+        rows:
+          - cells: ['Example', 'expires_at = 10:05:00Z', 'ttl = 300 seconds']
+            tip: 'The same information in two shapes. At issue time, turn the ttl into a deadline and store that.'
+          - cells: ['Where it''s stored', 'In the database, in a token', 'Cache TTL, showing time remaining']
+            tip: 'With the deadline in the database, "is it valid now?" is a simple query. A cache removes entries by their length by itself.'
+          - cells: ['Whose clock', 'The server''s wall clock', 'A monotonic clock (hrtime, performance.now)']
+            tip: 'When measuring a duration, a clock jump in between does no harm. A monotonic clock never goes backwards.'
+          - cells: ['Showing the client', 'Send the seconds left; don''t make it compute', 'Run the countdown locally']
+            tip: 'The server says "297 seconds left", and the client counts down on its own stopwatch. The phone''s date isn''t needed.'
+      - type: quote
+        body: 'Store expiry as a deadline; measure time with a duration and a monotonic timer.'
+    aside:
+      - type: terms
+        items:
+          - {term: 'TTL', meaning: 'Time to live: how long something is allowed to stay alive.'}
+          - {term: 'Monotonic clock', meaning: 'A clock that only moves forward, never back. For measuring time, not for knowing the date.'}
+      - type: refs
+        items:
+          - {to: 'time/clocks-lie', label: 'Wall clock vs monotonic clock'}
+    check:
+      q: 'To show a countdown, do you send expires_at or the seconds remaining, and how does the client count?'
+      a: 'The server sends the seconds remaining. The client subtracts using `performance.now()` (monotonic), so the countdown stays right even if the phone''s date is wrong.'
+
+  - slug: server-authority-grace
+    title: 'The server is the judge, with a small grace'
+    kind: howto
+    tldr: 'Compare expires_at with the current time from the server''s Clock. Allow a small grace for network delay and slight clock differences between issue and verification.'
+    keywords: ['OTP verification', 'ClockInterface', 'grace period', 'leeway', 'countdown', 'Vue']
+    blocks:
+      - type: code
+        lang: php
+        file: 'src/Service/OtpVerifier.php'
+        code: |
+          final readonly class OtpVerifier
+          {
+              private const GRACE_SECONDS = 5;   // network delay + a slight clock difference
+
+              public function __construct(
+                  private ClockInterface $clock,
+                  private OtpRepository $otps,
+              ) {
+              }
+
+              public function verify(int $userId, string $code): bool
+              {
+                  $otp = $this->otps->findLatestFor($userId);
+
+                  if ($otp === null || !hash_equals($otp->getCode(), $code)) {
+                      return false;
+                  }
+
+                  $lastValid = $otp->getExpiresAt()->modify('+'.self::GRACE_SECONDS.' seconds');
+
+                  return $this->clock->now() <= $lastValid;   // the server's clock is the judge
+              }
+          }
+        marks:
+          - {line: 3, tip: 'Grace covers only technical gaps: a few seconds. It is not a way to extend the expiry.'}
+          - {line: 15, tip: 'hash_equals avoids timing attacks. And if the code doesn''t match, stop right here.'}
+          - {line: 21, tip: 'The time comes from ClockInterface, so a test can use MockClock to pass the expiry. The client''s clock never comes into it.'}
+      - type: code
+        lang: vue
+        file: 'src/components/OtpCountdown.vue'
+        code: |
+          <script setup lang="ts">
+          import { onUnmounted, ref } from 'vue'
+
+          // the server said: "300 seconds left"
+          const props = defineProps<{ expiresInSeconds: number }>()
+
+          const startedAt = performance.now()           // monotonic
+          const left = ref(props.expiresInSeconds)
+
+          const timer = setInterval(() => {
+            const gone = Math.floor((performance.now() - startedAt) / 1000)
+            left.value = Math.max(0, props.expiresInSeconds - gone)
+            if (left.value === 0) clearInterval(timer)
+          }, 1000)
+          onUnmounted(() => clearInterval(timer))
+          </script>
+
+          <template>
+            <p v-if="left > 0">{{ left }} seconds left</p>
+            <p v-else>The code has expired. Request a new one.</p>
+          </template>
+        marks:
+          - {line: 7, tip: 'performance.now() is monotonic; it keeps the same pace even if the phone''s date changes.'}
+          - {line: 11, tip: 'It works out the seconds left from elapsed time, not the phone''s Date. It is only for display; the decision is the server''s.'}
+    aside:
+      - type: tips
+        items:
+          - 'In JWT verification, a library''s `leeway` or clock-skew setting is the same idea. Usually 5-30 seconds.'
+          - 'Business grace is a different thing: keeping the service on for 3 days after a subscription ends. That is policy; give it a clear name in code (graceUntil).'
+      - type: pitfalls
+        items:
+          - 'Make the grace very large and the expiry means nothing. Keep it small in security code.'
+    check:
+      q: 'An OTP arrives 5 minutes 1 second after issue, with a 5-second grace. Why is it accepted, and why would a 5-minute grace be wrong?'
+      a: '5 seconds is enough to cover technical delay and slight clock differences, so it is accepted. With a 5-minute grace, the expiry doubles and security is weakened.'
+
+  - slug: timeout-budget
+    title: 'Timeout budget: spending the whole request''s time in portions'
+    kind: howto
+    tldr: 'Instead of a separate timeout on every call, set one total deadline for the whole request. Count it with hrtime and give each step only what remains.'
+    keywords: ['timeout budget', 'deadline propagation', 'HttpClient', 'max_duration', 'hrtime', 'timeout']
+    blocks:
+      - type: text
+        body: |
+          In an order request the client won't wait more than 3 seconds. Inside, the database, the payment gateway and the email queue are all involved. Give each one its own "10 seconds" timeout and the total gets out of hand. So treat the 3 seconds in total as a budget, subtract the cost at each step, and don't start more work once the budget is spent.
+      - type: visual
+        kind: bars
+        caption: 'A 3000 ms budget, divided by step'
+        items:
+          - {label: 'Total budget', value: 3000, display: '3000ms', tone: accent, tip: 'The longest the client will wait. If it takes longer, the client gives up first.'}
+          - {label: 'Database', value: 300, display: '300ms', tone: good, tip: 'An ordinary query; a small part of the budget.'}
+          - {label: 'Payment gateway', value: 1500, display: '1500ms', tone: warn, tip: 'The slowest step, so the biggest share. Its timeout can''t be given more than this.'}
+          - {label: 'Email to queue', value: 100, display: '100ms', tone: good, tip: 'Only sending a message, not the email itself. Fast.'}
+          - {label: 'Left (safety)', value: 1100, display: '1100ms', tone: muted, tip: 'Kept for the network, serialization and unexpected slowness.'}
+      - type: code
+        lang: php
+        file: 'src/Support/Deadline.php'
+        code: |
+          final class Deadline
+          {
+              private readonly int $endNs;
+
+              public function __construct(int $budgetMs)
+              {
+                  $this->endNs = hrtime(true) + $budgetMs * 1_000_000;   // monotonic
+              }
+
+              public function remainingSeconds(): float
+              {
+                  return max(0.0, ($this->endNs - hrtime(true)) / 1_000_000_000);
+              }
+          }
+
+          // usage
+          $deadline = new Deadline(3000);
+          if ($deadline->remainingSeconds() <= 0.0) {
+              throw new DeadlineExceeded();      // max_duration: 0 means unlimited!
+          }
+          $response = $this->http->request('POST', $url, [
+              'max_duration' => min(1.5, $deadline->remainingSeconds()),
+          ]);
+        marks:
+          - {line: 7, tip: 'hrtime(true) is monotonic, so the budget is counted correctly even if the clock jumps.'}
+          - {line: 18, tip: 'In HttpClient, a max_duration of 0 or less means unlimited. So check whether the budget is spent first.'}
+          - {line: 22, tip: 'Each call has its own limit (1.5s) but never more than the remaining budget. Whichever is smaller applies.'}
+    aside:
+      - type: terms
+        items:
+          - {term: 'timeout (HttpClient)', meaning: 'The idle timeout: how long to wait when no data arrives. Not the total time.'}
+          - {term: 'max_duration', meaning: 'The maximum total time for the whole request + response, in seconds.'}
+      - type: tips
+        items:
+          - 'Tell internal services the remaining budget in a header (for example `X-Deadline-Ms`) so they can keep count too.'
+    check:
+      q: 'What is the difference between `timeout` and `max_duration` in HttpClient, and which do you need to hold a budget?'
+      a: '`timeout` is the idle time when no data arrives; `max_duration` is the total limit for the whole request. To hold a total budget you need `max_duration`.'
+
+  - slug: timeout-traps
+    title: 'Three timeout traps: bigger inside, retries multiply, unbounded'
+    kind: pitfall
+    tldr: 'If an inner timeout is bigger than the outer one, work carries on after the outer caller has given up. Retries multiply the timeout. Without a timeout, one hung call blocks everything.'
+    keywords: ['timeout', 'retry', 'nested timeout', 'retry_failed', 'unbounded wait', 'HttpClient']
+    blocks:
+      - type: text
+        body: |
+          The client gives up after 3 seconds. But inside the server, the gateway call has a 10-second timeout with 3 retries on top: 40 seconds in the worst case. The client has gone, yet the server keeps working, and the work may even succeed in the end. The user never finds out what happened.
+      - type: code
+        lang: yaml
+        file: 'config/packages/framework.yaml'
+        variant: bad
+        code: |
+          framework:
+              http_client:
+                  scoped_clients:
+                      gateway.client:
+                          base_uri: '%env(GATEWAY_URL)%'
+                          timeout: 10         # idle only; no total limit
+                          retry_failed:
+                              max_retries: 3  # 4 attempts × 10 seconds = 40 seconds
+        marks:
+          - {line: 6, tip: '10 seconds is bigger than the client''s 3. The work carries on inside long after the outside has given up.'}
+          - {line: 8, tip: 'Every retry gets the full timeout again. The worst-case time multiplies.'}
+      - type: code
+        lang: yaml
+        file: 'config/packages/framework.yaml'
+        variant: good
+        code: |
+          framework:
+              http_client:
+                  scoped_clients:
+                      gateway.client:
+                          base_uri: '%env(GATEWAY_URL)%'
+                          timeout: 0.5
+                          max_duration: 0.8   # total limit per attempt
+                          retry_failed:
+                              max_retries: 2
+                              delay: 100
+                              multiplier: 2   # 3 × 0.8 + 0.3 = 2.7 seconds < 3
+        marks:
+          - {line: 7, tip: 'There is a limit, and the worst case is 2.7 seconds in total, inside the client''s 3.'}
+          - {line: 9, tip: 'Retries are few and bounded. Only idempotent calls are safe to retry; a charge call isn''t, without an idempotency key.'}
+      - type: points
+        title: 'Three rules'
+        style: check
+        items:
+          - 'All the inner timeouts together must be smaller than the outer timeout.'
+          - 'Work out the worst-case total time of the retries first.'
+          - 'Every outbound call gets an explicit timeout; never rely on the default.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'A timeout doesn''t mean the work wasn''t done. The gateway may have taken the money and only the reply never came. The outcome is "unknown", not "failed".'
+      - type: refs
+        items:
+          - {to: 'payments/unknown-outcomes', label: 'After a timeout: "I don''t know whether it happened"'}
+          - {to: 'messaging/dlq-retries', label: 'Retries and backoff'}
+    check:
+      q: 'The client waits 3 seconds. Each attempt of the inner call takes at most 1 second, with 2 retries. Is that safe?'
+      a: 'Almost: 3 attempts × 1 second = 3 seconds, and the retry delays on top push it past the limit. Shorten each attempt (say to 0.8) to stay within 3 seconds in total.'
+
+flashcards:
+  - q: 'Whose clock should decide expiry?'
+    a: 'The server''s. A client''s clock can be wrong or deliberately changed, so it can''t be used for a security decision.'
+    more: |
+      The client only displays the remaining time the server gave it. On every request the server checks expiry against its own Clock. That way nobody can extend a trial or an OTP by changing the phone's date.
+    ref: phone-clock-otp
+  - q: 'What is the difference between a deadline and a duration?'
+    a: 'A deadline is a fixed moment (invalid after 10:05 UTC). A duration is a length of time (300 seconds).'
+    more: |
+      A deadline is better for storing expiry, because everyone sees the same moment. For counting down or measuring a wait, a duration and a monotonic timer are right. The usual rule: turn the ttl into expires_at when you issue, and store that.
+    ref: deadline-vs-duration
+  - q: 'What is a monotonic clock, and why is it good for measuring timeouts?'
+    a: 'A clock that never goes backwards. It doesn''t jump when NTP or a person changes the time, so it is safe for measuring how much time has passed.'
+    more: |
+      In PHP it is `hrtime(true)`, in the browser `performance.now()`. They don't tell the date; they only say how far time has advanced. The wall clock (`time()`, `Date.now()`) is good for knowing the date, not for measuring a length.
+    ref: deadline-vs-duration
+  - q: 'What should the server send to show a countdown to a client?'
+    a: 'The seconds remaining (say 297). The client counts it down with a monotonic timer, and the phone''s date isn''t needed.'
+    more: |
+      Send expires_at and the client compares it with its own clock, giving a wrong countdown if that clock is wrong. Send the remaining time and the client's clock drops out. The final decision is still always the server's.
+    ref: server-authority-grace
+  - q: 'What is a grace period, and how big should it be?'
+    a: 'A little extra time after expiry, to cover network delay and slight clock differences. In security, a few seconds, no more.'
+    more: |
+      In JWT it is called leeway (usually 5-30 seconds). Business grace is different: keeping the service on for 3 days after a subscription ends. Keep the two apart in name and in code, or they get mixed up.
+    ref: server-authority-grace
+  - q: 'What is a timeout budget?'
+    a: 'One total time limit for the whole request, divided among the steps. Each step gets only what remains.'
+    more: |
+      If the client waits 3 seconds, all the inner calls together must take less than 3 seconds. A `Deadline` object counts with hrtime and, once the budget is spent, throws an error instead of starting new work.
+    ref: timeout-budget
+  - q: 'What are `timeout` and `max_duration` in Symfony HttpClient?'
+    a: '`timeout` is the idle timeout (waiting when no data arrives). `max_duration` is the total limit for the whole request, in seconds; 0 or less means unlimited.'
+    more: |
+      A server that trickles data slowly doesn't trip the idle timeout, but it does trip max_duration. To hold a budget you need max_duration. And when the budget is spent, don't pass 0, because 0 means unlimited.
+    ref: timeout-budget
+  - q: 'What happens when an inner timeout is bigger than the outer timeout?'
+    a: 'The outer client gives up, but the work inside carries on. If it ends up succeeding, the user never learns of it.'
+    more: |
+      The rule: all the inner timeouts (retries included) must add up to less than the outer timeout. Otherwise the server burns resources for nothing, and the outcome goes around as "unknown".
+    ref: timeout-traps
+  - q: 'How do retries affect a timeout?'
+    a: 'They multiply the worst-case total: (retries + 1) × timeout per attempt + delays. Work it out first and keep it inside the budget.'
+    more: |
+      3 retries × 10 seconds = 40 seconds, while the client is on 3. Reduce the attempts and shorten each attempt's limit. And if you must retry a call that charges money, you need an idempotency key.
+    ref: timeout-traps
+
+quiz:
+  - q: 'A trial lasts 30 days. Which of these designs is the safest?'
+    hint: 'Whose clock is easiest to change?'
+    options:
+      - text: 'Count 30 days from the phone''s date'
+        correct: false
+        why: 'A user can set the date back and run the trial forever.'
+      - text: 'Store `trial_ends_at` on the server and compare it with the server''s Clock on each request'
+        correct: true
+        why: 'The decision is in the server''s hands, and the deadline is stored. The client can change nothing.'
+      - text: 'Run a stopwatch on the phone from the first launch'
+        correct: false
+        why: 'The stopwatch is lost if the app closes or the phone reboots, and everything on the client can be changed.'
+      - text: 'Store nothing and ask the user each time'
+        correct: false
+        why: 'Whatever the user says, the server can''t verify it.'
+    ref: phone-clock-otp
+  - q: 'Which are the right ways to show a countdown?'
+    hint: 'Will the countdown stay right if the phone''s date is wrong?'
+    options:
+      - text: 'The server sends "300 seconds left" and the client counts down with `performance.now()`'
+        correct: true
+        why: 'The phone''s date is out of it. A monotonic timer runs at its own pace.'
+      - text: 'The server sends expires_at and the client works out the remainder with `Date.now()`'
+        correct: false
+        why: 'If the phone''s clock is wrong, the countdown is wrong.'
+      - text: 'Even when the countdown ends, the final check is on the server'
+        correct: true
+        why: 'A countdown is only UX. The real decision is the server''s.'
+      - text: 'When the countdown hits 0, the client discards the code and doesn''t send it to the server'
+        correct: false
+        why: 'If the server has a small grace and the client runs slow, a valid code gets thrown away.'
+    ref: server-authority-grace
+  - q: 'What is the problem in this code?'
+    lang: php
+    code: |
+      $start = microtime(true);
+      $this->importer->run();
+      $took = microtime(true) - $start;
+      if ($took > 30) { $this->alert('slow'); }
+    hint: 'Which clock does microtime() read, and what if NTP changes the clock in between?'
+    options:
+      - text: 'It is the wall clock; if NTP changes the clock, the duration can come out wrong. hrtime(true) is safe'
+        correct: true
+        why: 'Measuring a duration needs a monotonic clock. If the clock goes backwards you also get negative or jumpy times.'
+      - text: 'The if condition is the wrong way round'
+        correct: false
+        why: 'The condition is fine. The problem is the clock used to measure.'
+      - text: 'microtime() isn''t accurate to the second'
+        correct: false
+        why: 'The precision is enough. The problem is clock jumps.'
+    ref: deadline-vs-duration
+  - q: 'In an order request the client waits 3 seconds. The inner gateway call has `max_duration` of 1 second, 2 retries, and delays of 0.2 + 0.4 seconds. What is the worst-case total, and is it OK?'
+    hint: '3 attempts + the delays.'
+    options:
+      - text: '3 seconds, which is fine'
+        correct: false
+        why: 'It leaves out the delays.'
+      - text: '3.6 seconds, over the limit; the per-attempt limit has to come down'
+        correct: true
+        why: '3 × 1 + 0.2 + 0.4 = 3.6 > 3. The client gives up first.'
+      - text: '1 second, because the retries run at the same time'
+        correct: false
+        why: 'Retries run one after another, not at the same time.'
+      - text: 'Unlimited, because there are retries'
+        correct: false
+        why: 'max_retries is bounded, so the total is bounded.'
+    ref: timeout-traps
+  - q: 'Which of these are true about `max_duration`?'
+    hint: 'HttpClient''s total limit, and what 0 means.'
+    options:
+      - text: 'It is the maximum total time for the whole request + response'
+        correct: true
+        why: 'It even catches a server that sends data very slowly.'
+      - text: 'A value of 0 makes it time out immediately'
+        correct: false
+        why: '0 or less means unlimited, so when the budget is spent you must check that first.'
+      - text: 'It is a synonym for the idle timeout'
+        correct: false
+        why: 'The idle timeout is a different option (`timeout`). This one counts total time.'
+      - text: 'It applies separately to each retry attempt'
+        correct: true
+        why: 'Each attempt gets its own limit, so the total time of the retries has to be worked out separately.'
+    ref: timeout-budget
+  - q: 'A gateway call timed out. Which view is right?'
+    hint: 'Does no reply mean the work wasn''t done?'
+    options:
+      - text: 'The work failed, so it is safe to charge again'
+        correct: false
+        why: 'The money may already be taken, with only the reply missing. A second charge would take it twice.'
+      - text: 'The outcome is unknown; retry with the same idempotency key, or ask for the status'
+        correct: true
+        why: 'A timeout means "I got no reply", not "I know the result". The safe path is the same key or a status query.'
+      - text: 'It succeeded, so assume that'
+        correct: false
+        why: 'That is a guess too. If it is wrong, the goods go out and the money never arrives.'
+    ref: timeout-traps

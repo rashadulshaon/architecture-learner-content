@@ -1,0 +1,396 @@
+slides:
+  - slug: works-on-my-machine
+    title: 'It works on my machine, but not in prod'
+    kind: story
+    tldr: 'Addresses, passwords and settings hardcoded in the code are right in one environment and wrong in another, and a password that reaches git is leaked for good. Keep config outside the code.'
+    keywords: ['configuration', 'environment', 'hardcoded config', 'config', '12-factor', 'staging prod']
+    blocks:
+      - type: metaphor
+        icon: book
+        title: 'The wedding kitchen''s recipe and spice amounts'
+        body: |
+          The recipe is the same: biryani. But the spice quantities for 50 guests and for 500 guests are different. If you wrote the quantities inside the recipe, you would have to reprint the recipe every time. So the recipe stays fixed and the quantities go on a separate slip of paper. The code is the recipe; the config is that slip.
+      - type: text
+        body: |
+          Rahim wrote the database address and the payment gateway key straight into the code. On staging he found the code writing to the production database! A few weeks later an intern pushed the code to public GitHub, payment key included.
+      - type: visual
+        kind: compare
+        caption: 'Config inside the code vs config outside it'
+        columns:
+          - title: 'Inside the code'
+            tone: bad
+            icon: cross
+            tip: 'Changing config means changing code, and secrets travel into git along with it.'
+            items:
+              - 'Database address written in the code'
+              - 'A separate build for every environment'
+              - 'Passwords live in git history forever'
+          - title: 'Outside the code'
+            tone: good
+            icon: check
+            tip: 'The code is the same everywhere and the values arrive at run time. Secrets never enter the repository.'
+            items:
+              - 'The address comes from an environment variable'
+              - 'One build for every environment'
+              - 'Secrets live in a separate, safe place'
+      - type: quote
+        body: 'Whatever changes between environments belongs outside the code.'
+    aside:
+      - type: story
+        title: 'The key sitting on GitHub'
+        body: 'Within hours of a payment key landing in a public repository, automated scanners find it. Deleting the key afterwards doesn''t help, because it stays in git history. The only fix is to rotate it: issue a new key.'
+      - type: terms
+        items:
+          - {term: 'Environment', meaning: 'Where the app runs: dev (your own machine), staging (a dress rehearsal), prod (the real thing).'}
+          - {term: 'Config', meaning: 'Settings that change from one environment to another. They are kept outside the code.'}
+    check:
+      q: 'What goes wrong between staging and prod if you hardcode the database address?'
+      a: 'You have to change the code for every environment, and one slip makes staging write to the production database. Keep the code the same and supply the address from outside, and that mistake can''t happen.'
+
+  - slug: build-once-config-outside
+    title: 'Build once, run everywhere'
+    kind: concept
+    tldr: 'The 12-factor rule: the same build or image runs in every environment, and the differences come from environment variables. What you tested on staging is exactly what ships to prod.'
+    keywords: ['12-factor', 'build once', 'environment variables', 'immutable build', 'image', 'config outside code']
+    blocks:
+      - type: metaphor
+        icon: box
+        title: 'One pot cooked, served differently'
+        body: |
+          The cook makes a single pot. If one table wants it spicier, the chilli goes in a separate bowl; nobody cooks the dish again. A built image is that pot, and the env variables are the bowl of chilli.
+      - type: visual
+        kind: flow
+        caption: 'One image, three places, different env variables'
+        nodes:
+          - {id: ci, label: 'CI build', sub: 'code, once', icon: gear, col: 0, row: 1, tip: 'Builds one image after the tests pass. No environment ever gets a build of its own.'}
+          - {id: image, label: 'Image v42', sub: 'immutable', icon: box, tone: accent, col: 1.5, row: 1, tip: 'No passwords or addresses inside. Every environment gets this same image.'}
+          - {id: staging, label: 'Staging', sub: 'staging env', icon: server, col: 3, row: 0, tip: 'Runs with its own database and its own payment sandbox key.'}
+          - {id: prod, label: 'Production', sub: 'prod env', icon: server, col: 3, row: 2, tip: 'The real database and the real key, supplied from outside at run time.'}
+        edges:
+          - {from: ci, to: image, label: 'CI builds the image from the code, once'}
+          - {from: image, to: staging, label: 'It runs on staging with the staging env variables'}
+          - {from: image, to: prod, label: 'On prod it is the same image, with only prod''s env and secrets', tone: good}
+      - type: points
+        title: 'What you gain'
+        style: check
+        items:
+          - 'What you tested on staging is exactly what runs on prod, with no risk from a separate build.'
+          - 'Changing config doesn''t need a new build: change the env and restart.'
+          - 'There are no secrets in the image, so nothing is lost if someone gets hold of it.'
+      - type: quote
+        body: 'Build the code once. Decide its behaviour at run time, with environment variables.'
+    aside:
+      - type: problem
+        body: '"It was fine on staging, but broke on prod" often means the two places were actually running different code or different builds.'
+      - type: refs
+        items:
+          - {to: 'infra/ci-cd', label: 'CI/CD pipeline'}
+          - {to: 'resilience/zero-downtime-deploys', label: 'Zero-downtime deploys'}
+    check:
+      q: 'What risk do you create by making a separate build for every environment?'
+      a: 'The build you tested on staging isn''t the one that runs on prod, and separate builds can contain different code. With one image, exactly what you tested is what runs.'
+
+  - slug: symfony-env-vars
+    title: 'Using env variables in Symfony'
+    kind: howto
+    tldr: 'Put safe defaults in .env and the real values on the server. In code, inject them with types via #[Autowire(env: ''int:NAME'')], and in YAML write %env(int:NAME)%.'
+    keywords: ['.env', '.env.local', 'Autowire env', 'env processor', 'APP_ENV', 'Symfony Dotenv', 'int:', 'bool:']
+    blocks:
+      - type: text
+        body: |
+          Symfony reads the `.env` file, but real environment variables on the server always win. `.env` goes into git and holds only safe defaults. Changes for your own machine go in `.env.local`, which stays out of git. Env variables are always strings, so when you need a number or a true/false, add a processor (`int:`, `bool:`).
+      - type: code
+        lang: env
+        file: '.env  (committed to git: safe defaults only)'
+        code: |
+          APP_ENV=dev
+          PAYMENT_TIMEOUT=5
+          SEARCH_ENABLED=1
+          PAYMENT_BASE_URL=https://sandbox.pay.example
+          # PAYMENT_API_KEY is not here: it is secret, so it lives in the secrets vault
+        marks:
+          - {line: 2, tip: 'It looks like a number, but it is a string. You need int: to turn it into a number when it enters the code.'}
+          - {line: 5, tip: 'Even the name of a secret doesn''t have to be written here. The next slide shows where it goes.'}
+      - type: code
+        lang: php
+        file: 'src/Payment/PaymentGateway.php'
+        variant: good
+        code: |
+          final readonly class PaymentGateway
+          {
+              public function __construct(
+                  private HttpClientInterface $http,
+                  #[Autowire(env: 'PAYMENT_BASE_URL')]
+                  private string $baseUrl,
+                  #[Autowire(env: 'int:PAYMENT_TIMEOUT')]
+                  private int $timeout,
+                  #[Autowire(env: 'bool:SEARCH_ENABLED')]
+                  private bool $searchEnabled,
+              ) {
+              }
+
+              public function charge(Money $amount): void
+              {
+                  $this->http->request('POST', $this->baseUrl.'/charges', [
+                      'timeout' => $this->timeout,
+                      'json' => ['amount' => $amount->paisa()],
+                  ]);
+              }
+          }
+        marks:
+          - {line: 7, tip: 'The int: processor turns the value into a number as it is read. Passing the string "5" as a timeout would be wrong.'}
+          - {line: 9, tip: 'The bool: processor turns "1", "true", "on" and similar values into true.'}
+          - {line: 18, tip: 'No address or number is written in the code. It all came from outside.'}
+    aside:
+      - type: commands
+        title: 'Where does each value come from?'
+        items:
+          - {cmd: 'php bin/console debug:dotenv', desc: 'Which value comes from which .env file'}
+          - {cmd: 'php bin/console debug:container --env-vars', desc: 'Which env variables the app uses'}
+          - {cmd: 'php bin/console lint:container', desc: 'Catch wrong or mismatched config'}
+      - type: tips
+        items:
+          - 'APP_ENV is for Symfony itself to read. Don''t write if (APP_ENV === ''prod'') in your own code. See the pitfall slide.'
+          - 'In production, `composer dump-env prod` compiles .env into a PHP file, so nothing is parsed on every request.'
+    check:
+      q: 'Why do you need the int: processor to inject PAYMENT_TIMEOUT=5 as a timeout?'
+      a: 'Because env variables are always strings. The int: processor turns the value into a number. Without it, the string "5" arrives and you get a type error or odd behaviour.'
+
+  - slug: secrets-vs-config
+    title: 'Config and secrets are not the same thing'
+    kind: concept
+    tldr: 'Leaking an address or a timeout does little harm; leaking a password or an API key does. Keep secret values in the Symfony secrets vault or a secret manager, never in git.'
+    keywords: ['secrets', 'Symfony secrets vault', 'secrets:set', 'API key', 'DATABASE_URL', 'secret manager']
+    blocks:
+      - type: metaphor
+        icon: lock
+        title: 'The shop''s spice list and the safe key'
+        body: |
+          If the sheet of spice quantities leaks, little is lost. If the key to the safe leaks, the shop gets emptied. So the sheet hangs on the wall while the key stays on the owner's belt. That is why you keep config and secrets apart.
+      - type: visual
+        kind: table
+        caption: 'What goes where'
+        headers: ['Kind', 'Examples', 'Where it lives']
+        rows:
+          - cells: ['Safe defaults', 'timeouts, feature switches', '.env (in git)']
+            tip: 'Harmless if leaked, and a new developer can run the app straight away.'
+          - cells: ['Per-environment values', 'DB host, CDN URL', 'Server env or the deploy tool']
+            tip: 'Outside the code, and specific to each environment.'
+          - cells: ['Secrets', 'API key, DB password, JWT private key', 'Secrets vault or cloud secret manager']
+            tip: 'Encrypted or stored separately, and never in the repository as plain text.'
+          - cells: ['Your own machine', 'Your local DB password', '.env.local (not in git)']
+            tip: 'Check once that it is listed in .gitignore.'
+      - type: quote
+        body: 'A secret never goes into git. If one gets there by mistake, don''t just delete it: rotate the key.'
+    aside:
+      - type: commands
+        title: 'Symfony secrets'
+        items:
+          - {cmd: 'php bin/console secrets:set PAYMENT_API_KEY', desc: 'Store a secret value, encrypted'}
+          - {cmd: 'php bin/console secrets:list --reveal', desc: 'Show all secret values (in dev)'}
+          - {cmd: 'php bin/console secrets:set PAYMENT_API_KEY --env=prod', desc: 'A separate value for prod'}
+      - type: tips
+        items:
+          - 'The vault''s encrypted files and the encrypt key go into git. The decrypt key doesn''t: give prod the SYMFONY_DECRYPTION_SECRET variable.'
+          - 'Larger systems use a cloud secret manager or HashiCorp Vault. These also give you value rotation and audit trails.'
+      - type: refs
+        items:
+          - {to: 'security/secrets-management', label: 'Secrets management in depth'}
+    check:
+      q: 'Of a timeout and a payment API key, which can sit in .env in git, and which can''t?'
+      a: 'The timeout can, because leaking it does no harm. The API key can''t; it belongs in the secrets vault or a secret manager.'
+
+  - slug: config-drift
+    title: 'When environments drift apart: config drift'
+    kind: pitfall
+    tldr: 'If code changes behaviour by checking APP_ENV, or environments slowly move apart, then tests on staging no longer show how prod behaves. Put the differences in config, not in code branches.'
+    keywords: ['config drift', 'environment parity', 'APP_ENV check', 'staging vs prod', 'dev prod parity']
+    blocks:
+      - type: text
+        body: |
+          Two kitchens use the same recipe, but one cook quietly adds more sugar. After a few months the two dishes taste different. That is **config drift**. The most common cause is writing `if (prod)` inside the code. Then prod's path never runs on staging, and it runs for the first time right in front of the customer.
+      - type: code
+        lang: php
+        file: 'src/Notification/OrderSms.php'
+        variant: bad
+        code: |
+          public function send(Order $order): void
+          {
+              if ('prod' === $_ENV['APP_ENV']) {
+                  $this->bulkSms->send($order->phone(), $this->text($order));
+              } else {
+                  $this->logger->info('SMS skipped', ['order' => $order->id()]);
+              }
+          }
+        marks:
+          - {line: 3, tip: 'The path that sends the real SMS runs only on prod. Nobody has tested it on staging.'}
+          - {line: 6, tip: 'Staging and prod run different code paths, so a staging test is no guarantee for prod.'}
+      - type: code
+        lang: yaml
+        file: 'config/services.yaml'
+        variant: good
+        code: |
+          services:
+              App\Sms\SmsGateway: '@App\Sms\BulkSmsGateway'
+
+          when@dev:
+              services:
+                  App\Sms\SmsGateway: '@App\Sms\LogSmsGateway'
+        marks:
+          - {line: 2, tip: 'The code always calls the SmsGateway interface, with no new if. Config decides which implementation it gets.'}
+          - {line: 4, tip: 'In dev, a log replaces the real SMS. The difference sits in one place where you can see it.'}
+      - type: points
+        title: 'Four ways to stop drift'
+        style: check
+        items:
+          - 'Give staging the same database version, the same image and the same list of env variables as prod.'
+          - 'Change config through code review or the deploy tool, never by hand on a server.'
+          - 'At startup, detect missing required env variables and fail fast and clearly.'
+          - 'Regularly compare the env variable names on staging and prod.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Don''t read APP_ENV in your own code to change behaviour. Let Symfony do that for you (when@dev, per-environment config).'
+          - 'Logging into a server and editing .env.local by hand is the most common source of drift.'
+      - type: remember
+        body: 'No if (prod) in the code. Keep the differences in config.'
+      - type: refs
+        items:
+          - {to: 'infra/cloud-primitives', label: 'Environments and infrastructure as code'}
+    check:
+      q: 'If code changes behaviour with if (APP_ENV === ''prod''), why does a passing staging test not guarantee prod?'
+      a: 'Because the prod branch never runs on staging, so you tested a different code path. If the difference lives in config, the same code path runs everywhere.'
+
+flashcards:
+  - q: 'What is config, and where should it live?'
+    a: 'Whatever changes between environments (addresses, timeouts, keys). Keep it outside the code, in environment variables or secrets.'
+    more: |
+      The code stays the same and the values change. If you put values in the code, you have to change the code for every environment, and passwords end up in git. The code is the recipe; the config is the separate slip with the spice amounts.
+    ref: works-on-my-machine
+  - q: 'What does the 12-factor rule say about config?'
+    a: 'Keep config in environment variables. One build runs in every environment, and the differences come from outside values.'
+    more: |
+      What you tested on staging is exactly what ships to prod. Changing config doesn't need a new build. There are no secrets in the image, so it does no harm if the image spreads.
+    ref: build-once-config-outside
+  - q: 'In Symfony, what is the difference between .env and .env.local?'
+    a: '.env is committed to git and holds safe defaults. .env.local stays out of git and holds values for your own machine.'
+    more: |
+      Real environment variables on the server always win over .env files. In production you normally use the server's env or secrets rather than .env.local. To check, run `php bin/console debug:dotenv`.
+    ref: symfony-env-vars
+  - q: 'Env variables are always strings. How do you get a number or a bool?'
+    a: 'With env processors: %env(int:NAME)% or #[Autowire(env: ''bool:NAME'')].'
+    more: |
+      There are processors such as `int:`, `bool:`, `float:`, `json:`, `file:` and `default:`. They convert the type as the value is read, so you don't get type errors later. Without one, the string "5" arrives and can cause odd behaviour.
+    ref: symfony-env-vars
+  - q: 'What is the difference between config and a secret?'
+    a: 'Leaking config (a timeout, a URL) does little harm; leaking a secret (a password, an API key) does. Secrets live somewhere separate and safe.'
+    more: |
+      Config can sit in .env in git as safe defaults. Secrets go in the Symfony secrets vault or a cloud secret manager. A key that reached git by mistake can't be fixed by deleting it: it stays in git history, so you have to rotate the key.
+    ref: secrets-vs-config
+  - q: 'How does the Symfony secrets vault work?'
+    a: 'secrets:set encrypts a value. The encrypted file goes into git, while the decrypt key reaches the server separately.'
+    more: |
+      The encrypt (public) key and the encrypted values live in the repository. The decrypt (private) key never goes into git; in production it is supplied through the `SYMFONY_DECRYPTION_SECRET` env variable or a separate file. Dev and prod have separate vaults.
+    ref: secrets-vs-config
+  - q: 'What is config drift and why is it dangerous?'
+    a: 'Environments slowly moving apart, so that tests on staging no longer show how prod behaves.'
+    more: |
+      Causes include hand edits on a server, different database versions, and if (prod) in the code. To prevent it: use the same image, change config through code review, and detect missing required env variables at startup.
+    ref: config-drift
+
+quiz:
+  - q: 'What is wrong with the code below?'
+    lang: php
+    code: |
+      private const DB_URL = 'mysql://root:secret@prod-db.internal/shop';
+
+      public function connect(): PDO
+      {
+          return new PDO(self::DB_URL);
+      }
+    hint: 'Which database would this code connect to if you ran it on staging?'
+    options:
+      - text: 'The address and password are written in the code: they go into git, and staging would hit the prod database too'
+        correct: true
+        why: 'If config lived outside the code, neither risk would exist.'
+      - text: 'You shouldn''t use const; a static property would be fine'
+        correct: false
+        why: 'The problem isn''t what kind of declaration it is. The value sits inside the code.'
+      - text: 'PDO is outdated; you should use Doctrine DBAL'
+        correct: false
+        why: 'The library doesn''t matter. Writing the value in code is just as bad with DBAL.'
+      - text: 'Nothing is wrong, it is an internal host'
+        correct: false
+        why: 'Internal or not, the password stays in git history forever.'
+    ref: works-on-my-machine
+  - q: 'Tests passed on staging, but the app broke after deploying to prod. The team made a separate build for each environment. What is the best fix?'
+    hint: 'Are the thing that was tested and the thing that ran the same?'
+    options:
+      - text: 'Build one image, run it in every environment, and differ only through env variables'
+        correct: true
+        why: 'Exactly what was tested on staging is what ships to prod.'
+      - text: 'Also run the prod build on staging for testing'
+        correct: false
+        why: 'There are still two separate builds, and they will still differ.'
+      - text: 'Stop deploying when tests pass'
+        correct: false
+        why: 'Stopping deploys isn''t a fix. It just avoids the problem.'
+      - text: 'Fix it by changing the code directly on prod'
+        correct: false
+        why: 'That increases drift and creates even more different code.'
+    ref: build-once-config-outside
+  - q: 'Which of these values should go in the Symfony secrets vault (or a secret manager)?'
+    hint: 'Who is hurt if it leaks?'
+    options:
+      - text: 'The payment gateway API key'
+        correct: true
+        why: 'If it leaks, someone else can make transactions in your name.'
+      - text: 'The database password'
+        correct: true
+        why: 'If it leaks, all your data is at risk.'
+      - text: 'The JWT signing private key'
+        correct: true
+        why: 'If it leaks, anyone can forge tokens.'
+      - text: 'PAYMENT_TIMEOUT=5'
+        correct: false
+        why: 'Leaking it does no harm, so it can stay in .env as a safe default.'
+    ref: secrets-vs-config
+  - q: 'What could go wrong in this Symfony code?'
+    lang: php
+    code: |
+      public function __construct(
+          #[Autowire(env: 'PAYMENT_TIMEOUT')]
+          private int $timeout,
+      ) {
+      }
+    hint: 'What type is an env variable?'
+    options:
+      - text: 'An env value is a string; without the int: processor the type doesn''t match (or the conversion you expect doesn''t happen)'
+        correct: true
+        why: 'You need #[Autowire(env: ''int:PAYMENT_TIMEOUT'')].'
+      - text: 'Autowire doesn''t work without readonly'
+        correct: false
+        why: 'Autowire has nothing to do with readonly.'
+      - text: '#[Autowire(env: ...)] doesn''t exist in Symfony'
+        correct: false
+        why: 'It does exist. It is the modern way to inject env variables.'
+      - text: 'Env variables can''t be read in code, only in YAML'
+        correct: false
+        why: 'You can read them in code too, with #[Autowire(env: ...)].'
+    ref: symfony-env-vars
+  - q: 'Which approach reduces config drift?'
+    hint: 'Why are staging and prod running down different paths?'
+    options:
+      - text: 'Using the same image on staging and prod, and keeping the same list of env variables'
+        correct: true
+        why: 'The same code and the same kind of config run in both places.'
+      - text: 'Using if (APP_ENV === ''prod'') to keep a separate code path for prod'
+        correct: false
+        why: 'The prod path never runs on staging, so drift grows.'
+      - text: 'Logging into the server to edit .env.local by hand when needed'
+        correct: false
+        why: 'Nobody notices that change, and six months later nobody knows why that server is different.'
+      - text: 'Using the cheapest database version on staging'
+        correct: false
+        why: 'With different versions, queries and behaviour can differ too.'
+    ref: config-drift

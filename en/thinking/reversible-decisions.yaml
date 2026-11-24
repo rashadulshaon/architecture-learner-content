@@ -1,0 +1,331 @@
+slides:
+  - slug: two-doors
+    title: 'Three days on a banner colour, one minute to drop a column'
+    kind: story
+    tldr: 'Teams spend time on decisions that are easy to undo, and rush through the ones that can''t be undone.'
+    keywords: ['reversible decision', 'one-way door', 'two-way door', 'irreversible', 'decision making']
+    blocks:
+      - type: text
+        body: |
+          Sumi's team got two jobs in one week: pick the homepage banner colour, and drop the old `phone` column from the database. The banner took three days of arguing. The column was dropped in one minute, with a single migration and no backup. The next day they learned that the phone numbers of older customers existed only in that column.
+      - type: visual
+        kind: compare
+        caption: 'Two kinds of door: one you can walk back through, one you can''t'
+        columns:
+          - title: 'A door you can return through'
+            tone: good
+            icon: repeat
+            tip: 'If you get it wrong, you walk back through and try again. A mistake is cheap, so speed is the asset here.'
+            items:
+              - 'Changing the banner colour'
+              - 'Turning on a new feature flag'
+              - 'Adding a column'
+              - 'If it goes wrong, one deploy restores the old state'
+          - title: 'A one-way door'
+            tone: bad
+            icon: warning
+            tip: 'Once you''re through, there''s no coming back. A mistake is costly and permanent, so go slowly and verify.'
+            items:
+              - 'Dropping a column or table'
+              - 'Removing a field from a public API'
+              - 'Sending money or an email to a customer'
+              - 'If it goes wrong, there''s no way back'
+    aside:
+      - type: story
+        title: 'The email that couldn''t be recalled'
+        body: |
+          A team once sent an "offer ended" email to production addresses instead of the test database. They fixed the code within an hour, but an email can't be called back. The only option was to apologise with another email.
+      - type: refs
+        items:
+          - {to: 'thinking/what-is-architectural', label: 'Which decisions are architectural?'}
+    check:
+      q: 'Where did Sumi''s team go wrong in dividing their time?'
+      a: 'Three days went to a banner that is easy to undo, while dropping a column that can''t be undone took one minute with no safety net.'
+
+  - slug: one-way-vs-two-way
+    title: 'Which kind of door is it — and how fast to move'
+    kind: concept
+    tldr: 'Decide reversible things fast; decide irreversible ones slowly and in writing. The cost of going back is what tells them apart.'
+    keywords: ['two-way door', 'one-way door', 'irreversible', 'decision speed', 'fast decisions']
+    blocks:
+      - type: metaphor
+        icon: home
+        title: 'Renting a flat versus buying land'
+        body: |
+          If you don't like a rented flat, you give notice at month-end and leave, so deciding quickly is fine. But once you've bought land and built a house, there's no way back, so you check the deed, the plan and the neighbours before buying. In software, some decisions are rented flats and some are land purchases.
+      - type: visual
+        kind: table
+        caption: 'Software decisions: which kind of door each one is'
+        headers: ['Decision', 'Door', 'Way back']
+        rows:
+          - cells: ['Turning on a new feature flag', 'Two-way', 'Switch the flag off and you''re back']
+            tip: 'The code is already there; you''re only flipping a switch. No retreat is cheaper than this.'
+          - cells: ['Adding a new column', 'Two-way', 'Can be dropped later']
+            tip: 'Old code doesn''t know the new column, so nothing breaks. Adding is safe; deleting is dangerous.'
+          - cells: ['Choosing an SMS company', 'Two-way', 'With an interface, change one class']
+            tip: 'The rest of the code knows only the interface, so switching company means rewriting one class.'
+          - cells: ['Dropping a column or data', 'One-way', 'Only from a backup']
+            tip: 'Without a backup the data is gone for good. Before any delete, ask: who still reads this?'
+          - cells: ['Removing a public API field', 'One-way', 'Win over the clients again']
+            tip: 'Outside apps wrote code against this field. Remove it and their apps break, and that''s out of your hands.'
+          - cells: ['Emailing, texting or paying a customer', 'One-way', 'Can''t undo, only correct']
+            tip: 'Once a message is out, it can''t be pulled back. So verify the address and the environment before sending.'
+      - type: quote
+        body: 'Move fast on what you can reverse; on what you can''t, go slowly, in writing, with a second pair of eyes.'
+    aside:
+      - type: remember
+        body: 'One question: "If I''m wrong, how do I get back, and at what cost?" If the answer is "one click", go ahead; if it''s "I can''t", stop.'
+      - type: terms
+        items:
+          - {term: 'Two-way door', meaning: 'A decision you can easily reverse if it turns out wrong.'}
+          - {term: 'One-way door', meaning: 'A decision that is hard or impossible to reverse once made.'}
+    check:
+      q: 'Adding a column versus dropping one: which is which kind of door, and why?'
+      a: 'Adding is a two-way door, because old code doesn''t notice and you can drop it later. Dropping is one-way, because data doesn''t come back without a backup.'
+
+  - slug: keep-door-open
+    title: 'Turning a one-way door into a two-way door'
+    kind: howto
+    tldr: 'Put a thin layer over a big decision with an interface and a feature flag, so you can go back to the old path if it goes wrong.'
+    keywords: ['interface', 'feature flag', 'abstraction', 'AsAlias', 'Autowire env', 'rollback']
+    blocks:
+      - type: text
+        body: |
+          Some decisions look one-way but can be made two-way. Don't scatter a vendor or library through your code; keep it behind an `interface`, and keep the new path behind a flag. Then if something goes wrong, changing one class or flipping the flag restores the old state.
+      - type: code
+        lang: php
+        file: 'src/Sms/SmsGateway.php + BulkSmsGateway.php'
+        variant: good
+        code: |
+          interface SmsGateway
+          {
+              public function send(string $to, string $text): void;
+          }
+
+          #[AsAlias(SmsGateway::class)]
+          final readonly class BulkSmsGateway implements SmsGateway
+          {
+              public function __construct(
+                  private HttpClientInterface $http,
+                  #[Autowire(env: 'SMS_API_KEY')] private string $apiKey,
+              ) {
+              }
+
+              public function send(string $to, string $text): void
+              {
+                  $this->http->request('POST', 'https://sms.example.test/v1/send', [
+                      'auth_bearer' => $this->apiKey,
+                      'json' => ['to' => $to, 'text' => $text],
+                  ])->getContent(); // throws an exception on 4xx/5xx
+              }
+          }
+        marks:
+          - {line: 1, tip: 'The rest of the code knows only this interface. It doesn''t need to know which company sends the SMS.'}
+          - {line: 6, tip: '#[AsAlias] says: when someone asks for SmsGateway, hand them this class. Switch company and only this one line moves.'}
+      - type: code
+        lang: php
+        file: 'src/Checkout/CheckoutService.php'
+        variant: good
+        code: |
+          final readonly class CheckoutService
+          {
+              public function __construct(
+                  private LegacyCheckout $legacy,
+                  private NewCheckout $new,
+                  #[Autowire(env: 'bool:FEATURE_NEW_CHECKOUT')]
+                  private bool $newCheckoutOn,
+              ) {
+              }
+
+              public function pay(Cart $cart): Receipt
+              {
+                  return $this->newCheckoutOn
+                      ? $this->new->pay($cart)
+                      : $this->legacy->pay($cart);
+              }
+          }
+        marks:
+          - {line: 6, tip: 'The `bool:` env processor turns "true"/"1" into a real bool. The flag comes from the environment and isn''t hard-coded.'}
+          - {line: 13, tip: 'Both paths live side by side. If the new one misbehaves, turn the flag off and you''re back on the old path.'}
+    aside:
+      - type: tips
+        items:
+          - 'Create interfaces for things that are external (SMS, payments, file storage), not for every class.'
+          - 'Write a removal date next to every flag. Old flags piling up become the new clutter.'
+      - type: refs
+        items:
+          - {to: 'config/feature-flags', label: 'Running feature flags properly'}
+          - {to: 'thinking/hexagonal', label: 'Hexagonal: keeping outside things at arm''s length'}
+    check:
+      q: 'If the new SMS company turns out to be bad, what has to change in the code to go back to the old one?'
+      a: 'Only the class that the interface is aliased to. All the other code knows SmsGateway, not the company.'
+
+  - slug: drop-column-trap
+    title: 'The drop-column trap: four steps instead of one'
+    kind: pitfall
+    tldr: 'Changing code and dropping a column in one deploy cuts off your way back; remove it in four steps: expand, migrate, switch, contract.'
+    keywords: ['expand contract', 'drop column', 'migration', 'backup', 'Doctrine Migrations']
+    blocks:
+      - type: text
+        body: |
+          Sumi's team made one mistake: changing the code and dropping the column in the same deploy. When a bug showed up in the new code, going back to the old code didn't help, because the column was gone. The fix is to make the drop the very last step, in its own deploy, once you're certain nobody reads the column any more.
+      - type: code
+        lang: php
+        file: 'migrations/Version20261124100000.php'
+        variant: bad
+        code: |
+          // code change and column drop in the same deploy
+          public function up(Schema $schema): void
+          {
+              $this->addSql('ALTER TABLE customer DROP COLUMN phone');
+          }
+
+          // down() is empty or a lie: the data doesn't come back
+          public function down(Schema $schema): void
+          {
+              $this->addSql('ALTER TABLE customer ADD phone VARCHAR(20) DEFAULT NULL');
+          }
+        marks:
+          - {line: 4, tip: 'The data is gone for good, instantly. If you find a bug and go back to the old code, this column won''t come back.'}
+          - {line: 10, tip: 'down() restores the column''s structure, not its data. The column returns, but empty.'}
+      - type: visual
+        kind: steps
+        caption: 'Four steps to remove a column safely, each its own deploy'
+        steps:
+          - {title: '1. Expand', body: 'Add a new `mobile_number` column. Old code notices nothing.', tip: 'Adding alone is a two-way door. Nothing can break in this step.'}
+          - {title: '2. Migrate', body: 'Copy data from the old `phone` into the new column, and write to both.', tip: 'Because both columns are written, any code version finds correct data, so you can step back at any time.'}
+          - {title: '3. Switch', body: 'Make the code read only the new column. Watch for a while to see that all is well.', tip: 'The old column is still intact, so if something''s wrong, going back to the previous code version is enough.'}
+          - {title: '4. Contract', body: 'Once sure, and with a backup, drop the old `phone` column.', tip: 'The only one-way step. Up to here, the other three steps kept your way back open.'}
+      - type: quote
+        body: 'Deleting always comes last, in its own deploy, with a backup.'
+    aside:
+      - type: problem
+        body: 'Break a one-way job into several small, reversible steps, and the risk piles up only in the last one. The rest are cheap and safe.'
+      - type: refs
+        items:
+          - {to: 'data/zero-downtime-migrations', label: 'Zero-downtime migrations'}
+    check:
+      q: 'Why does the drop step go last, in its own deploy?'
+      a: 'Because it''s the only one-way step. In every earlier step the old column stays intact, so you can safely go back if the code has a problem.'
+
+flashcards:
+  - q: 'What is a two-way door decision?'
+    a: 'One that is easy and cheap to reverse if it turns out wrong, such as turning on a feature flag or changing a banner colour.'
+    more: |
+      Long discussion on such a decision is wasted time. Let one person decide and move on; if it's wrong, you can come back and correct it. Speed is the real advantage here.
+    ref: one-way-vs-two-way
+  - q: 'What is a one-way door decision?'
+    a: 'One that can''t be undone once made, or whose reversal is hugely costly, such as deleting data or removing a public API field.'
+    more: |
+      Stop on these: consider alternatives, write down the risks, get a second person to look. A mistake is costly and permanent, so a few extra hours of thought pay off.
+    ref: one-way-vs-two-way
+  - q: 'What question tells a two-way door from a one-way door?'
+    a: '"If I''m wrong, how do I get back, and at what cost?" "One click" means two-way; "I can''t" means one-way.'
+    more: |
+      The question is about the cost of going back, not the size of the decision. A small migration can be one-way (dropping a column), while a big-looking job can be a two-way door (a new checkout behind a flag).
+    ref: one-way-vs-two-way
+  - q: 'What goes wrong if you change code and drop a column in the same deploy?'
+    a: 'If the new code has a bug, going back to the old code doesn''t help, because the column is gone. Your way back is cut off.'
+    more: |
+      Rollback works for code, not for data. So the drop has to come after the code change, in its own deploy, with a backup.
+    ref: drop-column-trap
+  - q: 'What are the four steps of an expand-contract migration?'
+    a: 'Expand (add the new), migrate (copy the data), switch (code reads the new), contract (drop the old).'
+    more: |
+      Each step is its own deploy. Only the last step is one-way; in the other three the old column stays intact, so you can return to the earlier state at any time.
+    ref: drop-column-trap
+  - q: 'What are two common ways to turn a one-way door into a two-way one?'
+    a: 'Keep external things behind an interface, and keep the new path behind a feature flag.'
+    more: |
+      With an interface, switching vendor is the job of one class. With a flag, if the new path misbehaves you flip the switch and the old path is back. Both cost a little effort up front and save a big cost later.
+    ref: keep-door-open
+  - q: 'Why shouldn''t a feature flag stay around for long?'
+    a: 'An old flag keeps two code paths alive and adds complexity. So give every flag a removal date.'
+    more: |
+      A flag is a temporary ladder. When the job is done, delete one of the two paths and remove the flag. Otherwise, in time nobody knows what each flag does, and that's the new clutter.
+    ref: keep-door-open
+
+quiz:
+  - q: 'Which of these are one-way door decisions, where you should stop and think?'
+    hint: 'Which ones can''t be reversed if wrong, or cost a lot to reverse?'
+    options:
+      - text: 'Dropping a column from the production database'
+        correct: true
+        why: 'Deleted data doesn''t come back without a backup, and rolling back the code doesn''t bring the column back.'
+      - text: 'Removing a field from a public API'
+        correct: true
+        why: 'External clients wrote code against that field. Removing it breaks their apps, and that''s out of your hands.'
+      - text: 'Putting the new checkout behind a feature flag'
+        correct: false
+        why: 'Turning the flag off brings the old path back, so this is a two-way door.'
+      - text: 'Adding a new nullable column'
+        correct: false
+        why: 'Old code doesn''t know the new column, so nothing breaks, and you can drop it later.'
+    ref: one-way-vs-two-way
+  - q: 'The migration below and the code change went out in the same deploy. A bug showed up in the code and you rolled back to the previous version. What happens?'
+    lang: php
+    code: |
+      public function up(Schema $schema): void
+      {
+          $this->addSql('ALTER TABLE customer DROP COLUMN phone');
+      }
+    hint: 'A rollback restores the code. Does the database state come back with it?'
+    options:
+      - text: 'The old code asks for the `phone` column again, but it''s gone, so errors follow'
+        correct: true
+        why: 'Even when the code is rolled back, the migration doesn''t undo itself. And even if it did, the column''s data wouldn''t come back.'
+      - text: 'Everything works, because the rollback restores the database too'
+        correct: false
+        why: 'A deploy rollback restores only the code. Database changes have to be reversed separately.'
+      - text: 'Only new users will have problems'
+        correct: false
+        why: 'Anyone whose request makes the old code read `phone` hits the problem, new or old.'
+    ref: drop-column-trap
+  - q: 'Rahim''s team wants to switch SMS companies, but the SDK''s classes are spread across 30 files. What is the best step for the future?'
+    hint: 'How do you bring the places to change down from 30 to 1?'
+    options:
+      - text: 'Put the SDK behind an `SmsGateway` interface and have all the code call that'
+        correct: true
+        why: 'Then switching company means rewriting just one adapter class.'
+      - text: 'Add the new company''s SDK next to it in all 30 files'
+        correct: false
+        why: 'That doubles the dependency and locks the door even tighter.'
+      - text: 'Drop the idea of switching, since going back is hard'
+        correct: false
+        why: 'If it''s hard, there''s a way to make it easy, and an interface is that way.'
+      - text: 'Run a find-and-replace across all the files'
+        correct: false
+        why: 'It''s risky and you''d have to repeat it every time; the real problem, the spread-out dependency, remains.'
+    ref: keep-door-open
+  - q: 'What is the best rule for deciding how much time to give a decision?'
+    hint: 'Think about the consequence of a mistake, not the size of the decision.'
+    options:
+      - text: 'Decide reversible things fast, and irreversible ones slowly and in writing'
+        correct: true
+        why: 'Where a mistake is cheap, speed wins; where it''s permanent, verification wins.'
+      - text: 'Give every decision equal time so nothing is missed'
+        correct: false
+        why: 'Then the expensive decisions don''t get enough time, and the cheap ones slow the team down.'
+      - text: 'Spend more time on whichever decision looks bigger'
+        correct: false
+        why: 'A small-looking migration can be one-way, and a big-looking job can be a two-way door behind a flag.'
+      - text: 'Decide everything fast; you can fix it later'
+        correct: false
+        why: 'For decisions you can''t fix, this rule destroys data or trust permanently.'
+    ref: one-way-vs-two-way
+  - q: 'Which is the correct expand-contract order?'
+    hint: 'The new thing comes first; deleting the old comes last.'
+    options:
+      - text: 'Add the new column, copy the data, make the code read the new one, then drop the old column'
+        correct: true
+        why: 'The old column stays intact in every step, so you can safely go back until the last one.'
+      - text: 'Drop the old column, then add the new one and copy the data'
+        correct: false
+        why: 'If the old data is deleted before copying, there''s nothing left to copy.'
+      - text: 'Start reading the new column in the code, then add the column'
+        correct: false
+        why: 'Reading a column that doesn''t exist yet is an error right away.'
+      - text: 'Everything together in one migration'
+        correct: false
+        why: 'Doing it all at once leaves no chance of going back midway, and that is the trap.'
+    ref: drop-column-trap

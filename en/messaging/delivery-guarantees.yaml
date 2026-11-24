@@ -1,0 +1,315 @@
+slides:
+  - slug: two-emails-one-order
+    title: 'Two confirmation emails for one order'
+    kind: story
+    tldr: 'If a worker finishes the job but dies before sending the ack, the broker delivers the message again and the job runs twice.'
+    keywords: ['ack', 'redelivery', 'duplicate message', 'at-least-once', 'duplicate email', 'message redelivered']
+    blocks:
+      - type: metaphor
+        icon: truck
+        title: 'The courier''s signed receipt'
+        body: |
+          A courier boy delivers a parcel and gets the receipt signed, and only then does the office write "delivered". With no signature, the office assumes the parcel never arrived and sends another rider. Now suppose the parcel did arrive, but the boy's bike broke down before he could collect the signature. The customer ends up with two parcels.
+      - type: visual
+        kind: sequence
+        caption: 'The email went out, the ack didn''t, so the message came again'
+        actors:
+          - {id: broker, label: 'Broker', icon: queue, tip: 'Stores messages. It does not delete a message until it receives an ack.'}
+          - {id: worker, label: 'Worker', icon: worker, tip: 'Takes the message and runs the handler. When the job is done, it is supposed to send an ack to the broker.'}
+          - {id: customer, label: 'Customer', icon: user, tip: 'The person whose inbox the email lands in.'}
+        messages:
+          - {from: broker, to: worker, label: 'Take OrderPlaced #501', tip: 'The message is delivered for the first time.'}
+          - {from: worker, to: customer, label: 'Confirmation email goes out', tip: 'The job really did get done.'}
+          - {at: worker, note: 'Crashes before sending the ack', tone: bad}
+          - {from: broker, to: worker, label: 'No ack, take #501 again', dashed: true, tip: 'The broker can''t know whether the job was done. Sending it again is the safe choice.'}
+          - {from: worker, to: customer, label: 'A second email goes out', tone: bad}
+      - type: quote
+        body: 'No ack means the broker can''t tell whether the job was done, so it sends the message again.'
+    aside:
+      - type: story
+        title: 'The double mobile top-up'
+        body: |
+          One app's "top up" handler sent money to the operator and then sent the ack. During a deploy a worker was shut down halfway through. A new worker received the same message again and topped up a second time.
+      - type: terms
+        items:
+          - {term: 'Ack', meaning: 'The worker''s signal saying "job done, you can delete the message".'}
+          - {term: 'Redelivery', meaning: 'The broker handing out the same message again because no ack arrived.'}
+    check:
+      q: 'A worker sends the email and then dies before the ack. Why does the broker deliver the message again?'
+      a: 'The broker can''t tell whether the job was done. No ack means "maybe not", and redelivering is safer than losing the message.'
+
+  - slug: three-guarantees
+    title: 'At-most-once, at-least-once and "exactly-once"'
+    kind: concept
+    tldr: 'Ack before the work and a message can be lost; ack after and it can arrive twice. Exactly-once is really at-least-once plus an idempotent handler.'
+    keywords: ['at-most-once', 'at-least-once', 'exactly-once', 'effectively-once', 'idempotent', 'delivery guarantee']
+    blocks:
+      - type: metaphor
+        icon: receipt
+        title: 'When does the receipt get signed?'
+        body: |
+          If the boy tells the office "delivered" the moment he picks up the parcel, nobody goes looking when it gets lost on the way. That's **at-most-once**. If he reports only after the customer has signed, a lost signature can send the parcel out twice. That's **at-least-once**. And if, on the second trip, the customer says "I already have this one, take it back", the result is exactly one parcel. That's **effectively-once**.
+      - type: visual
+        kind: table
+        caption: 'The three guarantees side by side'
+        headers: ['', 'At-most-once', 'At-least-once', 'Effectively-once']
+        rows:
+          - cells: ['When the ack goes', 'Before the work', 'After the work', 'After the work']
+            tip: 'The only difference is where the ack sits. Effectively-once acks exactly like at-least-once.'
+          - cells: ['What can happen', 'Message is lost', 'Message arrives twice', 'Arrives twice, effect once']
+            tip: 'The first loses work and the second duplicates it. In the third, a duplicate can arrive and do no harm.'
+          - cells: ['Good for', 'Things safe to lose', 'Most jobs', 'Money, stock, orders']
+            tip: 'Live location or a metric sample can be lost because the next one is coming. For money, neither a loss nor a duplicate is acceptable.'
+          - cells: ['Your job', 'Nothing', 'Handle duplicates', 'Make the handler idempotent']
+            tip: 'The broker guarantees delivery, but handling the effect of duplicates is the handler''s job.'
+      - type: quote
+        body: 'There is no exactly-once delivery. There is at-least-once plus an idempotent handler.'
+    aside:
+      - type: problem
+        body: 'Networks and processes can die at any moment. So neither broker nor worker can be sure a job was done, and a delivery guarantee is the rule for handling that uncertainty.'
+      - type: remember
+        body: 'Twice beats lost, and turning twice into once is the handler''s job.'
+      - type: refs
+        items:
+          - {to: 'payments/idempotency-keys', label: 'Idempotency keys'}
+    check:
+      q: 'Kafka or SQS advertises "exactly-once". What should you still do in your handler?'
+      a: 'Make it idempotent anyway. That guarantee usually holds only inside the broker, and outside work like your email or payment API can still run twice.'
+
+  - slug: ordering-by-key
+    title: 'Ordering and partitions: same key, same line'
+    kind: concept
+    tldr: 'With many workers running at once, message order breaks. Send messages with the same key to the same partition and the order holds within that key.'
+    keywords: ['ordering', 'partition', 'partition key', 'message group', 'FIFO', 'message order']
+    blocks:
+      - type: metaphor
+        icon: bank
+        title: 'The bank counters'
+        body: |
+          With four counters in a bank the queue moves fast, but if Rahim's deposit and withdrawal go to two different counters, nobody can say which finishes first. So the rule is that all of Rahim's work always goes to the same counter. His own transactions stay in order, while the counters together still work in parallel.
+      - type: visual
+        kind: flow
+        caption: 'The account id picks the partition, with one worker per partition'
+        nodes:
+          - {id: prod, label: 'Producer', sub: 'key = accountId', icon: send, col: 0, row: 1, tip: 'Sends a key with every message, here the account id.'}
+          - {id: p0, label: 'Partition 0', sub: 'acc 7, acc 9', icon: queue, tone: accent, col: 1.5, row: 0, tip: 'Messages whose key hashes here stay in the order they came in.'}
+          - {id: p1, label: 'Partition 1', sub: 'acc 8, acc 12', icon: queue, col: 1.5, row: 2, tip: 'The line for the other keys. It runs in parallel with p0.'}
+          - {id: w0, label: 'Worker A', sub: 'partition 0 only', icon: worker, col: 3, row: 0, tip: 'Only one reader at a time per partition, so the order can''t break.'}
+          - {id: w1, label: 'Worker B', sub: 'partition 1 only', icon: worker, col: 3, row: 2, tip: 'A separate worker, so throughput goes up.'}
+        edges:
+          - {from: prod, to: p0, label: 'Messages for acc 7 are hashed to partition 0'}
+          - {from: prod, to: p1, label: 'Messages for acc 8 are hashed to partition 1'}
+          - {from: p0, to: w0, label: 'Worker A gets acc 7''s messages in arrival order', dashed: true}
+          - {from: p1, to: w1, label: 'Worker B runs its own line at the same time', dashed: true}
+      - type: points
+        title: 'What it is called where'
+        style: dot
+        items:
+          - 'Kafka: the message key picks the partition, and each partition has one reader per consumer group.'
+          - 'Amazon SQS FIFO: messages with the same `MessageGroupId` keep their order.'
+          - 'RabbitMQ: one consumer on a queue keeps order; with several consumers it doesn''t.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Ask for a single global order across the whole system and every message lands in one line, so throughput stalls.'
+          - 'When one key runs too hot (a hot key), the single worker on that partition buckles under the load.'
+      - type: terms
+        items:
+          - {term: 'Partition key', meaning: 'The value that decides which line a message goes to.'}
+          - {term: 'Hot key', meaning: 'A key that has far more messages than the others.'}
+    check:
+      q: 'You want the "deposit" and "withdrawal" messages of one account processed in order. What should the partition key be?'
+      a: 'accountId. All messages of one account then reach one worker, in order, on one partition, while different accounts run in parallel.'
+
+  - slug: messenger-ack-and-order
+    title: 'Handling ack and order in Messenger'
+    kind: howto
+    tldr: 'Messenger acks only after the handler succeeds, so the guarantee is at-least-once. If you need order, set a group id and let the handler drop stale messages.'
+    keywords: ['Symfony Messenger', 'AmazonSqsFifoStamp', 'message group id', 'stale message', 'version check', 'ordering']
+    blocks:
+      - type: text
+        body: |
+          Messenger acks **after** the handler finishes, and doesn't ack when an exception is thrown. So the default behaviour is at-least-once. If you need order, set a message group on the SQS FIFO transport, and make the handler quietly drop any message that turns out to be stale.
+      - type: code
+        lang: php
+        file: 'src/Service/AccountEvents.php'
+        variant: good
+        code: |
+          public function credited(Account $account, int $amount, int $version): void
+          {
+              $this->bus->dispatch(
+                  new AccountCredited($account->getId(), $amount, $version),
+                  [
+                      // same account = same group = processed in order
+                      new AmazonSqsFifoStamp(
+                          messageGroupId: (string) $account->getId(),
+                          messageDeduplicationId: 'credit-'.$account->getId().'-'.$version,
+                      ),
+                  ],
+              );
+          }
+        marks:
+          - {line: 8, tip: 'The group id is SQS''s version of a partition key. Messages in one group run one after another.'}
+          - {line: 9, tip: 'For a window of time (5 minutes), SQS FIFO drops a second message that carries the same deduplication id.'}
+      - type: code
+        lang: php
+        file: 'src/MessageHandler/AccountCreditedHandler.php'
+        variant: good
+        code: |
+          #[AsMessageHandler]
+          final readonly class AccountCreditedHandler
+          {
+              public function __construct(private ReadModelRepository $readModels) {}
+
+              public function __invoke(AccountCredited $m): void
+              {
+                  $applied = $this->readModels->applyIfNewer(
+                      $m->accountId, $m->amount, $m->version,
+                  );
+                  // applied = false means this version was already applied: duplicate or stale
+              }
+          }
+        marks:
+          - {line: 8, tip: 'The query inside has `WHERE version < :version`, so a stale or duplicate message changes nothing.'}
+      - type: points
+        title: 'The rules behind this code'
+        style: check
+        items:
+          - 'The ack comes after the handler succeeds, so no work is lost.'
+          - 'If you need order, set a group id. Never assume messages arrive in order.'
+          - 'The handler uses the version to reject stale or duplicate messages itself.'
+    aside:
+      - type: tips
+        items:
+          - 'First ask whether you really need order. Many jobs (emails, PDFs) work fine without it.'
+          - 'Put a version or sequence number in the message, and the handler stays correct even when order breaks.'
+      - type: refs
+        items:
+          - {to: 'messaging/dlq-retries', label: 'Stopping duplicates: the idempotent consumer'}
+    check:
+      q: 'What goes wrong if you give every message the same group id to guarantee order?'
+      a: 'All messages end up in one line with one worker, so parallelism drops to zero. The group id should be a small unit such as one account or one order.'
+
+flashcards:
+  - q: 'What is the core difference between at-most-once, at-least-once and exactly-once?'
+    a: 'At-most-once can lose a message, and at-least-once can deliver it twice. Exactly-once is really at-least-once plus an idempotent handler.'
+    more: |
+      The difference is where the ack sits. Ack before the work and a crash loses the job. Ack after the work and a crash runs it again. In the last case the handler produces the same result even when a duplicate arrives.
+    ref: three-guarantees
+  - q: 'Why can a broker deliver the same message twice?'
+    a: 'If the worker finishes but dies before sending the ack, or the ack gets lost on the way, the broker assumes the job wasn''t done and sends it again.'
+    more: |
+      From the outside, a broker can't see what happened inside the handler. It only knows whether an ack arrived. Resending is safer than losing the message, so at-least-once is the default behaviour.
+    ref: two-emails-one-order
+  - q: 'What kind of work is fine with at-most-once?'
+    a: 'Work where losing one message costs nothing because the next one is coming, such as live location or metric samples.'
+    more: |
+      This guarantee has no duplicate worry and is the simplest. But for money, orders or emails, losing a message is unacceptable, so there the rule is at-least-once and handling duplicates.
+    ref: three-guarantees
+  - q: 'When does Messenger ack, and what happens if the handler throws an exception?'
+    a: 'It acks after the handler succeeds. On an exception it doesn''t ack, so the message is tried again according to the retry strategy.'
+    more: |
+      That is why Messenger behaves as at-least-once: even if a handler dies midway, the message isn't lost. The price is that the same handler may run twice, and you have to be ready for that.
+    ref: messenger-ack-and-order
+  - q: 'What is a partition key for?'
+    a: 'All messages with the same key go to the same partition. That partition has one reader, so message order holds within that key.'
+    more: |
+      Order is guaranteed only within one key, not across all keys. That gives you both order and parallelism, because different keys run on different workers at the same time.
+    ref: ordering-by-key
+  - q: 'What is a hot key, and why is it a problem?'
+    a: 'A key with far more messages than the rest. The single worker on its partition buckles while the other workers sit idle.'
+    more: |
+      For example, all orders of one very popular shop partitioned by shopId. The fix is to partition by a smaller unit such as orderId, or to add a number to the key and spread the load, if order isn't needed at that level.
+    ref: ordering-by-key
+  - q: 'Why does order break when you have many workers?'
+    a: 'Two workers pick up two messages at once, and the second message can finish first. The order then depends on who finishes first.'
+    more: |
+      Parallelism and order pull in opposite directions, and you can't raise one for free. So ask for order only where you need it, such as within one account.
+    ref: ordering-by-key
+
+quiz:
+  - q: 'A handler sends an email and dies before the ack. What happens next?'
+    hint: 'Think about what the broker knows and what it doesn''t.'
+    options:
+      - text: 'The message is lost and the email is never sent again'
+        correct: false
+        why: 'That is at-most-once behaviour. When the ack comes after the work, the message isn''t lost.'
+      - text: 'The broker delivers the message again, and the customer may get two emails'
+        correct: true
+        why: 'No ack arrived, so the broker assumes the job wasn''t done. It actually was done, so you get a duplicate.'
+      - text: 'The broker figures out the email went out and won''t send it again'
+        correct: false
+        why: 'The broker can''t see inside the handler. It only knows whether an ack arrived.'
+    ref: two-emails-one-order
+  - q: 'Which statements are correct?'
+    hint: 'Is the ack before or after the work, and what is the handler''s responsibility?'
+    options:
+      - text: 'In at-least-once, the ack is sent after the work'
+        correct: true
+        why: 'With the ack after the work, a crash makes the message come again, so it is never lost.'
+      - text: 'In at-most-once, a message can be lost'
+        correct: true
+        why: 'With the ack first, after a crash the broker thinks the job is done when it isn''t.'
+      - text: 'Exactly-once means the handler no longer needs to be idempotent'
+        correct: false
+        why: 'A broker can''t guarantee that outside work, like an email or payment, runs only once.'
+      - text: 'At-least-once never loses a message and never delivers one twice'
+        correct: false
+        why: 'The chance of a duplicate is exactly its price, and it is what forces the handler to be idempotent.'
+    ref: three-guarantees
+  - q: 'In a banking app you want each account''s transactions processed in order, but all accounts at the same time. What do you do?'
+    hint: 'You need order only within one account.'
+    options:
+      - text: 'Run just one worker for all messages'
+        correct: false
+        why: 'The order holds, but every account gets stuck in one line.'
+      - text: 'Use accountId as the partition key or message group id'
+        correct: true
+        why: 'One account runs in order on one line, and different accounts run in parallel.'
+      - text: 'Put a timestamp in each message and let the worker sort them out'
+        correct: false
+        why: 'Clocks on different machines don''t agree, and you have no way to handle a later message arriving first.'
+    ref: ordering-by-key
+  - q: 'What is wrong with the handler below?'
+    lang: php
+    code: |
+      #[AsMessageHandler]
+      final readonly class AccountCreditedHandler
+      {
+          public function __construct(private AccountRepository $accounts) {}
+
+          public function __invoke(AccountCredited $m): void
+          {
+              $account = $this->accounts->find($m->accountId);
+              $account->setBalance($account->getBalance() + $m->amount);
+              $this->accounts->save($account);
+          }
+      }
+    hint: 'What happens to the balance if the message arrives twice?'
+    options:
+      - text: 'On a redelivery the same money is credited twice'
+        correct: true
+        why: 'There is no duplicate check, so under at-least-once the second message adds the amount again.'
+      - text: 'Because it is `final readonly`, the handler won''t work'
+        correct: false
+        why: 'That is fine. `readonly` works on Messenger handlers.'
+      - text: 'If an old message arrives later, this code can''t catch it'
+        correct: true
+        why: 'There is no version, so there is no way to tell an out-of-order or duplicate message apart.'
+      - text: 'Reading the entity with `find()` is wrong'
+        correct: false
+        why: 'Reading a fresh entity by id is the right approach.'
+    ref: messenger-ack-and-order
+  - q: 'What happens if you give every message the same `MessageGroupId` on SQS FIFO?'
+    hint: 'Messages in one group run one after another.'
+    options:
+      - text: 'Order is guaranteed, but throughput drops to about that of a single worker'
+        correct: true
+        why: 'Every message runs in order inside one group, with no parallelism.'
+      - text: 'Messages run faster, because SQS spreads them out by group id'
+        correct: false
+        why: 'A group id doesn''t spread messages out. It ties one group to one line.'
+      - text: 'Duplicate messages stop completely'
+        correct: false
+        why: 'The deduplication id prevents duplicates, not the group id, and only for a limited time.'
+    ref: ordering-by-key

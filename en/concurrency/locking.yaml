@@ -1,0 +1,431 @@
+slides:
+  - slug: pessimistic-lock
+    title: 'Pessimistic lock: take the key, everyone else queues'
+    kind: story
+    tldr: 'SELECT … FOR UPDATE locks the row as you read it; the second request waits in line and then reads the correct balance.'
+    keywords: ['pessimistic lock', 'SELECT FOR UPDATE', 'row lock', 'lock', 'waiting']
+    blocks:
+      - type: metaphor
+        icon: lock
+        title: 'The key to the bank vault'
+        body: |
+          There is only one key to the vault. Whoever goes in with it works while everyone else queues outside until they are done. That is a pessimistic lock: "I assume trouble will happen, so I lock up first". Rahim's two phone requests now stand in that queue, and the second one walks in later to see a clean, up-to-date balance.
+      - type: visual
+        kind: sequence
+        caption: 'FOR UPDATE: the second request waits until the first one commits'
+        actors:
+          - {id: p1, label: 'Rahim''s phone 1', icon: phone, tip: 'The first request, wanting to send 800 taka.'}
+          - {id: p2, label: 'Rahim''s phone 2', icon: phone, tip: 'The second request, which arrived at almost the same moment.'}
+          - {id: db, label: 'Database', icon: db, tip: 'Manages the row lock on the wallet row.'}
+        messages:
+          - {from: p1, to: db, label: 'SELECT … FOR UPDATE', tip: 'It gets the row''s lock together with the read.'}
+          - {from: db, to: p1, label: '1000 taka, lock granted', dashed: true, tone: good}
+          - {from: p2, to: db, label: 'SELECT … FOR UPDATE', tip: 'The row is locked, so this query simply hangs. No error is raised; it just waits.'}
+          - {at: db, note: 'Phone 2 waits in line', tone: warn}
+          - {from: p1, to: db, label: 'Write balance 200, COMMIT', tip: 'The lock is released the moment the commit happens.'}
+          - {from: db, to: p2, label: '200 taka, lock granted', dashed: true, tone: good, tip: 'Now phone 2 sees the new balance.'}
+          - {from: p2, to: db, label: '200 < 800, abort', tone: good, tip: 'The second transfer fails exactly as it should. No wrong money went out.'}
+      - type: quote
+        body: 'Take the lock, then read. Taking the lock after you have read is too late.'
+    aside:
+      - type: problem
+        body: 'The simplest way to close the check-then-act gap: lock the row you are going to decide on before you decide. When collisions are frequent, this is the right choice.'
+      - type: terms
+        items:
+          - {term: 'Row lock', meaning: 'A lock on one row; other transactions cannot change it (or read it with FOR UPDATE) until it is released.'}
+          - {term: 'Pessimistic', meaning: 'Assuming up front that a collision will happen, so locking first.'}
+    check:
+      q: 'Until phone 1''s transaction commits, what does phone 2''s `SELECT … FOR UPDATE` do?'
+      a: 'It blocks and waits; it does not raise an error. When phone 1 commits, the lock is released and phone 2 reads the new balance.'
+
+  - slug: pessimistic-doctrine
+    title: 'PESSIMISTIC_WRITE in Doctrine: rules and time limits'
+    kind: howto
+    tldr: 'Pass PESSIMISTIC_WRITE to find() inside an open transaction, keep the work short, and put a cap on the waiting time.'
+    keywords: ['PESSIMISTIC_WRITE', 'LockMode', 'wrapInTransaction', 'lock_timeout', 'SKIP LOCKED']
+    blocks:
+      - type: text
+        body: |
+          In Doctrine, passing `LockMode::PESSIMISTIC_WRITE` as the third argument of `find()` adds `FOR UPDATE` to the SQL. It only works inside an open transaction; otherwise you get a `TransactionRequiredException`. So wrap the whole job in `wrapInTransaction()`. The shorter you hold the lock, the shorter the queue.
+      - type: code
+        lang: php
+        file: 'src/Service/WalletService.php'
+        variant: good
+        code: |
+          use Doctrine\DBAL\LockMode;
+
+          public function send(int $walletId, int $amount): void
+          {
+              $this->em->wrapInTransaction(function () use ($walletId, $amount): void {
+                  $wallet = $this->em->find(Wallet::class, $walletId, LockMode::PESSIMISTIC_WRITE)
+                      ?? throw new WalletNotFound($walletId);
+
+                  // a balance read after the lock can no longer be stale
+                  if ($wallet->getBalance() < $amount) {
+                      throw new InsufficientFunds();
+                  }
+
+                  $wallet->withdraw($amount);
+              });   // the lock is released on COMMIT
+          }
+        marks:
+          - {line: 6, tip: 'SELECT … FOR UPDATE. Outside a transaction, this raises a TransactionRequiredException.'}
+          - {line: 10, tip: 'This if is now safe, because the row is held under our lock. No other request can get in here.'}
+          - {line: 15, tip: 'The lock is released on commit or rollback, whichever happens. There is no way to unlock it earlier by hand.'}
+      - type: code
+        lang: sql
+        file: 'migrations / psql'
+        code: |
+          -- Bounded wait: if the lock isn't granted within 3 seconds, raise an error (PostgreSQL)
+          SET LOCAL lock_timeout = '3s';
+
+          -- Skip a row someone else holds and take the next one (for job-queue style work)
+          SELECT id FROM job WHERE status = 'new'
+          ORDER BY id LIMIT 1
+          FOR UPDATE SKIP LOCKED;
+        marks:
+          - {line: 2, tip: 'Without lock_timeout, one hung transaction can block everyone else indefinitely. In MySQL, innodb_lock_wait_timeout does this job.'}
+          - {line: 7, tip: 'SKIP LOCKED doesn''t wait; it steps over rows that are locked. It lets several workers pick different jobs from the same table.'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'No HTTP calls, SMS or other slow work inside a lock. The lock lasts as long as the queue does.'
+          - 'Lock only the rows your decision depends on. Locking a whole table puts everyone in the queue.'
+      - type: terms
+        items:
+          - {term: 'LockMode', meaning: 'In ORM 3 it is `Doctrine\DBAL\LockMode`. PESSIMISTIC_WRITE means FOR UPDATE; PESSIMISTIC_READ means a shared lock.'}
+      - type: refs
+        items:
+          - {to: 'concurrency/acid', label: 'How wrapInTransaction() works'}
+    check:
+      q: 'What happens if you call `find($class, $id, LockMode::PESSIMISTIC_WRITE)` without a transaction, and when is the lock released?'
+      a: 'You get a TransactionRequiredException, because the lock only works in an open transaction. The lock is released when the transaction commits or rolls back.'
+
+  - slug: optimistic-lock
+    title: 'Optimistic lock: don''t hold anything, check the seal on the way out'
+    kind: concept
+    tldr: 'Keep a version column on the row; the UPDATE applies only if the version is still what it was; otherwise the conflict is caught.'
+    keywords: ['optimistic lock', 'version column', 'OptimisticLockException', 'ETag', 'If-Match', '409']
+    blocks:
+      - type: text
+        body: |
+          Two admins open the same product form, and one of them takes 10 minutes to fill it in. You can't hold a database lock for 10 minutes, yet you can't let one admin's work silently vanish either. This is where an optimistic lock helps: everyone gets in, but on the way out the seal number on the vault is compared. If the number has changed, someone else worked in the meantime.
+      - type: visual
+        kind: sequence
+        caption: 'Two admins open the form at version 3; the second one''s save is caught'
+        actors:
+          - {id: a, label: 'Admin Sumi', icon: user, tip: 'Is changing the product''s name.'}
+          - {id: b, label: 'Admin Rafiq', icon: user, tip: 'Is changing the same product''s price. Opened the form at the same time as Sumi.'}
+          - {id: db, label: 'Database', icon: db, tip: 'Keeps a version column on the product row.'}
+        messages:
+          - {from: a, to: db, label: 'save, expecting version = 3', tip: 'The version received when the form was opened is sent back.'}
+          - {from: db, to: a, label: 'OK, now version 4', dashed: true, tone: good, tip: 'UPDATE … SET version = 4 WHERE id = 7 AND version = 3 changed one row.'}
+          - {from: b, to: db, label: 'save, expecting version = 3', tip: 'Rafiq still holds the old 3.'}
+          - {at: db, note: 'WHERE version = 3 found nothing', tone: bad, tip: 'Zero rows changed; Doctrine sees this and throws an OptimisticLockException.'}
+          - {from: db, to: b, label: '409 Conflict', dashed: true, tone: warn, tip: 'Rafiq didn''t destroy Sumi''s change. He is told to reload and look again.'}
+      - type: code
+        lang: php
+        file: 'src/Entity/Product.php'
+        code: |
+          #[ORM\Version]
+          #[ORM\Column(type: 'integer')]
+          private int $version = 1;
+
+          // src/Controller/ProductController.php
+          try {
+              $this->em->wrapInTransaction(function () use ($id, $dto): void {
+                  $p = $this->em->find(Product::class, $id, LockMode::OPTIMISTIC, $dto->version);
+                  $p->rename($dto->name);
+              });
+          } catch (OptimisticLockException) {
+              return $this->json(['error' => 'Someone else changed it first, please reload'], 409);
+          }
+        marks:
+          - {line: 1, tip: 'Doctrine bumps the version on every UPDATE and checks it in the WHERE clause itself. You write no code for it.'}
+          - {line: 8, tip: 'If the version the client sent back doesn''t match the row''s current version, the exception is thrown right here.'}
+    aside:
+      - type: tips
+        items:
+          - 'In a JSON API, send the version in the body or in an ETag/If-Match header; return 412 or 409 on a mismatch.'
+          - 'On a conflict, show the client the fresh data and let them resolve it. Quietly forcing the write through is a lost update all over again.'
+      - type: when
+        use: ['Collisions are rare, but users work in a form for a long time', 'Editing the same record in an admin panel']
+        avoid: ['Frequently contended figures such as wallet or stock, where retries pile up']
+    check:
+      q: 'How does the database know there was a conflict when the second admin saves?'
+      a: 'The UPDATE''s WHERE clause says `version = 3`, but the row is already at version 4. Zero rows change, and Doctrine throws an OptimisticLockException.'
+
+  - slug: advisory-distributed
+    title: 'Advisory locks and Symfony Lock: a lock with no row'
+    kind: howto
+    tldr: 'You can lock a name instead of a row. It suits cron jobs, exports and multi-server work, but the TTL has a trap.'
+    keywords: ['advisory lock', 'pg_advisory_xact_lock', 'Symfony Lock', 'LockFactory', 'distributed lock', 'TTL']
+    blocks:
+      - type: text
+        body: |
+          There isn't always a row to lock: for example, "the monthly invoice export must run only once". Then you lock a name. Inside the database, that's an advisory lock (`pg_advisory_xact_lock` in PostgreSQL). Across several servers or outside the database, use Symfony Lock, backed by Redis or a database. Such locks have a **TTL** (time to live), meaning they release themselves when the time runs out.
+      - type: code
+        lang: php
+        file: 'src/Service/InvoiceExporter.php'
+        code: |
+          public function export(string $month): void
+          {
+              $lock = $this->lockFactory->createLock('invoice-export-'.$month, ttl: 120);
+
+              if (!$lock->acquire()) {
+                  throw new ExportAlreadyRunning($month);   // someone else is running it
+              }
+
+              try {
+                  foreach ($this->batches($month) as $batch) {
+                      $this->write($batch);
+                      $lock->refresh();     // TTL back to 120 seconds
+                  }
+              } finally {
+                  $lock->release();
+              }
+          }
+        marks:
+          - {line: 3, tip: 'A lock by name. Without a TTL, a crashed process would hold the lock forever, which is why there is one.'}
+          - {line: 5, tip: 'acquire() returns false immediately instead of waiting. Pass acquire(true) if you want it to wait.'}
+          - {line: 12, tip: 'In long jobs, call refresh() now and then, or the TTL expires mid-job and someone else walks in.'}
+      - type: code
+        lang: sql
+        file: 'PostgreSQL / MySQL'
+        code: |
+          -- PostgreSQL: turns the name into a number; a transaction-level lock
+          SELECT pg_advisory_xact_lock(hashtext('invoice-export-2026-11'));
+
+          -- MySQL: a named lock, waiting at most 5 seconds
+          SELECT GET_LOCK('invoice-export-2026-11', 5);
+        marks:
+          - {line: 2, tip: 'It is released automatically on COMMIT or ROLLBACK, so you can''t forget to release it. It works even with no row or table involved.'}
+      - type: quote
+        body: 'A lock with a TTL is for efficiency only; correctness of money is guarded by a database constraint.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'If a GC pause or slow work outlasts the TTL, someone else gets the lock while the first holder still thinks it has it. Both run.'
+          - 'If a Redis node is lost or fails over, the lock can vanish. Don''t rely on it alone for the correctness of money.'
+      - type: commands
+        title: 'Configuration'
+        items:
+          - {cmd: 'composer require symfony/lock', desc: 'add Symfony Lock'}
+          - {cmd: 'LOCK_DSN=redis://localhost', desc: 'choose the store in .env (framework.lock: ''%env(LOCK_DSN)%'')'}
+    check:
+      q: 'A Symfony Lock has a 60-second TTL but the job takes 90 seconds. What can go wrong, and how do you avoid it?'
+      a: 'When the TTL runs out the lock releases itself, someone else walks in, and two run at once. Call `refresh()` during the job, and keep a database constraint for correctness.'
+
+  - slug: deadlock-ordering
+    title: 'Deadlock: each waiting for the other'
+    kind: pitfall
+    tldr: 'When two transactions take locks in opposite order, both get stuck; always lock in the same order, and retry when a deadlock error occurs.'
+    keywords: ['deadlock', 'lock ordering', 'DeadlockException', 'retry', 'circular wait']
+    blocks:
+      - type: text
+        body: |
+          Rahim is sending money to Karim, and at the very same moment Karim is sending money to Rahim. The first transaction locks Rahim's wallet first, the second locks Karim's. Now the first wants Karim's and the second wants Rahim's. Neither will let go, so the database aborts one of them itself.
+      - type: visual
+        kind: sequence
+        caption: 'Locking in opposite order leaves the two transfers stuck'
+        actors:
+          - {id: t1, label: 'Rahim → Karim', icon: send, tip: 'Locks its own wallet first, then the recipient''s.'}
+          - {id: t2, label: 'Karim → Rahim', icon: send, tip: 'Locks its own wallet first (Karim''s), then Rahim''s.'}
+          - {id: db, label: 'Database', icon: db, tip: 'Keeps a graph of who waits for whom, and aborts one transaction when it finds a cycle.'}
+        messages:
+          - {from: t1, to: db, label: 'Lock Rahim''s wallet'}
+          - {from: t2, to: db, label: 'Lock Karim''s wallet'}
+          - {from: t1, to: db, label: 'Wants Karim''s wallet', tip: 'Karim''s is held by t2, so t1 waits.'}
+          - {from: t2, to: db, label: 'Wants Rahim''s wallet', tip: 'Rahim''s is held by t1, so t2 waits too.'}
+          - {at: db, note: 'Cycle: each waits for the other', tone: bad, tip: 'This is a deadlock. If nobody gave way, they would be stuck forever.'}
+          - {from: db, to: t2, label: 'Deadlock! You are aborted', dashed: true, tone: warn, tip: 'The database rolls back one transaction. The other moves on.'}
+      - type: code
+        lang: php
+        file: 'src/Service/TransferService.php'
+        variant: good
+        code: |
+          $this->em->wrapInTransaction(function () use ($fromId, $toId, $amount): void {
+              $ids = [$fromId, $toId];
+              sort($ids);                    // always the smaller id first
+
+              $wallets = [];
+              foreach ($ids as $id) {
+                  $wallets[$id] = $this->em->find(Wallet::class, $id, LockMode::PESSIMISTIC_WRITE)
+                      ?? throw new WalletNotFound($id);
+              }
+
+              $wallets[$fromId]->withdraw($amount);
+              $wallets[$toId]->deposit($amount);
+          });
+        marks:
+          - {line: 3, tip: 'Transfers in both directions now lock the smaller id first, so nobody waits in opposite order. A cycle cannot form.'}
+          - {line: 7, tip: 'Keep this code the same everywhere. If the order is wrong in even one place, deadlocks come back.'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'After a deadlock the database aborts one transaction and you get a DeadlockException. That transaction must be tried again, wholly from the start, on a fresh EntityManager or via Messenger retry.'
+          - 'Cap the retries too (say 3) and add a little jitter, or two transactions collide again at the same moment.'
+      - type: remember
+        body: 'When you need several locks, always take them in the same order: smaller id first.'
+      - type: refs
+        items:
+          - {to: 'concurrency/atomic-operations', label: 'Atomic updates with no lock at all'}
+    check:
+      q: 'Why do two transfers in opposite directions deadlock, and which rule stops it?'
+      a: 'One transaction holds Rahim''s wallet and wants Karim''s, while the other does the reverse. If every transaction locks in the same order (smaller id first), such a cycle can never form.'
+
+flashcards:
+  - q: 'What is a pessimistic lock?'
+    a: 'Assuming a collision will happen, so you lock the row while reading it (SELECT … FOR UPDATE). Others wait until you commit.'
+    more: |
+      When the transaction that holds the lock commits or rolls back, the lock is released and the next one reads the new value. It suits frequent collisions, such as wallets or stock, because it guarantees a correct calculation. The price is waiting and the risk of deadlock.
+    ref: pessimistic-lock
+  - q: 'How do you take a pessimistic lock in Doctrine?'
+    a: 'Call find($class, $id, LockMode::PESSIMISTIC_WRITE) inside wrapInTransaction(). Without a transaction you get a TransactionRequiredException.'
+    more: |
+      In ORM 3, LockMode comes from Doctrine\DBAL\LockMode. PESSIMISTIC_WRITE means FOR UPDATE. Read the balance or stock and make your decision only after you hold the lock, never before.
+    ref: pessimistic-doctrine
+  - q: 'Why must you keep lock-holding time short?'
+    a: 'While the lock is held, other requests queue up. Slow work inside it (HTTP calls, SMS) makes the queue grow and slows the whole site.'
+    more: |
+      Keep only the necessary reads and writes inside the lock. Calls to outside services come after the commit. Also set a lock_timeout (say 3 seconds), so one stuck transaction can't block everyone forever.
+    ref: pessimistic-doctrine
+  - q: 'What does SELECT … FOR UPDATE SKIP LOCKED do?'
+    a: 'It steps over locked rows and takes the next free one, without waiting. It lets several workers pick different jobs from one table.'
+    more: |
+      A plain FOR UPDATE waits for a locked row. SKIP LOCKED skips it, so in a database-backed job queue ten workers share the jobs instead of grabbing the same one. It isn't suitable when strict ordering matters.
+    ref: pessimistic-doctrine
+  - q: 'How does an optimistic lock work?'
+    a: 'The row has a version column. The UPDATE applies only if the version in its WHERE clause still matches; otherwise the conflict is caught.'
+    more: |
+      Nothing is held while the user works, which suits long form sessions. In Doctrine, `#[ORM\Version]` makes the ORM bump and check the version itself. On a conflict it throws an OptimisticLockException.
+    ref: optimistic-lock
+  - q: 'What do you do when you get an OptimisticLockException?'
+    a: 'Show the user the fresh data and let them decide again (409 or 412). Quietly forcing the write through brings back the lost update.'
+    more: |
+      In an API, send the version along with the data (in the body or as ETag/If-Match). On a conflict, show "someone else changed this first" in the client and load the latest data. In a background job, you can re-read the fresh data and try again automatically.
+    ref: optimistic-lock
+  - q: 'When do you pick a pessimistic lock, and when an optimistic one?'
+    a: 'Pessimistic for frequent collisions (wallet, stock). Optimistic for rare collisions and long user work (editing a form).'
+    more: |
+      With optimistic locking, heavy contention means failures and retries pile up. With pessimistic locking, you pay the lock cost on every request even when collisions are rare. So choose by collision rate and by how long the work lasts.
+    ref: optimistic-lock
+  - q: 'When do you need an advisory lock or Symfony Lock?'
+    a: 'When there is no row to lock, such as "this cron job or export must run only once". You lock a name.'
+    more: |
+      `pg_advisory_xact_lock` in PostgreSQL locks a name inside the database. To coordinate across several servers, Symfony's `LockFactory` keeps the lock in Redis or another store. The simplest use is making sure a cron or pick-up job runs in just one place.
+    ref: advisory-distributed
+  - q: 'Why does a distributed lock have a TTL, and what is the risk?'
+    a: 'So a crashed process doesn''t hold the lock forever. The risk: if the job outlasts the TTL, the lock lets go and two run at once.'
+    more: |
+      The fix: call `refresh()` during long jobs. And where a failure would be costly, such as money, don't trust the lock alone; keep a database constraint or a version check as well.
+    ref: advisory-distributed
+  - q: 'What is a deadlock, and how do you prevent it?'
+    a: 'Two transactions lock in opposite order and wait for each other forever. Locking in the same order everywhere (smaller id first) prevents it.'
+    more: |
+      When the database spots a deadlock, it rolls back one transaction and you get a DeadlockException. You then retry the whole transaction, with a little jitter and a limited number of attempts. The real cure is still the same lock order.
+    ref: deadlock-ordering
+
+quiz:
+  - q: 'What goes wrong when two requests run this code at the same time, and what does it need to be fixed?'
+    lang: php
+    code: |
+      $wallet = $em->find(Wallet::class, $id);
+      if ($wallet->getBalance() >= $amount) {
+          $wallet->withdraw($amount);
+          $em->flush();
+      }
+    hint: 'Is there any lock on the row while it is being read?'
+    options:
+      - text: 'There is no lock, so both read the same balance; the find must use PESSIMISTIC_WRITE inside a transaction'
+        correct: true
+        why: 'The balance read after the lock is the true one, because other requests wait in line until the commit.'
+      - text: 'Nothing is wrong, because flush() uses a transaction'
+        correct: false
+        why: 'flush()''s transaction wraps only the write, not the balance that was read earlier.'
+      - text: 'Checking the balance with another if will be enough'
+        correct: false
+        why: 'A second look is just another gap; with no lock, someone can still slip in between the check and the write.'
+      - text: 'Wrapping it in try/catch will be enough'
+        correct: false
+        why: 'Catching exceptions doesn''t stop the race, because no exception is being thrown here at all.'
+    ref: pessimistic-doctrine
+  - q: 'Where is an optimistic lock the best fit?'
+    hint: 'How long does the user keep the form open, and how often do collisions happen?'
+    options:
+      - text: 'A wallet balance with many transactions per second'
+        correct: false
+        why: 'With frequent collisions, optimistic locking piles up failures and retries; pessimistic locking or an atomic update is better here.'
+      - text: 'Editing a product in an admin panel, where the form stays open for minutes'
+        correct: true
+        why: 'You can''t hold a lock while the form is open; comparing versions catches the conflict at save time.'
+      - text: 'Many people buying the last ticket for a seat at once'
+        correct: false
+        why: 'Everyone is fighting over the same row, so there would be many failures. A lock or an atomic update is needed here.'
+      - text: 'A cron job that must run only once'
+        correct: false
+        why: 'There is no row here at all; you need a lock by name (Symfony Lock or an advisory lock).'
+    ref: optimistic-lock
+  - q: 'What happens when this code runs?'
+    lang: php
+    code: |
+      $wallet = $em->find(Wallet::class, 7, LockMode::PESSIMISTIC_WRITE);
+      $wallet->withdraw(100);
+      $em->flush();
+    hint: 'Where does a pessimistic lock work, and where doesn''t it?'
+    options:
+      - text: 'A TransactionRequiredException, because there is no open transaction'
+        correct: true
+        why: 'A pessimistic lock requires a transaction. Wrap the code in wrapInTransaction().'
+      - text: 'The row is locked and released on its own after flush()'
+        correct: false
+        why: 'Without a transaction, the exception comes straight from find(); it never gets as far as taking the lock.'
+      - text: 'The lock does nothing and execution quietly continues'
+        correct: false
+        why: 'Doctrine throws an explicit exception here, so you can''t run without the lock by accident.'
+    ref: pessimistic-doctrine
+  - q: 'Sumi and Rafiq both open the same product at version 3. Sumi saves. What happens when Rafiq saves?'
+    hint: 'What is the row''s version after Sumi''s save?'
+    options:
+      - text: 'Rafiq''s change overwrites Sumi''s'
+        correct: false
+        why: 'That would happen without an optimistic lock. Comparing versions prevents it.'
+      - text: 'Sumi''s change merges with Rafiq''s automatically'
+        correct: false
+        why: 'Doctrine doesn''t merge anything. It only reports the conflict.'
+      - text: 'Rafiq''s save gets an OptimisticLockException, because the version is now 4'
+        correct: true
+        why: 'WHERE version = 3 now finds no row, and Rafiq is told to reload.'
+    ref: optimistic-lock
+  - q: 'Which of these are reasonable places to use Symfony Lock or an advisory lock?'
+    hint: 'Where is there no separate row to lock?'
+    options:
+      - text: 'A cron job running on several servers that must run only once'
+        correct: true
+        why: 'If every server asks for the same named lock, only one gets it, and the rest skip the job.'
+      - text: 'Making sure the monthly invoice export doesn''t run twice at once'
+        correct: true
+        why: 'The job has no specific row of its own, so a lock by name fits.'
+      - text: 'Making sure two requests don''t deduct the same wallet balance twice'
+        correct: false
+        why: 'Here there is a row; a row lock or an atomic UPDATE is simpler and safer, and has no TTL risk.'
+      - text: 'Keeping emails unique'
+        correct: false
+        why: 'A database unique constraint is the most reliable tool for that.'
+    ref: advisory-distributed
+  - q: 'When two transfers run in opposite directions at the same time, you sometimes get a "Deadlock found" error. What is the first remedy?'
+    hint: 'Who is waiting for whom, and in what order?'
+    options:
+      - text: 'Follow one lock order everywhere, smaller id first'
+        correct: true
+        why: 'With one order, an opposite-direction cycle can''t form; this is the root cause of deadlocks.'
+      - text: 'Stop taking locks at all'
+        correct: false
+        why: 'Removing the locks would remove the deadlock but bring the race back, and balances would be wrong again.'
+      - text: 'Add more work inside the transaction'
+        correct: false
+        why: 'More work inside means locks are held longer, which gives deadlocks more chances.'
+      - text: 'Reduce the number of database connections'
+        correct: false
+        why: 'That adds waiting, but it does nothing about the cause of the cycle.'
+    ref: deadlock-ordering

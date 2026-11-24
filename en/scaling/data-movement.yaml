@@ -1,0 +1,399 @@
+slides:
+  - slug: replica-lag-surprise
+    title: 'I placed an order, but "no such order"'
+    kind: story
+    tldr: 'A replica gets the primary''s data a little late. During that gap a user can''t see their own write, data can jump backwards in time, or events can show up in the wrong order.'
+    keywords: ['replication lag', 'read replica', 'read your writes', 'stale read', 'eventual consistency', 'replica']
+    blocks:
+      - type: metaphor
+        icon: mail
+        title: 'The head post office and the branch'
+        body: |
+          Rahim deposits a money order at the head post office, and it's written in their ledger. The postman needs a few minutes to carry that line to the branch's ledger. If Rahim walks straight into the branch and asks, he hears, "There's no such record." The post office made no mistake; the copy just hasn't arrived yet.
+      - type: visual
+        kind: sequence
+        caption: 'Write goes to the primary, read comes from the replica: a wrong answer in the 2 seconds between'
+        actors:
+          - {id: user, label: 'Rahim', icon: user, tip: 'He places an order and immediately wants to see the result page.'}
+          - {id: app, label: 'App', icon: api, tip: 'It sends the write to the primary, and the read that shows the page to the replica.'}
+          - {id: primary, label: 'Primary', icon: db, tip: 'Every write lands here first.'}
+          - {id: replica, label: 'Replica', icon: db, tip: 'A copy of the primary. A write reaches it with a small delay.'}
+        messages:
+          - {from: user, to: app, label: 'I place an order'}
+          - {from: app, to: primary, label: 'Write order #502'}
+          - {from: primary, to: app, label: 'Written', dashed: true}
+          - {from: app, to: user, label: 'Go to the order page', dashed: true}
+          - {from: user, to: app, label: 'Show order #502'}
+          - {from: app, to: replica, label: 'Read order #502'}
+          - {at: replica, note: 'The copy hasn''t arrived yet (lag 2 seconds)', tone: bad}
+          - {from: replica, to: app, label: 'Not found', dashed: true, tone: bad}
+          - {from: app, to: user, label: '404: where is my order?', tone: bad, tip: 'The user thinks the money was taken and the order lost. In fact the data is fine; it was just read from the wrong place.'}
+      - type: points
+        title: 'Three kinds of trouble from lag'
+        style: cross
+        items:
+          - 'Not seeing your own write: you place an order and it says "no such order".'
+          - 'Time going backwards: you see the new data once, then refresh and see the old (on another replica).'
+          - 'Order reversed: the answer shows up, but the question it answers hasn''t arrived yet.'
+    aside:
+      - type: problem
+        body: 'Read replicas spread the read load, but the price is losing the "always the latest" guarantee. This step is about deciding where you can live with that and where you can''t.'
+      - type: refs
+        items:
+          - {to: 'data/replication', label: 'How replication works'}
+          - {to: 'data/consistency-models', label: 'Read-your-writes and other models'}
+    check:
+      q: 'Right after placing an order, the page said "no such order" and then was fine a moment later. What is the most likely cause?'
+      a: 'Replication lag. The order was written to the primary, but the read for the page went to a replica that hadn''t received the write yet.'
+
+  - slug: read-your-writes
+    title: 'Show users their own writes'
+    kind: howto
+    tldr: 'For a few seconds after a write, serve that user''s reads from the primary. Everyone else reads from a replica. Critical reads (money, stock) always go to the primary.'
+    keywords: ['read your writes', 'primary replica', 'DBAL connection', 'monotonic reads', 'LSN', 'sticky replica']
+    blocks:
+      - type: text
+        body: |
+          The simple rule: a user who has just written gets their reads from the primary for a few seconds. Lag usually stays within a few seconds, so 5 seconds of primary reads is enough to keep them from seeing stale data. Below, a small cookie is set after a write, and reads check it to choose the connection.
+      - type: code
+        lang: php
+        file: 'src/Db/ReadConnectionPicker.php'
+        variant: good
+        code: |
+          final class ReadConnectionPicker
+          {
+              private const STICKY_SECONDS = 5;
+
+              public function __construct(
+                  private readonly Connection $primary,               // default
+                  private readonly Connection $replicaConnection,     // doctrine: replica
+              ) {
+              }
+
+              #[AsEventListener(event: KernelEvents::RESPONSE)]
+              public function markWrite(ResponseEvent $event): void
+              {
+                  if ($event->getRequest()->isMethodSafe()) {
+                      return;                       // nothing was written on GET/HEAD
+                  }
+                  $event->getResponse()->headers->setCookie(
+                      Cookie::create('last_write', (string) time())->withHttpOnly(true),
+                  );
+              }
+
+              public function forRead(Request $request): Connection
+              {
+                  $lastWrite = (int) $request->cookies->get('last_write', '0');
+
+                  return time() - $lastWrite < self::STICKY_SECONDS
+                      ? $this->primary
+                      : $this->replicaConnection;
+              }
+          }
+        marks:
+          - {line: 7, tip: 'DoctrineBundle autowires the connection named "replica" as `$replicaConnection`. The default connection comes in by type alone.'}
+          - {line: 18, tip: 'After any POST, PUT or DELETE a cookie with the time is set in the user''s browser. The server keeps no state.'}
+          - {line: 26, tip: 'Within 5 seconds of the last write, read from the primary. Once more than the lag has passed, the replica is safe.'}
+      - type: points
+        title: 'Other ways'
+        style: dot
+        items:
+          - 'Return the new order in the POST response itself, so the page doesn''t need a read at all.'
+          - 'Always read critical things like money, stock or permissions from the primary.'
+          - 'Pin each user to one replica (hash of the user id), so time doesn''t go backwards.'
+    aside:
+      - type: tips
+        items:
+          - 'Measure lag: on a PostgreSQL replica, `SELECT now() - pg_last_xact_replay_timestamp();`. Keep an alert on it at all times.'
+          - 'Keep the sticky window longer than the p99 of the lag, or gaps will remain.'
+      - type: commands
+        title: 'Checking lag (PostgreSQL)'
+        items:
+          - {cmd: 'SELECT now() - pg_last_xact_replay_timestamp();', desc: 'run on the replica: how far behind it is'}
+          - {cmd: 'SELECT client_addr, replay_lag FROM pg_stat_replication;', desc: 'run on the primary: the lag of each replica'}
+    check:
+      q: 'A user refreshes the feed 3 seconds after posting. Why do you read from the primary, and for how long?'
+      a: 'The post may not have reached the replica yet. So after a user''s last write, serve their reads from the primary for longer than the lag (say 5 seconds).'
+
+  - slug: moving-in-steps
+    title: 'Moving the warehouse while the shop stays open'
+    kind: concept
+    tldr: 'Big data can''t be moved in one night. Build the new place, write new data to both, copy the old data, verify, then move reads over step by step.'
+    keywords: ['data migration', 'rebalancing', 'dual write', 'cutover', 'shadow read', 'resharding', 'zero downtime']
+    blocks:
+      - type: metaphor
+        icon: truck
+        title: 'Changing warehouses with the shop open'
+        body: |
+          The old warehouse has become too small and the stock must go to a new one. But the shop can't close for even a day. So new stock goes into both warehouses, trucks carry the old stock over bit by bit, and then the books are checked. Only when everything matches do customers get sent to the new warehouse.
+      - type: visual
+        kind: steps
+        caption: 'The plan for moving big data, the same for a new database, a new shard or a new table'
+        steps:
+          - {title: '1. Build the new place', body: 'An empty schema, indexes ready', tip: 'The new table, shard or database is ready in advance. Nothing has changed in the old system yet.'}
+          - {title: '2. Turn on dual write', body: 'New writes go to both old and new', tip: 'From this step on, new data no longer falls behind. Only the old data is left.'}
+          - {title: '3. Backfill', body: 'Copy old data slowly, in small batches', tip: 'It runs slowly so the live site isn''t put under pressure. The next slide has the code.'}
+          - {title: '4. Verify', body: 'Match counts and checksums, shadow read', tip: 'A shadow read means reading from the new place too and comparing the results, while the user still sees the old one.'}
+          - {title: '5. Move reads', body: '1% → 10% → 100% from the new place', tip: 'Moving in steps means that if a problem shows up, few users suffer, and you can step back one stage.', tone: accent}
+          - {title: '6. Retire the old one', body: 'Stop writes, keep it a while, then delete', tip: 'Don''t delete straight away. Keeping the old one for a while gives you a way back if a mistake turns up.'}
+      - type: quote
+        body: 'Big data doesn''t move in one jolt. Move in small steps, check at every step, and keep the way back open.'
+    aside:
+      - type: when
+        use:
+          - 'Changing the database or storage engine'
+          - 'Rebalancing after adding or removing shards'
+          - 'Changing the structure of a big table'
+        avoid:
+          - 'A small table that copies in a minute: the simple way is enough'
+      - type: refs
+        items:
+          - {to: 'data/zero-downtime-migrations', label: 'Expand/contract migrations'}
+          - {to: 'scaling/consistent-hashing', label: 'Moving less data when a shard is added'}
+    check:
+      q: 'Before moving reads to the new place, which must start first, dual write or backfill, and why?'
+      a: 'Dual write. Otherwise new writes that arrive while the backfill runs never reach the new place, and that gap never gets filled.'
+
+  - slug: batched-backfill
+    title: 'Backfill: small batches, slow pace, stop and resume'
+    kind: howto
+    tldr: 'Run a backfill in small batches by id (keyset), with idempotent INSERTs, and pause when replica lag grows. The live site stays fast, and a stopped job can be resumed.'
+    keywords: ['backfill', 'batch', 'throttle', 'keyset', 'idempotent', 'console command', 'ON CONFLICT']
+    blocks:
+      - type: code
+        lang: sql
+        file: 'What not to do'
+        variant: bad
+        code: |
+          INSERT INTO orders_v2 (id, status, total_cents)
+          SELECT id, status, total_cents FROM orders;
+        marks:
+          - {line: 1, tip: 'Tens of millions of rows in one transaction: long locks, a surge of WAL, replica lag for minutes on end. If it fails halfway, everything rolls back.'}
+      - type: code
+        lang: php
+        file: 'src/Command/BackfillOrdersCommand.php'
+        variant: good
+        code: |
+          protected function execute(InputInterface $in, OutputInterface $out): int
+          {
+              $last = (int) $in->getOption('from');      // if it stopped, resume from here
+
+              while (null !== ($max = $this->db->fetchOne(
+                  'SELECT max(id) FROM (
+                       SELECT id FROM orders WHERE id > ? ORDER BY id LIMIT 1000
+                   ) t',
+                  [$last],
+              ))) {
+                  $this->db->executeStatement(
+                      'INSERT INTO orders_v2 (id, status, total_cents)
+                       SELECT id, status, total_cents FROM orders WHERE id > ? AND id <= ?
+                       ON CONFLICT (id) DO NOTHING',
+                      [$last, $max],
+                  );
+                  $last = (int) $max;
+                  $out->writeln('done up to '.$last);
+
+                  $lag = (float) $this->replicaConnection->fetchOne(
+                      'SELECT extract(epoch FROM now() - pg_last_xact_replay_timestamp())'
+                  );
+                  usleep($lag > 5 ? 5_000_000 : 200_000);   // if lag grows, back off
+              }
+
+              return Command::SUCCESS;
+          }
+        marks:
+          - {line: 7, tip: 'Keyset with id > ?, not OFFSET. Every batch is equally fast, even at the 10-millionth row.'}
+          - {line: 14, tip: 'ON CONFLICT DO NOTHING makes it idempotent. If dual write already inserted some rows, or you rerun the command, no harm is done.'}
+          - {line: 23, tip: 'If replica lag is over 5 seconds, pause for 5 seconds, otherwise 0.2. That way reads on the live site don''t slow down either.'}
+    aside:
+      - type: tips
+        items:
+          - 'Keep each batch a small transaction (about 1000 rows). Bigger ones increase locks and lag.'
+          - 'Run it in the quiet of the night, and make the batch size and pause options of the command so you can change them while it runs.'
+      - type: commands
+        title: 'Running it'
+        items:
+          - {cmd: 'php bin/console app:backfill:orders --from=0', desc: 'from the beginning'}
+          - {cmd: 'php bin/console app:backfill:orders --from=48210000', desc: 'after a stop, from the last id'}
+    check:
+      q: 'The backfill command crashed at midnight. Why is rerunning it harmless, and where do you restart?'
+      a: 'INSERT ... ON CONFLICT DO NOTHING is idempotent, so rows that were already copied aren''t inserted a second time. Restart with `--from` set to the last logged id.'
+
+  - slug: dual-write-verify
+    title: 'When dual write slips: the old one is the truth, so verify'
+    kind: pitfall
+    tldr: 'Writing to two places, one can fail. Treat the old system as the source of truth, repair failed writes to the new one later, and verify step by step with counts and checksums.'
+    keywords: ['dual write', 'verification', 'checksum', 'source of truth', 'reconciliation', 'cutover', 'shadow read']
+    blocks:
+      - type: text
+        body: |
+          In a dual write the two writes are separate, so one can succeed while the other fails. A failure on the new side must not block the user's order. So the old one is the source of truth, and when the new one fails you log it and queue a repair job.
+      - type: code
+        lang: php
+        file: 'src/Order/DualWriteOrderStore.php'
+        variant: good
+        code: |
+          public function save(Order $order): void
+          {
+              $this->oldStore->save($order);            // source of truth: the old one
+
+              try {
+                  $this->newStore->save($order);
+              } catch (\Throwable $e) {
+                  // if the new one fails, don't block the order; we'll fix it later
+                  $this->logger->error('dual_write_failed', ['order' => $order->id, 'e' => $e]);
+                  $this->bus->dispatch(new RepairOrderCopy($order->id));
+              }
+          }
+        marks:
+          - {line: 3, tip: 'Until reads move over, the truth is the old one. If it fails here, the whole save fails, which is the normal behaviour.'}
+          - {line: 10, tip: 'RepairOrderCopy reads the row from the old store again and puts it in the new one. It must be idempotent, because it may run more than once.'}
+      - type: code
+        lang: sql
+        file: 'The same checksum on both sides (by id range)'
+        code: |
+          SELECT count(*) AS n,
+                 sum(hashtextextended(concat_ws('|', id, status, total_cents), 0)) AS checksum
+            FROM orders            -- on the new side, run it against orders_v2
+           WHERE id BETWEEN 1 AND 100000;
+        marks:
+          - {line: 2, tip: 'Matching counts isn''t enough. With the same number of rows, some values can still differ, and the checksum catches that.'}
+          - {line: 4, tip: 'Compare in id ranges, not the whole table at once. When there is a mismatch you know exactly which slice has the problem.'}
+      - type: quote
+        body: 'Don''t move reads without verifying. Matching counts is not enough; the values must match.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'If writes reach the old and new in different orders ("A then B" vs "B then A"), the final values can differ. Keep writes to the same row in order, through one queue.'
+          - 'Counts on live data never match exactly. Use a quiet night, or an older cutoff on updated_at.'
+      - type: refs
+        items:
+          - {to: 'ledgers/reconciliation', label: 'Reconciliation: matching two sets of books'}
+          - {to: 'workflows/outbox-inbox', label: 'A safe second write with an outbox'}
+    check:
+      q: 'Both tables have 12,000,000 rows. Why is cutover still not safe?'
+      a: 'A count only matches the number of rows, not their values. Some rows may differ in status or amount. Match the values with a checksum by range, or a shadow read.'
+
+flashcards:
+  - q: 'What is replication lag?'
+    a: 'The time gap between a write on the primary and its arrival on the replica. During it, the replica shows stale data.'
+    more: |
+      Lag typically grows during heavy bursts of changes or when a replica is slow. Reading from replicas to share the read load means accepting the risk of stale data, so lag should always be measured and alerted on. More in [[data/replication|replication]].
+    ref: replica-lag-surprise
+  - q: 'What kinds of trouble do users see from replication lag?'
+    a: 'They don''t see their own writes, data goes back in time (monotonic reads break), and events appear out of order.'
+    more: |
+      Placing an order and seeing "no such order" is the first kind. The second happens when two replicas have different lag: one shows new data, the other old. In the third, the answer arrives before the question.
+    ref: replica-lag-surprise
+  - q: 'How do you guarantee read-your-writes?'
+    a: 'After a user writes, serve their reads from the primary for a while, or return the new data in the POST response itself.'
+    more: |
+      In Symfony you can set a `last_write` cookie in the write response, and on reads check it and choose the primary connection for 5 seconds. Critical reads, like money or stock, are best always served from the primary.
+    ref: read-your-writes
+  - q: 'During dual write, which is the source of truth, the old or the new?'
+    a: 'The old one, until reads move over. If a write to the new one fails, log it and queue a repair; the user''s action isn''t blocked.'
+    more: |
+      The two writes are separate, so there is no guarantee they both succeed or both fail. Verification and backfill fill that gap later. The new place becomes the truth only after cutover.
+    ref: dual-write-verify
+  - q: 'What is the correct order for moving big data?'
+    a: 'Build the new place, dual write, backfill, verify, move reads step by step, and retire the old one last.'
+    more: |
+      Without dual write first, writes that arrive during the backfill are lost. Reads move over starting at 1% and growing in steps, so that few users suffer if a problem shows up. Keep the old place for a while as a way back.
+    ref: moving-in-steps
+  - q: 'What are the four rules of a backfill command?'
+    a: 'Small batches, keyset (id > last), idempotent INSERT (ON CONFLICT), and slow down when replica lag grows.'
+    more: |
+      OFFSET gets slow deep into a table, hence keyset. Thanks to ON CONFLICT DO NOTHING, the command can safely be stopped and rerun. A pause after each batch keeps the pressure on the live site under control.
+    ref: batched-backfill
+  - q: 'If the counts of two tables match, is the copy correct?'
+    a: 'No. A count only matches numbers. To match values, use a checksum by id range or a shadow read.'
+    more: |
+      Two tables can have the same count even if one row says 'paid' and the other 'pending'. Matching checksums by range tells you exactly which slice differs, so you only need to copy that part again.
+    ref: dual-write-verify
+
+quiz:
+  - q: 'A user posts a comment and refreshes the page, but doesn''t see their comment until 10 seconds later. Which solutions are right?'
+    hint: 'The comment is on the primary, but where is the page reading from?'
+    options:
+      - text: 'After a write, serve that user''s reads from the primary for a few seconds'
+        correct: true
+        why: 'This is read-your-writes. For the duration of the lag, they see the primary''s new data.'
+      - text: 'Return the new comment in the POST response and put it straight on the page'
+        correct: true
+        why: 'No read from the database is needed at all, so lag never comes into it.'
+      - text: 'Add more replicas'
+        correct: false
+        why: 'More replicas means more copies that can fall behind. It doesn''t reduce lag, and may increase it.'
+      - text: 'Read everything from the primary and shut the replicas down'
+        correct: false
+        why: 'It fixes the problem, but destroys the replicas'' main purpose (sharing the read load). Choosing the primary for a short time is enough.'
+    ref: read-your-writes
+  - q: 'A user refreshes and the first time sees the new post, the second time it has vanished, the third time it''s back. What is the cause and the remedy?'
+    hint: 'Does every refresh go to the same replica?'
+    options:
+      - text: 'The two replicas have different lag; pinning each user to one replica (user id hash) stops time going backwards'
+        correct: true
+        why: 'Reading from a different replica each time gives a new answer once and an old one next. Sending one user always to the same replica means at least they never go back further than before.'
+      - text: 'It''s the browser cache; press Ctrl+F5'
+        correct: false
+        why: 'A browser cache shows the same answer again and again; it doesn''t come and go.'
+      - text: 'The write on the primary is getting lost'
+        correct: false
+        why: 'If the write were lost, it would never reach any replica.'
+      - text: 'The database index is corrupted'
+        correct: false
+        why: 'A corrupted index would always give the wrong result, not right one time and wrong another.'
+    ref: replica-lag-surprise
+  - q: 'What is the problem in the code below?'
+    lang: sql
+    code: |
+      -- on a table of 200 million rows, in production
+      INSERT INTO orders_v2 (id, status, total_cents)
+      SELECT id, status, total_cents FROM orders;
+    hint: 'How long will this one statement take, and what happens to everyone else meanwhile?'
+    options:
+      - text: 'One giant transaction: a surge of locks and WAL, replica lag grows, a failure rolls everything back, and it can''t be stopped and resumed'
+        correct: true
+        why: 'The right way is small batches, keyset by id, and pausing when lag is high.'
+      - text: 'No problem, the database batches it by itself'
+        correct: false
+        why: 'One statement is one transaction. The database doesn''t break it up on its own.'
+      - text: 'It is slow only because the id column has no index'
+        correct: false
+        why: 'id is probably the primary key. The problem isn''t an index, it''s the size of the operation.'
+      - text: 'Using COPY instead of INSERT fixes everything'
+        correct: false
+        why: 'COPY may be faster, but the same giant transaction and the lag problem remain.'
+    ref: batched-backfill
+  - q: 'During dual write, a write to the new place fails for a moment. What is the best behaviour?'
+    hint: 'The user has placed an order; which place is still the source of truth?'
+    options:
+      - text: 'If the old write succeeded, treat the order as successful; log the new failure and queue a repair job'
+        correct: true
+        why: 'The old one is still the source of truth. You must not block the user''s order, and the gap can be filled later.'
+      - text: 'Roll both back and show the user an error'
+        correct: false
+        why: 'A problem in the new system would block the user''s money transaction. It needlessly breaks the site.'
+      - text: 'Ignore the failure on the new one'
+        correct: false
+        why: 'The gap would never get filled, and data would be lost at cutover.'
+      - text: 'Make the new one the source of truth and throw the old one away'
+        correct: false
+        why: 'Verification and backfill aren''t finished. Switching the source of truth in this state is a path to data loss.'
+    ref: dual-write-verify
+  - q: 'Before cutover, both tables have the same number of rows (1,200,000). Why must you still compare checksums?'
+    hint: 'If two rows have the same id, must their values be the same?'
+    options:
+      - text: 'With the same count, some rows can still have different values (status, amount); a checksum catches that'
+        correct: true
+        why: 'Rows that changed after the backfill may be wrong because of gaps in dual write. A count doesn''t see this.'
+      - text: 'A checksum is fast, so always use it instead of a count'
+        correct: false
+        why: 'Speed isn''t the reason. A count is a cheap first check, and a checksum matches the values.'
+      - text: 'If the count matches, the checksum will never match'
+        correct: false
+        why: 'With correct data both match. A count alone is just not sufficient evidence.'
+      - text: 'You don''t need a checksum, a shadow read is enough; they say the same thing'
+        correct: false
+        why: 'A shadow read only compares the rows users actually ask for; rows that were missed show up in the checksum.'
+    ref: dual-write-verify

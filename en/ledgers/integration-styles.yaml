@@ -1,0 +1,323 @@
+slides:
+  - slug: shared-ledger-book
+    title: 'One book in everyone''s hands: the shared database'
+    kind: story
+    tldr: 'When several apps write straight into the same database tables, every column becomes a secret API. One person renames a column and the others break.'
+    keywords: ['shared database', 'integration database', 'coupling', 'schema change', 'shared tables']
+    blocks:
+      - type: text
+        body: |
+          A corner shop has a single ledger, and the shopkeeper, his son and the accountant all write in it. One day the son renames the "Price" column to "Price (in paisa)". The accountant's addition formula breaks, and nobody warned him. The same thing happens with apps when two of them reach straight into the same `orders` table.
+      - type: visual
+        kind: flow
+        caption: 'Three apps share one table: one changes it and the others break'
+        nodes:
+          - {id: checkout, label: 'Checkout', sub: 'Owns the table', icon: cart, col: 0, row: 0, tip: 'The real owner of the orders table. Wants to move the money column from float to an integer in paisa.'}
+          - {id: report, label: 'Reporting', sub: 'Direct SQL', icon: chart, col: 0, row: 2, tip: 'Reads from orders with its own SQL. The owner has no idea which columns it uses.'}
+          - {id: db, label: 'orders table', sub: 'Shared by all', icon: db, tone: accent, col: 2, row: 1, tip: 'Any app reads or writes here. No middleman, no contract.'}
+          - {id: ware, label: 'Warehouse', sub: 'Writes status directly', icon: box, col: 4, row: 1, tip: 'Runs UPDATE on orders.status directly, ignoring any of Checkout''s rules.'}
+        edges:
+          - {from: checkout, to: db, label: 'Checkout renames `total` to `total_minor`', tone: warn}
+          - {from: report, to: db, label: 'The nightly report''s SQL can''t find `total` and breaks', tone: bad}
+          - {from: ware, to: db, label: 'Warehouse sets `status = shipped`, even though the order is unpaid', tone: bad, tip: 'Checkout''s rule ("never shipped before payment") is something the warehouse knows nothing about.'}
+      - type: quote
+        body: 'Every column in a shared table is a secret API whose contract nobody knows.'
+    aside:
+      - type: problem
+        body: 'The apps have to talk to each other somehow. The question is how, and how tightly that ties us together.'
+      - type: terms
+        items:
+          - {term: 'Coupling', meaning: 'A measure of how much breaks in one part when another part changes.'}
+    check:
+      q: 'When two apps write to the same table, why does Checkout''s "never shipped before payment" rule break?'
+      a: 'The rule lives in Checkout''s code, not in the table. Warehouse writes straight to the table and walks around that code.'
+
+  - slug: four-styles
+    title: 'Four ways to communicate, and what they cost'
+    kind: concept
+    tldr: 'Four ways for apps to talk: shared DB, RPC, messaging, files. The more direct the link, the tighter the coupling.'
+    keywords: ['integration styles', 'RPC', 'messaging', 'file transfer', 'shared database', 'coupling cost']
+    blocks:
+      - type: metaphor
+        icon: mail
+        title: 'Four kinds of contact at a shop'
+        body: |
+          One ledger in everyone's hands is the closest and riskiest (shared DB). A direct phone call gets you an answer right away, but the other end must pick up (RPC). A letter in the post box is read later, so nobody is left waiting (messaging). A big box from the daily courier carries a lot at once, but arrives late (file transfer).
+      - type: visual
+        kind: table
+        caption: 'Four styles, five yardsticks'
+        headers: ['', 'Shared DB', 'RPC', 'Messaging', 'File']
+        rows:
+          - cells: ['What is shared', 'Table columns', 'The API contract', 'The shape of a message', 'The file format']
+            tip: 'These are the "contract". Whatever is shared is hard to change.'
+          - cells: ['Time coupling', 'Immediate', 'Both sides up together', 'Run at different times', 'In batches, delayed']
+            tip: 'The faster you need the answer, the more both sides must be running at once.'
+          - cells: ['If the other side is down', 'If the DB is held, both are down', 'My call fails', 'The message waits', 'The file sits there']
+            tip: 'With RPC, their problem becomes mine; with messaging and files, it doesn''t.'
+          - cells: ['Coupling', 'Tightest', 'Medium', 'Loose', 'Loosest']
+            tip: 'How much I break when the other side changes.'
+          - cells: ['Main cost', 'Hard to change the schema', 'One''s delay is everyone''s delay', 'Duplicates, ordering, debugging', 'Delay, format hassle']
+            tip: 'Each style has a hidden price. Know it before you choose.'
+      - type: quote
+        body: 'The less each side has to know, the looser the tie. Knowing another app''s tables is the tightest tie of all.'
+    aside:
+      - type: terms
+        items:
+          - {term: 'RPC', meaning: 'Calling another app''s function directly (usually over HTTP) and waiting for the reply.'}
+          - {term: 'Messaging', meaning: 'Leaving a message on a queue; the other side picks it up and works on it in its own time.'}
+      - type: remember
+        body: 'What you share is your contract; the smaller the contract, the looser the tie.'
+    check:
+      q: 'If the other app is down, why do RPC and messaging end up differently?'
+      a: 'With RPC, my call fails at once because I need the reply. With messaging, the message waits in the queue and gets read when the other side is back up.'
+
+  - slug: rpc-vs-message
+    title: 'One job, two ways: RPC and messaging'
+    kind: howto
+    tldr: 'With RPC you get an answer now but the other side must be up. With Messenger you leave a message and move on, and the other service handles it in its own time.'
+    keywords: ['Symfony Messenger', 'HttpClient', 'AsMessageHandler', 'event', 'async', 'RPC call']
+    blocks:
+      - type: text
+        body: |
+          When an order is placed, the warehouse has to set the goods aside. With **RPC**, we call the warehouse directly and stop to wait for its answer. With **messaging**, we just leave the news "an order was placed" and the warehouse picks it up later. In the second way, even if the warehouse is down, our order isn't held up.
+      - type: code
+        lang: php
+        file: 'RPC: calling directly'
+        variant: neutral
+        code: |
+          // call the warehouse and wait for the reply (with a timeout)
+          $res = $this->warehouseClient->request('POST', '/reservations', [
+              'json' => ['orderId' => $order->id(), 'lines' => $lines],
+              'timeout' => 3,
+          ]);
+
+          if (201 !== $res->getStatusCode()) {
+              throw new StockUnavailable();      // warehouse says no, or is down: the order stalls
+          }
+        marks:
+          - {line: 2, tip: 'On this line the warehouse must be up. If it is down or slow, our order gets stuck too.'}
+      - type: code
+        lang: php
+        file: 'Messaging: Symfony Messenger'
+        variant: good
+        code: |
+          // 1. The sending side (our service)
+          final readonly class OrderPlaced
+          {
+              public function __construct(public string $orderId, public array $lines) {}
+          }
+
+          $this->bus->dispatch(new OrderPlaced($order->id(), $lines));   // leave it and move on
+
+          // 2. The receiving side (the warehouse service, in its own time)
+          #[AsMessageHandler]
+          final readonly class ReserveStock
+          {
+              public function __construct(private Warehouse $warehouse) {}
+
+              public function __invoke(OrderPlaced $m): void
+              {
+                  $this->warehouse->reserve($m->orderId, $m->lines);
+              }
+          }
+        marks:
+          - {line: 7, tip: 'The message goes on the queue and the call returns straight away. Even with the warehouse down, the order succeeds.'}
+          - {line: 10, tip: 'The handler can run in a separate process or service. The same message can occasionally arrive twice, so keep this idempotent as well.'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'In messaging, a message can arrive "twice". If the handler isn''t idempotent, the work is done twice.'
+          - 'Nesting RPC inside RPC (A→B→C) means one delay holds up the whole chain.'
+      - type: refs
+        items:
+          - {to: 'messaging/delivery-guarantees', label: 'How many times a message arrives'}
+          - {to: 'workflows/outbox-inbox', label: 'The outbox pattern'}
+    check:
+      q: 'The warehouse service is down for 10 minutes. What happens to new orders under RPC and under messaging?'
+      a: 'Under RPC, orders hang or fail. Under messaging, the order succeeds, the message waits, and the warehouse catches up when it is back.'
+
+  - slug: choosing-a-style
+    title: 'Which one, when: three questions'
+    kind: compare
+    tldr: 'Do you need the answer now, are both sides up at once, and how big is the data? Those three questions are enough to choose a style.'
+    keywords: ['choosing integration', 'decision', 'trade-off', 'synchronous vs asynchronous', 'which style']
+    blocks:
+      - type: visual
+        kind: steps
+        caption: 'Questions for choosing a style'
+        steps:
+          - {title: '1. Need the answer now?', body: 'If yes, RPC; if not, messaging or files', tip: 'If a user is sitting at the screen waiting for the answer, use RPC. Otherwise it can happen later.'}
+          - {title: '2. Other side always up?', body: 'If not, messaging; trust RPC less', tip: 'Our work shouldn''t stop when the other side is down or slow.'}
+          - {title: '3. Big, regular data?', body: 'If yes, a file (batch); otherwise a message', tip: 'With 100,000 rows a day a file is cheap; sending them one by one is expensive.'}
+          - {title: '4. Touching their table?', body: 'Never; use an API or an event', tip: 'A shared DB is only for a read-only replica, never for writes, and even then in a limited scope.'}
+      - type: visual
+        kind: compare
+        caption: 'What fits where'
+        columns:
+          - title: 'RPC / HTTP API'
+            tone: default
+            icon: api
+            tip: 'An answer now, a small request, a direct result.'
+            items:
+              - 'Checking a balance, validating a card'
+              - 'A user is waiting for the answer'
+              - 'Needs a timeout and retries without fail'
+          - title: 'Messaging'
+            tone: good
+            icon: queue
+            tip: 'Spread out the work, a loose tie, a delay is fine.'
+            items:
+              - 'Email, stock counts, reports'
+              - 'Several consumers take the same news'
+              - 'Handlers must be idempotent'
+          - title: 'File transfer'
+            tone: warn
+            icon: file
+            tip: 'Big batches, a relaxed schedule, banks or government systems.'
+            items:
+              - 'Salaries, statements, nightly batches'
+              - 'The only way in with a legacy system'
+              - 'Needs a checksum and a control total'
+      - type: quote
+        body: 'Never write into another system''s database. Pick a contract: an API, a message or a file.'
+    aside:
+      - type: when
+        use:
+          - 'Shared DB: between parts of one app owned by one team, and during a temporary migration'
+        avoid:
+          - 'Between separate teams or separate apps, especially for writes'
+      - type: refs
+        items:
+          - {to: 'ledgers/batch-files', label: 'File integration'}
+          - {to: 'thinking/monolith-microservices', label: 'Monolith vs microservices'}
+    check:
+      q: 'A bank sends a statement of 100,000 rows each night. RPC or a file, and why?'
+      a: 'A file. The data is big, regular, and nobody needs an answer right now. Making 100,000 separate calls would be slow and expensive.'
+
+flashcards:
+  - q: 'What are the four main integration styles?'
+    a: 'A shared database, RPC, messaging and file transfer.'
+    more: |
+      They differ in how much each side has to know about the other and how much has to be running at the same time. A shared DB is the closest (the tightest tie); files are the furthest apart (the loosest).
+    ref: four-styles
+  - q: 'Why is a shared database dangerous?'
+    a: 'Every column becomes a secret API: when one app changes it, the others break, and a direct write can bypass another app''s rules.'
+    more: |
+      The business rules of the table's owner live in code, not in the table. When another app runs an UPDATE directly, it skips those rules. Changing the schema is also hard, because nobody knows who uses which column.
+    ref: shared-ledger-book
+  - q: 'What is RPC, and what is its biggest risk?'
+    a: 'Calling another app''s function directly and waiting for the reply. The risk: if the other side is down or slow, we get stuck too.'
+    more: |
+      That's why RPC always needs a timeout and retries. In a chain like A→B→C, one delay holds up the whole thing.
+    ref: rpc-vs-message
+  - q: 'What happens in messaging when the other side is down?'
+    a: 'The message waits on the queue. When the other side is back up, it picks it up, and our work isn''t held up.'
+    more: |
+      The price: a message can arrive more than once, the order can change, and debugging is harder. So the handler has to be idempotent.
+    ref: rpc-vs-message
+  - q: 'When should you choose file transfer?'
+    a: 'When the data is big and regular, no instant answer is needed, and the other side is an old or external system (a bank, the government).'
+    more: |
+      Files are the loosest tie, but they bring delay and format hassle. They aren't safe without a checksum, a control total and quarantine.
+    ref: choosing-a-style
+  - q: 'What are the three questions for choosing a style?'
+    a: 'Do you need the answer now, is the other side always up, and is the data big and regular.'
+    more: |
+      If you need it now, RPC. If the other side can be down, messaging. If it's big and regular, a file. And writing into another system's table is never the answer.
+    ref: choosing-a-style
+  - q: 'What is the simple rule for keeping coupling low?'
+    a: 'What you share is your contract. The smaller the contract (one message or API), the looser the tie.'
+    more: |
+      If a table with a hundred columns is the contract, change is nearly impossible. If one specific message or API response is the contract, you can change anything inside freely.
+    ref: four-styles
+
+quiz:
+  - q: 'The Reporting app runs SQL directly on Checkout''s `orders` table. The Checkout team renames the `total` column. What happens?'
+    hint: 'Did anyone tell Reporting?'
+    options:
+      - text: 'Reporting''s SQL breaks overnight, and the Checkout team never knew it used that column'
+        correct: true
+        why: 'In a shared table every column is a secret API; since the contract is unknown, so is the impact of a change.'
+      - text: 'Nothing breaks, because the database tells everyone about the rename'
+        correct: false
+        why: 'A database tells nobody anything like that; a column name inside a query only fails when it runs.'
+      - text: 'Only Checkout breaks, not Reporting'
+        correct: false
+        why: 'The opposite. When a column is renamed, those who read it are the ones who break.'
+      - text: 'The database keeps the old name working for a while'
+        correct: false
+        why: 'There is no general mechanism like that; it only happens if you set up a view or two columns on purpose.'
+    ref: shared-ledger-book
+  - q: 'In which situation is RPC a good fit?'
+    hint: 'Is the user sitting at the screen waiting for the answer?'
+    options:
+      - text: 'Validating a card at checkout, where you need the result now'
+        correct: true
+        why: 'The user is waiting, and you can''t go on without the answer. RPC with a timeout and retries fits.'
+      - text: 'Sending a confirmation email after an order'
+        correct: false
+        why: 'An email can go later; putting it on a message queue is better.'
+      - text: 'Taking in a nightly statement of 1,000,000 rows'
+        correct: false
+        why: 'A file transfer is cheap and a good fit here.'
+      - text: 'Telling the analytics team about an order when we aren''t sure they are up'
+        correct: false
+        why: 'The other side may be down; with messaging our work isn''t held up.'
+    ref: choosing-a-style
+  - q: 'What is the biggest risk in this code?'
+    lang: php
+    code: |
+      public function place(Order $order): void
+      {
+          $this->orders->save($order);
+          $this->warehouseClient->request('POST', '/reservations', [
+              'json' => ['orderId' => $order->id()],
+          ])->getStatusCode();
+      }
+    hint: 'What happens to saving the order when the warehouse is slow or down?'
+    options:
+      - text: 'Our request hangs waiting for the warehouse (no timeout), and we can end up with a saved order that has no reservation'
+        correct: true
+        why: 'Inside RPC the work splits in two: the order is saved but the reservation isn''t. With no timeout, a slow warehouse traps the worker.'
+      - text: '`save()` shouldn''t be called first'
+        correct: false
+        why: 'Even with the order swapped, the two jobs are still separate, and the RPC risk remains.'
+      - text: 'You can''t use `getStatusCode()`'
+        correct: false
+        why: 'That isn''t a specific problem.'
+      - text: 'There is no risk; the warehouse is always reliable'
+        correct: false
+        why: 'No service is always reliable.'
+    ref: rpc-vs-message
+  - q: 'Which of these precautions does messaging need?'
+    hint: 'How many times can a queue deliver the same message?'
+    options:
+      - text: 'Making the handler idempotent'
+        correct: true
+        why: 'A message can arrive more than once; the second time must not do the work twice.'
+      - text: 'Putting only the needed facts in the message (an id, an amount), not the whole entity'
+        correct: true
+        why: 'A small contract gives a looser tie, and the message doesn''t break when the entity changes.'
+      - text: 'Retries and a failure transport for failed messages'
+        correct: true
+        why: 'Some messages fail again and again; if they are lost, the work is lost too.'
+      - text: 'Making the producer stop and wait for a reply to each message'
+        correct: false
+        why: 'Then it is no longer messaging; it has turned into RPC.'
+    ref: rpc-vs-message
+  - q: 'An old government system wants 500,000 rows of data each night, and all they have is SFTP. Which style?'
+    hint: 'An outside system, big data, a delay is fine.'
+    options:
+      - text: 'File transfer, with a checksum and a control total'
+        correct: true
+        why: 'The data is big and regular, and SFTP is the other side''s only route. It becomes safe once it passes the verification gates.'
+      - text: 'One HTTP call per row'
+        correct: false
+        why: 'The other side doesn''t offer HTTP, and 500,000 calls would be slow and expensive.'
+      - text: 'Writing directly into their database'
+        correct: false
+        why: 'Never touch another system''s database; they wouldn''t give you permission anyway.'
+      - text: 'Sending one message per row'
+        correct: false
+        why: 'They have no message broker, and 500,000 messages is extra trouble.'
+    ref: choosing-a-style

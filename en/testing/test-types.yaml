@@ -1,0 +1,469 @@
+slides:
+  - slug: different-tests-different-bugs
+    title: 'Every unit test is green, yet the courier API broke us'
+    kind: story
+    tldr: 'Each kind of test catches a different kind of bug. When the courier API renames a field, unit tests stay green because the mock still returns the old response. That is why you need five kinds.'
+    keywords: ['contract test', 'integration test', 'load test', 'chaos test', 'test types', 'kinds of tests']
+    blocks:
+      - type: metaphor
+        icon: building
+        title: 'Hospital check-ups'
+        body: |
+          A doctor never runs just one test on a patient. A blood test finds one kind of illness, an X-ray another, and a treadmill stress test shows whether the heart can take the strain. Passing one doesn't mean you pass the rest. Software is the same: each kind of test catches its own kind of bug and misses the others.
+      - type: text
+        body: |
+          Our shipping code reads the `charge_paisa` field from the courier's API. One day the courier quietly renames it to `charge`. Our unit tests still get the old response from a mock, so everything is green, yet in production the delivery charge comes out as zero.
+      - type: visual
+        kind: table
+        caption: 'Five kinds of tests: what each catches and what it misses'
+        headers: ['Test', 'Catches', 'Misses']
+        rows:
+          - cells: ['Unit', 'Calculation and rule mistakes', 'Seams and outside changes']
+            tip: 'Fast, but blind to anything beyond the mock.'
+          - cells: ['Contract', 'Field or type changes in an outside API', 'Slowness or heavy traffic']
+            tip: 'Checks that what we expect matches what the other side actually sends.'
+          - cells: ['Integration', 'Query, config and migration mistakes', 'Pressure from a crowd']
+            tip: 'Runs against the real database or queue, so it catches mistakes at the seams.'
+          - cells: ['Load', 'Slowness, breaking under traffic', 'Calculation mistakes']
+            tip: 'Applies a crowd and sees which part runs out of breath first.'
+          - cells: ['Chaos', 'Whether behaviour is right during failures', 'Mistakes in normal operation']
+            tip: 'Deliberately breaks a dependency to see if the fallback and breaker really work.'
+      - type: quote
+        body: 'Each kind of test catches its own kind of bug. One green doesn''t mean all green.'
+    aside:
+      - type: story
+        title: 'The silently renamed field'
+        body: |
+          An e-commerce team's courier service once switched to a new version and renamed a field. Every test the team had still passed. For seven hours orders went out with a delivery charge of 0, because the code had a `?? 0` fallback. Nobody realised that anything had broken.
+      - type: refs
+        items:
+          - {to: 'testing/what-to-test', label: 'What is worth testing'}
+    check:
+      q: 'A field in the courier API got renamed. Which kind of test would have caught it, and why didn''t the unit test?'
+      a: 'A contract test would have, because it compares our expectation (a schema) with the real response. In a unit test the mock returns the old response, so the change never shows up.'
+
+  - slug: contract-tests
+    title: 'Contract tests: checking the deal between two sides'
+    kind: howto
+    tldr: 'Write down what you expect from an outside API in a schema file. Your tests build their mock from that file, and a nightly run checks the real sandbox''s response against the same schema.'
+    keywords: ['contract testing', 'consumer-driven', 'JSON schema', 'MockHttpClient', 'sandbox', 'Pact']
+    blocks:
+      - type: text
+        body: |
+          Two sides keep a written contract: "the response will contain an integer called `charge_paisa`." A **contract test** checks that contract from both directions. On our side: does our code read it as promised? On the other side: does the real API still keep the promise? Here we are the consumer (the one who uses the API) and the courier is the provider (the one who supplies it).
+      - type: visual
+        kind: flow
+        caption: 'The contract file binds both sides'
+        nodes:
+          - {id: app, label: 'Our app', sub: 'consumer', icon: code, col: 0, row: 1, tip: 'Our tests build their mock from exactly this contract, so the mock never returns an imagined response.'}
+          - {id: contract, label: 'Contract (schema)', sub: 'courier-rates.schema.json', icon: file, tone: accent, col: 2, row: 1, tip: 'Writes down what we expect: which fields, what types. It lives in the repository.'}
+          - {id: courier, label: 'Courier sandbox', sub: 'provider', icon: truck, col: 4, row: 1, tip: 'The courier''s test environment. No real money or real deliveries are involved.'}
+        edges:
+          - {from: app, to: contract, label: 'We write down what we expect'}
+          - {from: contract, to: app, label: 'The mock in our tests is built from this contract', dashed: true}
+          - {from: courier, to: contract, label: 'The nightly test checks the real response against the contract', tone: warn}
+          - {from: contract, to: courier, label: 'If they don''t match, the test fails and we know early', tone: bad, dashed: true}
+      - type: code
+        lang: php
+        file: 'tests/Contract/CourierContractTest.php'
+        variant: good
+        code: |
+          #[Group('contract')]   // runs in the nightly pipeline, not on every commit
+          final class CourierContractTest extends TestCase
+          {
+              public function testSandboxResponseMatchesOurSchema(): void
+              {
+                  $client = HttpClient::createForBaseUri(getenv('COURIER_SANDBOX_URL'), [
+                      'auth_bearer' => getenv('COURIER_SANDBOX_TOKEN'),
+                      'timeout' => 5,
+                  ]);
+
+                  $body = $client->request('GET', '/v1/rates?district=dhaka&weight=500')->getContent();
+
+                  $validator = new Validator();
+                  $schema = json_decode(file_get_contents(__DIR__.'/courier-rates.schema.json'));
+                  $validator->validate($data = json_decode($body), $schema);
+
+                  self::assertTrue($validator->isValid(), json_encode($validator->getErrors()));
+              }
+          }
+        marks:
+          - {line: 1, tip: 'A separate group, because it is slow and depends on an outside network. Running it on every commit would make CI brittle.'}
+          - {line: 6, tip: 'The real sandbox, not production. The token comes from an environment variable, not from the code.'}
+          - {line: 17, tip: 'On failure, getErrors() says exactly which field didn''t match, so you don''t have to guess.'}
+      - type: code
+        lang: php
+        file: 'tests/Unit/CourierRateProviderTest.php'
+        variant: good
+        code: |
+          public function testReadsChargeFromExampleOfTheContract(): void
+          {
+              // the mock response comes from the contract's example file, not from imagination
+              $example = file_get_contents(__DIR__.'/../Contract/courier-rates.example.json');
+              $client = new MockHttpClient(new MockResponse($example), 'https://api.courier.example');
+
+              $provider = new CourierRateProvider($client, new NullLogger());
+
+              self::assertSame(12_000, $provider->chargeFor('dhaka', 500));
+          }
+        marks:
+          - {line: 4, tip: 'This example file lives next to the schema. If the schema changes, the example must change too, or the nightly test catches it.'}
+    aside:
+      - type: terms
+        items:
+          - {term: 'Consumer', meaning: 'The side that calls someone else''s API and depends on its response.'}
+          - {term: 'Provider', meaning: 'The side that supplies the API. If it changes a field, the consumer breaks.'}
+      - type: tips
+        items:
+          - 'If you give your own API to others, do the reverse too: check the consumers'' expectations (Pact or OpenAPI) in your CI.'
+          - 'A sandbox doesn''t always behave like production. So treat this test as a signal, not proof; when it fails, investigate.'
+      - type: refs
+        items:
+          - {to: 'api/contracts-versioning', label: 'API contracts and versioning'}
+          - {to: 'ledgers/third-party-integrations', label: 'Integrating outside services'}
+    check:
+      q: 'Why is the mock response in the unit test taken from the contract''s example file instead of JSON you wrote yourself?'
+      a: 'A mock you write yourself is imagination, and nobody knows whether it matches reality. If the contract example is checked against the real response every night, the mock stays tied to reality.'
+
+  - slug: integration-real-deps
+    title: 'Integration tests: a real database, not a mock'
+    kind: howto
+    tldr: 'Run PostgreSQL in tests, just like production. SQLite or a mock hides the real behaviour of unique indexes, JSONB, FOR UPDATE and migrations.'
+    keywords: ['integration test', 'PostgreSQL', 'docker compose', 'SQLite', 'unique index', 'Testcontainers']
+    blocks:
+      - type: text
+        body: |
+          To make tests fast, many teams use SQLite or an in-memory database. But production runs PostgreSQL, and the differences sit exactly where the bugs hide. The test below checks a PostgreSQL-specific rule that would never fail on SQLite.
+      - type: visual
+        kind: table
+        caption: 'Mistakes only a real database catches'
+        headers: ['Topic', 'On SQLite or a mock', 'On real PostgreSQL']
+        rows:
+          - cells: ['Unique index on LOWER(email)', 'Missing or behaves differently', 'Blocks the same email in different letter case']
+            tip: 'The code assumes emails are unique. Whether the index really is case-insensitive, only the real database knows.'
+          - cells: ['SELECT ... FOR UPDATE', 'Not supported', 'Locks the row, others wait']
+            tip: 'This is the whole basis of a pessimistic lock. Test on SQLite and you will never learn whether the lock works.'
+          - cells: ['JSONB and its operators', 'Not available', 'Real support']
+            tip: 'Mistakes in queries on JSON fields, and use of their indexes, can only be tested here.'
+          - cells: ['Migration SQL', 'A different dialect', 'Exactly what production will run']
+            tip: 'The SQL you wrote in the migration will run on the production database, so test it there.'
+      - type: code
+        lang: yaml
+        file: 'compose.test.yaml'
+        variant: good
+        code: |
+          services:
+            database_test:
+              image: postgres:16-alpine
+              environment:
+                POSTGRES_DB: app_test
+                POSTGRES_USER: app
+                POSTGRES_PASSWORD: test_only
+              ports: ['5433:5432']
+              tmpfs: ['/var/lib/postgresql/data']   # in memory: fast, wiped when stopped
+        marks:
+          - {line: 3, tip: 'Exactly the same major version as production. Test on 15 and run on 16, and even small differences are dangerous.'}
+          - {line: 9, tip: 'The database files live in RAM, so tests are much faster. This data isn''t meant to be kept, so that''s fine.'}
+      - type: code
+        lang: php
+        file: 'tests/Integration/UserEmailUniquenessTest.php'
+        variant: good
+        code: |
+          final class UserEmailUniquenessTest extends KernelTestCase
+          {
+              public function testEmailUniquenessIgnoresCase(): void
+              {
+                  self::bootKernel();
+                  $em = self::getContainer()->get(EntityManagerInterface::class);
+
+                  $em->persist(new User('rahim@example.com'));
+                  $em->flush();
+
+                  $this->expectException(UniqueConstraintViolationException::class);
+                  $em->persist(new User('RAHIM@example.com'));
+                  $em->flush();
+              }
+          }
+        marks:
+          - {line: 11, tip: 'The test expects one specific exception. If it doesn''t come, the unique index wasn''t set up properly.'}
+    aside:
+      - type: tips
+        items:
+          - 'In .env.test, set DATABASE_URL to postgresql://app:test_only@127.0.0.1:5433/app_test?serverVersion=16. It is for tests only, not a real password.'
+          - 'Run the same compose.test.yaml in CI, so your machine and CI use the same database.'
+          - 'The same goes for RabbitMQ or Redis: if you rely on a dependency''s behaviour, keep the real one in your tests.'
+      - type: refs
+        items:
+          - {to: 'data/zero-downtime-migrations', label: 'Rules for safe migrations'}
+    check:
+      q: 'Tests are green on SQLite, but duplicate emails get into production PostgreSQL. What is the likely cause?'
+      a: 'On SQLite the unique index on LOWER(email) behaves differently, or isn''t created at all. PostgreSQL''s real behaviour only shows up when you run against real PostgreSQL.'
+
+  - slug: load-testing-k6
+    title: 'Load tests: create a crowd with k6'
+    kind: howto
+    tldr: 'In a k6 script, describe how the crowd ramps up and set thresholds (p95 < 500ms, failures < 1%). When a threshold is crossed the test fails by itself, so you can put it in CI.'
+    keywords: ['k6', 'load test', 'stress test', 'spike', 'soak', 'thresholds', 'p95']
+    blocks:
+      - type: text
+        body: |
+          Think of the hospital treadmill: the heart is fine at rest, but what happens when you run? A load test creates an artificial crowd (**virtual users**) and shows where slowness or failures begin. A k6 script is plain JavaScript, so it is easy to keep in the repository.
+      - type: code
+        lang: js
+        file: 'load/products.js'
+        variant: good
+        code: |
+          import http from 'k6/http';
+          import { check, sleep } from 'k6';
+
+          export const options = {
+            stages: [
+              { duration: '2m', target: 50 },   // ramp up slowly to 50 users over 2 minutes
+              { duration: '5m', target: 50 },   // hold for 5 minutes
+              { duration: '1m', target: 0 },    // ramp back down
+            ],
+            thresholds: {
+              http_req_duration: ['p(95)<500'],  // 95% of requests under 500ms
+              http_req_failed: ['rate<0.01'],    // failures under 1%
+            },
+          };
+
+          export default function () {
+            const res = http.get(`${__ENV.BASE_URL}/api/products?page=1`);
+            check(res, { 'status is 200': (r) => r.status === 200 });
+            sleep(1);   // real users read the page and pause
+          }
+        marks:
+          - {line: 5, tip: 'stages raise the crowd step by step, not all at once. That shows at which number the slowness starts.'}
+          - {line: 11, tip: 'When a threshold is crossed, k6 exits with a non-zero code, so the test fails in CI. Derive the numbers from your SLO.'}
+          - {line: 19, tip: 'Without sleep, each virtual user fires requests at machine speed, which no real user does.'}
+      - type: visual
+        kind: table
+        caption: 'Four kinds of crowd tests'
+        headers: ['Type', 'What it does', 'What it looks for']
+        rows:
+          - cells: ['Load', 'Holds the expected crowd', 'Does it run fine on a normal day?']
+            tip: 'The baseline. If you don''t pass this first, there is no point in the others.'
+          - cells: ['Stress', 'Raises the crowd until it breaks', 'The breaking point, and what breaks first']
+            tip: 'You learn how many you can handle, and how the system fails past that limit: gracefully, or in a heap?'
+          - cells: ['Spike', 'Suddenly multiplies the crowd', 'The jolt of a sale or an ad']
+            tip: 'This tests autoscaling and queue limits. A slowly growing crowd would never expose them.'
+          - cells: ['Soak', 'Runs for several hours', 'Memory leaks, connection leaks']
+            tip: 'Slow problems that a 10-minute test will never show.'
+      - type: quote
+        body: 'Run load tests on staging that looks like production: real data volume, real server size.'
+    aside:
+      - type: commands
+        title: 'Running k6'
+        items:
+          - {cmd: 'k6 run -e BASE_URL=https://staging.example.com load/products.js', desc: 'Run the script; exit code is non-zero if a threshold fails'}
+          - {cmd: 'k6 run --vus 10 --duration 30s load/products.js', desc: 'Quick smoke run: 10 users, 30 seconds'}
+      - type: pitfalls
+        items:
+          - 'Test against an empty database and everything looks fast. Keep production-sized data on staging, or the results lie.'
+          - 'The slowness of the first minute (cold cache) blends into the results. Add a warm-up stage or look at it separately.'
+      - type: refs
+        items:
+          - {to: 'scaling/load-latency', label: 'How load and latency relate'}
+          - {to: 'observability/metrics-slos', label: 'Deriving thresholds from an SLO'}
+    check:
+      q: 'The k6 script has no `sleep(1)`. Why does that make the results misleading?'
+      a: 'Each virtual user fires requests without pause, which isn''t how real users behave. The system breaks with few users, and the "how many users can it handle" number comes out wrong.'
+
+  - slug: chaos-failure-injection
+    title: 'Chaos tests: break things on purpose to see if the fallback works'
+    kind: howto
+    tldr: 'A fallback or breaker that only exists on paper can''t be trusted. Inject a 503 or a timeout with MockHttpClient, and create real slowness on staging with Toxiproxy.'
+    keywords: ['chaos engineering', 'failure injection', 'MockHttpClient', 'Toxiproxy', 'steady state', 'failure testing']
+    blocks:
+      - type: text
+        body: |
+          Another hospital-style check: what does a bus do when a tyre bursts? A **chaos test** deliberately breaks one dependency and checks that the system behaves as expected. Start small: first inject failures in code tests, then on staging over a real network.
+      - type: visual
+        kind: steps
+        caption: 'The five steps of a chaos experiment'
+        steps:
+          - {title: '1. Normal state', body: 'Measure what healthy looks like: say, checkout success at 99%.', tip: 'If you don''t measure the steady state, you can''t tell afterwards whether anything really changed.'}
+          - {title: '2. Write a hypothesis', body: 'If the courier is down, checkout still succeeds, with just the default charge.', tip: 'Write down what you expect to happen before the test. If it doesn''t match, that is the lesson.'}
+          - {title: '3. Break it small', body: 'One dependency, a short time, a small share of traffic.', tone: warn, tip: 'Change only one thing at first, or you can''t tell what caused the result.'}
+          - {title: '4. Observe', body: 'Measure error rate, latency and breaker state.', tip: 'Keep the dashboard open. Decide beforehand what you would have to see to stop.'}
+          - {title: '5. Fix it', body: 'If the hypothesis was wrong, file the bug, fix it and run it again.', tone: good, tip: 'The real win is the fix, not the discovery. If you don''t fix it, the same thing happens next time.'}
+      - type: code
+        lang: php
+        file: 'tests/Chaos/CourierFailureTest.php'
+        variant: good
+        code: |
+          public function testShippingFallsBackWhenCourierFails(): void
+          {
+              $client = new MockHttpClient([
+                  new MockResponse('', ['http_code' => 503]),            // the server is sick
+                  new MockResponse('', ['error' => 'connection timed out']),   // network failure
+              ], 'https://api.courier.example');
+
+              $provider = new CourierRateProvider($client, new NullLogger());
+
+              self::assertNull($provider->chargeFor('dhaka', 500));   // 503: null, not a crash
+              self::assertNull($provider->chargeFor('dhaka', 500));   // timeout: null, not a crash
+          }
+        marks:
+          - {line: 4, tip: 'In real life, a 503 makes HttpClient throw a ServerException.'}
+          - {line: 5, tip: 'With `error`, MockResponse throws a TransportException when the response is read, just like a real timeout or a dropped connection.'}
+          - {line: 11, tip: 'The question the test asks: on failure, does the app crash, or does it gracefully return null?'}
+      - type: code
+        lang: bash
+        file: 'staging: Toxiproxy'
+        variant: good
+        code: |
+          # put a proxy in front of the courier so you can slow it down or cut it off at will
+          toxiproxy-cli create --listen 0.0.0.0:8474 --upstream api.courier.example:443 courier
+
+          # add a 3 second delay to every response
+          toxiproxy-cli toxic add -t latency -a latency=3000 courier
+
+          # check whether the app's breaker opened and whether checkout still works
+          # remove the toxic when the experiment is over
+          toxiproxy-cli toxic remove -n latency_downstream courier
+        marks:
+          - {line: 5, tip: 'If every timeout is set to 2 seconds, this 3 second delay should make every call time out. That is how you see whether the breaker opens.'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'Don''t do chaos in production on day one. Start with unit tests and staging, then a small scope during low traffic.'
+          - 'Never run chaos without a stop switch: decide in advance what you would have to see to halt it immediately.'
+      - type: refs
+        items:
+          - {to: 'resilience/circuit-breakers', label: 'Circuit breakers and retries'}
+          - {to: 'resilience/disaster-recovery', label: 'Game days'}
+    check:
+      q: 'Why do you need both `http_code => 503` and `error => ...` in MockResponse?'
+      a: 'They are two different failures: a 503 means the server answered but is unhealthy; an error means a network problem or timeout, with no answer at all. You need to see the code behave correctly in both cases.'
+
+flashcards:
+  - q: 'What does a contract test verify?'
+    a: 'That what we expect from an outside API (fields and types) matches what it really sends.'
+    more: |
+      The expected response is written in a schema file. The mock in our tests is built from an example in that file, and a nightly test checks the real sandbox response against the same schema. If the other side silently changes a field, we find out first.
+    ref: contract-tests
+  - q: 'Why don''t unit tests catch a field change in an outside API?'
+    a: 'Because the mock returns the old response we imagined. It has no idea what the real API now sends.'
+    more: |
+      The mock's response is written by hand. When the outside party changes its response, the mock doesn't, so the test stays green and production breaks. The fix is a contract test, where the mock comes from the contract's example and the real response is checked against the contract.
+    ref: different-tests-different-bugs
+  - q: 'Why should integration tests run on real PostgreSQL, not SQLite?'
+    a: 'Unique indexes, FOR UPDATE, JSONB and migrations behave differently from one database to another. Only the real one shows production behaviour.'
+    more: |
+      Green on SQLite, broken in production is one of the most annoying experiences. Use compose.test.yaml to run the same major version of PostgreSQL as production, and keep the data on tmpfs to make it fast too.
+    ref: integration-real-deps
+  - q: 'What are thresholds for in a k6 test?'
+    a: 'When a limit is crossed the test fails on its own (non-zero exit code), so CI can decide pass or fail for a load test automatically.'
+    more: |
+      For example, `http_req_duration: ['p(95)<500']` means 95% of requests under 500ms, and `http_req_failed: ['rate<0.01']` means failures under 1%. Derive the numbers from your SLO, not from a guess.
+    ref: load-testing-k6
+  - q: 'What is the difference between load, stress, spike and soak tests?'
+    a: 'Load: the expected crowd. Stress: raise it until it breaks. Spike: a sudden jolt. Soak: run for hours on end.'
+    more: |
+      Load is the baseline. Stress shows the breaking point and how it breaks. Spike tests autoscaling and queue limits. Soak catches slow problems like memory leaks and connection leaks that short tests never show.
+    ref: load-testing-k6
+  - q: 'What is a chaos test, and why do you need one?'
+    a: 'Deliberately breaking a dependency to see whether the system behaves as expected. Fallbacks and breakers get proven in action, not on paper.'
+    more: |
+      Five steps: measure the normal state, write a hypothesis, break it small, observe, fix. Start with code tests (a 503 or a timeout via MockHttpClient), then move to staging with Toxiproxy.
+    ref: chaos-failure-injection
+  - q: 'How do you simulate a timeout with MockHttpClient?'
+    a: 'Build a MockResponse with the `error` option. It throws a TransportException when the response is read, just like a real timeout.'
+    more: |
+      `['http_code' => 503]` gives a "server is sick" failure, and `error` gives a network failure. Pass several MockResponses to MockHttpClient in an array and it returns one per request, in order.
+    ref: chaos-failure-injection
+
+quiz:
+  - q: 'Rashed''s app calls an outside exchange-rate API. The API silently renames `rate` to `exchange_rate`. All of Rashed''s unit tests are green. Which test would have caught it?'
+    hint: 'The test that checks the real API''s response.'
+    options:
+      - text: 'A contract test: compare the real sandbox response with the schema'
+        correct: true
+        why: 'The schema says `rate`, the real response says `exchange_rate`: no match, so the test fails.'
+      - text: 'Writing more unit tests'
+        correct: false
+        why: 'In a unit test the mock returns the old response we wrote, and never sees the new change.'
+      - text: 'A load test'
+        correct: false
+        why: 'A load test looks at slowness and failures under a crowd, not at the shape of the response.'
+      - text: 'Raising code coverage'
+        correct: false
+        why: 'Even if the code lines run, nobody verifies that the response fields are right.'
+    ref: contract-tests
+  - q: 'Which of these mistakes can only an integration test on real PostgreSQL catch?'
+    hint: 'Behaviour that belongs to the database itself, not to a mock or SQLite.'
+    options:
+      - text: 'Whether the unique index on LOWER(email) blocks duplicates in different letter case'
+        correct: true
+        why: 'Index behaviour belongs to the database itself. On SQLite or a mock it is different or missing.'
+      - text: 'Whether SELECT ... FOR UPDATE locks the row'
+        correct: true
+        why: 'Locking is a PostgreSQL feature. With a mock there is no way to verify it.'
+      - text: 'Whether the `discountFor()` method calculates 10% correctly'
+        correct: false
+        why: 'A pure calculation needs no database. A unit test is enough, and faster.'
+      - text: 'Whether a class getter returns the right value'
+        correct: false
+        why: 'There is nothing about the database here.'
+    ref: integration-real-deps
+  - q: 'Tania ran her k6 script with 100 virtual users and the site fell over, but the script has no sleep. What is the most accurate thing to say about the result?'
+    hint: 'Do real users fire requests with no pause?'
+    options:
+      - text: 'The result is misleading: non-stop requests put far more pressure on the system than real behaviour, so the "100 users" figure isn''t realistic'
+        correct: true
+        why: 'Real users read a page, think, then click. Without sleep, 100 virtual users may push as hard as 1,000 real ones.'
+      - text: 'The result is accurate, because more pressure means safer'
+        correct: false
+        why: 'A wrong number gives a wrong estimate of capacity, and you may add or cut servers for no reason.'
+      - text: 'Sleep only slows the script down, so it makes no difference'
+        correct: false
+        why: 'It makes a huge difference: how many requests per second go out depends directly on sleep.'
+      - text: 'It should have been run directly on production, not staging'
+        correct: false
+        why: 'Pushing an untested crowd into production is dangerous. The problem is the design of the staging test.'
+    ref: load-testing-k6
+  - q: 'What is the purpose of this test, and what makes it fail?'
+    lang: php
+    code: |
+      $client = new MockHttpClient([
+          new MockResponse('', ['http_code' => 503]),
+          new MockResponse('', ['error' => 'connection timed out']),
+      ], 'https://api.courier.example');
+
+      $provider = new CourierRateProvider($client, new NullLogger());
+
+      self::assertNull($provider->chargeFor('dhaka', 500));
+      self::assertNull($provider->chargeFor('dhaka', 500));
+    hint: 'What kind of failures are the two mock responses?'
+    options:
+      - text: 'To check that the provider returns null without crashing on both kinds of failure (503 and timeout); it fails if an exception escapes'
+        correct: true
+        why: 'This is a failure-injection test: it verifies that the code handles failures gracefully.'
+      - text: 'To check that the courier API returns the correct rates'
+        correct: false
+        why: 'There is no successful response here, only two kinds of failure.'
+      - text: 'To measure how slow the courier API gets under a crowd'
+        correct: false
+        why: 'There is no crowd and no measuring here, just two failed responses.'
+      - text: 'The code is only for 503, and the timeout is irrelevant to the test'
+        correct: false
+        why: 'The second mock simulates the timeout, and the two go through different exception paths.'
+    ref: chaos-failure-injection
+  - q: 'A team is about to run its first chaos test. Which steps are right?'
+    hint: 'Balance risk against the chance to learn.'
+    options:
+      - text: 'Start with unit tests and staging, breaking one dependency at a time'
+        correct: true
+        why: 'A small start carries little risk, and with one change at a time the cause of a result is easy to see.'
+      - text: 'Measure the steady state and write down a hypothesis before the experiment'
+        correct: true
+        why: 'Without measuring, you can''t tell whether anything really changed, and without a hypothesis you learn nothing even when you find a flaw.'
+      - text: 'On day one, shut down several services at once in production'
+        correct: false
+        why: 'Break many things at once and you can''t tell the cause, and the risk is huge.'
+      - text: 'Start without deciding when to stop; you will see when the time comes'
+        correct: false
+        why: 'Decide before you start what you would have to see to stop. Deciding in the middle of an incident is hard.'
+    ref: chaos-failure-injection

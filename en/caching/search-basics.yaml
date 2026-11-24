@@ -1,0 +1,557 @@
+slides:
+  - slug: like-fails
+    title: 'LIKE search: fine on small data, breaks on big data'
+    kind: story
+    tldr: 'LIKE %x% reads every row, ignores typos, and has no idea which result fits best.'
+    keywords: ['LIKE', 'full table scan', 'search', 'slow query', 'search box', 'relevance']
+    blocks:
+      - type: metaphor
+        icon: book
+        title: 'Opening every book in the library'
+        body: |
+          A library holds 500,000 books. You ask, "Give me every book that mentions hilsa." If the librarian flips through every page of every book, it will be evening before you get an answer. `LIKE '%hilsa%'` does exactly that: it reads every row in the table to see whether the word appears anywhere in the text. An ordinary index doesn't help, because it is sorted like a dictionary, by the **first letters**.
+      - type: code
+        lang: sql
+        file: 'Rahim''s shop search box'
+        variant: bad
+        code: |
+          -- a table of 500,000 products
+          SELECT id, name FROM product
+          WHERE name LIKE '%phone%' OR description LIKE '%phone%'
+          ORDER BY created_at DESC
+          LIMIT 20;
+
+          -- EXPLAIN says: type = ALL, rows ≈ 500000
+          -- i.e. no index was used, the whole table was read
+        marks:
+          - {line: 3, tip: 'The leading % makes the B-tree index useless, so the database reads the full text of every row to compare.'}
+          - {line: 4, tip: 'You get the newest product first, not the best match. SQL has no idea which result is more relevant.'}
+      - type: visual
+        kind: table
+        caption: 'What the customer typed, what LIKE did, and what the customer really wanted'
+        headers: ['Customer typed', 'What LIKE did', 'Customer wanted']
+        rows:
+          - cells: ['samsung phone', 'Found nothing', 'Samsung Galaxy A15 Phone']
+            tip: 'In the name, "samsung" and "phone" are not next to each other ("Galaxy A15" sits between them), so the exact fragment never matched.'
+          - cells: ['phones', 'Found nothing', 'Every product with "phone" in it']
+            tip: 'LIKE doesn''t know that phones and phone are two forms of the same word. It only compares characters.'
+          - cells: ['samsang', 'Found nothing', 'Samsung products']
+            tip: 'A one-letter typo. A person understands it at once; LIKE does not.'
+          - cells: ['phone', 'Also returned headphones and microphones', 'Mobile phones first']
+            tip: 'As long as the characters match, LIKE is happy. It has no judgement about what to show first.'
+    aside:
+      - type: problem
+        body: 'While you have a few thousand products, a search box built on LIKE works fine. The trouble shows up later: the page takes seconds to open, and customers say "I can''t find anything."'
+      - type: terms
+        items:
+          - {term: 'Full table scan', meaning: 'Reading every row of a table because no index can be used.'}
+          - {term: 'Relevance', meaning: 'A measure of how well a result fits what was searched for.'}
+      - type: refs
+        items:
+          - {to: 'data/indexing', label: 'How a B-tree index works'}
+    check:
+      q: 'The name column has an index. Why is LIKE ''%phone%'' still slow while LIKE ''phone%'' is fast?'
+      a: 'An index is sorted by the start of the text. If the start is known, the database can jump straight there; with a leading %, it has no idea where to begin, so it reads every row.'
+
+  - slug: inverted-index
+    title: 'Inverted index: from a word to its documents'
+    kind: concept
+    tldr: 'An inverted index lists, for every word, the documents that contain it; searching is just fetching that list.'
+    keywords: ['inverted index', 'posting list', 'term', 'book index', 'search index', 'word list']
+    blocks:
+      - type: metaphor
+        icon: list
+        title: 'The index at the back of a book'
+        body: |
+          A thick book has an index at the back: "hilsa: pages 12, 87, 203". To find the word you don't read the whole book, you look at one line. Now imagine the librarian building one such notebook for the entire library, with every word followed by the books it appears in. That notebook is an **inverted index**. A table says "book → words"; this notebook runs the other way and says "word → books".
+      - type: visual
+        kind: table
+        caption: 'An inverted index built from three product names'
+        headers: ['Word (term)', 'Documents containing it']
+        rows:
+          - cells: ['samsung', '1, 3']
+            tip: 'The word appears in document 1 (Samsung Galaxy phone) and 3 (Samsung charger). This list is called a posting list.'
+          - cells: ['phone', '1, 2']
+            tip: 'It appears in document 1 (Samsung Galaxy phone) and 2 (Phone cover).'
+          - cells: ['galaxy', '1']
+            tip: 'Only in document 1. A word that appears in few places is worth more when searching.'
+          - cells: ['cover', '2']
+            tip: 'Only in document 2 (Phone cover).'
+          - cells: ['charger', '3']
+            tip: 'Only in document 3 (Samsung charger).'
+      - type: visual
+        kind: flow
+        caption: 'What happens inside the index when you search "samsung phone"'
+        nodes:
+          - {id: query, label: 'Search', sub: 'samsung phone', icon: search, col: 0, row: 1, tip: 'What the customer typed. It is first split into separate words.'}
+          - {id: t1, label: 'samsung', sub: 'list: 1, 3', icon: list, col: 1.5, row: 0, tip: 'The posting list for samsung is pulled straight from the notebook, with no document read at all.'}
+          - {id: t2, label: 'phone', sub: 'list: 1, 2', icon: list, col: 1.5, row: 2, tip: 'The posting list for phone is pulled out the same way.'}
+          - {id: merge, label: 'Combine', sub: 'two lists', icon: filter, tone: accent, col: 3, row: 1, tip: 'Combining two short sorted lists is very cheap. Even with millions of documents it takes milliseconds.'}
+          - {id: result, label: 'Result', sub: '1 first, then 2 and 3', icon: check, tone: good, col: 4, row: 1, tip: 'Document 1 contains both words, so it goes to the top. Documents 2 and 3 each match one word.'}
+        edges:
+          - {from: query, to: t1, label: 'The search is split into words; the list for samsung is fetched'}
+          - {from: query, to: t2, label: 'The list for phone is fetched too'}
+          - {from: t1, to: merge, label: 'samsung appears in documents 1 and 3'}
+          - {from: t2, to: merge, label: 'phone appears in documents 1 and 2'}
+          - {from: merge, to: result, label: 'Both lists contain 1, so it comes first', tone: good}
+      - type: quote
+        body: 'To do less work at search time, do more work at write time. An index is work done in advance.'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Document', meaning: 'One item stored in a search engine, such as a product. Like a row in a table.'}
+          - {term: 'Term', meaning: 'A single word stored in the index.'}
+          - {term: 'Posting list', meaning: 'The sorted list of documents in which a term appears.'}
+      - type: remember
+        body: 'A table goes document → words. An inverted index goes word → documents. Flip the direction and searching gets easy.'
+    check:
+      q: 'In the index above, which document comes first for "samsung charger", and why?'
+      a: 'Document 3. The list for samsung is (1, 3) and the list for charger is (3), and only 3 appears in both.'
+
+  - slug: analyzer-pipeline
+    title: 'Analyzer: the factory that turns text into terms'
+    kind: concept
+    tldr: 'An analyzer splits text into words, lowercases them and reduces them to their root; if index and query don''t use the same analyzer, words won''t match.'
+    keywords: ['analyzer', 'tokenizer', 'token filter', 'stemming', 'stop word', 'tokenization', 'bengali analyzer']
+    blocks:
+      - type: text
+        body: |
+          If "Phones", "phone" and "PHONE" went into the notebook as three separate lines, searching for "phone" would miss the other two. So before anything is written down, every piece of text passes through a small factory called an **analyzer**. Inside it, a **tokenizer** cuts the text into words and **token filters** bring those words to a common form. The customer's search text goes through the same factory.
+      - type: visual
+        kind: steps
+        caption: 'How "<b>Samsung</b> Phones for Gaming" becomes three terms'
+        steps:
+          - {title: '1. Character filter', body: 'Strips HTML tags: Samsung Phones for Gaming', tip: 'A cleanup before the text is cut. html_strip removes tags; other filters can swap characters.'}
+          - {title: '2. Tokenizer', body: 'Cuts into words: Samsung · Phones · for · Gaming', tip: 'The standard tokenizer cuts at spaces and punctuation. Each piece is called a token.'}
+          - {title: '3. Lowercase', body: 'Lowercases: samsung · phones · for · gaming', tip: 'From now on Samsung, SAMSUNG and samsung are one and the same term.'}
+          - {title: '4. Stop words', body: 'Drops filler words: samsung · phones · gaming', tip: 'Words like for, the and is appear in almost every text, so they are useless for searching.'}
+          - {title: '5. Stemmer', body: 'Reduces to the root: samsung · phone · game', tone: accent, tip: 'phones → phone, gaming → game. Now searching "phone" finds this product too. The root isn''t always a real word, and that''s fine.'}
+      - type: code
+        lang: http
+        file: 'Elasticsearch: creating the index'
+        code: |
+          PUT /products
+          {
+            "settings": {
+              "analysis": {
+                "analyzer": {
+                  "product_text": {
+                    "type": "custom",
+                    "char_filter": ["html_strip"],
+                    "tokenizer": "standard",
+                    "filter": ["lowercase", "stop", "porter_stem"]
+                  }
+                }
+              }
+            },
+            "mappings": {
+              "properties": {
+                "name":  { "type": "text", "analyzer": "product_text" },
+                "brand": { "type": "keyword" },
+                "price": { "type": "integer" }
+              }
+            }
+          }
+        marks:
+          - {line: 10, tip: 'The filters run in exactly this order. Without lowercase first, the stop word filter and the stemmer won''t recognise capitalised words.'}
+          - {line: 17, tip: 'text means the analyzer runs, for searching inside the full text. product_text is used at both index time and query time.'}
+          - {line: 18, tip: 'keyword means no analyzer: the whole value is one exact term. This is what you need for filters, sorting and facets.'}
+      - type: quote
+        body: 'Same analyzer on both sides, index and query. Otherwise the word sits in the notebook and never matches.'
+    aside:
+      - type: commands
+        title: 'Testing an analyzer'
+        items:
+          - {cmd: 'POST /products/_analyze', desc: 'Send an analyzer and some text in the body to see which terms it produces'}
+      - type: tips
+        items:
+          - 'Elasticsearch ships a ready-made `bengali` analyzer. If names mix Bangla and English, keep two fields with two analyzers.'
+          - 'A synonym filter can make "mobile" and "phone" the same. Teach the engine the words your customers actually use.'
+      - type: terms
+        items:
+          - {term: 'Token', meaning: 'A piece cut by the tokenizer; once it passes the filters and lands in the index, it is a term.'}
+          - {term: 'Stemming', meaning: 'Trimming the end of a word to get its root (phones → phone).'}
+    check:
+      q: 'Product names were indexed with a lowercase filter, but the search text skips it. What happens when you search "Samsung"?'
+      a: 'Nothing matches. The notebook holds "samsung" and you are looking for "Samsung", and to the search engine those are two different terms.'
+
+  - slug: relevance-scoring
+    title: 'Relevance: which result comes first'
+    kind: concept
+    tldr: 'A search engine gives every document a score (BM25): higher for rare words, for repeated words, and for matches in short text.'
+    keywords: ['relevance', 'BM25', 'TF-IDF', 'score', 'boost', 'fuzziness', 'ranking']
+    blocks:
+      - type: text
+        body: |
+          The librarian searches "hilsa recipe" and finds 300 books. Handing them all over in a heap doesn't help; the most useful book must be on top. So the search engine gives every document a number called its **score** and shows the highest first. Elasticsearch calculates it with a formula called BM25, which looks at three things.
+      - type: points
+        title: 'The three things BM25 looks at'
+        style: number
+        items:
+          - '**How rare the word is:** "recipe" is in a thousand books, "hilsa" in only 40. Matching a rare word scores higher.'
+          - '**How often it appears:** more occurrences raise the score, but only up to a limit.'
+          - '**How short the text is:** "hilsa" in a five-word title is not the same as "hilsa" in the corner of a 500-page book.'
+      - type: visual
+        kind: bars
+        caption: 'Scores of three products for the search "samsung phone" (example)'
+        items:
+          - {label: 'Samsung Galaxy Phone', value: 82, display: '8.2', tone: good, tip: 'Both words match, and inside a short name, so this gets the highest score.'}
+          - {label: 'Samsung Charger', value: 31, display: '3.1', tip: 'Only samsung matched. The word is fairly rare, so the score is middling.'}
+          - {label: 'Phone Cover', value: 14, display: '1.4', tone: muted, tip: 'Only phone matched, and phone appears in thousands of products, so the score is low.'}
+      - type: code
+        lang: http
+        file: 'Elasticsearch: the search query'
+        variant: good
+        code: |
+          POST /products/_search
+          {
+            "query": {
+              "multi_match": {
+                "query": "samsang phone",
+                "fields": ["name^3", "description"],
+                "fuzziness": "AUTO"
+              }
+            }
+          }
+        marks:
+          - {line: 6, tip: 'name^3 gives a match in the name three times the weight of a match in the description. This is called a boost.'}
+          - {line: 7, tip: 'Tolerates a typo of one or two letters, so even "samsang" brings back Samsung products.'}
+      - type: quote
+        body: 'Search is not just "is it there?" but "how well does it fit?"'
+    aside:
+      - type: terms
+        items:
+          - {term: 'TF (term frequency)', meaning: 'How many times the word appears in one document.'}
+          - {term: 'IDF', meaning: 'How rare the word is across the whole index; the rarer, the more it is worth.'}
+          - {term: 'Boost', meaning: 'Manually giving a field or condition extra weight.'}
+      - type: tips
+        items:
+          - 'Add `"explain": true` to the query and every result shows exactly how its score was calculated.'
+          - 'Business signals such as sales or ratings can be blended into the score (`function_score`), but fix names and analyzers first.'
+    check:
+      q: 'Searching "hilsa recipe", which book scores higher: one with "hilsa" in its title, or one with "recipe" in a corner of its 500 pages? Why?'
+      a: 'The one with "hilsa" in the title. "Hilsa" is a rare word and it matched in very short text, and both of those raise the score.'
+
+  - slug: search-with-facets
+    title: 'Searching from Symfony: results and facets in one request'
+    kind: howto
+    tldr: 'A facet is a counted list like "Samsung (12), Xiaomi (8)" beside the results; send the query, filter and aggregation in one request.'
+    keywords: ['facet', 'aggregation', 'bool query', 'filter', 'HttpClient', 'faceted search', 'keyword field']
+    blocks:
+      - type: text
+        body: |
+          Type "phone" in an online shop and the left side shows: Samsung (12), Xiaomi (8). That counted list is a **facet**. It splits the results into groups and shows how many fall in each, so the customer can narrow the list with one click. Elasticsearch calls it an aggregation. The search text goes in `must`, where it gets a score. The brand the customer picked goes in `filter`, where it is a plain yes or no.
+      - type: code
+        lang: yaml
+        file: 'config/packages/framework.yaml'
+        code: |
+          framework:
+              http_client:
+                  scoped_clients:
+                      search.client:
+                          base_uri: '%env(SEARCH_URL)%'
+      - type: code
+        lang: php
+        file: 'src/Search/ProductSearch.php'
+        variant: good
+        code: |
+          final readonly class ProductSearch
+          {
+              public function __construct(private HttpClientInterface $searchClient)
+              {
+              }
+
+              /** @return array{hits: list<array>, brands: list<array>} */
+              public function search(string $text, ?string $brand = null): array
+              {
+                  $filter = null === $brand ? [] : [['term' => ['brand' => $brand]]];
+
+                  $data = $this->searchClient->request('POST', '/products/_search', [
+                      'json' => [
+                          'size' => 20,
+                          'query' => ['bool' => [
+                              'must' => [['multi_match' => [
+                                  'query' => $text,
+                                  'fields' => ['name^3', 'description'],
+                              ]]],
+                              'filter' => $filter,
+                          ]],
+                          'aggs' => [
+                              'brands' => ['terms' => ['field' => 'brand', 'size' => 10]],
+                          ],
+                      ],
+                  ])->toArray();
+
+                  return [
+                      'hits' => array_column($data['hits']['hits'], '_source'),
+                      'brands' => $data['aggregations']['brands']['buckets'],
+                  ];
+              }
+          }
+        marks:
+          - {line: 3, tip: 'The scoped client named search.client is autowired automatically into an argument called $searchClient.'}
+          - {line: 16, tip: 'The query inside must calculates scores, so this is where the order of products is decided.'}
+          - {line: 20, tip: 'A filter never changes the score; it only excludes. It is also cached, so yes/no conditions always belong here.'}
+          - {line: 23, tip: 'Counts how many products matched for each brand: [{key: samsung, doc_count: 12}, …]. The field must be a keyword.'}
+      - type: visual
+        kind: flow
+        caption: 'Results and facets in one request'
+        nodes:
+          - {id: vue, label: 'Vue app', sub: 'search box', icon: browser, col: 0, row: 0, tip: 'The customer types and clicks facets here. Instead of a request per keystroke, send one 300ms after typing stops.'}
+          - {id: api, label: 'ProductSearch', sub: 'Symfony service', icon: api, tone: accent, col: 2, row: 0, tip: 'Builds the Elasticsearch query from what the customer typed and picked. The browser never talks to Elasticsearch directly.'}
+          - {id: es, label: 'Elasticsearch', sub: 'products index', icon: search, col: 4, row: 0, tip: 'Finds the matching documents in the inverted index, scores them, and counts them by brand in the same pass.'}
+        edges:
+          - {from: vue, to: api, label: 'The customer types "phone" and picks the brand Samsung'}
+          - {from: api, to: es, label: 'The query, filter and aggs go in one request'}
+          - {from: es, to: api, label: '20 hits ranked by score come back, plus the brand buckets', dashed: true}
+          - {from: api, to: vue, label: 'Vue shows the facets on the left and the results on the right', dashed: true, tone: good}
+    aside:
+      - type: pitfalls
+        items:
+          - 'Running an aggregation on a `text` field throws an error. Always keep facet fields as `keyword`.'
+          - 'If the brand filter is in the main query, the facet shows only the selected brand. To show the other brands too, put it in `post_filter`.'
+          - 'Never expose Elasticsearch directly to the internet; every request should go through Symfony.'
+      - type: terms
+        items:
+          - {term: 'Facet / aggregation', meaning: 'Splitting the results into groups and counting the documents in each group.'}
+          - {term: 'Bucket', meaning: 'One group of an aggregation, such as brand = samsung, together with its count.'}
+    check:
+      q: 'A customer types "phone" and picks the brand Samsung. Which goes in `must` and which in `filter`, and why?'
+      a: '"phone" goes in must, because it needs a score. brand = Samsung goes in filter, because it is only yes or no: no score is needed, and the result is cached.'
+
+  - slug: search-engine-tradeoffs
+    title: 'Elasticsearch / OpenSearch: when to bring one in, when not to'
+    kind: compare
+    tldr: 'A search engine is powerful, but you must run a separate cluster, keep data in sync and accept a delay of a second or two; for small data, database full-text is enough.'
+    keywords: ['Elasticsearch', 'OpenSearch', 'full-text search', 'PostgreSQL tsvector', 'Meilisearch', 'trade-off', 'when to use']
+    blocks:
+      - type: text
+        body: |
+          Elasticsearch and OpenSearch are both search engines built on the same library, Lucene, so the inner concepts and the API are almost identical. (OpenSearch is an Apache 2.0 fork of Elasticsearch 7.10.) Both give excellent search, but not for free: it is one more moving part in your system, which you have to run, monitor and keep in sync with the database.
+      - type: visual
+        kind: compare
+        caption: 'Three paths: what you get and what you pay'
+        columns:
+          - title: 'Database full-text'
+            tone: good
+            icon: db
+            tip: 'A tsvector column with a GIN index in PostgreSQL, a FULLTEXT index in MySQL. Under the hood this is an inverted index too.'
+            items:
+              - 'No new server needed'
+              - 'Data is always fresh, inside the transaction'
+              - 'Often enough up to a few hundred thousand rows'
+              - 'Weak at typos, facets and fine-grained ranking'
+          - title: 'Elasticsearch / OpenSearch'
+            tone: accent
+            icon: search
+            tip: 'A full search engine. It does the most, and costs the most to run.'
+            items:
+              - 'Typos, synonyms, facets, language analyzers'
+              - 'Answers in milliseconds even on tens of millions of documents'
+              - 'A separate cluster: RAM, monitoring, upgrades, backups'
+              - 'Must be synced from the database; lags by a second or two'
+              - 'Changing an analyzer or mapping means a full reindex'
+          - title: 'Meilisearch / Typesense'
+            icon: bolt
+            tip: 'Small, simple search engines. Easy to set up, and they handle typos out of the box.'
+            items:
+              - 'Easy to run and learn'
+              - 'Great for small to medium catalogues'
+              - 'Limited on huge data or complex aggregations'
+              - 'Also needs syncing from the database'
+      - type: points
+        title: 'The decision rule'
+        style: number
+        items:
+          - 'Start with database full-text.'
+          - 'Bring in a search engine when real complaints arrive about typos, facets, language or ranking.'
+          - 'Whatever you keep in the search engine must be rebuildable from the database on any day.'
+      - type: quote
+        body: 'A search index is a copy, not the source of truth. Never base a decision about money or stock on the index.'
+    aside:
+      - type: when
+        use:
+          - 'Searching is the customer''s main task: an e-commerce catalogue, job listings, documents.'
+          - 'You need typo tolerance, facets and text that mixes Bangla and English.'
+        avoid:
+          - 'A short list in an admin panel, searched by name or ID.'
+          - 'Nobody on the team can run a cluster, and there is no budget for a managed service.'
+      - type: refs
+        items:
+          - {to: 'caching/search-pipeline', label: 'Keeping the search index up to date'}
+          - {to: 'thinking/build-vs-buy', label: 'The real cost of new technology'}
+    check:
+      q: 'Rahim''s shop has 8,000 products, one server and a team of two. What should he choose for search first, and why?'
+      a: 'Database full-text search. At that size it is fast enough, with no new server and no sync to worry about. Move to a search engine when complaints arrive.'
+
+flashcards:
+  - q: 'Why is LIKE ''%word%'' slow on a big table?'
+    a: 'The leading % makes the B-tree index unusable, so every row has to be read and compared (a full table scan).'
+    more: |
+      A B-tree index is sorted by the first letters of the text, like a dictionary. `LIKE 'phone%'` can follow the index, but in `LIKE '%phone%'` even the starting point is unknown. With ten times the data, it takes ten times as long. On top of that, LIKE ignores typos and has no idea which result fits best.
+    ref: like-fails
+  - q: 'What is an inverted index?'
+    a: 'A list that records, for every word, which documents contain it.'
+    more: |
+      It works like the index at the back of a book: "hilsa: pages 12, 87". To search, you never read a document; you just fetch the word's list (its posting list). For several words, the lists are combined. That is why search stays at milliseconds even on tens of millions of documents.
+    ref: inverted-index
+  - q: 'What are the three parts of an analyzer?'
+    a: 'A character filter (cleanup), a tokenizer (cuts into words) and token filters (lowercase, stop words, stemming).'
+    more: |
+      An analyzer turns text into terms that are ready for the index. "Samsung Phones" becomes samsung and phone. So whether someone searches "phone" or "PHONES", it matches. You can see how any text is split with the `_analyze` API.
+    ref: analyzer-pipeline
+  - q: 'What goes wrong if indexing and searching use different analyzers?'
+    a: 'The terms on the two sides differ, so a word that is in the index never matches the search.'
+    more: |
+      A search engine doesn't understand meaning; it matches terms exactly. If the index holds "phone" and the query produces "Phones", there is no match. Hence the rule: the same analyzer on both sides. In Elasticsearch, once you set the analyzer on a field, queries on that field use it automatically.
+    ref: analyzer-pipeline
+  - q: 'What is the difference between text and keyword fields in Elasticsearch?'
+    a: 'text runs an analyzer, for full-text search. keyword is one exact value, for filters, sorting and facets.'
+    more: |
+      A product name or description is text, because customers search by any word inside it. Brand, status and category are keyword, because they are matched or counted as a whole. Running an aggregation on a text field makes Elasticsearch return an error.
+    ref: analyzer-pipeline
+  - q: 'Which three things does BM25 look at to score a document?'
+    a: 'How rare the word is across the index, how often it appears in the document, and how short the text is.'
+    more: |
+      A rare word carries more information, so matching it scores higher. Repetition raises the score too, but flattens out after a point. A match in short text is worth more than a match in the corner of a long one. On top of this, a boost can give a field such as the name extra weight.
+    ref: relevance-scoring
+  - q: 'What is a facet?'
+    a: 'A counted list that splits the results into groups, such as Samsung (12), Xiaomi (8).'
+    more: |
+      Facets show customers what is in the results and let them narrow the list with one click. In Elasticsearch you build them with an aggregation, and the field must be a keyword. The search results and the facets come back in the same request.
+    ref: search-with-facets
+  - q: 'In a bool query, what is the difference between must and filter?'
+    a: 'must conditions calculate a score; filter only answers yes or no, leaves the score alone and is cached.'
+    more: |
+      The customer's search words go in must, because "how well does it fit" matters there. Brand, a price range or in-stock status go in filter. Putting everything in must still works, but the query is slower and the scores change for no reason.
+    ref: search-with-facets
+  - q: 'Why shouldn''t the search index be the only home of your real data?'
+    a: 'It is a copy: it lags by a second or two, has no transactions, and a mapping change means rebuilding it all.'
+    more: |
+      The source of truth lives in the database. Design on the assumption that you can delete the search index any day and rebuild it from the database. Take decisions about price or stock from the database. How to keep the copy fresh: [[caching/search-pipeline|keeping the search index up to date]].
+    ref: search-engine-tradeoffs
+
+quiz:
+  - q: 'Karim added an index on `product.name`, yet `WHERE name LIKE ''%charger%''` is as slow as before. Why?'
+    hint: 'In a dictionary, where would you start if you had to find every word ending in "r"?'
+    options:
+      - text: 'The index is sorted by the start of the text; with a leading % it is no use'
+        correct: true
+        why: 'Where to look is unknown, so the database has no choice but to read every row.'
+      - text: 'The server wasn''t restarted after the index was built'
+        correct: false
+        why: 'An index is used as soon as it is built; a restart has nothing to do with it.'
+      - text: 'Indexes don''t work on Bangla text'
+        correct: false
+        why: 'Indexes work on text in any language. `%x%` is just as slow on English words.'
+      - text: 'Without a LIMIT, all rows have to be read'
+        correct: false
+        why: 'Even with a LIMIT, the rows must be read before enough matching ones can be found.'
+    ref: like-fails
+  - q: 'An inverted index has laptop → 2, 5, 9 and bag → 5, 7. Searching "laptop bag", which document contains both words?'
+    hint: 'Look for the number that appears in both lists.'
+    options:
+      - text: 'Only 5'
+        correct: true
+        why: 'The two posting lists overlap only at 5. Combining lists like this is the core job of a search engine.'
+      - text: '2, 5, 7, 9 — all of them'
+        correct: false
+        why: 'Each of these has at least one of the words, but only one document has both.'
+      - text: '2 and 9'
+        correct: false
+        why: 'These have only laptop and no bag.'
+      - text: 'Can''t tell without reading every document'
+        correct: false
+        why: 'The whole point of an inverted index is to answer by combining lists, without reading documents.'
+    ref: inverted-index
+  - q: 'Product names were indexed with lowercase and a stemmer. Later someone swaps the query analyzer for one that keeps text exactly as typed. A customer searches "Phones". What happens?'
+    hint: 'Which term is stored in the index, and which term comes from the query?'
+    options:
+      - text: 'Nothing matches: the index has "phone" and the search is for "Phones"'
+        correct: true
+        why: 'The analyzers differ, so the terms differ; a search engine matches terms exactly.'
+      - text: 'Everything works, the search engine figures it out'
+        correct: false
+        why: 'A search engine doesn''t understand meaning. It only matches the terms the analyzer produces.'
+      - text: 'Results appear, just with a slightly lower score'
+        correct: false
+        why: 'If the term doesn''t match at all, there is no score to lower. The result is empty.'
+      - text: 'Elasticsearch throws an error'
+        correct: false
+        why: 'This is a valid configuration, so no error is raised. That is why the bug is hard to spot: you silently get empty results.'
+    ref: analyzer-pipeline
+  - q: 'Building a brand facet with the mapping below throws an error. What is wrong?'
+    lang: json
+    code: |
+      {
+        "mappings": {
+          "properties": {
+            "name":  { "type": "text" },
+            "brand": { "type": "text" },
+            "price": { "type": "integer" }
+          }
+        }
+      }
+    hint: 'A facet has to count the whole value as one exact term.'
+    options:
+      - text: 'brand should be a keyword; aggregations don''t work on text fields'
+        correct: true
+        why: 'A text field is broken into pieces by the analyzer, and aggregation is disabled on it. Counting exact values needs a keyword.'
+      - text: 'price should be text'
+        correct: false
+        why: 'Numeric fields are good for range filters and sorting; making it text would break both.'
+      - text: 'name has no analyzer specified'
+        correct: false
+        why: 'Without one, the standard analyzer runs; it has nothing to do with the brand facet.'
+      - text: 'One index can''t hold two text fields'
+        correct: false
+        why: 'An index can have as many fields as you like.'
+    ref: search-with-facets
+  - q: 'According to BM25, in which cases does a document''s score go up?'
+    hint: 'Remember three words: rare, repeated, short.'
+    options:
+      - text: 'The matched word appears in very few documents across the whole index'
+        correct: true
+        why: 'A rare word carries more information, so it gets more weight (IDF).'
+      - text: 'The word appears several times inside the document'
+        correct: true
+        why: 'Repetition raises the score (TF), though it levels off after a point.'
+      - text: 'The document is the newest one'
+        correct: false
+        why: 'BM25 ignores dates. To show newer items first you need a separate sort or boost.'
+      - text: 'The match was found in a very short field'
+        correct: true
+        why: 'A match in short text means the text is mostly about that topic, so the score is higher.'
+    ref: relevance-scoring
+  - q: 'In which situations does it make sense to bring in Elasticsearch or OpenSearch?'
+    hint: 'Think about whether the problem is really there, and whether you can afford to run it.'
+    options:
+      - text: 'A catalogue of 3 million products; customers make typos and want facets by brand and price'
+        correct: true
+        why: 'The data is big, and typos and facets are exactly where database full-text is weak.'
+      - text: 'Searching 200 staff by name in an admin panel'
+        correct: false
+        why: 'With 200 rows, even LIKE answers instantly. A new cluster here is just extra baggage.'
+      - text: 'Hundreds of thousands of ads mixing Bangla and English, where the best-fitting ones must come first'
+        correct: true
+        why: 'Language analyzers and relevance scoring are what a search engine is for.'
+      - text: 'Checking whether a product is in stock at checkout'
+        correct: false
+        why: 'Stock decisions must be made from the database; the search index can lag behind.'
+    ref: search-engine-tradeoffs
+  - q: 'A customer searched "samsang" and got nothing back. What is the most fitting fix?'
+    hint: 'Search engines already have a way to tolerate a typo of one or two letters.'
+    options:
+      - text: 'Turn on fuzziness in the query'
+        correct: true
+        why: 'Fuzziness accepts a mismatch of one or two letters and finds nearby terms.'
+      - text: 'Add every possible misspelling to the product names'
+        correct: false
+        why: 'There is no end to misspellings; you would pollute your data and still miss some.'
+      - text: 'Show the customer an error and ask them to spell it correctly'
+        correct: false
+        why: 'If they knew the right spelling, they wouldn''t have misspelled it. They see an empty page and leave for another shop.'
+      - text: 'Add a stemmer filter'
+        correct: false
+        why: 'A stemmer unifies word forms (phones → phone); it doesn''t fix spelling mistakes.'
+    ref: relevance-scoring

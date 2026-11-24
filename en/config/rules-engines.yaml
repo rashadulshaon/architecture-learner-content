@@ -1,0 +1,392 @@
+slides:
+  - slug: weekly-discount-rules
+    title: 'Discount rules that change every week'
+    kind: story
+    tldr: 'When the business team changes a rule once a week, waiting for a developer and a deploy each time is slow and irritating. That raises the question of moving such rules into data.'
+    keywords: ['business rules', 'rules engine', 'discount rules', 'rules as data', 'hardcoded rules']
+    blocks:
+      - type: metaphor
+        icon: bank
+        title: 'The bus fare chart'
+        body: |
+          A bus conductor knows the procedure for collecting fares: find the start and the stop on the chart, read the fare, take the money. When fares go up, the authority issues a new chart, and nobody has to retrain the conductor. The procedure is the code; the chart is the data. The only question is whether your rule is a chart or a procedure.
+      - type: text
+        body: |
+          At Rahim's e-commerce company, the marketing team changes the discount rules every week: "10% off the first order", "free delivery above 2,000 taka". Every change means a ticket, code, a review and a deploy. Changing one small number takes three days, and the developers are fed up.
+      - type: visual
+        kind: bars
+        caption: 'How long a discount change takes to go live (minutes)'
+        items:
+          - {label: 'Rule in code', value: 4320, display: '3 days', tone: bad, tip: 'Ticket, code change, review, test, deploy: a wait at every step.'}
+          - {label: 'Rule in data', value: 10, display: '10 minutes', tone: good, tip: 'The business person changes it in an admin screen. But it brings its own risks, covered in the next slides.'}
+      - type: quote
+        body: 'Move a rule into data and it no longer passes through code review. You have to build the safety net yourself.'
+    aside:
+      - type: problem
+        body: 'A rule that changes often, and is changed by people who aren''t developers, shouldn''t wait for a deploy every time.'
+      - type: terms
+        items:
+          - {term: 'Business rule', meaning: 'A business decision that ends up in code: who gets how much discount, which orders must be held back.'}
+          - {term: 'Rules engine', meaning: 'A setup that keeps rules outside the code as data and evaluates them at run time.'}
+    check:
+      q: 'What do you save by moving rules into data, and what extra responsibility do you take on?'
+      a: 'You save the wait for a developer and a deploy. But you lose the safety of code review, tests and versioning, so you have to build those yourself.'
+
+  - slug: code-or-data
+    title: 'Should a rule live in code or in data?'
+    kind: concept
+    tldr: 'Decide with four questions: how often it changes, who changes it, what a mistake costs, and how complex it is. Simple, frequently changed rules with a capped downside go in data; complex or risky ones stay in code.'
+    keywords: ['rules in code', 'rules in data', 'decision criteria', 'when to use rules engine', 'code or data']
+    blocks:
+      - type: text
+        body: |
+          The fare chart is data, but the rule "a fare is never zero or negative" is part of the procedure. Ask four questions about every rule. The more answers that point towards data, the safer it is to move the rule out of the code.
+      - type: visual
+        kind: table
+        caption: 'Four questions to decide'
+        headers: ['Question', 'Keep it in code', 'Put it in data']
+        rows:
+          - cells: ['How often does it change?', 'A few times a year', 'Weekly or daily']
+            tip: 'For a rarely changed rule, the effort of moving it into data never pays off.'
+          - cells: ['Who changes it?', 'Developers', 'Trusted business staff']
+            tip: 'If developers make the changes anyway, code is easier, with review and tests as a bonus.'
+          - cells: ['What does a mistake cost?', 'A lot: money, law, security', 'Limited, or capped by a limit in code']
+            tip: 'If a mistake is expensive, keep the rule in code, or at least put a hard ceiling in code.'
+          - cells: ['How complex is it?', 'Many branches, loops, states', 'Simple conditions and numbers']
+            tip: 'Put a complex rule into data and the data slowly turns into a poor programming language.'
+          - cells: ['Testing and audit?', 'Normal CI and review are enough', 'Needs separate versions, approval, replay']
+            tip: 'Choose data and that burden is yours: you have to build it.'
+      - type: quote
+        body: 'In code: risk, complexity and hard limits. In data: numbers, lists and simple conditions that change often.'
+    aside:
+      - type: when
+        use:
+          - 'A discount percentage, which cities get delivery, the amount above which delivery is free.'
+        avoid:
+          - 'Tax calculation, balance updates, legal obligations. A mistake in these does direct damage.'
+      - type: remember
+        body: 'The chart goes in data; the procedure stays in code.'
+    check:
+      q: 'Which is the better candidate for data: the tax calculation rule or "10% off the first order"? Why?'
+      a: 'The discount rule. It changes often, it is simple, and a mistake costs little. A mistake in tax calculation carries legal risk, so that stays in code.'
+
+  - slug: expression-language-engine
+    title: 'Running rules with Symfony ExpressionLanguage'
+    kind: howto
+    tldr: 'Store each rule''s condition as a string in the database and let ExpressionLanguage evaluate it. Pass only a small facts DTO, and check each rule with lint() when you save it.'
+    keywords: ['ExpressionLanguage', 'evaluate', 'lint', 'facts DTO', 'discount engine', 'Symfony']
+    blocks:
+      - type: text
+        body: |
+          Imagine each discount is one database row: a condition (`cart.total >= 200000 and user.firstOrder`), a percentage and a priority. The code just loops over the rows and applies the discount of the first condition that matches. Symfony's ExpressionLanguage runs that condition string in a safe, limited language. But remember that the condition is really code, so limit who may write it, and pass a small facts object rather than an entity.
+      - type: code
+        lang: php
+        file: 'src/Discount/DiscountEngine.php'
+        variant: good
+        code: |
+          final readonly class CartFacts
+          {
+              public function __construct(public int $total, public int $items)
+              {
+              }
+          }
+
+          final class DiscountEngine
+          {
+              private ExpressionLanguage $language;
+
+              public function __construct(private readonly DiscountRuleRepository $rules)
+              {
+                  $this->language = new ExpressionLanguage();
+              }
+
+              public function percentFor(CartFacts $cart, UserFacts $user): int
+              {
+                  foreach ($this->rules->activeByPriority() as $rule) {
+                      $facts = ['cart' => $cart, 'user' => $user];
+                      if ($this->language->evaluate($rule->expression(), $facts)) {
+                          return min($rule->percent(), 30);   // the cap lives in code
+                      }
+                  }
+
+                  return 0;
+              }
+          }
+        marks:
+          - {line: 1, tip: 'Give the rule only the facts it needs: numbers and flags. Hand it a Doctrine entity and the rule can know and call far too much.'}
+          - {line: 21, tip: 'The condition string runs here. The first rule that matches decides the discount.'}
+          - {line: 22, tip: 'Whatever is written in the data, the code will never give more than 30% off. The hard limit stays in code.'}
+      - type: code
+        lang: php
+        file: 'src/Discount/RuleValidator.php'
+        variant: good
+        code: |
+          public function assertValid(string $expression): void
+          {
+              try {
+                  $this->language->lint($expression, ['cart', 'user']);
+              } catch (SyntaxError $e) {
+                  throw new InvalidRuleException('Invalid condition: '.$e->getMessage(), previous: $e);
+              }
+          }
+        marks:
+          - {line: 4, tip: 'Lint before saving. Only the names cart and user are recognised; any other name is caught immediately.'}
+    aside:
+      - type: tips
+        items:
+          - 'Don''t parse the string on every request. Give ExpressionLanguage a cache pool (a constructor argument) so the parsed result is kept.'
+          - 'Keep the group of people who can change rules small, and log every change.'
+      - type: pitfalls
+        items:
+          - 'Never run user input (for example, text a customer typed) as an expression. Only trusted staff may write them.'
+      - type: refs
+        items:
+          - {to: 'security/input-validation', label: 'Input validation'}
+    check:
+      q: 'Why pass a small CartFacts DTO instead of the entity?'
+      a: 'The rule sees only what it needs and can''t call the entity''s other methods. And when the entity''s shape changes, the rules stored in the database don''t break.'
+
+  - slug: version-and-test-rules
+    title: 'Versioning, testing and dry-running rules'
+    kind: howto
+    tldr: 'Rules kept in data must go through versioning, tests and approval, just like code: a new version, tests, a dry run on old orders, a start date, and the old versions kept.'
+    keywords: ['rule versioning', 'rule testing', 'dry run', 'shadow mode', 'audit', 'PHPUnit DataProvider', 'valid_from']
+    blocks:
+      - type: text
+        body: |
+          Moving rules into data doesn't reduce your responsibility. You now have to build what code review gave you for free. Fixing a rule isn't just editing a row; it means writing a new version, so that later you can answer "which rule gave order 1023 its discount?".
+      - type: visual
+        kind: steps
+        caption: 'A safe path for changing a rule'
+        steps:
+          - {title: '1. Write a new version', body: 'Don''t edit the old row; add a new one called v4.', tip: 'The old version stays, so you can roll back and you can audit.'}
+          - {title: '2. Run the tests', body: 'Example-based tests: which cart should get what discount.', tip: 'You can check the rule is written correctly without any deploy.'}
+          - {title: '3. Dry run', body: 'Run it over the last 30 days of orders and see what discounts would have been given.', tip: 'This catches a rule that suddenly gives everyone a discount.'}
+          - {title: '4. Approval', body: 'A second person reviews it.', tip: 'What review is to code, this is to rules.'}
+          - {title: '5. Go live on a date', body: 'Use valid_from to start at a set time.', tone: accent, tip: 'At midnight everything switches by itself, with no hand on a switch.'}
+          - {title: '6. Record the version on the order', body: 'Note which discount came from which version.', tip: 'When a question comes up about an order, you can say exactly which rule applied.'}
+      - type: code
+        lang: php
+        file: 'tests/Discount/RuleTest.php'
+        variant: good
+        code: |
+          #[DataProvider('cases')]
+          public function testRule(string $expr, int $total, bool $first, bool $expected): void
+          {
+              $result = (new ExpressionLanguage())->evaluate($expr, [
+                  'cart' => new CartFacts($total, 3),
+                  'user' => new UserFacts($first),
+              ]);
+
+              self::assertSame($expected, $result);
+          }
+
+          public static function cases(): iterable
+          {
+              $r = 'cart.total >= 200000 and user.firstOrder';
+              yield 'first order, 2,000 taka' => [$r, 200000, true, true];
+              yield 'first order, 1,999 taka' => [$r, 199900, true, false];
+              yield 'returning customer' => [$r, 500000, false, false];
+          }
+        marks:
+          - {line: 1, tip: 'One test, many cases. Include values on both sides of every boundary: 2,000 and 1,999.'}
+          - {line: 15, tip: 'Dropping the exact boundary (≥) is the most common mistake, and this is where the test catches it.'}
+    aside:
+      - type: tips
+        items:
+          - 'In bigger systems, a cousin of the dry run is shadow mode: run the new rule for real, but only log what it would do, without applying it.'
+          - 'Keep a change log of who changed which rule, when, what changed and who approved it.'
+      - type: refs
+        items:
+          - {to: 'testing/what-to-test', label: 'What to test'}
+    check:
+      q: 'What do you gain by creating a new version instead of editing the old rule''s row?'
+      a: 'The version recorded on the order tells you exactly which rule gave the discount, and if something goes wrong you can go back to the earlier version.'
+
+  - slug: rules-gone-wrong
+    title: 'The price of getting rules-as-data wrong'
+    kind: pitfall
+    tldr: 'Unguarded rules can turn a single typo into a 100% discount, and complex rules in data become an untested programming language. Keep the ceiling in code.'
+    keywords: ['inner platform effect', 'rule typo', 'guardrails', 'invariants in code', 'untested rules', 'rules engine mistakes']
+    blocks:
+      - type: text
+        body: |
+          A change in code passes through review and tests. A number on an admin page goes straight to production without any of that. Here is a realistic incident: someone in marketing meant to type "10" and typed "100".
+      - type: visual
+        kind: sequence
+        caption: 'One typo, direct damage from the admin screen'
+        actors:
+          - {id: mkt, label: 'Marketing', icon: user, tip: 'A business person who doesn''t read code and only uses the admin form.'}
+          - {id: db, label: 'Rules table', icon: db, tip: 'The rules stored as data. No tests, no approval.'}
+          - {id: checkout, label: 'Checkout', icon: cart, tip: 'Reads the rule on every order and applies the discount.'}
+          - {id: buyer, label: 'Customers', icon: users, tip: 'News of the discount spreads and hundreds of buyers arrive.'}
+        messages:
+          - {from: mkt, to: db, label: 'Discount 10% → 100% (typo)', tone: bad}
+          - {at: db, note: 'Live at once, nobody saw it', tone: warn}
+          - {from: buyer, to: checkout, label: 'Place an order'}
+          - {from: checkout, to: db, label: 'Read the rule'}
+          - {from: db, to: checkout, label: '100% discount', dashed: true, tone: bad}
+          - {at: checkout, note: 'Everything is free!', tone: bad, tip: 'Hundreds of orders in an hour. Every one of them is legally valid.'}
+      - type: code
+        lang: php
+        file: 'src/Discount/DiscountEngine.php'
+        variant: good
+        code: |
+          $percent = min($rule->percent(), self::MAX_PERCENT);   // the cap in code: 30
+
+          if ($rule->percent() > self::MAX_PERCENT) {
+              $this->logger->error('Discount rule exceeds cap', [
+                  'rule' => $rule->id(), 'version' => $rule->version(),
+              ]);
+          }
+        marks:
+          - {line: 1, tip: 'Whatever the data says, the code''s limit holds. A typo''s damage stops at 30%.'}
+          - {line: 3, tip: 'When the cap is exceeded, log it and raise an alert. You can fix the admin screen later, but before the damage is done.'}
+      - type: points
+        title: 'Safeguards for rules in data'
+        style: check
+        items:
+          - 'Hard limits (maximum discount, minimum price) live in code.'
+          - 'Validate, lint and test when saving.'
+          - 'Keep only small rules in data; complex branching, loops and state stay in code.'
+      - type: quote
+        body: 'Move rules into data and the risk goes with them. Keep the limits in code, and require a separate approval for changes.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'The inner-platform effect: the rule language gradually gains loops, variables and functions, and a weak programming language grows inside your database, with no debugger and no tests.'
+          - 'No developer fully understands the rules any more. Nobody owns them.'
+      - type: remember
+        body: 'The numbers go in data; the limits stay in code.'
+      - type: refs
+        items:
+          - {to: 'thinking/build-vs-buy', label: 'Build vs buy: building or buying a rules engine'}
+    check:
+      q: 'Someone types a 100% discount by mistake on the admin page. What must exist, and where, so the damage never exceeds 30%?'
+      a: 'A ceiling in code, such as min($percent, 30). Whatever is written in the data, the code never goes past the cap, and logs it when it is exceeded.'
+
+flashcards:
+  - q: 'What is a business rule?'
+    a: 'A business decision that ends up in code, such as who gets how much discount or which orders are held back.'
+    more: |
+      The fare chart and the procedure for collecting fares are different things: the chart changes, the procedure doesn't. Some rules are like the chart (numbers, lists); others are like the procedure (complex calculations).
+    ref: weekly-discount-rules
+  - q: 'When is it reasonable to keep a rule in data rather than code?'
+    a: 'When it changes often, business staff change it, it is simple, and a mistake costs little.'
+    more: |
+      The four questions: how often it changes, who changes it, what a mistake costs, and how complex it is. A discount percentage or a delivery area is a good candidate for data; tax calculation or a balance update is not.
+    ref: code-or-data
+  - q: 'Which rules are better left in code?'
+    a: 'Risky ones (money, law, security), complex ones (branches, loops, state), and ones that rarely change.'
+    more: |
+      Put a rule in data and you must build the safety of code review, tests and versioning yourself. For a rarely changed rule that effort never pays off. A complex rule in data slowly turns into an untested programming language.
+    ref: code-or-data
+  - q: 'What is Symfony ExpressionLanguage used for?'
+    a: 'Running a condition stored as a string (cart.total >= 200000) in a safe, limited language to get a result.'
+    more: |
+      `$language->evaluate($expr, ['cart' => $cart])` runs the condition, and `lint()` checks the syntax before you save. A condition is really code, so limit who may change it and never run user input through it.
+    ref: expression-language-engine
+  - q: 'Why pass a small facts DTO to a rule instead of a Doctrine entity?'
+    a: 'So the rule sees only what it needs, can''t call other methods, and stored rules don''t break when the entity changes.'
+    more: |
+      Stored rules sit in the database for a long time. If they depend on deep calls like `cart.getUser().getOrders()`, any change to the entity breaks them. A facts DTO is a stable contract.
+    ref: expression-language-engine
+  - q: 'What are the safe steps for changing a rule stored in data?'
+    a: 'Write a new version, test it, dry-run it on old orders, get approval, go live on a date, and record the version on the order.'
+    more: |
+      Never delete old versions: then you can audit and you can go back. A dry run shows how much discount the rule would suddenly give. With the version on the order, you can answer "why this discount?".
+    ref: version-and-test-rules
+  - q: 'How do you stop a rule typo from causing big damage?'
+    a: 'Keep a hard limit in code, such as min($percent, 30), and validate and lint when saving to the data.'
+    more: |
+      Whatever is written in the data, the code's limit holds. Log and alert when it is exceeded, so a mistake on the admin page is caught before the damage. Numbers in data, limits in code.
+    ref: rules-gone-wrong
+
+quiz:
+  - q: 'Which rules are good candidates for moving into data?'
+    hint: 'They change often, are simple, and a mistake costs little.'
+    options:
+      - text: 'The amount above which delivery is free'
+        correct: true
+        why: 'A single number that changes often, and a mistake costs little.'
+      - text: 'The discount percentage per product category (with the ceiling in code)'
+        correct: true
+        why: 'It changes often and business staff can change it. With the cap in code, it is safe.'
+      - text: 'The VAT calculation'
+        correct: false
+        why: 'It carries legal risk and a mistake does direct damage. Keep it in code, with review and tests.'
+      - text: 'The order in which money is deducted from balances'
+        correct: false
+        why: 'That is a procedure, not a chart. It involves state and ordering, so it stays in code.'
+    ref: code-or-data
+  - q: 'What danger is there in the code below?'
+    lang: php
+    code: |
+      foreach ($this->rules->activeByPriority() as $rule) {
+          if ($this->language->evaluate($rule->expression(), ['cart' => $cart])) {
+              return $rule->percent();
+          }
+      }
+    hint: 'What would the code do if someone wrote 100 in the data?'
+    options:
+      - text: 'There is no ceiling on the discount, so a wrong number in the data is applied directly'
+        correct: true
+        why: 'A cap in code like min($percent, 30) would have stopped the damage from a typo.'
+      - text: 'You should use while instead of foreach'
+        correct: false
+        why: 'The kind of loop isn''t the problem.'
+      - text: 'evaluate() never returns a bool'
+        correct: false
+        why: 'A condition gives a bool-like result, and that is fine.'
+      - text: 'Rules can''t be stored in a database'
+        correct: false
+        why: 'They can. The problem is the lack of safeguards, not that the rules sit in the database.'
+    ref: rules-gone-wrong
+  - q: 'The marketing team wants to change a rule. Which order is safe?'
+    hint: 'Where is the chance to test against past events?'
+    options:
+      - text: 'Write a new version, test, dry-run on the last 30 days, get approval, go live on a date'
+        correct: true
+        why: 'Each step catches a different kind of mistake, and the old version makes a rollback possible.'
+      - text: 'Overwrite the existing row with the new value'
+        correct: false
+        why: 'You lose the previous version, so auditing and rollback both become impossible.'
+      - text: 'Change it on the admin page and have it live in production immediately'
+        correct: false
+        why: 'Without tests or approval, a typo does direct damage.'
+      - text: 'Change it on staging only and see what happens'
+        correct: false
+        why: 'Staging doesn''t have production''s data. A dry run uses real old orders.'
+    ref: version-and-test-rules
+  - q: 'The rule language slowly gains variables, loops and functions. What is this problem called, and what is the risk?'
+    hint: 'Does a "program" stored in a database have a debugger?'
+    options:
+      - text: 'The inner-platform effect: a weak, untested programming language grows inside your data'
+        correct: true
+        why: 'Left in code, a complex rule would get tests, a debugger and review.'
+      - text: 'Cache stampede'
+        correct: false
+        why: 'That is a cache problem, not a rule-language problem.'
+      - text: 'Config drift'
+        correct: false
+        why: 'That is environments drifting apart from each other.'
+      - text: 'No problem, the rules are just getting more powerful'
+        correct: false
+        why: 'More power means more responsibility, and without tests that is a risk.'
+    ref: rules-gone-wrong
+  - q: 'Which precautions are right when you run rules with ExpressionLanguage?'
+    hint: 'A condition string is really a small piece of code.'
+    options:
+      - text: 'Let only trusted staff change rules'
+        correct: true
+        why: 'A condition is code; whoever can write it can change the behaviour.'
+      - text: 'Check with lint() before saving'
+        correct: true
+        why: 'Bad syntax is caught on the admin page, not in production.'
+      - text: 'Pass a small facts DTO, not the entity'
+        correct: true
+        why: 'The rule sees only what it needs, and rules in the database don''t break when the entity changes.'
+      - text: 'Evaluate text typed by a customer as an expression'
+        correct: false
+        why: 'Running user input as an expression is dangerous.'
+    ref: expression-language-engine

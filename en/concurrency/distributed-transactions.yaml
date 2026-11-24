@@ -1,0 +1,445 @@
+slides:
+  - slug: dual-write
+    title: 'Saved in the database, but nobody was told'
+    kind: story
+    tldr: 'When you write to the database and then to another system (a queue, email, another service), a failure in between leaves one done and the other not. This is the dual-write problem.'
+    keywords: ['dual write', 'distributed transaction', 'message broker', 'inconsistency', 'order']
+    blocks:
+      - type: metaphor
+        icon: truck
+        title: 'Writing in the ledger, then phoning the courier'
+        body: |
+          A shopkeeper writes an order in his ledger, then phones the courier to come and collect the goods. He writes the order but forgets to call, or the phone line drops. The customer has an order, but the goods will never ship. Writes to two separate places never happen together.
+      - type: code
+        lang: php
+        file: 'src/Service/OrderService.php'
+        variant: bad
+        code: |
+          public function place(PlaceOrder $cmd): Order
+          {
+              $order = Order::place($cmd->customerId, $cmd->items);
+              $this->em->persist($order);
+              $this->em->flush();                 // 1. committed in the database
+
+              // what if the process dies here, or the broker is down?
+              $this->bus->dispatch(new OrderPlaced($order->getId()));   // 2. the notification
+
+              return $order;
+          }
+        marks:
+          - {line: 5, tip: 'COMMIT happens here. After this, the order stays in the database whatever happens.'}
+          - {line: 8, tip: 'If this line never runs, the order exists but the warehouse and the email service know nothing. Write in the opposite order and you get phantom notifications instead.'}
+      - type: visual
+        kind: sequence
+        caption: 'A failure between the two steps: the order is saved, the notification is lost'
+        actors:
+          - {id: app, label: 'Symfony app', icon: api, tip: 'Writes to two places one after the other: the database first, then the queue.'}
+          - {id: db, label: 'Database', icon: db, tip: 'Committed the order correctly.'}
+          - {id: mq, label: 'Message broker', icon: queue, tip: 'Delivers news to the warehouse, email and other services. Here the news never arrived.'}
+        messages:
+          - {from: app, to: db, label: 'COMMIT order #101'}
+          - {from: db, to: app, label: 'Committed', dashed: true, tone: good}
+          - {at: app, note: 'process crash or deploy', tone: bad, tip: 'If the app stops at exactly this moment, the second write never happens. And nobody sees any error.'}
+          - {from: app, to: mq, label: 'OrderPlaced was never sent', tone: bad, dashed: true}
+          - {at: mq, note: 'Warehouse never learns of the order', tone: bad, tip: 'The customer has paid and the goods won''t ship. It surfaces days later as a complaint.'}
+    aside:
+      - type: terms
+        items:
+          - {term: 'Dual-write', meaning: 'Writing one event to two separate systems (a database and a queue) one after the other, with no way to commit both together.'}
+          - {term: 'Distributed transaction', meaning: 'One "all or nothing" job that spans several separate systems.'}
+      - type: story
+        title: 'The lost-order complaints'
+        body: |
+          An e-commerce site got 10 to 15 complaints a month of "payment made but goods never arrived". It turned out that at deploy time, some orders had reached the database but the notification never got to the queue.
+    check:
+      q: 'The code commits to the database and then dispatches to a queue. If the process dies before the dispatch, what happens?'
+      a: 'The order stays in the database, but the OrderPlaced message is never sent. The warehouse and email service never find out, and nobody sees an error.'
+
+  - slug: two-phase-commit
+    title: 'Two-phase commit: getting everyone''s "yes", and why it is avoided'
+    kind: concept
+    tldr: 'In 2PC, a coordinator first asks everyone "ready?" and commits only if all say yes; but if the coordinator dies, everyone is left stuck.'
+    keywords: ['2PC', 'two phase commit', 'XA', 'coordinator', 'prepare', 'blocking']
+    blocks:
+      - type: metaphor
+        icon: users
+        title: 'The qazi asking for consent'
+        body: |
+          At a Muslim wedding, the qazi (the marriage registrar) first asks both bride and groom, "Do you accept?" Only if both say yes is the marriage sealed; if either says no, nothing happens. That is 2PC: phase one is prepare (getting consent), phase two is commit (the announcement). If the qazi faints after the consent but before the announcement, both sides are stuck, not knowing whether it happened.
+      - type: visual
+        kind: sequence
+        caption: 'Two-phase commit: everyone agrees first, then everyone commits together'
+        actors:
+          - {id: coord, label: 'Qazi (coordinator)', icon: flag, tip: 'Coordinates the whole job; the decision rests with it alone.'}
+          - {id: a, label: 'Database A', icon: db, tip: 'The orders database.'}
+          - {id: b, label: 'Database B', icon: db, tip: 'The inventory database.'}
+        messages:
+          - {from: coord, to: a, label: 'PREPARE: ready?', tip: 'Phase 1: A gets its work ready, holds its locks, and promises it can commit.'}
+          - {from: coord, to: b, label: 'PREPARE: ready?'}
+          - {from: a, to: coord, label: 'Yes, I accept', dashed: true, tone: good}
+          - {from: b, to: coord, label: 'Yes, I accept', dashed: true, tone: good, tip: 'This "yes" can''t be taken back. Now B can only wait for the coordinator.'}
+          - {from: coord, to: a, label: 'COMMIT', tip: 'Phase 2: everyone said yes, so it is final now.'}
+          - {from: coord, to: b, label: 'COMMIT'}
+      - type: points
+        title: 'Why it is usually avoided'
+        style: cross
+        items:
+          - 'If the coordinator or the network fails midway, A and B sit holding locks (blocking).'
+          - 'Every phase costs a network round trip, so it is slow, and locks are held longer.'
+          - 'Email, SMS and external HTTP APIs don''t understand 2PC. Not every system supports XA.'
+      - type: quote
+        body: 'When outside systems are involved, skip 2PC: use an outbox, sagas and idempotency.'
+    aside:
+      - type: when
+        use: ['Two XA-capable databases in the same company, low traffic, an experienced team']
+        avoid: ['Outside APIs, queues, email or many services involved', 'High traffic or a need for fast responses']
+      - type: terms
+        items:
+          - {term: 'XA', meaning: 'The common standard for 2PC between databases and a transaction manager.'}
+    check:
+      q: 'After every participant has said "yes" to PREPARE, the coordinator dies. What happens?'
+      a: 'The participants don''t know whether to commit or roll back, so they sit holding their locks. Until the coordinator returns, nobody else can work on those rows.'
+
+  - slug: outbox-pattern
+    title: 'Outbox: write the notification in the same transaction'
+    kind: howto
+    tldr: 'Write the notification into an outbox table in the same transaction as the order; a separate relay sends it to the queue later. The notification can''t get lost.'
+    keywords: ['outbox pattern', 'transactional outbox', 'relay', 'Messenger', 'Scheduler', 'at-least-once']
+    blocks:
+      - type: text
+        body: |
+          The fix: don't write to two places, write to the same database. The order and the note "this message must be sent" go into one transaction, so they commit together or are cancelled together. Then a separate relay reads the outbox, sends the messages to the broker, and marks them as sent. Think of a postman's delivery list.
+      - type: code
+        lang: php
+        file: 'src/Service/OrderService.php'
+        variant: good
+        code: |
+          public function place(PlaceOrder $cmd): Order
+          {
+              return $this->em->wrapInTransaction(function () use ($cmd): Order {
+                  $order = Order::place($cmd->customerId, $cmd->items);
+                  $this->em->persist($order);
+
+                  // same transaction: order and message commit together, or neither does
+                  $this->em->persist(new OutboxMessage(
+                      type: 'order.placed',
+                      payload: json_encode(['orderId' => (string) $order->getId()]),
+                  ));
+
+                  return $order;
+              });
+          }
+        marks:
+          - {line: 8, tip: 'The outbox row is in the same database as orders. On COMMIT both stay; on ROLLBACK both go.'}
+      - type: code
+        lang: php
+        file: 'src/Scheduler/OutboxRelay.php'
+        code: |
+          #[AsPeriodicTask(frequency: '5 seconds')]
+          final readonly class OutboxRelay
+          {
+              public function __invoke(): void
+              {
+                  $this->em->wrapInTransaction(function (): void {
+                      $rows = $this->em->getConnection()->fetchAllAssociative(
+                          'SELECT id, type, payload FROM outbox_message
+                           WHERE published_at IS NULL ORDER BY created_at
+                           LIMIT 100 FOR UPDATE SKIP LOCKED'
+                      );
+                      foreach ($rows as $row) {
+                          $this->bus->dispatch(
+                              new PublishEvent($row['id'], $row['type'], $row['payload'])
+                          );
+                          $this->em->getConnection()->executeStatement(
+                              'UPDATE outbox_message SET published_at = NOW() WHERE id = :id',
+                              ['id' => $row['id']],
+                          );
+                      }
+                  });
+              }
+          }
+        marks:
+          - {line: 10, tip: 'SKIP LOCKED: when several relays run, two of them never pick up the same row.'}
+          - {line: 13, tip: 'If the dispatch succeeds but the UPDATE or COMMIT afterwards fails, the message goes out again. That is at-least-once, so the consumer needs idempotency.'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'An outbox never gives exactly-once. It won''t lose a message, but it may send one twice. That is why the idempotent consumer on the next slide is essential.'
+          - 'Add a job to delete old published rows, or the outbox table keeps growing.'
+      - type: tips
+        items:
+          - 'In a small app, if Messenger''s Doctrine transport uses the same connection, the dispatch itself becomes part of that transaction; that is how you get a simple outbox.'
+      - type: refs
+        items:
+          - {to: 'workflows/outbox-inbox', label: 'Outbox and inbox in depth'}
+    check:
+      q: 'Why does putting the notification in an outbox close the gap between the order''s COMMIT and a lost message?'
+      a: 'The order and the message are written in one transaction, so both commit or both are cancelled. The relay sends from the outbox later, so a pending message is never lost.'
+
+  - slug: saga-compensation
+    title: 'Saga: every step has an "undo step"'
+    kind: concept
+    tldr: 'Break a job spanning many services into small steps; if a step fails, undo the earlier successful steps in reverse order with compensations.'
+    keywords: ['saga', 'compensation', 'orchestration', 'choreography', 'rollback', 'steps']
+    blocks:
+      - type: text
+        body: |
+          An online order involves four services: order, payment, stock and courier. They are all separate, so a single rollback across them is impossible. So each service finishes its own transaction and tells the next step. If something gets stuck, the earlier steps run their own **compensation**, such as refunding the money. Instead of a database rollback, it is an "undoing action that makes amends".
+      - type: visual
+        kind: table
+        caption: 'A four-step saga, and the undo step for each'
+        headers: ['Step', 'What it does', 'Undo if it fails']
+        rows:
+          - cells: ['1. Create order', 'Makes the order pending', 'Mark the order cancelled']
+            tip: 'The first step succeeded. If any later step fails, the order is marked cancelled.'
+          - cells: ['2. Take payment', 'Charges the customer', 'Refund the money']
+            tip: 'The charge is already committed in another database. It can''t be erased, so you need an opposite refund transaction.'
+          - cells: ['3. Reserve stock', 'Places a hold on stock', 'Release the hold']
+            tip: 'If the courier step fails, the stock must be freed again.'
+          - cells: ['4. Book courier', 'Requests a pickup from the courier', 'Cancel the pickup']
+            tip: 'The last step. If it fails, the earlier three are undone in reverse order (3, 2, 1).'
+      - type: quote
+        body: 'A saga has no rollback; it has an undo action for each step.'
+    aside:
+      - type: remember
+        body: 'When it fails, undo the earlier steps in reverse order: 3, 2, 1.'
+      - type: terms
+        items:
+          - {term: 'Orchestration', meaning: 'One coordinator runs the steps in order.'}
+          - {term: 'Choreography', meaning: 'Each service listens for events and does its next job itself, with no coordinator in the middle.'}
+      - type: refs
+        items:
+          - {to: 'workflows/sagas', label: 'Sagas in depth'}
+          - {to: 'workflows/refunds-reversals', label: 'Refunds and reversals'}
+    check:
+      q: 'The courier booking failed. Which steps does the saga undo, and in what order?'
+      a: 'In reverse order: first it releases the stock hold (3), then refunds the payment (2), and finally marks the order cancelled (1).'
+
+  - slug: idempotent-consumer
+    title: 'Arrives twice, runs once: the idempotent consumer'
+    kind: pitfall
+    tldr: 'An outbox, retries and the broker can all deliver the same message more than once. A consumer that remembers each message id and does nothing the second time is safe.'
+    keywords: ['idempotency', 'idempotent consumer', 'inbox', 'at least once', 'duplicate', 'ON CONFLICT']
+    blocks:
+      - type: text
+        body: |
+          Because of the outbox and retries, a message arrives **at least once**, and sometimes twice. An ordinary handler then awards points twice or sends the email twice. The fix: every message has an id, and the handler first inserts that id into a table. If the insert doesn't go through (it's already there), the work was done earlier, and the handler quietly returns.
+      - type: code
+        lang: php
+        file: 'src/MessageHandler/AwardPointsHandler.php'
+        variant: bad
+        code: |
+          #[AsMessageHandler]
+          final readonly class AwardPointsHandler
+          {
+              public function __invoke(OrderPlaced $event): void
+              {
+                  // if the same event arrives twice, the customer gets double points
+                  $this->points->award($event->customerId, 50);
+              }
+          }
+        marks:
+          - {line: 7, tip: 'There is no duplicate check. A broker retry or a second send by the relay turns straight into extra money or points.'}
+      - type: code
+        lang: php
+        file: 'src/MessageHandler/AwardPointsHandler.php'
+        variant: good
+        code: |
+          #[AsMessageHandler]
+          final readonly class AwardPointsHandler
+          {
+              public function __invoke(OrderPlaced $event): void
+              {
+                  $this->em->wrapInTransaction(function () use ($event): void {
+                      $fresh = $this->em->getConnection()->executeStatement(
+                          'INSERT INTO processed_message (message_id, handler)
+                           VALUES (:id, :h) ON CONFLICT DO NOTHING',
+                          ['id' => $event->messageId, 'h' => 'award-points'],
+                      );
+                      if ($fresh === 0) {
+                          return;                   // already done, do nothing
+                      }
+                      $this->points->award($event->customerId, 50);
+                  });
+              }
+          }
+        marks:
+          - {line: 9, tip: 'processed_message has a unique constraint on the (message_id, handler) pair. Even if two workers arrive together, only one gets in.'}
+          - {line: 13, tip: '0 means this id was already inserted. Because awarding the points is in the same transaction, the work and the "done" marker commit together.'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'Putting outside work like email inside the transaction makes duplicates hard to stop. Where possible, use the provider''s idempotency key.'
+          - 'Create the message id once per event (the outbox row''s id), not on every send.'
+      - type: refs
+        items:
+          - {to: 'payments/idempotency-keys', label: 'Idempotency keys: the full design'}
+          - {to: 'concurrency/atomic-operations', label: 'ON CONFLICT and unique constraints'}
+    check:
+      q: 'If the same OrderPlaced event arrives twice, how does the handler award the points only once?'
+      a: 'The first time, it manages to insert the message_id, so it awards the points. The second time, ON CONFLICT gives affected rows 0, so it returns without doing anything.'
+
+flashcards:
+  - q: 'What is the dual-write problem?'
+    a: 'Writing one event to two separate systems (such as a database and a queue) one after the other, so a failure midway leaves one done and the other not.'
+    more: |
+      If the process dies after the database COMMIT but before the queue dispatch, the order exists but the notification doesn't. The reverse order is dangerous too: the notification goes out and the database has nothing. There is no simple way to commit two separate systems together.
+    ref: dual-write
+  - q: 'How does two-phase commit (2PC) work?'
+    a: 'A coordinator first asks everyone to PREPARE. If all say yes, it tells everyone to COMMIT; if anyone says no, everyone ROLLBACKs.'
+    more: |
+      In phase one, the participants get their work ready, hold locks and make a promise. In phase two, the coordinator announces the final decision. Like the qazi's "do you accept?" followed by "it is done".
+    ref: two-phase-commit
+  - q: 'Why is 2PC usually avoided?'
+    a: 'If the coordinator dies, everyone is stuck holding locks; it adds network round trips; and email or outside APIs don''t understand 2PC.'
+    more: |
+      If the coordinator doesn't return after everyone has said "yes", the participants are stuck. So it is slow, fragile, and impossible across many systems. It can be useful between two XA-capable databases in one company, but modern systems barely use it.
+    ref: two-phase-commit
+  - q: 'What is a transactional outbox?'
+    a: 'Writing the "must be sent" message into an outbox table in the same transaction as the data; a separate relay sends it to the queue later.'
+    more: |
+      Instead of writing to two systems, you make two writes in one database, so they commit together or are cancelled together. The relay sends from the outbox and sets `published_at`. The message is never lost.
+    ref: outbox-pattern
+  - q: 'Does an outbox give exactly-once delivery?'
+    a: 'No. It won''t lose a message, but it can send the same one twice (at-least-once). The consumer has to be idempotent.'
+    more: |
+      If the relay crashes after sending but before setting `published_at`, it sends the message again on its next pass. That is why an outbox is always paired with an idempotent consumer.
+    ref: outbox-pattern
+  - q: 'Why does an outbox relay use SKIP LOCKED?'
+    a: 'When several relays run, they share the rows instead of two taking the same one, skipping rows another relay holds.'
+    more: |
+      With `SELECT … FOR UPDATE SKIP LOCKED`, each relay gets its own batch of rows. That lets you scale up, and also reduces the risk of extra duplicate sends.
+    ref: outbox-pattern
+  - q: 'What is a saga?'
+    a: 'Splitting a job across many services into small steps, each with its own transaction and an undo (compensation) action for when it fails.'
+    more: |
+      Order, payment, stock, courier: each commits its work in its own database. If the courier fails, the stock hold is released, the money is refunded, and the order is marked cancelled.
+    ref: saga-compensation
+  - q: 'What is the difference between compensation and rollback?'
+    a: 'Rollback erases uncommitted changes. Compensation performs a new action that reverses already-committed work, such as a refund.'
+    more: |
+      The service has already committed its transaction, so it can't be erased. A refund is a new transaction, and the history holds both. That also means a compensation can fail too, so it needs retries and monitoring as well.
+    ref: saga-compensation
+  - q: 'How do you build an idempotent consumer?'
+    a: 'Insert each message id into a unique table; if the insert doesn''t go through (it already exists), do nothing and return.'
+    more: |
+      Use `INSERT … ON CONFLICT DO NOTHING` and look at affected rows: 1 means the first time, 0 means a duplicate. If the work is in the database, do it in the same transaction, so the "done" marker and the work commit together.
+    ref: idempotent-consumer
+
+quiz:
+  - q: 'What is the biggest danger in this code?'
+    lang: php
+    code: |
+      $this->em->persist($order);
+      $this->em->flush();
+      $this->bus->dispatch(new OrderPlaced($order->getId()));
+    hint: 'What if something happens after flush() but before the dispatch?'
+    options:
+      - text: 'If the process dies after the flush, the order exists but nobody learns of OrderPlaced'
+        correct: true
+        why: 'It writes to two separate systems; a failure in the gap leaves one committed and the other not.'
+      - text: 'If the dispatch is slow, the flush will fail'
+        correct: false
+        why: 'The flush was already committed, so a slow dispatch has no effect on it.'
+      - text: 'Doctrine will create the same order twice'
+        correct: false
+        why: 'That has nothing to do with this; the problem is a lost message, not a duplicate order.'
+    ref: dual-write
+  - q: 'Which are valid reasons to avoid 2PC?'
+    hint: 'What happens when the coordinator fails, and do outside systems understand XA?'
+    options:
+      - text: 'If the coordinator fails, participants are stuck holding locks'
+        correct: true
+        why: 'After saying yes to PREPARE, they can''t decide for themselves.'
+      - text: 'Email, SMS and outside HTTP APIs usually don''t support 2PC'
+        correct: true
+        why: 'Today''s apps often talk to systems like these, which makes 2PC useless.'
+      - text: 'It is slow because of network round trips in every phase and locks held longer'
+        correct: true
+        why: 'Locks stay held longer, so performance drops and collisions rise.'
+      - text: 'Data never commits with 2PC'
+        correct: false
+        why: 'When it runs properly, it commits. The problems are getting stuck on failure and its narrow applicability.'
+    ref: two-phase-commit
+  - q: 'In an outbox design, why are the order and the outbox row written in the same transaction?'
+    hint: 'What would happen if one committed and the other didn''t?'
+    options:
+      - text: 'So both commit together or both are cancelled, and the message is never lost'
+        correct: true
+        why: 'Only a database transaction gives atomicity, and here both rows are in the same database.'
+      - text: 'So the message is sent exactly once'
+        correct: false
+        why: 'An outbox gives at-least-once; with the relay''s retries, the same message may go out twice.'
+      - text: 'So you no longer need a queue'
+        correct: false
+        why: 'You still need the queue: the relay reads the outbox and sends to it.'
+      - text: 'So 2PC can be used'
+        correct: false
+        why: 'An outbox is an alternative to 2PC, not an application of it.'
+    ref: outbox-pattern
+  - q: 'The relay sent a message to the broker but died before setting `published_at`. What happens next?'
+    hint: 'Will the row look "unpublished" again?'
+    options:
+      - text: 'The message is lost and nobody ever receives it'
+        correct: false
+        why: 'The row is still unpublished, so it is sent again on the next pass; the message is not lost.'
+      - text: 'The message is sent again, so consumers must handle duplicates'
+        correct: true
+        why: 'This is at-least-once behaviour, which is why consumers must be idempotent.'
+      - text: 'The database deletes the row itself'
+        correct: false
+        why: 'A database never does that on its own; only your code changes it.'
+    ref: outbox-pattern
+  - q: 'In a four-service saga (order, payment, stock, courier), the courier step fails. What is the right response?'
+    hint: 'The payment charge is already committed in another database.'
+    options:
+      - text: 'Call ROLLBACK on all databases at once'
+        correct: false
+        why: 'The services have already committed their own transactions; a single rollback is impossible.'
+      - text: 'Release the stock hold, refund the payment, mark the order cancelled, in reverse order'
+        correct: true
+        why: 'Each step runs its own compensation, from the back to the front.'
+      - text: 'Do nothing and ask the customer to order again'
+        correct: false
+        why: 'Leaving the charge and the stock hold in place does real harm.'
+      - text: 'Only mark the order cancelled'
+        correct: false
+        why: 'The money and the stock hold haven''t been returned: the customer loses money and stock stays blocked.'
+    ref: saga-compensation
+  - q: 'In the code below, what does `$fresh === 0` mean?'
+    lang: php
+    code: |
+      $fresh = $conn->executeStatement(
+          'INSERT INTO processed_message (message_id, handler)
+           VALUES (:id, :h) ON CONFLICT DO NOTHING',
+          ['id' => $event->messageId, 'h' => 'award-points'],
+      );
+      if ($fresh === 0) { return; }
+    hint: 'When does ON CONFLICT DO NOTHING insert no row?'
+    options:
+      - text: 'This message id was already processed, so skipping the work is safe'
+        correct: true
+        why: 'A unique conflict means the work was done in an earlier pass.'
+      - text: 'The database connection failed'
+        correct: false
+        why: 'A failed connection would raise an exception, not return 0.'
+      - text: 'The message arrived in the wrong format'
+        correct: false
+        why: 'The format has nothing to do with it; this is a duplicate check.'
+    ref: idempotent-consumer
+  - q: 'Which of these are parts of a correct idempotent consumer?'
+    hint: 'What does the handler do to deal with duplicates?'
+    options:
+      - text: 'Inserting each message''s id into a unique table'
+        correct: true
+        why: 'That unique constraint is the tool that catches duplicates.'
+      - text: 'Keeping the work and the "done" marker in the same transaction'
+        correct: true
+        why: 'They commit together, so you never get "marker saved but work not done".'
+      - text: 'Collecting seen ids in a PHP static array inside the handler'
+        correct: false
+        why: 'Every worker is a separate process, and nothing is remembered after a restart.'
+      - text: 'Treating the broker as exactly-once and keeping the handler simple'
+        correct: false
+        why: 'Ordinary brokers give at-least-once; duplicates will come.'
+    ref: idempotent-consumer

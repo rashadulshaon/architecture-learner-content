@@ -1,0 +1,340 @@
+slides:
+  - slug: letter-that-never-delivers
+    title: 'The message that never succeeds'
+    kind: story
+    tldr: 'Rerun a broken message again and again in a rush and a failing API takes even more pressure while the queue clogs up. You need a rule for cutting it off.'
+    keywords: ['poison message', 'retry storm', 'infinite retry', 'retry loop', 'failed message']
+    blocks:
+      - type: metaphor
+        icon: mail
+        title: 'The letter with the wrong address'
+        body: |
+          A postman can't find the house for one letter. If he spent the whole day carrying that one letter around, a hundred others would sit undelivered. Yet for a temporary reason, say nobody is home, a second visit does get the letter through. The two kinds of failure need two different treatments.
+      - type: visual
+        kind: flow
+        caption: 'One broken message keeps coming back and blocks the line'
+        nodes:
+          - {id: queue, label: 'Queue', sub: 'message #77 at the front', icon: queue, col: 0, row: 0, tip: 'All the messages wait in line here. The broken message comes back and takes the front again.'}
+          - {id: worker, label: 'Worker', sub: 'fails every time', icon: worker, tone: warn, col: 1.5, row: 0, tip: 'Each time it tries the same job and hits the same exception.'}
+          - {id: api, label: 'SMS API', sub: '400: bad number', icon: api, tone: bad, col: 3, row: 0, tip: 'The number itself is wrong, so this API will never respond no matter how often you try.'}
+        edges:
+          - {from: queue, to: worker, label: 'The worker takes message #77'}
+          - {from: worker, to: api, label: 'The SMS API says the number is wrong, 400', tone: bad}
+          - {from: worker, to: queue, label: 'It failed, so the message goes straight back on the queue', dashed: true, tone: bad}
+      - type: quote
+        body: 'Not all failures are equal: retry the temporary ones, set the permanent ones aside.'
+    aside:
+      - type: story
+        title: 'The holiday-night SMS storm'
+        body: |
+          One app's SMS gateway was down for 10 minutes. The moment it came back, thousands of messages retried at once and knocked the gateway over again, because every retry was immediate and all of them fired at the same time.
+      - type: terms
+        items:
+          - {term: 'Poison message', meaning: 'A message that fails every time you run it, because the message itself is broken.'}
+          - {term: 'Retry storm', meaning: 'Many messages retrying together and pressing even harder on a service that is already down.'}
+    check:
+      q: 'An SMS to a wrong number keeps failing. Why is retrying it forever a mistake?'
+      a: 'The failure is permanent: the number won''t fix itself, so a retry changes nothing. The message just keeps coming back and wasting the worker''s and the API''s time.'
+
+  - slug: backoff-and-dlq
+    title: 'Retry with backoff, and the DLQ at the end'
+    kind: concept
+    tldr: 'Retry a limited number of times, waiting twice as long each time. If it still fails, park the message in a dead-letter queue and let a human look.'
+    keywords: ['retry', 'exponential backoff', 'jitter', 'DLQ', 'dead letter queue', 'max retries']
+    blocks:
+      - type: metaphor
+        icon: mail
+        title: 'The postman and the dead letter office'
+        body: |
+          The postman goes back after 1 hour, then after 2 hours, then after 4. The gap grows each time, and some postmen go a little earlier or later so they don't all arrive at the same house at the same moment. If the letter still isn't delivered after three tries, it goes to the **dead letter office**, where a person looks at it and decides what to do.
+      - type: visual
+        kind: bars
+        caption: 'Messenger''s default backoff: starts at 1s and doubles each time'
+        items:
+          - {label: '1st retry', value: 1, display: '1s', tone: good, tip: 'A temporary hiccup often clears up within a second.'}
+          - {label: '2nd retry', value: 2, display: '2s', tone: good, tip: 'The gap doubles, giving the failing service time to catch its breath.'}
+          - {label: '3rd retry', value: 4, display: '4s', tone: warn, tip: 'If it still fails, the problem probably isn''t temporary.'}
+          - {label: 'Failure transport', value: 8, display: 'DLQ', tone: bad, tip: 'max_retries is used up and the message is parked in a separate place. A human looks at it next.'}
+      - type: visual
+        kind: steps
+        caption: 'The life of one message: from failure to resolution'
+        steps:
+          - {title: '1. Fails', body: 'The handler throws, no ack is sent', tip: 'Messenger understands the job wasn''t done.'}
+          - {title: '2. Waits', body: 'The backoff delay grows and the message sits', tip: 'This gives the failing service time to recover.'}
+          - {title: '3. Retries', body: 'Tries again, up to max_retries times', tip: 'Without a limit, a broken message would circle forever.'}
+          - {title: '4. DLQ', body: 'The failed message is parked in its own queue', tip: 'The main queue is clean again and keeps moving.'}
+          - {title: '5. A human', body: 'Fixes the cause, then replays or discards it', tip: 'A message landing in the DLQ should always raise an alert.'}
+    aside:
+      - type: remember
+        body: 'Grow the gap, cap the count, and move the stubborn message somewhere else.'
+      - type: terms
+        items:
+          - {term: 'Backoff', meaning: 'Waiting longer before each retry than before the last one.'}
+          - {term: 'Jitter', meaning: 'A small random plus or minus on the wait time so everyone doesn''t arrive together.'}
+          - {term: 'DLQ', meaning: 'Dead-letter queue: a separate home for messages that still fail after retries.'}
+    check:
+      q: 'Why add jitter to a backoff?'
+      a: 'If a thousand messages fail at the same moment, without jitter they all retry in the same second and knock the service over again. Jitter spreads them out.'
+
+  - slug: messenger-retry-config
+    title: 'Retry strategy and failure transport in Messenger'
+    kind: howto
+    tldr: 'Set retry_strategy and failure_transport on the transport. Throw a plain exception for temporary failures and UnrecoverableMessageHandlingException for permanent ones.'
+    keywords: ['retry_strategy', 'failure_transport', 'UnrecoverableMessageHandlingException', 'messenger:failed:retry', 'failed messages']
+    blocks:
+      - type: code
+        lang: yaml
+        file: 'config/packages/messenger.yaml'
+        variant: good
+        code: |
+          framework:
+              messenger:
+                  failure_transport: failed
+
+                  transports:
+                      async:
+                          dsn: '%env(MESSENGER_TRANSPORT_DSN)%'
+                          retry_strategy:
+                              max_retries: 3
+                              delay: 1000        # first wait: 1 second
+                              multiplier: 2      # 1s, 2s, 4s
+                              max_delay: 60000   # never more than 1 minute
+                              jitter: 0.1        # ±10% random
+                      failed: 'doctrine://default?queue_name=failed'
+
+                  routing:
+                      'App\Message\SendSms': async
+        marks:
+          - {line: 3, tip: 'Without this line, a message that uses up max_retries is simply thrown away and nobody even sees it.'}
+          - {line: 9, tip: 'No more retries than this number. After the last failure the message goes to the failure transport.'}
+          - {line: 14, tip: 'The home for failed messages. In a small app a Doctrine table is enough, and no extra worker is needed.'}
+      - type: code
+        lang: php
+        file: 'src/MessageHandler/SendSmsHandler.php'
+        variant: good
+        code: |
+          #[AsMessageHandler]
+          final readonly class SendSmsHandler
+          {
+              public function __construct(private TexterInterface $texter) {}
+
+              public function __invoke(SendSms $m): void
+              {
+                  if (!preg_match('/^\+8801[3-9]\d{8}$/', $m->phone)) {
+                      // permanent failure: retrying won't fix the number
+                      throw new UnrecoverableMessageHandlingException('Invalid phone number');
+                  }
+
+                  // a gateway outage raises TransportException: temporary, so it retries
+                  $this->texter->send(new SmsMessage($m->phone, $m->text));
+              }
+          }
+        marks:
+          - {line: 10, tip: 'When it sees this exception, Messenger skips the retries and sends the message straight to the failure transport.'}
+          - {line: 14, tip: 'A normal exception or a transport exception triggers the retry strategy. Don''t catch it here and swallow it.'}
+    aside:
+      - type: commands
+        title: 'Inspecting and handling failed messages'
+        items:
+          - {cmd: 'php bin/console messenger:failed:show', desc: 'See the messages in the failure transport and why they failed'}
+          - {cmd: 'php bin/console messenger:failed:retry 12', desc: 'Send one specific message back to its original transport'}
+          - {cmd: 'php bin/console messenger:failed:retry --force', desc: 'Run all failed messages again, one by one'}
+          - {cmd: 'php bin/console messenger:failed:remove 12', desc: 'Delete a message you no longer need'}
+      - type: tips
+        items:
+          - 'Raise an alert when messages pile up in the failure transport. A DLQ that fills silently is lost work.'
+          - 'Fix the root cause before retrying, or the same message will fail and come back again.'
+    check:
+      q: 'Which exception should you throw for a message with an invalid phone number, and what does it do?'
+      a: '`UnrecoverableMessageHandlingException`. Messenger skips the retries and sends the message straight to the failure transport, because retrying can''t fix the number.'
+
+  - slug: idempotent-consumer
+    title: 'The trap: work done twice after a retry'
+    kind: pitfall
+    tldr: 'Retries and redeliveries mean a handler can run more than once. Record the message id in a processed-message table so the work happens only once.'
+    keywords: ['idempotent consumer', 'processed message', 'inbox', 'deduplication', 'unique constraint', 'duplicate handler']
+    blocks:
+      - type: metaphor
+        icon: book
+        title: 'The corner shop''s delivery ledger'
+        body: |
+          The shopkeeper writes a number on every delivery slip. When someone shows up twice with slip 102, he opens the ledger, sees "102 was already collected", and doesn't hand over the goods a second time. For an **idempotent consumer**, that ledger is the `processed_message` table.
+      - type: code
+        lang: php
+        file: 'src/MessageHandler/AwardPointsHandler.php'
+        variant: bad
+        code: |
+          public function __invoke(AwardPoints $m): void
+          {
+              // on redelivery the same points are added again
+              $this->db->executeStatement(
+                  'UPDATE loyalty SET points = points + ? WHERE user_id = ?',
+                  [$m->points, $m->userId],
+              );
+          }
+        marks:
+          - {line: 3, tip: 'Every time this code runs it adds points. A duplicate message means double points.'}
+      - type: code
+        lang: php
+        file: 'src/MessageHandler/AwardPointsHandler.php'
+        variant: good
+        code: |
+          public function __invoke(AwardPoints $m): void
+          {
+              $this->db->beginTransaction();
+              try {
+                  $new = $this->db->executeStatement(
+                      'INSERT INTO processed_message (message_id, handler) VALUES (?, ?)
+                       ON CONFLICT DO NOTHING', [$m->messageId, self::class]);
+                  if (0 === $new) {            // already processed
+                      $this->db->rollBack();
+                      return;
+                  }
+                  $this->db->executeStatement(
+                      'UPDATE loyalty SET points = points + ? WHERE user_id = ?',
+                      [$m->points, $m->userId]);
+                  $this->db->commit();
+              } catch (\Throwable $e) {
+                  $this->db->rollBack();
+                  throw $e;                    // rethrow so the retry happens
+              }
+          }
+        marks:
+          - {line: 6, tip: 'With a UNIQUE constraint on (message_id, handler), one message gets into one handler only once.'}
+          - {line: 8, tip: '0 rows inserted means it was already done, so quietly return. This is not a failure.'}
+          - {line: 15, tip: 'The work and the ledger entry are in one transaction, so one can''t happen without the other.'}
+      - type: quote
+        body: 'Where there are retries there are duplicates, and handling duplicates is the handler''s job.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'External work like email or a payment API can''t join your DB transaction. Give the provider an idempotency key there.'
+          - 'The producer creates the message id (`Uuid::v7()`). The id must stay the same across retries; make a new one and the check is useless.'
+      - type: refs
+        items:
+          - {to: 'payments/idempotency-keys', label: 'Idempotency keys and replay'}
+          - {to: 'workflows/outbox-inbox', label: 'The full inbox table'}
+    check:
+      q: 'Why is the UNIQUE constraint on (message_id, handler) in processed_message, not on message_id alone?'
+      a: 'One message can go to several handlers. With a unique message_id alone, the first handler would mark it and the other handlers could never do their work.'
+
+flashcards:
+  - q: 'What is a poison message?'
+    a: 'A message that fails every time it is run, because the message itself is broken or its data is unacceptable.'
+    more: |
+      A poison message can't be cured by retrying. With unlimited retries it keeps coming back and clogs the worker. So after a limited number of retries it has to be moved to a dead-letter queue.
+    ref: letter-that-never-delivers
+  - q: 'Which failures should you retry, and which not?'
+    a: 'Retry temporary failures (timeouts, a gateway outage). For permanent ones (a wrong number, a validation error), skip the retries and send the message straight to the DLQ.'
+    more: |
+      With a permanent failure a retry changes nothing and only wastes time and money. In Messenger, throw `UnrecoverableMessageHandlingException` to signal a permanent failure, and the retries are skipped.
+    ref: messenger-retry-config
+  - q: 'What is exponential backoff?'
+    a: 'Waiting longer before each retry than before the last, usually twice as long. For example 1s, 2s, 4s.'
+    more: |
+      The aim is to give a failing service time to recover, since an immediate retry only presses harder on it. In Messenger you tune this with `delay`, `multiplier` and `max_delay`.
+    ref: backoff-and-dlq
+  - q: 'Why add jitter to retries?'
+    a: 'So a thousand messages don''t retry in the same second. A small random plus or minus on the wait time spreads the retries out.'
+    more: |
+      Without jitter, all the messages that failed at the same moment come back at the same moment and knock the service over again, which is called a retry storm. In Messenger, `jitter: 0.1` means ±10%.
+    ref: backoff-and-dlq
+  - q: 'What is a dead-letter queue (DLQ) for?'
+    a: 'Messages that still fail after the retries wait here. The main queue keeps running clean, and a human can inspect the cause, then replay or discard them.'
+    more: |
+      A DLQ isn't just a dumping ground; it is a to-do list. You need an alert when messages land in it, or failed work quietly disappears.
+    ref: backoff-and-dlq
+  - q: 'Which Messenger setting creates the DLQ, and how do you rerun failed messages?'
+    a: '`failure_transport: failed`. Then inspect with `messenger:failed:show` and rerun with `messenger:failed:retry`.'
+    more: |
+      Without `failure_transport`, a message that uses up max_retries is discarded. Fix the cause before retrying, or the same message will fail and come back again.
+    ref: messenger-retry-config
+  - q: 'How do you build an idempotent consumer?'
+    a: 'Every message has an id. While doing the work, the handler writes that id into a processed_message table with a UNIQUE constraint, in the same transaction.'
+    more: |
+      If the insert conflicts, the message was already processed, so the handler returns without doing anything. With the work and the ledger entry in one transaction, one can't happen without the other.
+    ref: idempotent-consumer
+
+quiz:
+  - q: 'In which cases is a retry pointless, so the message should go straight to the failure transport?'
+    hint: 'In which cases will time passing change nothing?'
+    options:
+      - text: 'The SMS gateway times out for 30 seconds'
+        correct: false
+        why: 'That is a temporary failure. Once the gateway recovers, a retry will succeed.'
+      - text: 'The phone number in the message has an invalid format'
+        correct: true
+        why: 'The number won''t fix itself, so retrying is pointless.'
+      - text: 'The database hits a deadlock for a few seconds'
+        correct: false
+        why: 'A deadlock is temporary. A retry usually clears it quietly.'
+      - text: 'The data in the message JSON has the wrong type and no handler can read it'
+        correct: true
+        why: 'The data is broken, so it will fail every time you run it. That is a permanent failure too.'
+    ref: messenger-retry-config
+  - q: 'In the config below, what happens to a failed message once `max_retries` is used up?'
+    lang: yaml
+    code: |
+      framework:
+          messenger:
+              transports:
+                  async:
+                      dsn: '%env(MESSENGER_TRANSPORT_DSN)%'
+                      retry_strategy:
+                          max_retries: 3
+                          delay: 1000
+                          multiplier: 2
+    hint: 'Is there a failure_transport line?'
+    options:
+      - text: 'It automatically creates a failed queue and collects there'
+        correct: false
+        why: 'You have to define the failure transport yourself; Messenger doesn''t create one on its own.'
+      - text: 'The message is discarded and nobody even sees it'
+        correct: true
+        why: 'With no `failure_transport` set, the message is thrown away after the retries. The work is lost silently.'
+      - text: 'It keeps retrying forever, at gaps of 1s, 2s, 4s'
+        correct: false
+        why: '`max_retries: 3` sets the limit. After that there are no more retries.'
+    ref: messenger-retry-config
+  - q: 'A handler adds loyalty points every time it runs. What happens on a redelivery, and what should you do?'
+    hint: 'How will the handler recognise a message it has seen before?'
+    options:
+      - text: 'Points are added twice; keep the message id in a processed_message table with a UNIQUE constraint and check it'
+        correct: true
+        why: 'An idempotent consumer: if the id has been seen, the handler does nothing.'
+      - text: 'Messenger spots duplicates itself and drops them, so there is nothing to do'
+        correct: false
+        why: 'Messenger doesn''t know what the work means. Handling duplicates is the handler''s responsibility.'
+      - text: 'Turning off retries means there will be no more duplicates'
+        correct: false
+        why: 'Even with retries off, a crash still causes a redelivery, and you take on the risk of losing work.'
+    ref: idempotent-consumer
+  - q: 'Which statements are correct?'
+    hint: 'Think about what backoff and the DLQ are for.'
+    options:
+      - text: 'Backoff gives a failing service time to recover'
+        correct: true
+        why: 'An immediate retry presses harder on a failing service. A growing gap lets it breathe.'
+      - text: 'You should raise an alert when messages land in the DLQ'
+        correct: true
+        why: 'A DLQ means work for a human. With no alert, the work quietly rots there.'
+      - text: 'The more retries the better, so keep `max_retries` large'
+        correct: false
+        why: 'A big number sends a broken message round for hours. Keep the limit small and move it to the DLQ.'
+      - text: 'Messages in the DLQ fix themselves and run again'
+        correct: false
+        why: 'Someone has to fix the cause and then run `messenger:failed:retry`.'
+    ref: backoff-and-dlq
+  - q: 'Why keep the UNIQUE constraint on (message_id, handler) and the work in one transaction?'
+    hint: 'What if the work is done but the ledger entry isn''t written, or the reverse?'
+    options:
+      - text: 'So the ledger entry and the work either both happen or both are cancelled'
+        correct: true
+        why: 'Kept apart, a crash could leave the mark made but the work not done, or the work done but no mark.'
+      - text: 'So the database runs faster'
+        correct: false
+        why: 'This is for correctness, not speed.'
+      - text: 'So Messenger never lets a duplicate message into the queue'
+        correct: false
+        why: 'The message gets into the queue anyway. The duplicate is caught inside the handler, not on the way in.'
+    ref: idempotent-consumer

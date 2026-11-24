@@ -1,0 +1,364 @@
+slides:
+  - slug: one-copy-is-risky
+    title: 'The danger of a single copy'
+    kind: story
+    tldr: 'When the only database server dies, everything stops, and one machine carries all the read load. Replication keeps several copies: one leader takes the writes and the followers receive copies.'
+    keywords: ['replication', 'leader follower', 'primary replica', 'high availability', 'read scaling', 'database replication']
+    blocks:
+      - type: metaphor
+        icon: building
+        title: 'The head office ledger and the branch copies'
+        body: |
+          A bank keeps all its accounts only in the head office ledger. If the office burns down, everything is gone, and when everyone comes to check their balance the queue is long. So the head office also sends every new entry to the branches. New writes happen only at the head office (the leader); the other branches (the followers) keep copies and take over the viewing work.
+      - type: visual
+        kind: flow
+        caption: 'One leader, two followers: writes in one place, reads spread out'
+        nodes:
+          - {id: app, label: 'Symfony app', icon: api, col: 0, row: 1, tip: 'Both write and read requests come from here.'}
+          - {id: leader, label: 'leader', sub: 'primary, takes writes', icon: db, tone: accent, col: 2, row: 0, tip: 'The only node that accepts writes. It records every change in the WAL and sends it to the followers.'}
+          - {id: f1, label: 'follower 1', sub: 'read only', icon: db, col: 4, row: 0, tip: 'A copy of the leader. It serves read requests but takes no writes.'}
+          - {id: f2, label: 'follower 2', sub: 'read only', icon: db, col: 4, row: 2, tip: 'Another copy. If the leader dies, this one can also become the new leader.'}
+        edges:
+          - {from: app, to: leader, label: 'All writes go to the one leader'}
+          - {from: leader, to: f1, label: 'The leader sends every change to follower 1', dashed: true}
+          - {from: leader, to: f2, label: 'The same change goes to follower 2 too', dashed: true}
+          - {from: app, to: f1, label: 'The read load is spread across the followers', tone: good}
+      - type: points
+        title: 'What replication gives you'
+        style: check
+        items:
+          - 'Survival: if the leader dies, a follower can be made the new leader.'
+          - 'Read capacity: more followers means more read requests handled.'
+          - 'Backups and reports: heavy queries run on a follower, which spares the leader.'
+    aside:
+      - type: problem
+        body: 'Replication does not increase write capacity: writes still go to a single leader. When the write load grows, you need sharding.'
+      - type: refs
+        items:
+          - {to: 'data/sharding', label: 'Splitting the write load'}
+          - {to: 'resilience/disaster-recovery', label: 'Is a replica a substitute for a backup?'}
+    check:
+      q: 'In replication, who handles writes and who handles reads?'
+      a: 'Only the leader handles writes. Reads can be shared between the leader and the followers, since the followers hold copies of the leader''s data.'
+
+  - slug: sync-vs-async
+    title: 'Sync versus async replication'
+    kind: concept
+    tldr: 'With async, the leader says "done" without waiting for followers: fast, but a crash can lose the latest writes. With sync, it waits: safer, but slower.'
+    keywords: ['synchronous replication', 'asynchronous', 'semi-sync', 'quorum', 'data loss', 'sync async']
+    blocks:
+      - type: metaphor
+        icon: mail
+        title: 'Sent by post, or confirmed by phone'
+        body: |
+          If the head office posts a new entry to the branch, it finishes its own work right away, and the branch will get the letter tomorrow. That is async. If it phones to ask "did you receive it?" and only then tells the customer "it's done", that is sync. The post is fast, but if the head office burns down, the letters on their way are lost. The phone is safe, but if the branch line is busy, the customer stands waiting.
+      - type: visual
+        kind: compare
+        caption: 'The price of each approach'
+        columns:
+          - title: 'Async (default)'
+            tone: good
+            icon: bolt
+            tip: 'Most apps use this one. Write speed is the leader''s own speed.'
+            items:
+              - 'The leader commits as soon as it has written to its own disk'
+              - 'Writes are fast and a slow follower does not hold them up'
+              - 'If the leader crashes, the last few commits may be lost'
+          - title: 'Sync'
+            tone: warn
+            icon: lock
+            tip: 'Worth considering for data like money. Safer, but every write is slower.'
+            items:
+              - 'The leader waits for at least one follower to confirm'
+              - 'Every write gains one network round trip'
+              - 'If all the sync followers die, writes may stop too'
+      - type: code
+        lang: ini
+        file: 'postgresql.conf (leader)'
+        code: |
+          # a commit succeeds only after at least 1 follower confirms
+          synchronous_standby_names = 'ANY 1 (replica1, replica2)'
+          synchronous_commit = on
+        marks:
+          - {line: 2, tip: 'ANY 1 (...): it is enough for any one follower to confirm. Writes do not stop even if one dies. This is called quorum-style sync.'}
+      - type: quote
+        body: 'Async means the risk of losing the last writes if the leader dies. Sync means a delay on every write. You have to pick one.'
+    aside:
+      - type: when
+        use:
+          - 'Async: most apps, where losing the last few seconds of writes in a crash is acceptable'
+          - 'Sync (ANY 1): money and orders, where data must not be lost after you say "success"'
+        avoid:
+          - 'Keeping just one sync follower: if it dies, writes get stuck'
+      - type: refs
+        items:
+          - {to: 'scaling/cap-pacelc', label: 'The trade-off between speed and correctness'}
+    check:
+      q: 'What risk does async replication carry when the leader crashes?'
+      a: 'The last few commits may be lost, because the leader said "done" without waiting for the followers to confirm, and those commits never reached a follower.'
+
+  - slug: replication-lag
+    title: 'Lag: you can''t see your own write'
+    kind: pitfall
+    tldr: 'An async follower runs a little behind (replication lag). Read from a follower right after a write and the user doesn''t see their own new data; this problem is called read-your-own-writes.'
+    keywords: ['replication lag', 'read your own writes', 'stale read', 'follower lag', 'replica behind']
+    blocks:
+      - type: text
+        body: |
+          Rahim writes a comment and presses "Send". The write goes to the leader, but when the page refreshes it reads from a follower that has not yet heard the news. Rahim sees that his comment is missing. He sends it again, and now there are two comments. The database is fine; the mistake lies in where the read came from.
+      - type: visual
+        kind: sequence
+        caption: 'Reading from a stale place right after a write'
+        actors:
+          - {id: rahim, label: 'Rahim', icon: user, tip: 'Writes a comment and refreshes the page at once.'}
+          - {id: leader, label: 'leader', icon: db, tip: 'The write goes here; the new comment is here.'}
+          - {id: follower, label: 'follower', icon: db, tip: 'About 2 seconds behind. It has not received the new comment yet.'}
+        messages:
+          - {from: rahim, to: leader, label: 'Write comment #91'}
+          - {from: leader, to: rahim, label: 'Success', dashed: true}
+          - {from: rahim, to: follower, label: 'Give me my comments'}
+          - {at: follower, note: 'lag 2 seconds, #91 not here yet', tone: warn, tip: 'It takes time for changes to travel from the leader to this follower. That is replication lag.'}
+          - {from: follower, to: rahim, label: 'List without #91', dashed: true, tone: bad, tip: 'Rahim thinks his comment was lost.'}
+      - type: quote
+        body: 'Show people their own writes. Do the reads that matter right after a write from the leader.'
+    aside:
+      - type: story
+        title: 'The double post'
+        body: 'On one social app, the feed after a post was served from a follower. Many people did not see their post and posted again, so the same text appeared two or three times.'
+      - type: terms
+        items:
+          - {term: 'Replication lag', meaning: 'The time a change on the leader takes to reach a follower.'}
+          - {term: 'Read-your-own-writes', meaning: 'The guarantee that you always see your own writes in later reads.'}
+      - type: refs
+        items:
+          - {to: 'data/consistency-models', label: 'Who sees what, and when'}
+    check:
+      q: 'The write succeeded, yet reading straight after shows no new data. Did the database make a mistake?'
+      a: 'No. The read went to a follower that was still behind (replication lag). The fix is to read from the leader for a short while after a write.'
+
+  - slug: doctrine-primary-replica
+    title: 'A primary/replica setup in Doctrine'
+    kind: howto
+    tldr: 'With replicas in doctrine.yaml, DoctrineBundle sends reads to a replica and writes to the primary; after a write, every read in that request goes to the primary on its own, and a sticky listener handles the rest.'
+    keywords: ['PrimaryReadReplicaConnection', 'Doctrine replicas', 'ensureConnectedToPrimary', 'doctrine.yaml', 'read replica', 'Symfony']
+    blocks:
+      - type: code
+        lang: yaml
+        file: 'config/packages/doctrine.yaml'
+        code: |
+          doctrine:
+            dbal:
+              url: '%env(resolve:DATABASE_URL)%'        # primary
+              replicas:
+                replica1:
+                  url: '%env(resolve:DATABASE_REPLICA1_URL)%'
+                replica2:
+                  url: '%env(resolve:DATABASE_REPLICA2_URL)%'
+        marks:
+          - {line: 3, tip: 'The main url is the primary: all writes, transactions and migrations go here.'}
+          - {line: 4, tip: 'With replicas present, DoctrineBundle automatically uses PrimaryReadReplicaConnection. One replica is picked at random for each request.'}
+      - type: text
+        body: |
+          The rule is this: if nothing has been written yet, `executeQuery()` (find, SELECT) goes to a replica. But once a `flush()` or a transaction begins, every read and write for the rest of that request goes to the primary. So within one request you do see your own writes. The problem is only in the next request.
+      - type: code
+        lang: php
+        file: 'src/EventListener/StickyPrimaryListener.php'
+        variant: good
+        code: |
+          #[AsEventListener(event: KernelEvents::REQUEST)]
+          final readonly class StickyPrimaryListener
+          {
+              public function __construct(private Connection $connection) {}
+
+              public function __invoke(RequestEvent $event): void
+              {
+                  $request = $event->getRequest();
+                  if (!$event->isMainRequest() || !$request->hasSession()) {
+                      return;
+                  }
+
+                  $until = $request->getSession()->get('primary_until', 0);
+                  if ($until > time() && $this->connection instanceof PrimaryReadReplicaConnection) {
+                      $this->connection->ensureConnectedToPrimary();   // primary until that time
+                  }
+              }
+          }
+        marks:
+          - {line: 14, tip: 'For about 5 seconds after a write, this user reads from the primary, giving the replica time to get past its lag.'}
+      - type: text
+        body: |
+          After a write, add just one line to the controller: `$request->getSession()->set('primary_until', time() + 5);`. Then that user's reads for the next 5 seconds come from the primary, and by then the replica has usually caught up.
+    aside:
+      - type: tips
+        items:
+          - 'Not every read belongs on a replica: money figures, the first page after login and "my" data are safer on the primary.'
+          - 'For something more elaborate, note the leader''s WAL position (LSN) at write time and check whether the follower has reached it, though that takes extra work.'
+      - type: refs
+        items:
+          - {to: 'scaling/load-balancing', label: 'The idea of spreading requests'}
+    check:
+      q: 'In Doctrine, why can you see your own write if you call find() later in the same request?'
+      a: 'Once a flush or a transaction begins, PrimaryReadReplicaConnection switches to the primary, and every other query in that request runs on the primary too.'
+
+  - slug: failover-split-brain
+    title: 'Failover and split brain'
+    kind: pitfall
+    tldr: 'When the leader dies, a follower must be promoted to leader (failover); but if the old leader comes back alive and both take writes, you get split brain and the data divides in two.'
+    keywords: ['failover', 'split brain', 'fencing', 'promotion', 'Patroni', 'leader election']
+    blocks:
+      - type: metaphor
+        icon: building
+        title: 'Two head offices'
+        body: |
+          When contact with the head office is cut, one branch thinks "I am the head office now." Then the old head office comes back, also convinced that it is in charge. Both take entries, and the two ledgers hold different accounts. That is split brain: two leaders, and neither ledger holds the whole truth.
+      - type: visual
+        kind: steps
+        caption: 'The steps of a safe failover'
+        steps:
+          - {title: '1. Is the leader dead?', body: 'Agree on it through several checks, not one moment of network trouble.', tip: 'A failover on a false signal creates a situation where the old leader is actually alive.'}
+          - {title: '2. Stop the old one', body: 'Shut down the old leader, or block its writes (fencing).', tone: accent, tip: 'This is the step that prevents split brain. The old leader must never be able to take writes again.'}
+          - {title: '3. Promote the furthest ahead', body: 'Make the follower closest to the leader the new leader.', tip: 'Promoting the follower that is least behind loses the fewest writes.'}
+          - {title: '4. Tell the app', body: 'The app sends writes to the new leader; the old one returns as a follower.', tip: 'When the old leader returns, its extra writes must be discarded and it copies afresh from the new leader.'}
+      - type: quote
+        body: 'A failover that is not automatic cannot be relied on, and an automatic failover without fencing is dangerous.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Don''t write your own hand-made failover script; use Patroni or the proven machinery of a managed database (RDS, Cloud SQL).'
+          - 'With async, a failover can lose the last few writes. You must know whether your business can live with that.'
+          - 'Rehearse failover regularly. A failover that was never tested will not work in an emergency.'
+      - type: refs
+        items:
+          - {to: 'scaling/coordination', label: 'Agreeing on who the leader is'}
+          - {to: 'resilience/disaster-recovery', label: 'Limits on data loss (RPO/RTO)'}
+    check:
+      q: 'What is split brain, and which failover step must exist to prevent it?'
+      a: 'Split brain is two nodes both believing they are the leader and taking writes. To prevent it, the old leader must be fenced off from writing.'
+
+flashcards:
+  - q: 'What is leader/follower replication?'
+    a: 'One node (the leader) takes all the writes and sends the changes to the followers; the followers keep copies and serve read requests.'
+    more: |
+      Because writes go only to the leader, their order stays consistent. Followers spread the read load, and if the leader dies, one follower can become the new leader. "Primary/replica" is another name for the same idea.
+    ref: one-copy-is-risky
+  - q: 'Does replication increase write capacity?'
+    a: 'No. Writes still go to a single leader. Replication increases read capacity and the chance of surviving a failure.'
+    more: |
+      When the write load goes beyond one server, you have to split the data, which is sharding. Before that, consider indexes, caching, better queries and a bigger server.
+    ref: one-copy-is-risky
+  - q: 'What is the difference between sync and async replication?'
+    a: 'With async, the leader commits without waiting for followers (fast, but a crash can lose data). With sync, it waits (safe, but slow).'
+    more: |
+      In PostgreSQL, synchronous_standby_names = 'ANY 1 (a, b)' makes a commit succeed as soon as any one follower confirms. Writes do not stop even if one follower dies.
+    ref: sync-vs-async
+  - q: 'What is replication lag?'
+    a: 'The time a change on the leader takes to reach a follower. With async it may be small, but it is never zero.'
+    more: |
+      Lag grows with heavy writes, network delay or a slow follower. It is important to measure it (pg_stat_replication) and alert when it passes a limit; otherwise users keep seeing stale data.
+    ref: replication-lag
+  - q: 'What is read-your-own-writes?'
+    a: 'The guarantee that a user sees what they have just written in their next read. Reading from a follower can break it.'
+    more: |
+      The fix: read from the leader for a short time after a write (or for the related reads), or check how far the follower has got before reading. In Doctrine, ensureConnectedToPrimary() does this.
+    ref: doctrine-primary-replica
+  - q: 'How do you set up replicas in Doctrine?'
+    a: 'Keep the main url (the primary) in doctrine.yaml and add replicas: beneath it; DoctrineBundle then uses PrimaryReadReplicaConnection.'
+    more: |
+      After a write or the start of a transaction, every other query in that request goes to the primary. So within one request you see your own writes; the problem is in the next request, which is why you need a sticky mechanism.
+    ref: doctrine-primary-replica
+  - q: 'What is split brain, and how do you prevent it?'
+    a: 'Two nodes both believing they are the leader and taking writes. Prevent it by fencing the old leader so it cannot write.'
+    more: |
+      Two leaders means two different truths, which are very hard and sometimes impossible to merge later. So in a failover you first stop the old one and only then promote the new leader. Patroni or a managed service does this properly.
+    ref: failover-split-brain
+
+quiz:
+  - q: 'The code below reads right after a write. With a replica in place, what problem can occur, and when?'
+    lang: php
+    code: |
+      // POST /comments
+      $em->persist($comment);
+      $em->flush();
+      return $this->redirectToRoute('comments_list');
+
+      // GET /comments (the next request)
+      $comments = $repo->findBy(['user' => $user]);
+    hint: 'Which connection will the second request use?'
+    options:
+      - text: 'GET /comments is a new request, so it may read from a replica; if there is lag, the new comment may not show up'
+        correct: true
+        why: 'The switch to the primary lasts only within the same request. The next request goes to a replica again, where there may be lag.'
+      - text: 'Nothing, because flush() updates all the replicas'
+        correct: false
+        why: 'flush() writes only to the primary. Getting changes to the replicas is the database''s own job, and it takes time.'
+      - text: 'findBy() writes, so it goes to the primary'
+        correct: false
+        why: 'findBy() only reads, so it can go to a replica.'
+      - text: 'The problem occurs only with sync replication'
+        correct: false
+        why: 'Sync reduces the problem, but this exact setup (async with lag) is the commonly used one.'
+    ref: replication-lag
+  - q: 'Which of these jobs is safe to do from a follower?'
+    hint: 'What harm is there if the data is slightly stale?'
+    options:
+      - text: 'Generating the month-end sales report'
+        correct: true
+        why: 'Data a few seconds old does not change the meaning of a report, and the heavy query spares the leader.'
+      - text: 'Showing the product catalogue list'
+        correct: true
+        why: 'A catalogue a few seconds old does no harm. The heavy read load moves to the followers.'
+      - text: 'Reading the stock before confirming an order'
+        correct: false
+        why: 'Deciding on stale stock can sell the same item twice; this must be read from the leader.'
+      - text: 'Showing, in a form, the address the user has just saved'
+        correct: false
+        why: 'Their very latest write may not have reached the follower yet; read-your-own-writes would break.'
+    ref: replication-lag
+  - q: 'A database uses async replication and the leader suddenly crashes. A manager asks whether any data could be lost.'
+    hint: 'Did the leader wait for a follower before saying "done"?'
+    options:
+      - text: 'No, replication never loses data'
+        correct: false
+        why: 'That is a property of sync. Async gives no such guarantee.'
+      - text: 'Yes, commits that had not yet reached a follower may be lost'
+        correct: true
+        why: 'With async, the leader commits without the followers'' confirmation, so changes still on their way can be lost.'
+      - text: 'All the data will be lost'
+        correct: false
+        why: 'Only the latest part that did not reach a follower; everything earlier is on the follower.'
+      - text: 'Only read data is lost, not writes'
+        correct: false
+        why: 'There is no read data to lose. The risk is in the written changes.'
+    ref: sync-vs-async
+  - q: 'A money-transfer database must never lose data after saying a commit succeeded, yet writes must not stop if one follower dies. Which setup fits?'
+    hint: 'You want sync, but not dependent on just one follower.'
+    options:
+      - text: 'Async only, because it is fast'
+        correct: false
+        why: 'A crash can lose the last commits.'
+      - text: 'Three followers, one designated sync follower, the rest async'
+        correct: false
+        why: 'If that single sync follower dies, writes get stuck.'
+      - text: 'Several followers with ANY 1 style quorum sync: a commit succeeds when any one confirms'
+        correct: true
+        why: 'The data is on at least one follower, and if one dies, writes carry on through another.'
+      - text: 'No followers, just a good backup'
+        correct: false
+        why: 'A backup takes you back to old data; it does not give instant failover or protect the last commits.'
+    ref: sync-vs-async
+  - q: 'Because of a network problem, the app thought the leader had died and promoted a follower. The old leader was actually alive. What will happen, and what should have been done?'
+    hint: 'What if two leaders both take writes?'
+    options:
+      - text: 'Split brain: both take writes and the data divides in two. The old one should have been fenced before the new leader was promoted'
+        correct: true
+        why: 'A failover without stopping the old one lets two leaders take writes at once, and merging two ledgers is hard.'
+      - text: 'Nothing, the database will reconcile itself'
+        correct: false
+        why: 'An ordinary leader/follower setup cannot merge two leaders'' writes by itself.'
+      - text: 'The database will shut down automatically'
+        correct: false
+        why: 'The old leader does not know it has been replaced; it keeps taking writes.'
+      - text: 'Only the followers'' reads will be wrong, writes will be fine'
+        correct: false
+        why: 'The problem is in the writes: two leaders accept two different sets of changes.'
+    ref: failover-split-brain

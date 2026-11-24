@@ -1,0 +1,419 @@
+slides:
+  - slug: alarm-that-always-rings
+    title: 'The alarm that rings every day, and the day of the real fire'
+    kind: story
+    tldr: 'When an alert fires daily and there is nothing to do, the team learns to ignore it, and one day the real alert gets buried too.'
+    keywords: ['alert fatigue', 'noisy alerts', 'on-call', 'pager', 'monitoring']
+    blocks:
+      - type: metaphor
+        icon: bell
+        title: 'The building''s fire alarm'
+        body: |
+          An office fire alarm goes off by mistake every day, sometimes from toaster smoke, sometimes from a drill. After a few weeks nobody walks outside anymore. Then one day there really is a fire, the alarm rings, and everyone thinks "the toaster again". That is alert fatigue.
+      - type: visual
+        kind: bars
+        caption: 'Alerts the on-call engineer received last week'
+        items:
+          - {label: 'CPU > 70%', value: 112, display: '112 times', tone: warn, tip: 'No customer is hurt and there is nothing to do. It only wakes someone up.'}
+          - {label: 'Disk > 60%', value: 64, display: '64 times', tone: warn, tip: 'It grows slowly. A ticket in the morning would do; it is no reason to wake anyone at night.'}
+          - {label: 'A single 500 error', value: 41, display: '41 times', tone: warn, tip: 'One or two failed requests are normal, so alerting on each one is pointless.'}
+          - {label: 'Worker restart', value: 23, display: '23 times', tone: warn, tip: 'It heals itself and no customer notices.'}
+          - {label: 'Checkout errors > 5%', value: 1, display: '1 time', tone: bad, tip: 'The only real alert: customers can''t buy. But in a crowd of 200 others, everyone took this one for "just another".'}
+      - type: quote
+        body: 'An alert that wakes you with nothing to do isn''t an alert, it''s noise pollution.'
+    aside:
+      - type: story
+        title: 'Failed checkout, 20 minutes late'
+        body: 'At 2 a.m. checkout started failing. The on-call engineer saw the alert on their phone, thought "the CPU one again", snoozed it and went back to sleep. They learned the truth 20 minutes later from a call from support. By then many orders were lost.'
+      - type: problem
+        body: 'An alert exists to say "a human needs to do something right now". Everything else belongs on a dashboard or in a ticket, not in something that wakes people up.'
+    check:
+      q: 'Why is it harmful to send an alert for every one or two failed requests?'
+      a: 'Some requests will always fail. The alert fires too often, people learn to ignore it, and the alert for a real crisis gets buried too.'
+
+  - slug: liveness-readiness
+    title: 'Alive or ready: liveness and readiness'
+    kind: concept
+    tldr: 'Liveness asks "are you stuck, do you need a restart?", readiness asks "can you take work right now?". Never check the database in liveness.'
+    keywords: ['liveness', 'readiness', 'startup probe', 'health check', 'shallow', 'deep', 'Kubernetes probe']
+    blocks:
+      - type: metaphor
+        icon: truck
+        title: 'A bus and taking passengers'
+        body: |
+          Whether the bus engine is running is one question (liveness): if it has died, a mechanic comes and restarts it. Whether the door is open, the driver is in place and the bus is ready to take passengers is a different question (readiness): if it isn't, passengers board another bus, but this one isn't broken.
+      - type: visual
+        kind: table
+        caption: 'The two probes: what they check, what happens on failure'
+        headers: ['', 'Liveness', 'Readiness']
+        rows:
+          - cells: ['The question', 'Am I stuck?', 'Can I take requests now?']
+            tip: 'Two different questions, so two different endpoints.'
+          - cells: ['On failure', 'The process is restarted', 'The load balancer stops sending traffic']
+            tip: 'When readiness fails the process doesn''t die; it just gets no traffic for a while. When it recovers, traffic returns.'
+          - cells: ['What to check', 'Only whether it responds itself (shallow)', 'Essential dependencies other than itself (DB, cache)']
+            tip: 'Shallow means light on the inside; deep also touches outside dependencies.'
+          - cells: ['The mistake', 'Checking the database', 'Checking an outside third-party API']
+            tip: 'Get this wrong and the disaster grows; see the example on the right.'
+      - type: quote
+        body: 'Liveness speaks only for itself. When the database is down, restarting every server helps nobody.'
+    aside:
+      - type: story
+        title: 'Slow database, then everything restarts'
+        body: 'One team''s liveness probe touched the database. One day the database got slow, the probe timed out, and the platform restarted every server at once. The fresh servers then all hammered the database together and made it worse.'
+      - type: terms
+        items:
+          - {term: 'Startup probe', meaning: 'For slow-starting apps: it holds the other probes off until the app has started.'}
+          - {term: 'Shallow / Deep check', meaning: 'Shallow: it only answers for itself. Deep: it also touches dependencies like the DB and cache.'}
+      - type: when
+        use:
+          - 'In readiness, include only the dependency without which the app can do no work at all.'
+        avoid:
+          - 'Optional or third-party services in readiness: their outage would make all your servers look "sick".'
+    check:
+      q: 'The database is down. What happens if the liveness probe checks the database?'
+      a: 'The probe fails and every server keeps restarting, yet restarting doesn''t fix the database. You only add damage and chaos.'
+
+  - slug: health-endpoints
+    title: 'Two health endpoints in Symfony'
+    kind: howto
+    tldr: '`/health/live` always returns 200 (it only proves the app is alive), `/health/ready` checks the essential dependencies and returns 503 on failure. Error details go to the log, not the response.'
+    keywords: ['health controller', 'Symfony health check', 'probe', 'readiness endpoint', 'ready 503', 'Kubernetes']
+    blocks:
+      - type: code
+        lang: php
+        file: 'src/Controller/HealthController.php'
+        variant: good
+        code: |
+          #[Route('/health/live', methods: ['GET'])]
+          public function live(): JsonResponse
+          {
+              return new JsonResponse(['status' => 'up']); // no dependencies
+          }
+
+          #[Route('/health/ready', methods: ['GET'])]
+          public function ready(): JsonResponse
+          {
+              $checks = [
+                  'database' => fn () => $this->db->executeQuery('SELECT 1'),
+                  'cache' => fn () => $this->cache->getItem('health_probe'),
+              ];
+
+              $failed = [];
+              foreach ($checks as $name => $check) {
+                  try {
+                      $check();
+                  } catch (\Throwable $e) {
+                      $failed[] = $name;
+                      $this->logger->error('health.failed', ['check' => $name, 'exception' => $e]);
+                  }
+              }
+
+              return new JsonResponse(
+                  ['status' => [] === $failed ? 'ready' : 'degraded'],
+                  [] === $failed ? 200 : 503,
+              );
+          }
+        marks:
+          - {line: 4, tip: 'No dependencies: if PHP can answer, it is "alive". The restart decision rests on this alone.'}
+          - {line: 11, tip: 'Just "SELECT 1": does the DB connection work? Not a heavy query; probes run every few seconds.'}
+          - {line: 21, tip: 'Error details go to the log. Outsiders can''t learn stack traces or host names from the health page.'}
+          - {line: 27, tip: '503 means "not now"; the load balancer steers traffic away from this server instead of restarting it.'}
+      - type: code
+        lang: yaml
+        file: 'k8s/deployment.yaml (container section)'
+        variant: good
+        code: |
+          startupProbe:
+            httpGet: {path: /health/live, port: 80}
+            periodSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            httpGet: {path: /health/live, port: 80}
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: {path: /health/ready, port: 80}
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+        marks:
+          - {line: 4, tip: 'Gives a slow-starting app 2.5 minutes (5 seconds x 30) before liveness is allowed to kill it.'}
+          - {line: 8, tip: 'Restart only after 3 failures in a row; one slow answer doesn''t mean it''s dead.'}
+          - {line: 12, tip: 'Two failures and traffic stops. timeoutSeconds 2 keeps the probe from hanging on a slow DB.'}
+    aside:
+      - type: tips
+        items:
+          - 'Mark the health pages PUBLIC_ACCESS in the firewall (access_control), so probes need no login. But don''t put internal details in the response.'
+          - 'During a deploy, no traffic goes to new code until it is ready. That is the foundation of zero-downtime deploys.'
+          - 'Graceful shutdown: when stopping, fail readiness first, then let in-flight requests finish.'
+      - type: refs
+        items:
+          - {to: 'resilience/zero-downtime-deploys', label: 'Zero-downtime deploys'}
+          - {to: 'infra/containers-k8s', label: 'Containers and Kubernetes'}
+    check:
+      q: 'Why does readiness keep a failed dependency''s full error message in the log instead of the response?'
+      a: 'Health pages are often open to everyone. A full message with host names, versions or a stack trace would tell an attacker about your internals. So the details stay in the log.'
+
+  - slug: alert-design
+    title: 'A good alert: page on symptoms, not causes'
+    kind: concept
+    tldr: 'Page on signs of user harm (errors, slowness, SLO burn), not on causes (CPU, disk). Every alert must be urgent, actionable and come with a runbook.'
+    keywords: ['symptom-based alert', 'actionable alert', 'runbook', 'severity', 'page vs ticket', 'on-call']
+    blocks:
+      - type: metaphor
+        icon: home
+        title: 'Smoke in the house vs the kettle'
+        body: |
+          When smoke rises in the house (a symptom), you wake everyone, because harm is coming whatever the cause. But waking someone at 2 a.m. to say "the kitchen is at 35 degrees" (a cause) is pointless: when cooking is going on, the heat will rise. So wake people for the symptom and hunt for the cause afterwards.
+      - type: visual
+        kind: table
+        caption: 'What to send for which situation'
+        headers: ['Situation', 'Customers harmed?', 'What to send']
+        rows:
+          - cells: ['Checkout errors above 5% for 5 minutes', 'Yes, right now', 'Page: wake up']
+            tip: 'A symptom, urgent, and there is something to do. A true page-worthy alert.'
+          - cells: ['Error budget burning slowly over 6 hours', 'Happening slowly', 'Ticket: in working hours']
+            tip: 'Not urgent right now, but it grows if ignored; a ticket is enough.'
+          - cells: ['Disk at 70%, growing 2% a week', 'Not yet', 'Ticket or dashboard']
+            tip: 'Cause-based. A predictive alert ("full in 4 days at this rate") is better.'
+          - cells: ['One worker restarted', 'No', 'Dashboard/log only']
+            tip: 'It heals itself; no human action is needed.'
+      - type: points
+        title: 'Three tests for every alert'
+        style: check
+        items:
+          - 'Urgent: is harm happening or about to? If not, make it a ticket.'
+          - 'Actionable: can a person woken up do something? If not, it isn''t an alert.'
+          - 'Runbook: does the alert link to a page saying what to look at and what to do?'
+      - type: quote
+        body: 'Page on symptoms, open tickets for causes, and attach a runbook to every page.'
+    aside:
+      - type: tips
+        items:
+          - 'Review alerts once a month: how often each fired, and how often someone did something. Delete or demote to a ticket any alert nobody acted on.'
+          - 'Add a wait like `for: 5m`: alert on a sustained problem, not a momentary spike.'
+      - type: refs
+        items:
+          - {to: 'observability/metrics-slos', label: 'SLOs and burn-rate alerts'}
+    check:
+      q: 'Why is paging on CPU at 90% wrong, and what should you page on instead?'
+      a: 'CPU is a cause, not customer harm: everything can run fine at 90% CPU. Page on customer-facing symptoms instead: error rate, latency or SLO burn.'
+
+  - slug: alert-rule-runbook
+    title: 'A bad alert, a good alert, and the runbook'
+    kind: pitfall
+    tldr: 'Cause-based alerts with no wait ruin sleep. A symptom-based rule with `for`, a severity and a runbook link is the one that works.'
+    keywords: ['Prometheus alert rule', 'runbook', 'alertmanager', 'severity', 'for duration', 'annotations']
+    blocks:
+      - type: code
+        lang: yaml
+        file: 'alerts/bad.yaml'
+        variant: bad
+        code: |
+          - alert: HighCPU
+            expr: node_cpu_utilisation > 0.7
+            labels: {severity: page}
+        marks:
+          - {line: 2, tip: 'A cause, not a symptom. And it doesn''t say which server or what to do.'}
+          - {line: 3, tip: 'No wait (for): a 1-second spike pages someone, and there is no runbook.'}
+      - type: code
+        lang: yaml
+        file: 'alerts/checkout.yaml'
+        variant: good
+        code: |
+          - alert: CheckoutErrorsHigh
+            expr: |
+              sum(rate(shop_http_requests_total{route="checkout",status=~"5.."}[5m]))
+                / sum(rate(shop_http_requests_total{route="checkout"}[5m])) > 0.05
+            for: 5m
+            labels:
+              severity: page
+              team: payments
+            annotations:
+              summary: 'More than 5% of checkout requests have failed for 5 minutes'
+              runbook_url: 'https://wiki.shop.example/runbooks/checkout-errors'
+        marks:
+          - {line: 4, tip: 'A ratio, so it works the same whether total traffic is high or low.'}
+          - {line: 5, tip: 'No alert unless it lasts 5 minutes; momentary spikes are ignored.'}
+          - {line: 8, tip: 'Who gets the alert is in the labels. An alert with no owner is handled by nobody.'}
+          - {line: 11, tip: 'The runbook link lives inside the alert, so a sleepy brain at 2 a.m. doesn''t have to hunt for it.'}
+      - type: visual
+        kind: steps
+        caption: 'The shape of a runbook (one page, readable at 2 a.m.)'
+        steps:
+          - {title: '1. What this is', body: 'What the alert means and how customers are hurt', tip: 'One or two sentences, written to be understood half asleep.'}
+          - {title: '2. Look first', body: 'Which dashboard, which log query', tip: 'Give direct links, not a list of names.'}
+          - {title: '3. Likely causes', body: 'A list from past incidents, most likely first', tip: 'Check recent deploys first; most incidents follow a change.'}
+          - {title: '4. Stop the bleeding', body: 'Roll back, switch a feature flag off, scale up: stop the symptom first', tip: 'Finding the cause comes later. Stop the harm first.'}
+          - {title: '5. Who to call', body: 'The next level''s name and phone number', tip: 'If you can''t handle it, call them without wasting time.'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'A runbook gets written and never updated. After every incident, fix any wrong or incomplete step.'
+          - 'Twenty-five alerts for one incident: group and inhibit them so only one arrives.'
+          - 'Nobody knows whose job it is; write the owning team on every alert.'
+      - type: remember
+        body: 'Symptom, wait (for), owner, runbook: without all four it''s not an alert.'
+      - type: refs
+        items:
+          - {to: 'observability/incident-response', label: 'Handling the incident after the alert'}
+    check:
+      q: 'What does `for: 5m` buy you in an alert rule, and what is its risk?'
+      a: 'A momentary spike no longer fires the alert for nothing. The risk: you hear about a real problem 5 minutes late. So pick the value by looking at the kind of harm and your SLO, so both sides balance.'
+
+flashcards:
+  - q: 'What is alert fatigue?'
+    a: 'When there are too many useless alerts, the team learns to ignore them, and the alert for a real crisis gets missed too.'
+    more: |
+      If a fire alarm goes off by mistake every day, nobody leaves the building anymore. Alerts work the same way: reduce or delete any alert that rings with nothing to do. The goal is that on every page, a person really does something.
+    ref: alarm-that-always-rings
+  - q: 'What is the difference between liveness and readiness probes?'
+    a: 'Liveness: "are you stuck, do you need a restart?" On failure, restart. Readiness: "can you take requests now?" On failure, stop traffic.'
+    more: |
+      When readiness fails the process doesn't die; the load balancer just leaves it out for a while and brings it back when it recovers. They need separate endpoints, because the questions differ and so does the consequence of failing.
+    ref: liveness-readiness
+  - q: 'Why is checking the database in a liveness probe a mistake?'
+    a: 'When the database goes down, every server restarts at once, and a restart doesn''t fix the database. The problem only grows.'
+    more: |
+      Liveness should speak only for itself: can PHP answer? The state of outside dependencies is readiness's job. Otherwise one dependency's trouble turns into a restart storm across the whole fleet.
+    ref: liveness-readiness
+  - q: 'What is the difference between a shallow and a deep health check?'
+    a: 'Shallow only answers for itself. Deep also touches dependencies like the database or cache.'
+    more: |
+      Shallow is cheap and stable, so it suits liveness. Deep tells you more but is slower and more fragile, so readiness uses it only for essential dependencies. If a deep check includes a third-party API, their outage takes you down too.
+    ref: liveness-readiness
+  - q: 'Which HTTP status does a failing readiness endpoint return?'
+    a: '503 (Service Unavailable). 200 when it succeeds.'
+    more: |
+      503 says "not now, try later". Most load balancers, Kubernetes included, treat 2xx/3xx as success and anything else as failure. Don't put internal error details in the response body; they belong in the log.
+    ref: health-endpoints
+  - q: 'Should you page on symptoms or on causes?'
+    a: 'On symptoms: user harm (errors, slowness, SLO burn). For causes (CPU, disk), use a ticket or a dashboard.'
+    more: |
+      Customers may notice nothing at 90% CPU, and checkout may be broken at 30% CPU. A symptom-based alert handles both correctly. You hunt for the cause after the alert, on the dashboard.
+    ref: alert-design
+  - q: 'What are the three conditions of a good alert?'
+    a: 'Urgent (harm now), actionable (a person can do something), and it has a runbook.'
+    more: |
+      An alert with nothing to do belongs on a dashboard. An alert with something to do that isn't urgent belongs in a ticket. Page only when all three hold. Every page should also name an owning team.
+    ref: alert-design
+  - q: 'What is a runbook and what goes in it?'
+    a: 'A one-page guide for when an alert fires: what it means, what to look at first, likely causes, how to stop it, who to call.'
+    more: |
+      A sleepy brain at 2 a.m. can't think from scratch. A runbook puts past experience to work. Update it after every incident. If the alert rule's `runbook_url` annotation links to it, it's one click away.
+    ref: alert-rule-runbook
+  - q: 'Why put `for` in an alert rule?'
+    a: 'So the alert fires only when the condition holds continuously for that long, not on a momentary spike.'
+    more: |
+      A one-moment error spike is normal, caused by a deploy or retries. `for: 5m` means "5 minutes in a row". Too long and you hear late, too short and you get false alerts, so choose by looking at your SLO and the kind of harm.
+    ref: alert-rule-runbook
+
+quiz:
+  - q: 'The endpoint below is used as a liveness probe. What is wrong?'
+    lang: php
+    code: |
+      #[Route('/health/live')]
+      public function live(): JsonResponse
+      {
+          $this->db->executeQuery('SELECT 1');
+
+          return new JsonResponse(['status' => 'up']);
+      }
+    hint: 'What will this probe do when the database goes down?'
+    options:
+      - text: 'When the database goes down, liveness fails and every server restarts, yet a restart doesn''t fix the database'
+        correct: true
+        why: 'Liveness must not include dependencies. Checking the DB is the readiness endpoint''s job.'
+      - text: 'It should use Response instead of JsonResponse'
+        correct: false
+        why: 'The response type isn''t a problem.'
+      - text: '"SELECT 1" is slow, so a more complex query is needed'
+        correct: false
+        why: 'The issue isn''t the type of query but the purpose of the probe.'
+      - text: 'Nothing wrong: with no database, there is no point in the app staying alive'
+        correct: false
+        why: 'The app is alive and will work again when the database returns. A restart only loses in-flight work and warm caches.'
+    ref: liveness-readiness
+  - q: 'Which dependencies belong in readiness?'
+    hint: 'What can the app not handle a single request without?'
+    options:
+      - text: 'The main database'
+        correct: true
+        why: 'Almost no request succeeds without it, so traffic is better off going to another server.'
+      - text: 'A third-party email service'
+        correct: false
+        why: 'Email can wait in a queue and be sent later. Taking every server out because of its outage is overkill.'
+      - text: 'Session or cache (Redis), if the app depends on it'
+        correct: true
+        why: 'In an app that relies on login, nothing works without Redis, so this is an essential dependency too.'
+      - text: 'An advertising or analytics service'
+        correct: false
+        why: 'An optional service. The customer''s work goes on without it.'
+    ref: liveness-readiness
+  - q: 'What should happen when a readiness probe fails?'
+    hint: 'Will the process die?'
+    options:
+      - text: 'The load balancer stops sending traffic to that server, and sends it again once it recovers'
+        correct: true
+        why: 'The server isn''t shut down; it just rests for a while.'
+      - text: 'The server restarts immediately'
+        correct: false
+        why: 'That is liveness''s job. Readiness only controls traffic.'
+      - text: 'The new deploy is cancelled'
+        correct: false
+        why: 'It can hold up a deploy''s rollout, but it doesn''t cancel it.'
+    ref: liveness-readiness
+  - q: 'Which of these alerts deserve a page?'
+    hint: 'Is customer harm happening right now?'
+    options:
+      - text: 'Checkout errors above 5% for 5 minutes in a row'
+        correct: true
+        why: 'A symptom, urgent, and there is something to do (roll back or investigate).'
+      - text: 'Payment success rate suddenly drops from 99% to 80%'
+        correct: true
+        why: 'The money path is broken. Customers are directly harmed, so page.'
+      - text: 'Disk usage passed 60%'
+        correct: false
+        why: 'It grows slowly and isn''t urgent. A ticket or a predictive alert fits.'
+      - text: 'One worker restarted'
+        correct: false
+        why: 'It heals itself and no human has anything to do.'
+    ref: alert-design
+  - q: 'Rashed''s team gets 300 alerts a month and nobody reads them anymore. What should they do first?'
+    hint: 'On which alerts did anyone actually do something?'
+    options:
+      - text: 'Count how often each alert led to action, and delete or demote to tickets the ones nobody acted on'
+        correct: true
+        why: 'Cutting the useless alerts gives the rest their weight back.'
+      - text: 'Make every alert ring louder on the phone'
+        correct: false
+        why: 'The problem isn''t volume but quantity and relevance.'
+      - text: 'Add more alerts, so nothing is missed'
+        correct: false
+        why: 'More alerts means more noise, and the real ones get buried further.'
+      - text: 'Tell on-call to switch their phone off at night'
+        correct: false
+        why: 'Then nobody wakes up for a real fire either.'
+    ref: alarm-that-always-rings
+  - q: 'Which part of this alert rule is directly tied to the runbook?'
+    lang: yaml
+    code: |
+      - alert: CheckoutErrorsHigh
+        expr: error_ratio > 0.05
+        for: 5m
+        labels: {severity: page, team: payments}
+        annotations:
+          runbook_url: 'https://wiki.shop.example/runbooks/checkout-errors'
+    hint: 'Where does the on-call person go after being woken up?'
+    options:
+      - text: 'annotations.runbook_url'
+        correct: true
+        why: 'It puts the link to the instructions one click from the alert.'
+      - text: 'for: 5m'
+        correct: false
+        why: 'That is a waiting time, not instructions.'
+      - text: 'labels.severity'
+        correct: false
+        why: 'That is the level of urgency; it doesn''t say what to do.'
+    ref: alert-rule-runbook

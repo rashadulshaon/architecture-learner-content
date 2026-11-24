@@ -1,0 +1,417 @@
+slides:
+  - slug: surprise-bill
+    title: 'A $2,140 bill at month end'
+    kind: story
+    tldr: 'Cloud costs pile up unseen. Unless you track them, the bill is the first thing that tells you something went wrong.'
+    keywords: ['FinOps', 'cloud bill', 'cost', 'NAT gateway', 'surprise bill']
+    blocks:
+      - type: text
+        body: |
+          The bill is normally about $820 a month. This month it came to $2,140. Nobody had built anything new, yet the bill was almost two and a half times higher. Finding out why took two days: one service was fetching images through the NAT gateway, and a developer had left debug-level logging switched on.
+      - type: visual
+        kind: bars
+        caption: 'This month''s $2,140 bill: where the money went'
+        items:
+          - {label: 'Network (NAT)', value: 900, display: '$900', tone: bad, tip: 'It is normally $120. One service was pulling images from S3 through the NAT gateway, at its extra per-GB price.'}
+          - {label: 'Logs', value: 650, display: '$650', tone: bad, tip: 'It is normally $110. With debug logging on, several times more lines piled up every day.'}
+          - {label: 'Database', value: 260, display: '$260', tip: 'Normal. The fixed monthly price of a multi-AZ database.'}
+          - {label: 'Compute', value: 210, display: '$210', tip: 'Normal. Three app nodes.'}
+          - {label: 'Everything else', value: 120, display: '$120', tip: 'Cache, load balancer and storage together.'}
+      - type: quote
+        body: 'A cost nobody owns grows quietly every day.'
+    aside:
+      - type: problem
+        body: 'In the cloud, the more you use the more you pay. So one bad decision in code, like an extra call or an extra log line, changes the number in taka or dollars directly. FinOps makes cost part of the engineering conversation.'
+      - type: terms
+        items:
+          - {term: 'FinOps', meaning: 'Financial Operations: engineers, finance and the business working together to understand and control cloud costs.'}
+    check:
+      q: 'Why can the cloud bill go up even when no new feature has shipped?'
+      a: 'Because cloud cost grows with usage. Extra data transfer, debug logs or a resource left running all cost money, even if nobody built anything.'
+
+  - slug: cost-model
+    title: 'The cost model: a wedding budget sheet'
+    kind: concept
+    tldr: 'Break the month''s cost into components and separate fixed from variable, and you can estimate the number before the bill arrives.'
+    keywords: ['cost model', 'fixed cost', 'variable cost', 'forecast', 'budget']
+    blocks:
+      - type: metaphor
+        icon: receipt
+        title: 'A wedding budget sheet'
+        body: |
+          Before a wedding, the family draws up a list: the hall rent (the same however many guests come) and the food (per head). Double the guests and the hall rent stays put, but the food bill doubles. The cloud works the same way: some costs are **fixed** and some are **variable**, rising with use.
+      - type: visual
+        kind: table
+        caption: 'The monthly cost model for the Shop API (300,000 orders, example numbers)'
+        headers: ['Component', 'Type', 'Per month']
+        rows:
+          - cells: ['Compute (3 nodes × $70)', 'fixed', '$210']
+            tip: 'You pay as long as the nodes are on, even when there are few orders.'
+          - cells: ['Database (multi-AZ)', 'fixed', '$260']
+            tip: 'The biggest single cost. Change the instance size and the price changes.'
+          - cells: ['Cache + load balancer', 'fixed', '$75']
+            tip: 'Redis at $50 and the load balancer at $25, both billed by the hour.'
+          - cells: ['Storage (S3, backups)', 'variable', '$45']
+            tip: 'Grows as data piles up. Moving old files to a cheaper tier brings it down.'
+          - cells: ['Network (NAT, transfer)', 'variable', '$120']
+            tip: 'Billed per GB, so it rises directly with traffic.'
+          - cells: ['Logs and monitoring', 'variable', '$110']
+            tip: 'Charged by how many GB of logs are stored, so more lines means more cost.'
+          - cells: ['Total', 'fixed $545 + variable $275', '$820']
+            tip: '210 + 260 + 75 + 45 + 120 + 110 = 820.'
+      - type: text
+        body: |
+          With this model you can forecast. Double the orders and the variable part roughly doubles (from 275 to about 550), while the fixed part stays the same until you cross a limit and need another node or a bigger database. An ordinary spreadsheet is enough to build the model. What matters is knowing the reason behind each number.
+    aside:
+      - type: tips
+        items:
+          - 'Write the assumption next to each number: "Database $260 because a medium multi-AZ instance." Then when it changes, you know why.'
+          - 'Compare the model with the real bill every month. Any gap means you''ve found a cost you didn''t know about.'
+      - type: remember
+        body: 'Fixed costs arrive without any usage; variable costs follow usage.'
+    check:
+      q: 'In the model above, if orders double, which part roughly doubles and which stays the same for now?'
+      a: 'The variable part (storage, network, logs: about 275 to 550) roughly doubles. The fixed part (compute, database, cache) stays the same until you cross a limit.'
+
+  - slug: unit-economics
+    title: 'Unit economics: cost per order'
+    kind: concept
+    tldr: 'Look at the cost per 1,000 orders, not the total bill. It tells you whether the business is growing healthily or just growing its costs.'
+    keywords: ['unit economics', 'cost per order', 'cost per user', 'unit cost', 'FinOps metric']
+    blocks:
+      - type: metaphor
+        icon: users
+        title: 'Cost per head'
+        body: |
+          The catering manager knows the total bill, but the real question is "what is it per head?". 20,000 taka for 100 guests and 50,000 taka for 500: the total went up, but the cost per head came down, so the business is doing well. In the cloud, the head is an order, a user or a request.
+      - type: visual
+        kind: bars
+        caption: 'Cloud cost per 1,000 orders: the unit cost falls even as the total bill rises (except in April)'
+        items:
+          - {label: 'Jan: 100,000 orders, $600', value: 6.0, display: '$6.00', tone: warn, tip: '600 ÷ 100 = $6.00 per 1,000 orders. When small, the fixed costs are spread over few orders, so the figure is high.'}
+          - {label: 'Feb: 200,000, $700', value: 3.5, display: '$3.50', tone: good, tip: '700 ÷ 200 = $3.50. Orders doubled while the bill rose only a little: healthy growth.'}
+          - {label: 'Mar: 300,000, $820', value: 2.73, display: '$2.73', tone: good, tip: '820 ÷ 300 ≈ $2.73. The fixed costs are being spread over more orders.'}
+          - {label: 'Apr: 320,000, $1,400', value: 4.38, display: '$4.38', tone: bad, tip: '1,400 ÷ 320 ≈ $4.38. Orders barely grew but the bill jumped, so some waste has crept in.'}
+      - type: code
+        lang: sql
+        file: 'reports/unit_cost.sql'
+        code: |
+          SELECT c.day,
+                 SUM(c.cost_usd)                              AS cloud_cost,
+                 o.orders,
+                 ROUND(SUM(c.cost_usd) / o.orders * 1000, 2)  AS cost_per_1000_orders
+          FROM cloud_cost_daily c
+          JOIN orders_daily o ON o.day = c.day
+          WHERE c.tag_service = 'shop-api'
+          GROUP BY c.day, o.orders
+          ORDER BY c.day;
+        marks:
+          - {line: 6, tip: 'Join the billing export (cloud_cost_daily) with the business data (orders_daily) and the unit cost falls out.'}
+          - {line: 7, tip: 'It filters by tag, so every resource must be tagged properly.'}
+      - type: quote
+        body: 'Look at the cost per order, not the total bill.'
+    aside:
+      - type: tips
+        items:
+          - 'Pick a "unit" that fits your business: an order, an active user, GB processed, or emails sent.'
+          - 'Compare the unit cost with the revenue per order. That shows how much of the business the cloud bill is eating.'
+      - type: when
+        use: ['When the business is growing fast and the total bill is scary', 'To measure the cost of a new feature']
+        avoid: ['Cutting reliability or security just to push the unit cost down']
+    check:
+      q: 'The total bill went from 700 to 820 while orders went from 200,000 to 300,000. Is a rising bill bad news?'
+      a: 'No. The cost per 1,000 orders fell from $3.50 to $2.73. The total grew but each order costs less, so the business is growing healthily.'
+
+  - slug: tagging-budgets
+    title: 'Tags and budgets: whose cost, and what limit'
+    kind: howto
+    tldr: 'Put team, service and env tags on every resource, and set budgets and alerts in Terraform, so you know before the bill blows up.'
+    keywords: ['tagging', 'budget', 'cost allocation', 'Terraform', 'alert']
+    blocks:
+      - type: metaphor
+        icon: tag
+        title: 'A name on every shopping bag'
+        body: |
+          At the wedding market every bag is labelled: "kitchen", "decoration", "sweets". When the bill arrives you can see what went on what. A **tag** is that label, and a **budget** is a limit set in advance: cross it and a bell rings.
+      - type: code
+        lang: text
+        file: 'infra/cost.tf (HCL)'
+        variant: good
+        code: |
+          provider "aws" {
+            region = "ap-southeast-1"
+            default_tags {
+              tags = {
+                team    = "checkout"
+                service = "shop-api"
+                env     = "prod"
+              }
+            }
+          }
+
+          resource "aws_budgets_budget" "shop_prod" {
+            name         = "shop-prod-monthly"
+            budget_type  = "COST"
+            limit_amount = "900"
+            limit_unit   = "USD"
+            time_unit    = "MONTHLY"
+
+            notification {
+              comparison_operator        = "GREATER_THAN"
+              threshold                  = 80
+              threshold_type             = "PERCENTAGE"
+              notification_type          = "FORECASTED"
+              subscriber_email_addresses = ["checkout-team@example.com"]
+            }
+          }
+        marks:
+          - {line: 3, tip: 'default_tags: every resource created through this provider gets these tags automatically. Nobody has to remember.'}
+          - {line: 15, tip: 'A monthly limit of $900, just above the normal $820 bill, so any extra is noticed.'}
+          - {line: 23, tip: 'FORECASTED: you are warned as soon as the forecast passes $720 mid-month, without waiting for month end.'}
+      - type: visual
+        kind: steps
+        caption: 'From tag to alert: the cost-watching routine'
+        steps:
+          - {title: '1. Add tags', body: 'team, service, env, from IaC', tip: 'Not by hand. Set in Terraform, nobody forgets.'}
+          - {title: '2. Activate them', body: 'Cost allocation tags in the billing console', tip: 'Even when the tags are on the resources, you must switch them on separately for them to show up in billing reports.'}
+          - {title: '3. Set budgets', body: 'A monthly limit per service or team', tip: 'With team-based budgets, it is clear who owns it when the bill goes up.'}
+          - {title: '4. Review weekly', body: 'Unit cost and the top 5 categories', tip: 'Not at month end. Look weekly and waste is caught within the week.'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'Without tags, "whose cost is this?" has no answer, and unowned costs are the ones that grow most.'
+          - 'An alert that goes only to email gets ignored. Send it to the team''s chat channel.'
+      - type: terms
+        items:
+          - {term: 'Cost allocation tag', meaning: 'A tag used to split the bill''s money between teams or services.'}
+          - {term: 'Forecasted alert', meaning: 'A warning based on what the month will total if spending continues at today''s pace.'}
+    check:
+      q: 'What do you gain by making the budget alert "FORECASTED" instead of "ACTUAL"?'
+      a: 'You learn mid-month that at this pace you will pass the limit. ACTUAL tells you only after you hit the limit, when the money is already spent.'
+
+  - slug: save-without-risk
+    title: 'Cutting cost without cutting reliability'
+    kind: compare
+    tldr: 'Cut waste (idle resources, oversized instances, too many logs), but not the safety net (backups, multi-AZ, monitoring).'
+    keywords: ['cost optimization', 'right-sizing', 'autoscaling', 'savings plan', 'spot']
+    blocks:
+      - type: text
+        body: |
+          There are two kinds of cost cutting: **cutting waste** and **cutting protection**. Waste is whatever nobody is using. Protection is what isn't used today but will save your life in an emergency: backups, a second availability zone, monitoring. The first is always good. The second is never cheap.
+      - type: visual
+        kind: table
+        caption: 'What each step saves, and how risky it is'
+        headers: ['Step', 'How it saves', 'Risk']
+        rows:
+          - cells: ['Right-sizing', 'A smaller instance when usage is low', 'Low, if measured']
+            tip: 'If average CPU and memory use stays below 20%, consider a smaller instance.'
+          - cells: ['Autoscaling', 'Fewer Pods at night, more at peak', 'Low']
+            tip: 'Never let the minimum drop below 2, or you lose availability.'
+          - cells: ['Savings Plan / Reserved', 'A 1 to 3 year commitment for steady use', 'Medium: commitment risk']
+            tip: 'Buy it only for the usage that will always be there.'
+          - cells: ['Spot instance', 'Cheap, but can be taken away at any time', 'Only for workers/batch']
+            tip: 'Not for databases or web Pods. Use it for work that can be retried.'
+          - cells: ['Storage lifecycle', 'Old files moved to a cheaper tier or deleted', 'Low']
+            tip: 'Check first whether there is a legal retention period.'
+          - cells: ['Log retention', 'Debug logs for 7 days, audit logs for long', 'Low']
+            tip: 'Not all logs are equal: audit and payment logs must be kept longer.'
+          - cells: ['Deleting idle resources', 'Unused disks, IPs, old snapshots', 'Low']
+            tip: 'Check the owner tag and ask first, then delete.'
+      - type: quote
+        body: 'Cut the waste, never the safety net.'
+    aside:
+      - type: when
+        use: ['Measure first, then cut, with evidence', 'One change at a time, and look at the result before the next']
+        avoid: ['Spot or single-AZ on a production database']
+      - type: remember
+        body: 'What isn''t used is waste; what will save you in a crisis is insurance.'
+      - type: refs
+        items:
+          - {to: 'scaling/horizontal-vertical', label: 'The basics of autoscaling'}
+    check:
+      q: 'A small team wants to turn off multi-AZ to save money. Why is that not "cutting waste"?'
+      a: 'Multi-AZ only matters when a zone fails, so it is insurance. Turning it off saves some money a year, but the site goes down the moment one building loses power.'
+
+  - slug: bad-savings
+    title: 'False savings: what you cut at your peril'
+    kind: pitfall
+    tldr: 'Deleting backups, trimming replicas or optimising without measuring lowers the bill, but a single incident wipes out all the savings.'
+    keywords: ['false saving', 'cost cutting', 'reliability', 'premature optimization']
+    blocks:
+      - type: visual
+        kind: compare
+        caption: 'Two teams, two paths'
+        columns:
+          - title: 'False savings'
+            tone: bad
+            icon: cross
+            tip: 'The bill did go down, but so did your ability to handle trouble.'
+            items:
+              - 'Single-AZ database, 1 day of backups'
+              - 'Monitoring off, no alerts'
+              - 'Web Pods on spot instances'
+              - 'Every server shrunk without measuring anything'
+          - title: 'Smart savings'
+            tone: good
+            icon: check
+            tip: 'The waste is gone but the protection is intact.'
+            items:
+              - 'Instances sized from measured usage'
+              - 'Autoscaling at night, minimum 2 Pods'
+              - 'Spot only for workers'
+              - 'Old snapshots and disks deleted'
+      - type: text
+        body: |
+          One small app saved $700 a year by cutting its backup retention. Six months later a bad migration wiped data, and there was no backup to clean it up from. The savings were gone, and so was some customer trust.
+      - type: quote
+        body: 'One incident can cost more than a whole year of savings.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Buying too many Reserved instances or Savings Plans. If usage drops later, the commitment money is stuck.'
+          - 'Optimising without measuring wastes time where there is no big cost. Look at the top 3 costs first.'
+      - type: refs
+        items:
+          - {to: 'recovery/backups-restore', label: 'Why backups can''t be cut'}
+    check:
+      q: 'What is the first job before cutting costs, and why?'
+      a: 'Measure: what goes where, and how much is actually used. Cut without measuring and you waste time where the cost is small, or end up cutting protection.'
+
+flashcards:
+  - q: 'What does FinOps mean?'
+    a: 'Engineers, finance and the business working together to understand, split and control cloud costs.'
+    more: |
+      The core idea: cost isn't only the finance department's worry. The engineer who creates a resource is the one making the cost decision, so cost has to be visible to them too.
+    ref: surprise-bill
+  - q: 'What is the difference between fixed and variable cloud costs?'
+    a: 'Fixed costs come whenever something is on (nodes, a database). Variable costs grow with use (data transfer, logs, storage).'
+    more: |
+      Double the orders and variable costs roughly double while fixed costs stay the same for now. But once you cross a limit and need another node or a bigger database, fixed costs rise in steps.
+    ref: cost-model
+  - q: 'How do you build a cost model?'
+    a: 'Split the cost into components (compute, database, network...), write down the basis for each, and separate fixed from variable.'
+    more: |
+      Compare the model with the real bill every month. A gap means there is a cost you don't know about. A model lets you answer "how much if orders double?" before the bill arrives.
+    ref: cost-model
+  - q: 'What is unit economics, and how is it measured in the cloud?'
+    a: 'The cost per unit of business, such as cloud cost per 1,000 orders = month''s total cost ÷ orders × 1,000.'
+    more: |
+      If the total bill rises but the unit cost falls, the business is healthy. If orders grow only slightly but the unit cost jumps, waste has crept in somewhere and needs investigating.
+    ref: unit-economics
+  - q: 'Why do cloud resources need tags?'
+    a: 'To split the bill between teams, services and environments. Without tags, "whose cost is this?" has no answer.'
+    more: |
+      Terraform's default_tags can put team, service and env on every resource. In billing you must also activate the tag as a cost allocation tag, or it won't show up in reports.
+    ref: tagging-budgets
+  - q: 'Why is a FORECASTED budget alert better than an ACTUAL one?'
+    a: 'FORECASTED warns you early that, at this pace, you will pass the limit by month end. ACTUAL fires only after you hit it, when the money is gone.'
+    more: |
+      Teams usually set both: 80% forecast and 100% actual. It's best to send the alert to the team's chat channel so somebody sees it.
+    ref: tagging-budgets
+  - q: 'Which workloads are safe to run on spot instances?'
+    a: 'Work that can be retried: queue workers, batch jobs, image processing. Not databases or web Pods.'
+    more: |
+      Spot is cheap, but the cloud can take it back at any time. If a worker's job is idempotent and sits in a queue, another worker simply picks it up when one dies.
+    ref: save-without-risk
+  - q: 'What must you not cut when reducing costs?'
+    a: 'Backups, multi-AZ, monitoring and alerts. These aren''t waste, they are insurance.'
+    more: |
+      Waste is whatever nobody is using (idle disks, oversized instances, too many logs). Protection is what rescues you in a crisis. One incident can cost more than a whole year of savings.
+    ref: bad-savings
+
+quiz:
+  - q: 'Last month''s bill was $820 and this month''s is $2,140, with no code changes. What do you do first?'
+    hint: 'First you need to see which category went up.'
+    options:
+      - text: 'Shrink all the servers'
+        correct: false
+        why: 'Cutting without knowing the cause hits the wrong place and lowers reliability.'
+      - text: 'Break the bill down by tag or service and see which category jumped'
+        correct: true
+        why: 'Knowing which category rose (network, logs and so on) narrows down the cause.'
+      - text: 'Wait a month and see whether the bill drops again'
+        correct: false
+        why: 'Waste doesn''t stop by itself, and money is leaving every day.'
+    ref: surprise-bill
+  - q: 'From the numbers below, what is the cost per 1,000 orders in March? Total cloud bill $820, orders 300,000.'
+    hint: 'Bill ÷ orders × 1,000.'
+    options:
+      - text: 'About $0.27'
+        correct: false
+        why: 'That figure is not in dollars per 1,000 orders; it is what you get when you forget to multiply by 1,000 and misplace the units.'
+      - text: 'About $2.73'
+        correct: true
+        why: '820 ÷ 300,000 × 1,000 ≈ 2.73.'
+      - text: 'About $27.3'
+        correct: false
+        why: 'That is ten times too high. Recheck how you divide and multiply by 1,000.'
+    ref: unit-economics
+  - q: 'In April orders went from 300,000 to 320,000, but the bill went from 820 to 1,400. Which explanations are reasonable?'
+    hint: 'Orders grew slightly, while the bill almost doubled.'
+    options:
+      - text: 'The business is doing great, so a bigger bill is normal'
+        correct: false
+        why: 'Orders grew 7% and the bill 70%. That mismatch is not normal growth.'
+      - text: 'Waste has crept into some service, such as extra logs or traffic'
+        correct: true
+        why: 'The unit cost rose from $2.73 to $4.38, which needs investigating.'
+      - text: 'There may be a newly started resource that was forgotten, such as a large instance'
+        correct: true
+        why: 'An idle or forgotten resource shows the same symptom. Use the tags to find its owner.'
+      - text: 'The cloud raises prices every month, so there is nothing to do'
+        correct: false
+        why: 'A jump this big doesn''t come from price rises. It comes from a change in usage.'
+    ref: unit-economics
+  - q: 'What is the biggest benefit of adding tags in this Terraform snippet?'
+    lang: text
+    code: |
+      provider "aws" {
+        default_tags {
+          tags = {
+            team    = "checkout"
+            service = "shop-api"
+            env     = "prod"
+          }
+        }
+      }
+    hint: 'What happens if somebody forgets?'
+    options:
+      - text: 'Every resource from this provider gets the tags automatically, and nobody has to remember'
+        correct: true
+        why: 'When tags are set centrally in IaC, almost no resource is left untagged, so the bill can be split.'
+      - text: 'The resources run faster'
+        correct: false
+        why: 'Tags have nothing to do with performance.'
+      - text: 'With tags, the bill goes down by itself'
+        correct: false
+        why: 'Tags don''t cut cost; they show whose cost it is. Cutting it takes decisions.'
+    ref: tagging-budgets
+  - q: 'Shaheen''s team wants to lower the bill. Which of these can be done without reducing reliability?'
+    hint: 'Waste versus insurance.'
+    options:
+      - text: 'Delete disks unused for two months and old snapshots, after confirming with the owner'
+        correct: true
+        why: 'Nobody is using them, so it is waste. Deleting them leaves safety the same or better.'
+      - text: 'Keep debug logs for 7 days and delete the rest (audit logs excepted)'
+        correct: true
+        why: 'Not all logs are equal. Keeping the less important ones for less time is fine.'
+      - text: 'Make the production database single-AZ'
+        correct: false
+        why: 'If one zone goes down, the site goes down. That is cutting insurance.'
+      - text: 'Cut backup retention to 1 day'
+        correct: false
+        why: 'If a bad migration or corrupted data is noticed 2 or 3 days later, there is no way back.'
+    ref: save-without-risk
+  - q: 'Which workload is safest to run on spot instances?'
+    hint: 'Work that can be run again even if it stops suddenly.'
+    options:
+      - text: 'The production database'
+        correct: false
+        why: 'If it is taken away suddenly, you risk losing data and connections.'
+      - text: 'An idempotent queue worker that resizes images'
+        correct: true
+        why: 'If the worker dies, the message goes back to the queue and another worker picks it up. This is the ideal spot workload.'
+      - text: 'The only web Pod serving customer requests'
+        correct: false
+        why: 'The moment it is reclaimed, customers'' requests fail.'
+    ref: save-without-risk

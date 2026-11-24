@@ -1,0 +1,408 @@
+slides:
+  - slug: line-cut-bank
+    title: 'The branch phone line is cut: pay out or not?'
+    kind: story
+    tldr: 'When the link between two copies of the data is cut, a system has to choose: answer even though it may be wrong, or refuse to answer until it is sure.'
+    keywords: ['CAP theorem', 'partition', 'consistency', 'availability', 'two branches', 'network split']
+    blocks:
+      - type: metaphor
+        icon: bank
+        title: 'One account, the Dhaka and Sylhet branches'
+        body: |
+          Rahim's account holds 5000 taka, and both the Dhaka and Sylhet branches know the balance. Then the phone line between the two branches goes down. Now Rahim is in Dhaka and his wife is in Sylhet, and both want to withdraw 4000. Each branch has only two paths in front of it.
+      - type: visual
+        kind: sequence
+        caption: 'With the line cut, both branches said "yes"'
+        actors:
+          - {id: rahim, label: 'Rahim (Dhaka)', icon: user, tip: 'He has come to the Dhaka branch to withdraw 4000 taka.'}
+          - {id: dhaka, label: 'Dhaka branch', icon: bank, tip: 'It sees a balance of 5000 on its own books. It knows nothing about Sylhet.'}
+          - {id: sylhet, label: 'Sylhet branch', icon: bank, tip: 'Its own books say 5000 too. It knows nothing about Dhaka.'}
+          - {id: wife, label: 'Wife (Sylhet)', icon: user, tip: 'At the same moment she has come to Sylhet to withdraw 4000 from the same account.'}
+        messages:
+          - {at: dhaka, note: 'Dhaka-Sylhet line is cut (partition)', tone: warn, tip: 'Neither branch knows whether the other has died or only the line is cut.'}
+          - {from: rahim, to: dhaka, label: 'I''d like 4000'}
+          - {from: dhaka, to: rahim, label: 'Here, 4000', dashed: true}
+          - {from: wife, to: sylhet, label: 'I''d like 4000'}
+          - {from: sylhet, to: wife, label: 'Here, 4000', dashed: true}
+          - {at: sylhet, note: 'Account holds 5000, withdrawn 8000', tone: bad, tip: 'Both got an answer (available), but the books no longer add up (inconsistent).'}
+      - type: points
+        title: 'The two paths in front of a branch'
+        style: dot
+        items:
+          - 'Pay out: reconcile the books when the line is back (everyone gets an answer, but it may be wrong).'
+          - 'Refuse: wait until the line returns (the books stay right, but nobody gets served).'
+    aside:
+      - type: problem
+        body: 'Once the network splits, no system can give both the correct answer and an answer every time. If you don''t decide this choice in advance, it gets decided at random in the middle of the crisis.'
+      - type: refs
+        items:
+          - {to: 'data/consistency-models', label: 'Linearizable and eventual consistency'}
+    check:
+      q: 'With the line cut, what is lost if both branches pay out, and what would be lost if they didn''t?'
+      a: 'If they pay, consistency (correct books) is lost. If they don''t, availability (always getting an answer) is lost. You couldn''t have saved both.'
+
+  - slug: cap-in-practice
+    title: 'CAP: splits will happen, so pick C or A'
+    kind: concept
+    tldr: 'You can''t avoid network partitions. So CAP really says: during a partition you stay consistent (CP) or stay available (AP). It is a choice per feature, not a label for a database.'
+    keywords: ['CAP', 'CP', 'AP', 'partition tolerance', 'linearizability', 'consistency vs availability']
+    blocks:
+      - type: visual
+        kind: compare
+        caption: 'Two paths during a partition'
+        columns:
+          - title: 'CP: right answer or wait'
+            tone: accent
+            icon: lock
+            tip: 'The path for features where no answer beats a wrong one. The majority side keeps going and the minority side stops.'
+            items:
+              - 'Line cut: withdrawals stop'
+              - 'The minority side returns an error or times out'
+              - 'Balance, stock, seats, locks, leaders'
+              - 'etcd and ZooKeeper take this path'
+          - title: 'AP: always answer, reconcile later'
+            tone: good
+            icon: wifi
+            tip: 'The path for features that must always respond and can tolerate slightly stale data. You have to reconcile afterwards.'
+            items:
+              - 'Both sides answer'
+              - 'Some answers may be stale'
+              - 'Likes, feed, cart, view count'
+              - 'When the line is back, the changes are merged'
+      - type: points
+        title: 'What a partition really is'
+        style: dot
+        items:
+          - 'Two nodes can''t reach each other. A cut cable, a failed switch or a firewall mistake all count.'
+          - 'Slow means dead: in a 30-second GC pause, a node looks lost to the others once the timeout passes.'
+          - 'Rare, but real. A big system sees it at least a few times a year, so you can''t design on the assumption that it won''t happen.'
+      - type: quote
+        body: 'CAP is not "pick two of three". Partitions will happen, and then you choose: the right answer (C) or an answer at all (A).'
+    aside:
+      - type: terms
+        items:
+          - {term: 'C (consistency)', meaning: 'Every read sees the latest write, as if there were just one copy of the data. Not the same as the C in ACID (obeying the rules).'}
+          - {term: 'A (availability)', meaning: 'Every live node answers every request, instead of an error or waiting forever.'}
+          - {term: 'P (partition)', meaning: 'Messages between nodes getting lost or delayed.'}
+      - type: remember
+        body: 'With no partition, you have both C and A. When a partition comes, one must go.'
+    check:
+      q: '"We chose a CA database, so we don''t worry about partitions." What is wrong with that?'
+      a: 'A partition isn''t something you choose, it''s something that happens. A system with several nodes can have its network split, and then it has to give up either C or A.'
+
+  - slug: pacelc-latency
+    title: 'PACELC: even with the line fine, you pay'
+    kind: concept
+    tldr: 'Even with no partition (Else), writing with everyone''s agreement across places costs latency. PACELC says: in a partition, A or C; otherwise, L (latency) or C.'
+    keywords: ['PACELC', 'latency vs consistency', 'synchronous replication', 'quorum', 'eventual consistency', 'sync replica']
+    blocks:
+      - type: metaphor
+        icon: phone
+        title: 'Phoning Sylhet every single time'
+        body: |
+          The line is fine. Before every withdrawal the Dhaka branch could phone Sylhet and reconcile the books: perfect, but it takes 1 minute. Or it could just pay out without asking: 10 seconds, but its view of Sylhet may be slightly stale. Even with a healthy line, you pay this price.
+      - type: visual
+        kind: bars
+        caption: 'Approximate time of one write, by how many must agree'
+        items:
+          - {label: 'Write to one server', value: 2, display: '2ms', tone: good, tip: 'Nobody else to talk to, so it is fast. But if the server dies, you can lose data.'}
+          - {label: 'Quorum across 3 AZs', value: 6, display: '6ms', tip: 'A majority of three data centers in the same city agree. A small delay for a lot of safety.'}
+          - {label: 'Quorum across 3 continents', value: 130, display: '130ms', tone: warn, tip: 'The speed-of-light limit: agreement from a distant region takes time, and every write pays this delay.'}
+      - type: visual
+        kind: table
+        caption: 'Where each system leans (default configs; they can be changed)'
+        headers: ['System', 'On partition', 'Else']
+        rows:
+          - cells: ['Cassandra, DynamoDB (default reads)', 'A', 'L (latency)']
+            tip: 'It puts fast answers and staying up first. Reads may be slightly stale. Quorum reads can change that.'
+          - cells: ['Spanner, etcd, ZooKeeper', 'C', 'C (consistency)']
+            tip: 'It always takes agreement from a majority, so writes take a bit longer, but answers are correct.'
+          - cells: ['PostgreSQL + sync replica', 'C', 'C']
+            tip: 'A commit waits until the sync replica confirms. Safe, but every write adds network delay.'
+          - cells: ['PostgreSQL + reading from an async replica', 'A on reads', 'L on reads']
+            tip: 'Fast reads, but replication lag means you may see stale data.'
+    aside:
+      - type: remember
+        body: 'PACELC = If Partition then A or C; Else Latency or Consistency.'
+      - type: refs
+        items:
+          - {to: 'scaling/data-movement', label: 'Replication lag and read-your-writes'}
+          - {to: 'resilience/disaster-recovery', label: 'The price of multi-region'}
+    check:
+      q: 'Why are writes slow when every one needs a majority across three continents, even when the network is healthy?'
+      a: 'Agreement from a distant region takes time because of the speed of light. You are paying latency all the time to buy consistency, the "Else" part of PACELC.'
+
+  - slug: choose-per-feature
+    title: 'Choose CP or AP per feature in one app'
+    kind: howto
+    tldr: 'Not for the whole database but for each feature, ask: is wrong data worse, or no answer? Money and stock go CP; likes and feeds go AP.'
+    keywords: ['CP vs AP', 'per feature', 'stale read', 'Retry-After', 'graceful degradation', 'feature-level choice']
+    blocks:
+      - type: visual
+        kind: table
+        caption: 'Which path for which feature, and what the user sees'
+        headers: ['Feature', 'Path', 'What they see in a partition']
+        rows:
+          - cells: ['Withdrawing a balance', 'CP', '"Please try later" (503)']
+            tip: 'Money paid out against a wrong balance is hard to get back. So if you aren''t sure, it''s better not to do it.'
+          - cells: ['Stock and seat booking', 'CP', 'Waiting, or "can''t book right now"']
+            tip: 'The harm of selling one seat to two people is far bigger than a short wait.'
+          - cells: ['Likes, view counts', 'AP', 'A slightly old number']
+            tip: 'A few likes off harms nobody; always answering is what matters.'
+          - cells: ['Feed, product listing', 'AP', 'A slightly stale page from cache']
+            tip: 'Even a stale list beats no list. It corrects itself after a while.'
+          - cells: ['Shopping cart', 'AP', 'You can always add, and it is reconciled later']
+            tip: 'The famous Amazon Dynamo example: adding to the cart never fails, and the two copies are merged afterwards.'
+      - type: code
+        lang: php
+        file: 'src/Controller/WithdrawController.php (CP)'
+        variant: good
+        code: |
+          #[Route('/accounts/{id}/withdraw', methods: ['POST'])]
+          public function withdraw(
+              string $id,
+              #[MapRequestPayload] WithdrawRequest $req,
+          ): JsonResponse {
+              try {
+                  $this->ledger->withdraw($id, $req->amountCents);   // on the primary, with a majority
+              } catch (ConnectionException) {
+                  // CP: if we can't be sure, we don't hand out money
+                  return $this->json(['error' => 'try_later'], 503, ['Retry-After' => '5']);
+              }
+
+              return $this->json(['ok' => true]);
+          }
+        marks:
+          - {line: 7, tip: 'A money write always goes to the primary, never to some stale copy.'}
+          - {line: 10, tip: 'If it can''t be sure, it returns 503 with Retry-After. The user is told to try later, and no wrong figure is produced.'}
+      - type: code
+        lang: php
+        file: 'src/Controller/LikesController.php (AP)'
+        variant: good
+        code: |
+          #[Route('/posts/{id}/likes', methods: ['GET'])]
+          public function likes(int $id): JsonResponse
+          {
+              $count = $this->cache->get('likes:'.$id, function (ItemInterface $item) use ($id): int {
+                  $item->expiresAfter(30);              // 30 seconds stale is fine
+                  return $this->likes->countFromReplica($id);
+              });
+
+              return $this->json(['likes' => $count])->setPublic()->setMaxAge(30);
+          }
+        marks:
+          - {line: 5, tip: 'A number up to 30 seconds old, on purpose. In return you always answer fast, even when the database is split.'}
+          - {line: 9, tip: 'Browsers and the CDN can keep it for 30 seconds too, so the database is barely touched.'}
+    aside:
+      - type: when
+        use:
+          - 'CP: a mistake costs money, stock or legal trouble'
+          - 'AP: stale data hurts nobody, and getting no answer is worse'
+        avoid:
+          - 'AP for balances or seats'
+          - 'CP for feeds and likes'
+      - type: refs
+        items:
+          - {to: 'resilience/graceful-degradation', label: 'What to show when a dependency breaks'}
+    check:
+      q: 'Flight seat booking and "how many people liked this post": which is CP, which is AP, and why?'
+      a: 'Seat booking is CP: selling one seat twice does big damage, so wait if you aren''t sure. Likes are AP: a slightly stale number hurts nobody, and getting an answer every time matters.'
+
+  - slug: ap-conflicts
+    title: 'Choosing AP means owing a reconciliation'
+    kind: pitfall
+    tldr: 'In AP, both sides change the same data separately. "Last write wins" depends on clocks and silently drops one change. You need a merge rule built in advance.'
+    keywords: ['last write wins', 'LWW', 'conflict resolution', 'merge', 'CRDT', 'eventual consistency', 'clock skew']
+    blocks:
+      - type: visual
+        kind: compare
+        caption: 'Two ways to reconcile when the cart changed on both sides'
+        columns:
+          - title: 'Last write wins'
+            tone: bad
+            icon: cross
+            tip: 'It keeps the write with the latest timestamp and throws the rest away. Simple, but it quietly loses data.'
+            items:
+              - 'Shoes added to the cart in Dhaka'
+              - 'A watch added in Sylhet at the same time'
+              - 'Whoever''s clock runs further ahead wins'
+              - 'The other is lost, and nobody knows'
+          - title: 'Merge'
+            tone: good
+            icon: check
+            tip: 'It takes both sides'' changes and builds one result. No data is lost, but you have to design the rule for each feature.'
+            items:
+              - 'The shoes and the watch both stay'
+              - 'If the same product is on both sides, keep the larger quantity'
+              - 'The rule is decided per feature'
+              - 'When it gets complex, use a CRDT'
+      - type: code
+        lang: sql
+        file: 'Simple but dangerous'
+        variant: bad
+        code: |
+          UPDATE profiles
+             SET bio = :bio, updated_at = :client_ts
+           WHERE user_id = :id AND updated_at < :client_ts;
+        marks:
+          - {line: 3, tip: 'client_ts is the clock on the user''s phone. If that clock runs a few minutes ahead, it wins forever, and other people''s newer changes can''t get in.'}
+      - type: code
+        lang: php
+        file: 'src/Cart/CartMerger.php'
+        variant: good
+        code: |
+          public function merge(Cart $left, Cart $right): Cart
+          {
+              $qty = [];
+              foreach ([...$left->lines(), ...$right->lines()] as $line) {
+                  $qty[$line->sku] = max($qty[$line->sku] ?? 0, $line->qty);
+              }
+
+              return Cart::fromQuantities($qty);        // nothing is lost
+          }
+        marks:
+          - {line: 5, tip: 'For the same sku on both sides, keep the larger quantity. The rule changes from feature to feature.'}
+          - {line: 8, tip: 'With this rule, deleted items can come back (they did in Dynamo''s cart too). To delete, you need to keep a separate "deleted" marker.'}
+      - type: quote
+        body: 'AP means "we''ll reconcile later". With no reconciliation rule, it isn''t AP, it''s silently losing data.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Server clocks aren''t exact either; use a clock for LWW and even a small skew loses changes.'
+          - 'After picking AP, if you bolt on outside actions like refunds or emails, those can happen twice too, so keep them idempotent.'
+      - type: refs
+        items:
+          - {to: 'time/clocks-lie', label: 'Why you can''t order events by clock'}
+          - {to: 'time/ordering-events', label: 'Keeping events in the right order'}
+    check:
+      q: 'When is the "last write wins" rule dangerous in an AP system, and what is the alternative?'
+      a: 'When both sides change something at the same time, one is lost silently, and clock skew can make the wrong side win. The alternative: a per-feature merge rule, or a CRDT.'
+
+flashcards:
+  - q: 'What are C, A and P in CAP?'
+    a: 'C: every read sees the latest write. A: every live node answers every request. P: the system keeps working even when communication between nodes is cut.'
+    more: |
+      Here C means linearizable consistency, not the C in ACID (obeying the rules). When a partition comes, you can't keep C and A together, so one must go. With no partition, you have both.
+    ref: cap-in-practice
+  - q: 'What exactly is a partition?'
+    a: 'Nodes can''t reach each other. A cut cable, a failed switch, or a link so slow it times out: all are partitions.'
+    more: |
+      In a 30-second GC pause, a server looks dead to the others. Slow and dead can't be told apart, so you design for it as a partition too. It is rare, but a big system does see it.
+    ref: cap-in-practice
+  - q: 'How do CP and AP behave, with examples?'
+    a: 'CP: in a partition, if it can''t give the right answer it returns an error or waits (balance, stock). AP: it always answers, though some answers may be stale (likes, feed).'
+    more: |
+      In CP the majority side stays up and the minority side stops. In AP both sides keep accepting writes and reconcile when the line is back. The choice is made per feature, not for the whole database. More in [[data/consistency-models|consistency models]].
+    ref: cap-in-practice
+  - q: 'What does PACELC say?'
+    a: 'If there is a Partition, Availability or Consistency; Else, Latency or Consistency.'
+    more: |
+      CAP only talks about the time of the split. But most of the time the network is fine, and even then writing with everyone's agreement costs latency. PACELC names that second choice too.
+    ref: pacelc-latency
+  - q: 'Why are multi-region quorum writes slow even when the network is healthy?'
+    a: 'Agreement from a distant region takes time because of the speed of light. Keeping answers correct is paid for in latency.'
+    more: |
+      A quorum across 3 AZs in one city is around 6ms, but across three continents it can take over 100ms. That's why a common tactic is to keep a user's writes in the region where that user is.
+    ref: pacelc-latency
+  - q: 'Which features do you make CP and which AP?'
+    a: 'CP when wrong data costs money, stock or legal trouble. AP when slightly stale data is harmless and getting no answer is worse.'
+    more: |
+      In the same app, withdrawing a balance is CP (503 with Retry-After if unsure), and a like count is AP (a 30-second stale cache). The one question: "Which is more harmful, a wrong answer or no answer?"
+    ref: choose-per-feature
+  - q: 'Why is "last write wins" (LWW) dangerous in AP?'
+    a: 'When both sides change something at once, one change is lost silently, and the side with the clock further ahead wins. Clocks aren''t exact.'
+    more: |
+      The fix is a per-feature merge rule (for a cart, combine the items from both sides) or a data structure like a CRDT, where changes merge naturally. AP means "we'll reconcile later", so the rule has to be settled in advance.
+    ref: ap-conflicts
+
+quiz:
+  - q: 'Which of these events count as a "partition"?'
+    hint: 'The question is: can the nodes talk to each other?'
+    options:
+      - text: 'The ISP link between two data centers is cut'
+        correct: true
+        why: 'Both sides are alive but can''t reach each other. This is the classic partition.'
+      - text: 'The leader is stuck in a 40-second GC pause and the followers have timed out'
+        correct: true
+        why: 'To the followers, the leader is lost. Slow and dead can''t be told apart, so you handle this like a partition.'
+      - text: 'One server''s disk fails and the server goes down'
+        correct: false
+        why: 'This is the node''s own failure (a crash). The network hasn''t split, and the others can still talk to each other.'
+      - text: 'A developer ran a wrong SQL statement'
+        correct: false
+        why: 'This is an application mistake, not a network or node problem.'
+    ref: cap-in-practice
+  - q: 'In a cinema ticket app, a network problem cuts the order server off from the seat database. The seat state can''t be confirmed. What should you do?'
+    hint: 'What happens if one seat is sold to two people, and what happens if people wait a while?'
+    options:
+      - text: 'Return 503 with Retry-After and ask the user to try later (the CP path)'
+        correct: true
+        why: 'Selling one seat to two people does much bigger damage, so don''t sell without being sure.'
+      - text: 'Look at the old cache, treat the seat as "free" and sell it'
+        correct: false
+        why: 'That is the AP path. Stale information can sell the same seat to two people, which this feature can''t accept.'
+      - text: 'Keep processing all orders silently and reconcile later'
+        correct: false
+        why: 'When you reconcile, someone has to be told "sorry, no seat", after their money was taken. The damage is larger.'
+      - text: 'Shut the whole app down'
+        correct: false
+        why: 'Shutting everything down is needless. Block only booking; the movie listings and the rest can keep working.'
+    ref: choose-per-feature
+  - q: 'What is wrong with this CP feature?'
+    lang: php
+    code: |
+      $balance = $this->cache->get('balance:'.$id, function (ItemInterface $i) use ($id) {
+          $i->expiresAfter(300);
+          return $this->replica->fetchOne('SELECT balance FROM accounts WHERE id = ?', [$id]);
+      });
+
+      if ($balance >= $amount) {
+          $this->ledger->withdraw($id, $amount);
+      }
+    hint: 'What can happen if a number like a balance is 5 minutes old?'
+    options:
+      - text: 'It decides on a withdrawal from a balance that is 5 minutes old, cached from a replica; it should read from the primary'
+        correct: true
+        why: 'A balance is a CP feature. A stale number doesn''t show money already withdrawn, so an overdraft can happen.'
+      - text: 'It should use fetchAllAssociative instead of fetchOne'
+        correct: false
+        why: 'It isn''t a matter of the read method. The problem is where the data is read from and how stale it is.'
+      - text: 'expiresAfter(300) should be raised to get more cache hits'
+        correct: false
+        why: 'Older data means even more risk.'
+      - text: 'Nothing is wrong, having a cache is always good'
+        correct: false
+        why: 'A cache is great for an AP feature like a like count, not for money decisions.'
+    ref: choose-per-feature
+  - q: 'The network is completely healthy, with no partition. Yet the database insists every write needs agreement from three regions, and writes have become slow. Which part of PACELC is this?'
+    hint: 'What choice does the "Else" part talk about?'
+    options:
+      - text: 'The Consistency in Else: buying correctness with latency'
+        correct: true
+        why: 'There is no partition, yet getting everyone''s agreement costs latency. That is EC.'
+      - text: 'The Availability choice in a Partition'
+        correct: false
+        why: 'There is no partition here, so the P part doesn''t apply.'
+      - text: 'It is a CAP failure, unrelated to PACELC'
+        correct: false
+        why: 'CAP only speaks about the time of a partition; PACELC names exactly this choice made while "the line is fine".'
+      - text: 'A bug in the database'
+        correct: false
+        why: 'This is the normal price of the design, not a bug.'
+    ref: pacelc-latency
+  - q: 'In an AP-style system, the same profile bio is changed on both sides, and the system applies "last write wins" (by the phone''s clock time). Which problems can occur?'
+    hint: 'What happens to the person whose phone clock is a few minutes ahead?'
+    options:
+      - text: 'The one with the clock ahead keeps winning in the future, and other people''s newer changes are silently dropped'
+        correct: true
+        why: 'The timestamp depends on the clock. Clock skew lets the wrong side win.'
+      - text: 'One of the two changes is lost without anyone knowing'
+        correct: true
+        why: 'LWW doesn''t merge; it keeps one and throws the rest away.'
+      - text: 'When the line is back, both changes merge on their own'
+        correct: false
+        why: 'LWW doesn''t merge. To merge you need a merge rule or a CRDT.'
+      - text: 'The system becomes CP at that point'
+        correct: false
+        why: 'Everyone is still getting answers, so it is still AP; it is just that the reconciliation rule is bad.'
+    ref: ap-conflicts

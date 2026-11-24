@@ -1,0 +1,391 @@
+slides:
+  - slug: renamed-field
+    title: 'One renamed field, 30,000 blank phones'
+    kind: story
+    tldr: 'Many clients read your API response, known and unknown. Rename one field and the old clients quietly break.'
+    keywords: ['API contract', 'breaking change', 'field rename', 'mobile app', 'old version', 'backward compatibility']
+    blocks:
+      - type: text
+        body: |
+          Rahim renamed the API's `name` field to `fullName`, because the new name felt clearer to him. He fixed the Vue web app and deployed it the same day, and all was well. But 30,000 people still have an old version of the mobile app on their phones, and it still looks for `name`. Next morning every profile shows an empty space where the name should be, and the server logs no error at all.
+      - type: visual
+        kind: sequence
+        caption: 'What the old mobile app gets after the rename'
+        actors:
+          - {id: mobile, label: 'Mobile app v1.2', icon: mobile, tip: 'The user hasn''t updated yet. This app expects the response to contain a field called name.'}
+          - {id: api, label: 'API', icon: api, tip: 'Rahim''s Symfony app. He assumed only his own Vue app reads its responses.'}
+        messages:
+          - {from: mobile, to: api, label: 'GET /api/profile'}
+          - {at: api, note: 'This morning name became fullName', tone: warn, tip: 'In the code it looks like renaming a property, but in fact it breaks a promise made to everyone.'}
+          - {from: api, to: mobile, label: '200 OK  {"fullName": "Rahim"}', dashed: true, tip: 'The status is 200, so nobody sees an error.'}
+          - {at: mobile, note: 'user.name = undefined, name is blank', tone: bad, tip: 'The app may not even crash. Showing the wrong thing is more dangerous, because nobody notices.'}
+      - type: quote
+        body: 'An API is a promise. You can''t change its shape without telling the people standing on it.'
+        by: 'The first rule of API contracts'
+    aside:
+      - type: story
+        title: 'The phone that never updates'
+        body: |
+          On the web you can ship new code to everyone within a minute. With a mobile app you can't: some people go months without updating, and a store release can sit in review. So old versions keep calling your API for a year or more.
+      - type: terms
+        items:
+          - {term: 'Contract', meaning: 'The agreement, written or unwritten, between an API and its users: which URL, what to send, what comes back.'}
+          - {term: 'Breaking change', meaning: 'A change after which a client that used to work now misbehaves or breaks.'}
+    check:
+      q: 'Rahim only renamed a property in his own code. Why did that become a big problem?'
+      a: 'Because that name was part of the API''s contract. Clients that hadn''t updated still looked for the old name and found nothing.'
+
+  - slug: compatible-changes
+    title: 'Which changes are safe, which break'
+    kind: concept
+    tldr: 'Adding something new is safe; renaming, deleting or changing a type breaks. If readers ignore fields they don''t know, both sides can grow in peace.'
+    keywords: ['backward compatibility', 'forward compatibility', 'additive change', 'tolerant reader', 'compatibility', 'safe change']
+    blocks:
+      - type: metaphor
+        icon: plug
+        title: 'The wall socket and the plug'
+        body: |
+          For years, any appliance's plug fits the socket in your wall. You can install a new socket next to it and nothing happens to anyone. But change the size of the old socket's holes, and every appliance in the house stops working.
+      - type: text
+        body: |
+          When the new server can still handle old clients, that is **backward compatibility**. When an older party can cope with fields it doesn't recognise from a newer one, that is **forward compatibility**. On the client side this takes the form of a tolerant reader: read only the fields you need, and look past the rest.
+      - type: visual
+        kind: table
+        caption: 'What each change does to an old client'
+        headers: ['Change', 'Old client', 'Type']
+        rows:
+          - cells: ['Add a new field to the response', 'Ignores the unknown field', 'Safe']
+            tip: 'A new socket beside the old one. The old client never looks at the new field, so nothing changes for it.'
+          - cells: ['Add a new optional query parameter', 'Never sends it, works as before', 'Safe']
+            tip: 'If the default keeps the old behaviour, old requests work exactly as they did.'
+          - cells: ['Add a new endpoint', 'Doesn''t know it, no effect', 'Safe']
+            tip: 'You can''t break something nobody is calling.'
+          - cells: ['Rename a field', 'Finds nothing under the old name', 'Breaks']
+            tip: 'You can make this a safe change in steps: add the new name and keep the old one for a while.'
+          - cells: ['Delete a field', 'What it was looking for is gone', 'Breaks']
+            tip: 'Even if nobody seems to use it, you can''t remove it until you''re sure.'
+          - cells: ['Change a type, e.g. "12" to 12', 'Parses or compares wrongly', 'Breaks']
+            tip: 'It looks like a small change, but in typed languages (TypeScript, Kotlin) parsing the whole response can fail.'
+          - cells: ['Add a new required field to the request', 'Doesn''t send it, gets a 422', 'Breaks']
+            tip: 'Old clients don''t even know the new field exists. Always make new fields optional, with a default.'
+      - type: quote
+        body: 'Adding is safe. Renaming, deleting and changing a type all break.'
+    aside:
+      - type: remember
+        body: 'Be strict when you send and generous when you read: read only what you need and ignore anything unfamiliar.'
+      - type: pitfalls
+        items:
+          - 'Adding a new value to an enum is risky too: an old client may hit an unknown value and break in its switch. Tell clients to keep a default branch for unknown values.'
+      - type: refs
+        items:
+          - {to: 'data/zero-downtime-migrations', label: 'The same rule applies to databases: expand, then contract'}
+    check:
+      q: 'Why doesn''t adding a new field called `phone` to an API response break old clients?'
+      a: 'Old clients only read the fields they know. They never even look at the unknown one, so their behaviour stays as before.'
+
+  - slug: versioning-strategies
+    title: 'When you must break: which versioning method'
+    kind: compare
+    tldr: 'If you can''t avoid a break, ship a new version. The simplest and most common method is /v1, /v2 in the URL. The real work is keeping one set of logic under both versions.'
+    keywords: ['API versioning', 'URL versioning', 'header versioning', 'v1 v2', 'versioning strategy', 'Accept header']
+    blocks:
+      - type: text
+        body: |
+          Not every change can be made by adding. Sometimes the shape really has to change. When that happens, keep the old socket and install a second one with the new holes. There are four common ways to tell the sockets apart.
+      - type: visual
+        kind: table
+        caption: 'Four ways to version an API'
+        headers: ['Method', 'Example', 'Upside', 'Downside']
+        rows:
+          - cells: ['URL path', '/api/v2/orders', 'Simple, visible, cache-friendly', 'The URL changes']
+            tip: 'The default for most teams. In logs, curl and the browser you can see the version at a glance, and routing and caching stay simple.'
+          - cells: ['Header', 'Accept: application/vnd.shop.v2+json', 'Clean URLs', 'Hard to see, caches need Vary']
+            tip: 'It''s elegant from a pure REST point of view, but you can''t just open it in a browser, and testing it is a hassle.'
+          - cells: ['Query parameter', '/api/orders?version=2', 'Easy to change', 'Easy to forget, muddles cache keys']
+            tip: 'If the parameter is left out, it is unclear which version the caller gets. That is why this one is less popular.'
+          - cells: ['Date-based', 'Stripe-Version: 2024-06-20', 'Small changes are easy to handle', 'A lot of server work']
+            tip: 'Each client stays pinned to its own date. Stripe does it this way, but the server has to remember what changed on every date.'
+      - type: code
+        lang: yaml
+        file: 'config/routes.yaml'
+        variant: good
+        code: |
+          api_v1:
+              resource: ../src/Controller/Api/V1/
+              type: attribute
+              prefix: /api/v1
+
+          api_v2:
+              resource: ../src/Controller/Api/V2/
+              type: attribute
+              prefix: /api/v2
+        marks:
+          - {line: 4, tip: 'Every controller in the V1 folder gets a route starting with /api/v1. You don''t repeat the prefix in each controller.'}
+          - {line: 9, tip: 'V2 sits right beside it. Both controllers call the same application service; only the shape of the response differs.'}
+      - type: quote
+        body: 'A new version doesn''t mean a new house. The logic under both versions stays the same; only the outside looks different.'
+    aside:
+      - type: when
+        use:
+          - 'URL version: public APIs, mobile apps and partners, where you don''t control the clients'
+          - 'No version at all: only your own Vue app calls it, and both sides deploy together'
+        avoid:
+          - 'A new version for every small change: you end up running ten versions at once'
+      - type: tips
+        items:
+          - 'Keep the number of versions low. Running more than two at once is usually a burden on the team.'
+          - 'Bump the major version (v1, v2) only for a real break. Additive changes can go into any version quietly.'
+    check:
+      q: 'What is the best way to cut the extra maintenance when you run two versions side by side?'
+      a: 'Give each version its own controller, but share the application service underneath. Then there is one set of business rules and only the response shape comes in two forms.'
+
+  - slug: deprecation-howto
+    title: 'A safe way to retire an old version'
+    kind: howto
+    tldr: 'Never switch it off suddenly. Announce it, send Deprecation and Sunset headers, measure who still uses it, and shut it down only when the date arrives.'
+    keywords: ['deprecation', 'sunset header', 'Deprecation header', 'API retirement', 'shutting down', 'old API']
+    blocks:
+      - type: text
+        body: |
+          When a train timetable changes, notices go up at the stations well in advance; the trains don't just stop. Retiring an old API version works the same way. Put a header on every response saying that this version is old and when it will end, then watch whether anyone is still calling it.
+      - type: visual
+        kind: steps
+        caption: 'Five steps to retire an old version'
+        steps:
+          - {title: '1. Announce', body: 'The new version is ready; give the shutdown date early', tip: 'Announce it by email, in the changelog and in the docs together. Pick a date that gives mobile clients time to update, usually a few months.'}
+          - {title: '2. Send headers', body: 'Deprecation and Sunset on every old response', tip: 'A client whose code reads these headers can show a warning by itself. It is an announcement that needs no human.'}
+          - {title: '3. Measure usage', body: 'Log which clients still call v1', tip: 'Count by client name or app-version header. As the date gets closer, the number should head toward zero.'}
+          - {title: '4. Tell them directly', body: 'Contact those who still call it, one by one', tip: 'Phone or email the big partners. Not everyone reads the changelog.'}
+          - {title: '5. Shut it down', body: 'After the date, return 410 Gone', tip: '410 says "this existed and is gone". It is clearer than a 404, because the client knows the URL is not a mistake.'}
+      - type: code
+        lang: php
+        file: 'src/EventListener/DeprecatedApiListener.php'
+        variant: good
+        code: |
+          #[AsEventListener]
+          final class DeprecatedApiListener
+          {
+              public function __invoke(ResponseEvent $event): void
+              {
+                  if (!str_starts_with($event->getRequest()->getPathInfo(), '/api/v1/')) {
+                      return;
+                  }
+
+                  $headers = $event->getResponse()->headers;
+                  $headers->set('Deprecation', '@1795478400');
+                  $headers->set('Sunset', 'Wed, 30 Jun 2027 23:59:59 GMT');
+                  $headers->set('Link', '</docs/api/v2>; rel="successor-version"');
+              }
+          }
+        marks:
+          - {line: 6, tip: 'Runs only for v1 URLs. v2 responses are left untouched.'}
+          - {line: 11, tip: 'The Deprecation header carries the date the version was declared old, as a Unix timestamp with a leading @.'}
+          - {line: 12, tip: 'Sunset is the shutdown date, in HTTP date format. After it, v1 will be gone.'}
+    aside:
+      - type: commands
+        title: 'Check the headers'
+        items:
+          - {cmd: 'curl -sI https://shop.example/api/v1/orders', desc: 'Whether the response headers carry Deprecation and Sunset'}
+      - type: tips
+        items:
+          - 'A week or two before shutdown you can run a "brownout": deliberately return 410 from v1 for a few set hours, so anyone still calling it suddenly notices.'
+      - type: refs
+        items:
+          - {to: 'api/request-path', label: 'Which hop of the request path can change headers'}
+    check:
+      q: 'Why do you need headers and usage measurement on top of announcing the v1 shutdown date by email?'
+      a: 'Not everyone reads the email. Headers tell clients in code, and measuring shows who will break if you shut it down.'
+
+  - slug: contract-tests
+    title: 'The test that changes along with the code'
+    kind: pitfall
+    tldr: 'The developer who changes a field also changes the test, so the break goes unnoticed. A contract test guards, separately, what old clients rely on.'
+    keywords: ['contract testing', 'consumer-driven contract', 'Pact', 'OpenAPI diff', 'oasdiff', 'contract test']
+    blocks:
+      - type: text
+        body: |
+          Rahim renamed `name` to `fullName` and changed the test line `assertSame('Rahim', $data['name'])` in the same commit. Everything stays green. Here the test speaks for the change, not for the clients who depend on the API. A contract test stores, in a separate place, exactly what old clients expect, so that changing it forces everyone to ask questions.
+      - type: code
+        lang: php
+        file: 'tests/Contract/ProfileV1ContractTest.php'
+        variant: good
+        code: |
+          final class ProfileV1ContractTest extends WebTestCase
+          {
+              // What mobile app v1.2 relies on. Delete this test only when v1 is retired.
+              public function testProfileKeepsPromisedShape(): void
+              {
+                  $client = static::createClient();
+                  $client->request('GET', '/api/v1/profile/42');
+
+                  self::assertResponseIsSuccessful();
+                  $data = json_decode(
+                      $client->getResponse()->getContent(),
+                      true,
+                      flags: JSON_THROW_ON_ERROR,
+                  );
+
+                  self::assertIsInt($data['id']);
+                  self::assertIsString($data['name']);
+                  self::assertArrayHasKey('email', $data);
+              }
+          }
+        marks:
+          - {line: 3, tip: 'This comment records who relies on it. If you want to change the test, you first have to talk to that client.'}
+          - {line: 17, tip: 'It only checks that the key exists and the type matches. It doesn''t match the exact values of the whole response, which would be brittle.'}
+      - type: visual
+        kind: flow
+        caption: 'A consumer-driven contract: from the client''s expectations to the API''s CI'
+        nodes:
+          - {id: client, label: 'Client team', sub: 'mobile app', icon: mobile, col: 0, row: 1, tip: 'The people who use the response. They are the ones who know which fields are really needed.'}
+          - {id: pact, label: 'Contract file', sub: 'list of expectations', icon: file, col: 1.5, row: 1, tone: accent, tip: 'The client''s expectations written in one file: which URL it calls and which fields it expects. Pact does this job.'}
+          - {id: ci, label: 'API CI', sub: 'runs the check', icon: gear, col: 3, row: 1, tip: 'On every change it runs the real API against this file.'}
+          - {id: deploy, label: 'Deploy', sub: 'goes ahead if it passes', icon: rocket, col: 4, row: 1, tone: good, tip: 'If the check fails, the change never gets here. The break is caught before it reaches production.'}
+        edges:
+          - {from: client, to: pact, label: 'The client team writes its expectations into a file'}
+          - {from: pact, to: ci, label: 'The API''s CI pulls in that file'}
+          - {from: ci, to: deploy, label: 'The deploy goes ahead only if the expectations match', tone: good}
+    aside:
+      - type: commands
+        title: 'A tool that catches schema changes'
+        items:
+          - {cmd: 'oasdiff breaking openapi-old.yaml openapi-new.yaml', desc: 'Compares two OpenAPI files and finds breaking changes'}
+      - type: terms
+        items:
+          - {term: 'Consumer-driven contract', meaning: 'The client that uses the API writes down what it expects from it, and the API verifies exactly that.'}
+          - {term: 'Pact', meaning: 'A popular tool for consumer-driven contract tests; it works with both PHP and JS.'}
+      - type: remember
+        body: 'Check your own change with your own tests, but check other people''s reliance with expectations written by them.'
+    check:
+      q: 'If the same developer can change the response and the test, how is a contract test different?'
+      a: 'A contract test pins the old client''s expectations in a separate place. Changing the response turns it red, and everyone notices.'
+
+flashcards:
+  - q: 'What is an API contract?'
+    a: 'The agreement between an API and its users: which URL, what to send, and what shape comes back.'
+    more: |
+      Every field in a response, with its name and type, is part of the contract. As soon as someone depends on it, it becomes a promise, whether or not it is written down. That is why renaming something inside your code is easy, but renaming something in a response is not.
+    ref: renamed-field
+  - q: 'What is a breaking change?'
+    a: 'A change after which a client that used to work misbehaves or breaks, such as renaming or deleting a field or changing its type.'
+    more: |
+      The most dangerous break is the one that happens without an error: the server returns 200, but the client's screen shows blank or wrong data. That is why a rename is breaking too, even though it looks small in code.
+    ref: compatible-changes
+  - q: 'What is an additive change, and why is it safe?'
+    a: 'Only adding something new: a new field, a new optional parameter, a new endpoint. Old clients never look at it.'
+    more: |
+      An old client reads the fields it knows and ignores the rest, so adding doesn't change anything for it. The condition is that a new request parameter must be optional, and its default must keep the old behaviour.
+    ref: compatible-changes
+  - q: 'What is the difference between backward and forward compatibility?'
+    a: 'Backward: the new server can still handle old clients. Forward: an older party can cope with fields it doesn''t recognise from a newer one.'
+    more: |
+      Changing an API mainly calls for backward compatibility. Forward compatibility comes from the tolerant reader principle: the client reads only what it needs and doesn't fall apart on unknown fields. With both, server and client can be deployed at different times.
+    ref: compatible-changes
+  - q: 'What is the most common way to version an API, and why?'
+    a: 'A version in the URL path, such as /api/v1/orders. It is simple and visible, and caching and routing stay easy.'
+    more: |
+      There are header-based and date-based methods too, but they are harder to see and test. For most teams the URL path is the default. If only your own Vue app calls the API and both sides deploy together, you may not need versions at all.
+    ref: versioning-strategies
+  - q: 'What do the Deprecation and Sunset headers say?'
+    a: 'Deprecation: this API is declared old. Sunset: the exact date it will be shut down.'
+    more: |
+      If you send both on every old response, client code or monitoring can raise a warning by itself. A `Link` header with `rel="successor-version"` can point to the new version. After the shutdown date you return 410 Gone.
+    ref: deprecation-howto
+  - q: 'How is a contract test different from an ordinary test?'
+    a: 'It guards separately what the client expects, so a developer can''t hide a break by changing the test along with the code.'
+    more: |
+      An ordinary test checks the server's current behaviour, and when that changes, the test changes with it. A contract test is the client's list of expectations, and changing it means talking to the client. Pact and OpenAPI diff tools are used for this.
+    ref: contract-tests
+
+quiz:
+  - q: 'Which of these changes put old clients at risk of breaking?'
+    hint: 'What will the old client look for, and is it still exactly where it was?'
+    options:
+      - text: 'Changing the type of the `price` field in a response from string to number'
+        correct: true
+        why: 'Changing a type makes the client parse or compare wrongly. It looks small, but it is breaking.'
+      - text: 'Adding a new field called `avatarUrl` to the response'
+        correct: false
+        why: 'Old clients ignore fields they don''t know, so this is a safe additive change.'
+      - text: 'Requiring a new mandatory `couponCode` field in the request'
+        correct: true
+        why: 'Old clients don''t send this field, so every request they make now gets a 422.'
+      - text: 'Creating a new `GET /api/v1/offers` endpoint'
+        correct: false
+        why: 'Nobody was calling it before, so nothing breaks for anyone.'
+    ref: compatible-changes
+  - q: 'Rahim''s app has two clients: a Vue web app that deploys together with the API, and a mobile app that stays in use for up to six months after a release. He wants to rename the `name` field. What is the safest path?'
+    hint: 'Do you have any control over when the mobile app updates?'
+    options:
+      - text: 'Rename name to fullName in one deploy, since the web app is fine'
+        correct: false
+        why: 'Old versions of the mobile app will look for name and find nothing. The web app being fine isn''t enough.'
+      - text: 'Send both fields for a while, and after clients have moved over, remove the old one with a deprecation'
+        correct: true
+        why: 'With both name and fullName present, old and new clients both work. Then you can retire the old one gradually.'
+      - text: 'Email mobile users asking them to update, then rename'
+        correct: false
+        why: 'There''s no guarantee everyone will update. Some people stay on an old app for months.'
+      - text: 'Rename it without bumping the version, and just write a changelog entry'
+        correct: false
+        why: 'Nobody reads the changelog, and an old app''s code certainly doesn''t.'
+    ref: compatible-changes
+  - q: 'In the routes configuration below, which controller runs when v2 is called?'
+    lang: yaml
+    code: |
+      api_v1:
+          resource: ../src/Controller/Api/V1/
+          type: attribute
+          prefix: /api/v1
+
+      api_v2:
+          resource: ../src/Controller/Api/V2/
+          type: attribute
+          prefix: /api/v2
+    hint: 'What prefix is given next to each folder?'
+    options:
+      - text: 'The controllers in `src/Controller/Api/V2/`, with routes starting at /api/v2'
+        correct: true
+        why: 'The resource folder and the prefix together create the v2 routes. v1 stays separate.'
+      - text: 'The controllers in `src/Controller/Api/V1/`, because v1 was written first'
+        correct: false
+        why: 'Routes are matched by prefix, not by order. /api/v2/... only matches routes from the V2 folder.'
+      - text: 'Neither, because the attribute type only wants a prefix on the controller itself'
+        correct: false
+        why: 'Loading attribute routes from a folder in routes.yaml and giving them a prefix is valid and common.'
+      - text: 'Both controllers run together'
+        correct: false
+        why: 'Each request matches exactly one route, and because the prefixes differ the two never claim the same URL.'
+    ref: versioning-strategies
+  - q: 'Which steps should you take before shutting down v1?'
+    hint: 'How can you find out who will break when you shut it down?'
+    options:
+      - text: 'Send Deprecation and Sunset headers on v1 responses'
+        correct: true
+        why: 'It tells clients in code when the shutdown comes, so they can move off in time.'
+      - text: 'Count from the logs which clients still call v1'
+        correct: true
+        why: 'If the number isn''t close to zero, shutting down means deliberately breaking some people.'
+      - text: 'Delete the route overnight with no announcement'
+        correct: false
+        why: 'Those still using it get no chance to find out, and they all break on the same morning.'
+      - text: 'After the shutdown date, return 410 Gone instead of 404'
+        correct: true
+        why: '410 clearly says the resource existed and was removed on purpose; a 404 sounds like a wrong URL.'
+    ref: deprecation-howto
+  - q: 'Rahim renamed a field and, in the same commit, changed the matching `name` line in the test. CI is green. What is the problem?'
+    hint: 'Whose expectation was the test checking, and who changed that expectation?'
+    options:
+      - text: 'CI was slow and needs more tests'
+        correct: false
+        why: 'It isn''t the number of tests. The test that was supposed to guard against the break was itself changed.'
+      - text: 'Changing the test erased the old client''s expectation, so the break went unnoticed'
+        correct: true
+        why: 'When the same hand changes code and test, the test only verifies the new behaviour. That is why clients'' expectations live in a separate contract test.'
+      - text: 'He should have used Behat instead of PHPUnit for a rename'
+        correct: false
+        why: 'Changing the tool doesn''t fix it. The problem is that the list of expectations changes along with the code.'
+      - text: 'There is no problem, because the new name is clearer'
+        correct: false
+        why: 'The name may be clearer, but old clients don''t recognise it, and that is exactly why contracts exist.'
+    ref: contract-tests

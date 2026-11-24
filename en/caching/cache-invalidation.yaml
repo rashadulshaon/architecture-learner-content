@@ -1,0 +1,377 @@
+slides:
+  - slug: old-price-board
+    title: 'The price changed, the board still shows the old one'
+    kind: story
+    tldr: 'A cached answer is a copy of the real data; when the original changes, the copy doesn''t follow, so users see stale data. This problem is called cache invalidation.'
+    keywords: ['cache invalidation', 'stale data', 'old price', 'TTL', 'stale cache']
+    blocks:
+      - type: metaphor
+        icon: tag
+        title: 'The price board at the corner shop'
+        body: |
+          A board outside the shop says "Sugar 120 taka". In the morning the price rises to 130, but nobody changes the board. A customer reads 120, comes to the counter and hears 130. The board is the cache, and the shopkeeper's ledger is the database. When the real ledger changes, someone has to change the board too.
+      - type: text
+        body: |
+          In Rahim's app, product prices are cached for 1 hour. A seller drops a price from 500 taka to 450, and it is saved in the database just fine. But for another 50 minutes, buyers still see 500 taka. Some see 500 and buy anyway, others see 450 and complain.
+      - type: visual
+        kind: sequence
+        caption: 'Even after the price change, the cache shows the old price'
+        actors:
+          - {id: seller, label: 'Seller', icon: user, tip: 'Has lowered the price to 450.'}
+          - {id: db, label: 'Database', icon: db, tip: 'The source of truth. The price here is already 450.'}
+          - {id: cache, label: 'Cache', icon: cache, tip: 'Still holding the old answer, because nobody told it to change.'}
+          - {id: buyer, label: 'Buyer', icon: user, tip: 'Gets the answer from the cache and never reaches the database.'}
+        messages:
+          - {from: seller, to: db, label: 'Set the price to 450'}
+          - {at: cache, note: 'Cache still has 500', tone: warn}
+          - {from: buyer, to: cache, label: 'What''s the price?'}
+          - {from: cache, to: buyer, label: '500 taka (old)', dashed: true, tone: bad, tip: 'It was a cache hit, but the answer is wrong. A fast wrong answer can be worse than a slow correct one.'}
+          - {at: buyer, note: 'Saw the wrong price', tone: bad}
+      - type: quote
+        body: 'A cache is a copy. When the original changes, the copy must change too, or be thrown away.'
+    aside:
+      - type: story
+        title: 'The day after a flash sale'
+        body: 'A site''s sale ended at midnight, but its cache expiry was 6 hours. Orders kept arriving at the sale price until 6 a.m., and the company had to honour every one.'
+      - type: terms
+        items:
+          - {term: 'Invalidation', meaning: 'Deleting or voiding the cache''s old copy when the real data changes.'}
+          - {term: 'Stale', meaning: 'A copy that has fallen behind the real data.'}
+    check:
+      q: 'The request was a cache hit, yet the buyer saw the wrong price. Is the problem the cache''s speed, or something else?'
+      a: 'Not speed. After the real data changed, the cache''s copy was never updated, so it is serving a stale answer.'
+
+  - slug: ttl-design
+    title: 'TTL: every piece of data gets an expiry'
+    kind: concept
+    tldr: 'TTL is the lifetime of a cached answer; when it runs out the entry vanishes. Set it by how stale the data may get, and treat TTL as the last line of defence.'
+    keywords: ['TTL', 'time to live', 'expiry', 'staleness budget', 'expiresAfter']
+    blocks:
+      - type: metaphor
+        icon: clock
+        title: 'The date on a milk carton'
+        body: |
+          A milk carton has a date on it; once the date passes, nobody drinks it and it is thrown away. TTL (time to live) is that date. But how long it lasts depends on the item: milk 2 days, rice 6 months. So you ask yourself: "How long can this information be out of date without hurting anyone?"
+      - type: visual
+        kind: table
+        caption: 'A sample of choosing a TTL by the kind of data'
+        headers: ['What you cache', 'TTL', 'Why']
+        rows:
+          - cells: ['List of countries, categories', '1 day', 'Does it change even once a year?']
+            tip: 'For almost unchanging data a long TTL is safe, and the hit rate stays high.'
+          - cells: ['Top 10 products list', '10 minutes', 'Nobody notices if it is 10 minutes old']
+            tip: 'The most common case: a heavy calculation where a little staleness is fine.'
+          - cells: ['Product price', '1 minute + invalidate', 'A wrong price costs money']
+            tip: 'For data like prices, keep the TTL short and delete the entry the moment it changes.'
+          - cells: ['Stock count (in a list)', '30 seconds', 'An approximate display is fine; use the database when buying']
+            tip: 'Cache for showing, database for deciding.'
+          - cells: ['Balances, checkout values', 'Don''t cache', 'A wrong value is unacceptable']
+            tip: 'For some data, a correct answer matters above everything.'
+      - type: quote
+        body: 'TTL is the last line of defence: even if you forget to invalidate, the mistake lasts only until expiry.'
+    aside:
+      - type: tips
+        items:
+          - 'The question for setting a TTL: "What is the longest this data can be out of date?" That is the upper bound for the TTL.'
+          - 'If you rely on TTL alone, every change shows wrong data until expiry; so add invalidation for important data.'
+      - type: pitfalls
+        items:
+          - 'Using one TTL for everything, say 1 hour: too long for some data and far too short for others.'
+    check:
+      q: 'Between a product details page and a "list of countries", which should have the longer TTL, and why?'
+      a: 'The list of countries. It almost never changes, so a long TTL does no harm; product data changes much more often.'
+
+  - slug: cache-keys
+    title: 'Cache keys: the right key, and a version'
+    kind: concept
+    tldr: 'The key must contain everything that changes the answer: ID, language, page. A version in the key lets you void all entries of an old shape at once.'
+    keywords: ['cache key', 'versioned key', 'key design', 'namespace', 'version bump']
+    blocks:
+      - type: text
+        body: |
+          A key is a locker number: give the wrong number and you get someone else's stuff. Whatever changes the answer goes in the key; whatever doesn't, stays out. And sometimes the shape of every entry changes, say a new field is added. Then you don't delete them one by one: change `v1` in the key to `v2`, and nobody looks up the old ones any more; they die on their own at their TTL.
+      - type: visual
+        kind: compare
+        caption: 'What a safe key looks like, and what gives wrong answers'
+        columns:
+          - title: 'Dangerous keys'
+            tone: bad
+            icon: cross
+            tip: 'Nothing that affects the answer is in the key, so different answers take each other''s place.'
+            items:
+              - 'products: no language, page or sort'
+              - 'cart: which user?'
+              - 'user_list: the same for everyone, though it differs by role'
+          - title: 'Safe keys'
+            tone: good
+            icon: check
+            tip: 'Every different answer has its own key, and old shapes are separated by version.'
+            items:
+              - 'products.v2.cat7.page2.sort-price.en'
+              - 'cart.v1.user.42'
+              - 'product.v3.42: when the shape changes, v3 becomes v4'
+      - type: quote
+        body: 'What changes the answer goes in the key. What doesn''t, stays out.'
+    aside:
+      - type: tips
+        items:
+          - 'Don''t use PSR-6''s reserved characters `{ } ( ) / \ @ :` in keys. Dots and underscores are safe.'
+          - 'If a key is built from user input, hash it, or you will end up with long or odd keys.'
+      - type: when
+        use:
+          - 'Bump the version when the shape inside the cache changes (a new field, a rename).'
+        avoid:
+          - 'Bumping the version on every small data change; that is a job for tags or direct deletion.'
+    check:
+      q: 'You add a new field to the cached product and deploy, so old entries will come back in the wrong shape. What is the simplest fix?'
+      a: 'Bump the key version, for example product.v1.42 to product.v2.42. Nobody looks up the old entries any more, and they die at their TTL.'
+
+  - slug: tag-invalidation
+    title: 'Deleting many entries at once with tags'
+    kind: howto
+    tldr: 'One product lives in many cache entries; tag them all, and after a product change a single invalidateTags() call removes every one.'
+    keywords: ['TagAwareCacheInterface', 'invalidateTags', 'cache tags', 'redis_tag_aware', 'tags', 'ItemInterface::tag']
+    blocks:
+      - type: metaphor
+        icon: tag
+        title: 'Coloured stickers on the board'
+        body: |
+          Sugar is written in several places: on the front board, on the menu card, on the offer poster. Each one carries a green "sugar" sticker. When the price changes, you can say, "Take down every green sticker." You don't have to remember where sugar appeared. A cache tag does exactly this.
+      - type: code
+        lang: php
+        file: 'src/Catalog/ProductCache.php'
+        variant: good
+        code: |
+          final readonly class ProductCache
+          {
+              public function __construct(
+                  private TagAwareCacheInterface $cache,
+                  private ProductRepository $products,
+              ) {
+              }
+
+              public function view(int $id): array
+              {
+                  return $this->cache->get("product.v1.$id", function (ItemInterface $item) use ($id) {
+                      $product = $this->products->find($id) ?? throw new NotFoundHttpException();
+                      $item->expiresAfter(3600);
+                      $item->tag(["product_$id", 'category_'.$product->getCategoryId()]);
+
+                      return ProductView::from($product)->toArray();
+                  });
+              }
+
+              public function afterPriceChanged(int $id): void
+              {
+                  $this->cache->invalidateTags(["product_$id"]);  // call it after the flush
+              }
+          }
+        marks:
+          - {line: 4, tip: 'You need TagAwareCacheInterface, not the plain CacheInterface; it is the one with invalidateTags().'}
+          - {line: 14, tip: 'The list of things this entry depends on. One entry can have several tags.'}
+          - {line: 22, tip: 'Call it after the database flush has finished. Called earlier, the old value could get cached again.'}
+      - type: code
+        lang: yaml
+        file: 'config/packages/cache.yaml'
+        code: |
+          framework:
+              cache:
+                  app: cache.adapter.redis_tag_aware
+                  default_redis_provider: '%env(REDIS_URL)%'
+        marks:
+          - {line: 3, tip: 'The tag-aware adapter for Redis. Invalidating by tag takes fewer steps and is faster with it.'}
+    aside:
+      - type: tips
+        items:
+          - 'When a product''s price changes, both its own page and its category list should go. Bind both to one tag and a single call does it.'
+          - 'Shape tag names like keys: product_42, category_7.'
+      - type: commands
+        items:
+          - {cmd: 'php bin/console cache:pool:invalidate-tags product_42', desc: 'Delete every entry with a tag, from the console'}
+      - type: pitfalls
+        items:
+          - 'Piling on tags adds extra data to every entry; tag only as much as you will need to delete.'
+    check:
+      q: 'When a product changes, you want to delete both its own page and its category list from the cache. How do you do it with tags?'
+      a: 'Give both entries ->tag([''product_42'']), then call invalidateTags([''product_42'']) once after the product changes.'
+
+  - slug: invalidate-after-commit
+    title: 'When to delete, and in what order'
+    kind: pitfall
+    tldr: 'Write to the database and commit first, then delete from the cache. The other way round lets one request put the old value back in the cache; so keep a TTL too.'
+    keywords: ['invalidate order', 'race condition', 'stale cache', 'commit then invalidate', 'timing bug']
+    blocks:
+      - type: text
+        body: |
+          Many people wipe the board first and write the new price in the ledger afterwards. In that gap, a customer comes in, sees the old price in the ledger, and writes it on the board again. Now the ledger has the new price, the board the old one, and nobody will wipe it again.
+      - type: visual
+        kind: sequence
+        caption: 'The wrong order: delete from the cache first, write to the database after'
+        actors:
+          - {id: writer, label: 'Writer', icon: pencil, tip: 'The request that changes the price.'}
+          - {id: reader, label: 'Reader', icon: eye, tip: 'Another request that comes to read the price at exactly that moment.'}
+          - {id: cache, label: 'Cache', icon: cache, tip: 'The copy kept for fast reads, which is about to go stale here.'}
+          - {id: db, label: 'Database', icon: db, tip: 'The source of truth; after the write it holds the new value.'}
+        messages:
+          - {from: writer, to: cache, label: 'Delete the price from the cache'}
+          - {from: reader, to: cache, label: 'Is the price there?'}
+          - {from: cache, to: reader, label: 'No (miss)', dashed: true}
+          - {from: reader, to: db, label: 'Read the price'}
+          - {from: db, to: reader, label: '500 (old)', dashed: true, tip: 'The writer hasn''t written to the database yet, so the old value comes back.'}
+          - {from: writer, to: db, label: 'Write the new price, 450'}
+          - {from: reader, to: cache, label: 'Store 500', tone: bad}
+          - {at: cache, note: 'Cache has 500, database 450', tone: bad, tip: 'Nobody will delete it again. The wrong price stays until the TTL runs out.'}
+      - type: code
+        lang: php
+        file: 'src/Catalog/PriceUpdater.php'
+        variant: good
+        code: |
+          public function changePrice(Product $product, int $paisa): void
+          {
+              $product->changePrice($paisa);
+              $this->em->flush();                               // 1. write the truth first
+
+              $this->cache->invalidateTags(['product_'.$product->getId()]);  // 2. then delete
+          }
+        marks:
+          - {line: 4, tip: 'If flush fails, execution never reaches the next line, so the cache is never ahead of the database.'}
+          - {line: 6, tip: 'The first request after the delete gets a miss and fetches the new value from the database.'}
+      - type: quote
+        body: 'Commit to the database first, then delete from the cache. And always keep a TTL.'
+    aside:
+      - type: remember
+        body: 'Truth first, copy after: for writing and for deleting alike.'
+      - type: pitfalls
+        items:
+          - 'Even this order leaves a tiny gap (an old read being stored after the delete). That is exactly why a cache without a TTL is a mistake.'
+          - 'Delete after the commit, not during the transaction; otherwise a rollback empties the cache for nothing.'
+      - type: refs
+        items:
+          - {to: 'caching/cache-stampede', label: 'The storm of misses after a delete'}
+    check:
+      q: 'If you delete from the cache and then write to the database, how can the old value find its way back into the cache?'
+      a: 'In the gap between the delete and the write, another request gets a miss, reads the old value from the database and stores it in the cache, and nobody deletes it again.'
+
+flashcards:
+  - q: 'What is cache invalidation?'
+    a: 'Deleting or voiding the cache''s old copy when the real data changes.'
+    more: |
+      A cache is a copy of the real data, so when the original changes, the copy doesn't change by itself. Without invalidation, users see stale data. It is so hard that people joke there are only two hard things in computer science: cache invalidation and naming things.
+    ref: old-price-board
+  - q: 'What is a TTL, and why should every cache entry have one?'
+    a: 'A TTL is an entry''s lifetime; when it ends, the entry disappears. Even if you forget to invalidate, the mistake lasts only until expiry.'
+    more: |
+      A TTL is a safety net. If somewhere in the code an invalidation is missed, then without a TTL the stale data would stay forever. The question for setting a TTL: "What is the longest this data can be out of date?"
+    ref: ttl-design
+  - q: 'What TTL should important data like prices get?'
+    a: 'A short one, such as 1 minute, plus direct invalidation the moment the price changes.'
+    more: |
+      A long TTL leaves the wrong price visible for a long time, while a short TTL on its own isn't a guarantee. So use two layers: delete on change (the main mechanism) and a short TTL (the last line of defence).
+    ref: ttl-design
+  - q: 'What must a cache key contain?'
+    a: 'Everything that changes the answer: ID, user, language, page, sort, and a shape version.'
+    more: |
+      If a `products` key has no page or language, asking for page 2 can return page 1. If per-user data has no user in the key, information leaks. Example: `products.v2.cat7.page2.sort-price.en`.
+    ref: cache-keys
+  - q: 'What is a versioned cache key good for?'
+    a: 'When the shape inside the cache changes, bumping the key version (v1 to v2) voids every old entry at once.'
+    more: |
+      The new code looks up v2 keys, so nobody reads the v1 entries and they die at their TTL. You never delete them one by one. During a deploy that changes the shape this is nearly essential, otherwise new code that finds old-shaped entries can break.
+    ref: cache-keys
+  - q: 'What is a cache tag good for in Symfony?'
+    a: 'Tag several entries with one tag and a single invalidateTags() call deletes them all.'
+    more: |
+      Use `TagAwareCacheInterface` and call `$item->tag(['product_42'])` in the callback. When the product changes, call `invalidateTags(['product_42'])`. You don't have to remember which entries contain the product. With Redis, use `cache.adapter.redis_tag_aware`.
+    ref: tag-invalidation
+  - q: 'When a database change must also clear the cache, what is the right order?'
+    a: 'Write to the database and commit first, then delete from the cache.'
+    more: |
+      Delete first and, in the gap, another request can read the old value and put it back in the cache, where nobody deletes it again. Delete after the commit and the next miss fetches the new value. A tiny gap still remains, so keep a TTL too.
+    ref: invalidate-after-commit
+
+quiz:
+  - q: 'A seller changed a product''s price, but buyers kept seeing the old price for about an hour. What is the most likely cause?'
+    hint: 'A cache keeps a copy; who updates the copy?'
+    options:
+      - text: 'The price-change code didn''t invalidate the cache, and the TTL was 1 hour'
+        correct: true
+        why: 'The copy doesn''t change with the original; it stays stale until it is invalidated or expires.'
+      - text: 'The price wasn''t saved in the database'
+        correct: false
+        why: 'If it hadn''t been saved, nobody would see the new price; here the database is right and the cache is behind.'
+      - text: 'Redis is very slow'
+        correct: false
+        why: 'A speed problem gives slow answers, not wrong ones.'
+      - text: 'The buyer''s browser language is wrong'
+        correct: false
+        why: 'Language doesn''t change a price''s number.'
+    ref: old-price-board
+  - q: 'Which data should get the shortest TTL (or no caching at all)?'
+    hint: 'Where does a wrong value hurt the most?'
+    options:
+      - text: 'A user''s money balance and checkout stock'
+        correct: true
+        why: 'A wrong value causes direct financial loss, so here accuracy outranks speed.'
+      - text: 'The list of countries'
+        correct: false
+        why: 'It almost never changes; a long TTL is safe.'
+      - text: 'The top 10 products list'
+        correct: false
+        why: 'Being 10 minutes old harms nobody.'
+      - text: 'Old blog posts'
+        correct: false
+        why: 'Old posts don''t change, so a long TTL is fine.'
+    ref: ttl-design
+  - q: 'What is wrong with the code below?'
+    lang: php
+    code: |
+      $this->cache->delete('product.'.$id);
+      $product->changePrice($paisa);
+      $this->em->flush();
+    hint: 'What gets read if another request arrives between the delete and the flush?'
+    options:
+      - text: 'A request arriving between the delete and the flush can read the old value and put it back in the cache'
+        correct: true
+        why: 'Then the database holds the new value and the cache the old one, and nobody will delete it again.'
+      - text: 'delete() never works'
+        correct: false
+        why: 'It works; the problem is the order, not the method.'
+      - text: 'A cache key may not contain a dot'
+        correct: false
+        why: 'Dots are valid; the forbidden characters are { } ( ) / \ @ :.'
+      - text: 'changePrice() shouldn''t be called before flush'
+        correct: false
+        why: 'Calling changePrice() before flush is correct; the flush comes after it.'
+    ref: invalidate-after-commit
+  - q: 'Which of these are part of designing a cache key properly?'
+    hint: 'What changes the answer belongs in the key.'
+    options:
+      - text: 'Adding page, sort and language to a list''s key'
+        correct: true
+        why: 'Otherwise, asking for page 2 can return the cached page 1.'
+      - text: 'Putting the user ID in the key of per-user data'
+        correct: true
+        why: 'This removes the risk of one person seeing another''s data.'
+      - text: 'Bumping the key version when the cached shape changes'
+        correct: true
+        why: 'Nobody reads the old-shaped entries any more, and they die at their TTL.'
+      - text: 'Using a single key for all lists, to make it easy to remember'
+        correct: false
+        why: 'Different answers under one key take each other''s place.'
+    ref: cache-keys
+  - q: 'When a product changes, three separate cache entries must go: its own page, its category list and a block on the homepage. What is the cleanest way?'
+    hint: 'Do you want to remember by hand where the product appears?'
+    options:
+      - text: 'Give all three entries a shared tag, then call invalidateTags() once'
+        correct: true
+        why: 'The tag remembers that relationship, and one call deletes everything.'
+      - text: 'Empty the whole cache with cache:pool:clear'
+        correct: false
+        why: 'Deleting everything also throws away the hits for all other data, and the database suddenly takes a surge of load.'
+      - text: 'Set the TTL of all three to 1 second'
+        correct: false
+        why: 'The cache would give you almost no benefit.'
+      - text: 'Write the three keys by hand in the code and call delete()'
+        correct: false
+        why: 'When the product is cached in a new place, you will forget to add it here; tags protect you from that mistake.'
+    ref: tag-invalidation

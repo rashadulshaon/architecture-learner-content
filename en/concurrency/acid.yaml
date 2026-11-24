@@ -1,0 +1,434 @@
+slides:
+  - slug: half-transfer
+    title: 'The money left, but never arrived'
+    kind: story
+    tldr: 'If the two steps of one job are saved separately, a single error in between makes the money vanish.'
+    keywords: ['transaction', 'partial write', 'atomicity', 'money transfer', 'half-finished work']
+    blocks:
+      - type: text
+        body: |
+          Rahim sends 500 taka to Karim from a wallet app. The code does two things: lower Rahim's balance, raise Karim's. Each service method calls `flush()` internally, so each step is committed to the database on its own. If an exception hits after the first step, Rahim has been charged and Karim has received nothing.
+      - type: code
+        lang: php
+        file: 'src/Controller/TransferController.php'
+        variant: bad
+        code: |
+          #[Route('/api/transfers', methods: ['POST'])]
+          public function send(#[MapRequestPayload] SendMoney $dto): JsonResponse
+          {
+              // flush() inside: Rahim's 500 taka debit is now permanent
+              $this->wallets->withdraw($dto->fromWalletId, $dto->amount);
+
+              // what if an exception or a crash happens before this line?
+              $this->wallets->deposit($dto->toWalletId, $dto->amount);
+
+              return $this->json(['status' => 'sent']);
+          }
+        marks:
+          - {line: 5, tip: 'The moment this line finishes, the first change is permanent in the database. Whatever happens next, it will not undo itself.'}
+          - {line: 8, tip: 'Karim''s wallet is closed, the id is wrong, or a deploy lands right now: whatever stops this line from running, 500 taka disappear.'}
+      - type: visual
+        kind: sequence
+        caption: 'An error between the two steps: who is left holding what'
+        actors:
+          - {id: rahim, label: 'Rahim', icon: user, tip: 'Wants to send Karim 500 taka. His balance was 1000 taka.'}
+          - {id: app, label: 'Symfony app', icon: api, tip: 'Works in two steps: withdraw() first, deposit() second, each with its own flush().'}
+          - {id: db, label: 'Database', icon: db, tip: 'Commits every flush() as a separate transaction. It has no idea that the two steps belong to the same job.'}
+        messages:
+          - {from: rahim, to: app, label: 'Send 500 taka to Karim'}
+          - {from: app, to: db, label: 'Rahim''s balance 1000 → 500', tip: 'The flush() inside withdraw(). This change is committed immediately.'}
+          - {from: db, to: app, label: 'Committed', dashed: true}
+          - {at: app, note: 'exception: code stops here', tone: bad, tip: 'deposit() never runs. Once PHP has stopped, nobody is left to undo the earlier commit.'}
+          - {from: app, to: rahim, label: '500 error', dashed: true, tone: bad, tip: 'Rahim sees "failed", yet his money has already been taken.'}
+          - {at: db, note: 'Rahim −500, Karim +0', tone: bad, tip: 'The system as a whole has lost 500 taka. This half-done state is exactly what a transaction prevents.'}
+    aside:
+      - type: story
+        title: '"Money deducted, recipient got nothing"'
+        body: |
+          A wallet app kept getting two or three complaints a month: money deducted, recipient never received it. Testing alone never reproduced it. In the end the team found that a timeout or a deploy sometimes hit between the two steps, and each time the first half stayed in the database.
+      - type: terms
+        items:
+          - {term: 'Transaction', meaning: 'Running several changes as one indivisible unit of work.'}
+          - {term: 'Commit', meaning: 'Making all the changes of a transaction permanent.'}
+          - {term: 'Rollback', meaning: 'Throwing away all the changes of a transaction and returning to the earlier state.'}
+    check:
+      q: 'If the server dies between the two steps, what happens to Rahim''s and Karim''s balances in this code?'
+      a: 'Rahim''s 500 taka stay deducted, because the first flush() was already committed. Karim''s balance doesn''t change, so 500 taka vanish from the total.'
+
+  - slug: four-promises
+    title: 'ACID: the four promises of a transaction'
+    kind: concept
+    tldr: 'Atomicity, Consistency, Isolation, Durability: all or nothing, rules stay intact, half-done work stays hidden, committed means committed.'
+    keywords: ['ACID', 'atomicity', 'consistency', 'isolation', 'durability', 'transaction guarantees']
+    blocks:
+      - type: metaphor
+        icon: wallet
+        title: 'Sending money on bKash'
+        body: |
+          When you tap Send Money in a mobile wallet like bKash, you see one of two outcomes: "success" or "failed". You never see "your money left, but it didn't arrive". A database transaction gives you exactly that guarantee. Split the guarantee into four parts and you get ACID.
+      - type: visual
+        kind: table
+        caption: 'The four letters of ACID, explained with a wallet transfer'
+        headers: ['Letter', 'Promise', 'In wallet terms']
+        rows:
+          - cells: ['A: Atomicity', 'Every step happens, or none does', 'Debit and delivery both happen, or neither']
+            tip: 'If an error strikes midway, the database undoes the earlier steps itself (rollback). A half-done state is never left behind.'
+          - cells: ['C: Consistency', 'A state that breaks the rules is never saved', 'A balance never drops below zero']
+            tip: 'The database only guards the rules you have written down as constraints: NOT NULL, UNIQUE, foreign keys, CHECK. Every other rule is your code''s job.'
+          - cells: ['I: Isolation', 'Other people''s half-done work stays invisible', 'Someone looking midway still sees the old balance']
+            tip: 'The isolation level decides how separate concurrent transactions stay. The default level does not prevent every kind of mix-up.'
+          - cells: ['D: Durability', 'Once committed, it is never lost', 'Even if the power fails after "success", the money is there']
+            tip: 'Before answering the commit, the database writes the change to a log on disk (the WAL), so after a crash it can bring the change back.'
+      - type: quote
+        body: 'A transaction means: everything happens, or nothing does.'
+    aside:
+      - type: remember
+        body: 'A = all or nothing. C = rules stay intact. I = I never see others'' half-done work. D = committed means committed.'
+      - type: tips
+        items:
+          - 'C gets its strength from the constraints you write. Without constraints, the database has no idea which states are "wrong".'
+          - 'Of the four, I is the slippery one: it is not yes or no but a dial with several settings.'
+      - type: refs
+        items:
+          - {to: 'data/schema-design', label: 'Guarding data with constraints'}
+          - {to: 'concurrency/isolation-levels', label: 'Isolation levels and anomalies'}
+    check:
+      q: 'One second after showing "success", the database server crashes. Which ACID letter says the money won''t be lost, and how?'
+      a: 'D, Durability. The change is written to the log on disk before the commit is answered, so the database restores it when it restarts.'
+
+  - slug: doctrine-transactions
+    title: 'Transactions in Doctrine: flush() and wrapInTransaction()'
+    kind: howto
+    tldr: 'flush() is already a transaction; when a job has several steps, locks or raw SQL, wrap the whole job in wrapInTransaction().'
+    keywords: ['wrapInTransaction', 'flush', 'Doctrine', 'EntityManager', 'rollback', 'transaction']
+    blocks:
+      - type: text
+        body: |
+          In Doctrine, `flush()` is itself a transaction: it sends all pending changes together, and if one fails it rolls everything back. So the first rule is one `flush()` per job, at the very end. When you have to read, take a lock or run raw SQL in the middle, keep the whole job inside `wrapInTransaction()`.
+      - type: code
+        lang: php
+        file: 'src/Service/TransferService.php'
+        variant: good
+        code: |
+          final readonly class TransferService
+          {
+              public function __construct(private EntityManagerInterface $em)
+              {
+              }
+
+              public function send(int $fromId, int $toId, int $amount): Transfer
+              {
+                  return $this->em->wrapInTransaction(function () use ($fromId, $toId, $amount) {
+                      $from = $this->em->find(Wallet::class, $fromId, LockMode::PESSIMISTIC_WRITE)
+                          ?? throw new WalletNotFound($fromId);
+                      $to = $this->em->find(Wallet::class, $toId, LockMode::PESSIMISTIC_WRITE)
+                          ?? throw new WalletNotFound($toId);
+
+                      $from->withdraw($amount);   // throws if the balance is too low
+                      $to->deposit($amount);
+
+                      $transfer = new Transfer($from, $to, $amount);
+                      $this->em->persist($transfer);
+
+                      return $transfer;           // then flush() and COMMIT happen on their own
+                  });
+              }
+          }
+        marks:
+          - {line: 9, tip: 'BEGIN happens here. Everything inside (reads, locks, writes) is part of one transaction. Whatever the closure returns is handed back to you.'}
+          - {line: 10, tip: 'SELECT … FOR UPDATE: until this transaction commits, no other transaction can change this row. Without it, two transfers could read the same stale balance and compute wrong results.'}
+          - {line: 15, tip: 'If an exception escapes from here, wrapInTransaction() issues ROLLBACK itself, so Rahim''s debit does not stay behind.'}
+          - {line: 21, tip: 'When the closure ends, Doctrine calls flush() itself and then COMMIT. You never write a separate flush().'}
+      - type: points
+        title: 'Three rules'
+        style: check
+        items:
+          - 'No `flush()` calls scattered through service methods; call it once, at the end of the job.'
+          - 'Several steps, a lock, DQL or raw SQL together: use `wrapInTransaction()`.'
+          - 'After an exception the EntityManager is closed. Don''t try to write with it again in the same request.'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Unit of Work', meaning: 'Doctrine''s internal ledger: it remembers which entities changed and sends all the SQL together on flush().'}
+          - {term: 'FOR UPDATE', meaning: 'Taking a lock on the row while reading it, so nobody else can change it until you commit.'}
+      - type: pitfalls
+        items:
+          - 'If Rahim→Karim and Karim→Rahim run at the same time, the two locks are taken in opposite order and can deadlock. Fix: always lock the smaller id first.'
+          - '"The EntityManager is closed" means an earlier transaction failed. Finish that request with an error response.'
+      - type: tips
+        items:
+          - 'Messenger''s `doctrine_transaction` middleware wraps every message handler in a transaction automatically.'
+      - type: refs
+        items:
+          - {to: 'concurrency/locking', label: 'FOR UPDATE locks and deadlocks'}
+    check:
+      q: 'When an exception escapes from the closure of wrapInTransaction(), what does Doctrine do?'
+      a: 'It sends ROLLBACK, so none of the changes are saved. It closes the EntityManager and rethrows the exception, so you can return an error response.'
+
+  - slug: side-effects-inside
+    title: 'Rollback can''t take back an email or an SMS'
+    kind: pitfall
+    tldr: 'A transaction only undoes changes in its own database; an SMS, email or HTTP call made inside it stays sent and also holds locks.'
+    keywords: ['side effect', 'rollback', 'long transaction', 'HTTP call', 'SMS', 'external service']
+    blocks:
+      - type: text
+        body: |
+          A transaction can only undo changes to **its own database**. If you send an SMS, an email or an HTTP call to another service from inside it, that message is already out in the world, and a later rollback won't recall it. Imagine bKash texting "you have received money" and then cancelling the transfer. There is a second danger: while a slow call runs, the transaction stays open, and everyone else queues up behind the locked rows.
+      - type: code
+        lang: php
+        file: 'src/Service/TransferService.php'
+        variant: bad
+        code: |
+          $this->em->wrapInTransaction(function () use ($from, $to, $amount): void {
+              $from->withdraw($amount);
+              $to->deposit($amount);
+
+              // this leaves for the outside world: rollback can't recall it
+              $this->sms->send($to->getPhone(), 'You have received 500 taka');
+          });   // if COMMIT fails here, the SMS has gone out but the money hasn't moved
+        marks:
+          - {line: 6, tip: 'If the gateway hangs for 20 seconds, the transaction stays open for 20 seconds, and nobody else can touch these two wallets.'}
+          - {line: 7, tip: 'flush() and COMMIT happen after the closure. If a constraint breaks or the connection drops, everything rolls back, but the SMS has already arrived.'}
+      - type: code
+        lang: php
+        file: 'src/Controller/TransferController.php'
+        variant: good
+        code: |
+          // 1. Database work first: only database calls inside, then COMMIT
+          $transfer = $this->transfers->send($dto->fromWalletId, $dto->toWalletId, $dto->amount);
+
+          // 2. Notify only once the money is final, via a queue so a slow gateway can't block requests
+          $this->bus->dispatch(new SendTransferSms($transfer->getId()));
+
+          return $this->json(['status' => 'sent'], 201);
+        marks:
+          - {line: 5, tip: 'If the commit fails, execution never reaches this line, so a wrong SMS can''t go out. A worker will call the gateway later.'}
+      - type: quote
+        body: 'Inside a transaction, only database work. Anything for the outside world comes after the commit.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Writing files, clearing a cache, publishing to a queue, charging a payment gateway: none of these roll back.'
+          - 'If the dispatch fails after the commit, the money is fine and only the SMS is lost. If even that is unacceptable, you need the outbox pattern.'
+      - type: remember
+        body: 'Rollback undoes what is inside the database. What has left it has left it.'
+      - type: refs
+        items:
+          - {to: 'concurrency/distributed-transactions', label: 'Keeping a database and outside services in step'}
+          - {to: 'messaging/events-vs-commands', label: 'Doing work later with Messenger'}
+    check:
+      q: 'An SMS is sent from inside the transaction, then COMMIT fails. What does Karim see, and why?'
+      a: 'He gets the "money received" SMS, but his balance doesn''t go up. The database changes were rolled back, while the SMS had already reached an outside system and can''t be recalled.'
+
+  - slug: what-it-protects
+    title: 'What a transaction protects, and what it doesn''t'
+    kind: recap
+    tldr: 'A transaction stops half-done work and rule violations; it does not stop race conditions, outside services or wrong calculations.'
+    keywords: ['ACID limits', 'race condition', 'lost update', 'what transactions protect', 'limitations']
+    blocks:
+      - type: text
+        body: |
+          A transaction is powerful, but it isn't magic. Its four promises hold only inside its own database. This is where people get it wrong most often: two transactions can both read Rahim's balance as 500 at the same moment and both deduct 400. Each transaction is flawless on its own, yet the result is wrong.
+      - type: visual
+        kind: compare
+        caption: 'Where the power of a transaction ends'
+        columns:
+          - title: 'Protects against'
+            tone: good
+            icon: shield
+            tip: 'These four are direct ACID promises: the database guarantees them itself and you write no extra code.'
+            items:
+              - 'An error or crash midway: no half-done work is saved'
+              - 'Data that breaks a constraint: it never commits'
+              - 'Other people''s uncommitted changes: you don''t see them'
+              - 'Power loss after commit: the data survives'
+          - title: 'Does not protect against'
+            tone: bad
+            icon: warning
+            tip: 'Each of these needs its own technique: locks, atomic updates, the outbox pattern, and tests.'
+            items:
+              - 'Two transactions reading the same stale value and calculating from it'
+              - 'Email, SMS, HTTP calls: they don''t roll back'
+              - 'Data in another database or another service'
+              - 'A wrong calculation in your code: it commits perfectly too'
+      - type: quote
+        body: 'A transaction prevents half-done work; it does not prevent the wrong arithmetic of two simultaneous requests.'
+    aside:
+      - type: problem
+        body: '"I used a transaction, so I''m safe": this belief is the source of double-spend and double-booking bugs. The links below show which tool covers which gap.'
+      - type: refs
+        items:
+          - {to: 'concurrency/race-conditions', label: 'Simultaneous requests: spotting a race condition'}
+          - {to: 'concurrency/locking', label: 'Using locks to stop stale reads'}
+          - {to: 'concurrency/distributed-transactions', label: 'Systems outside the database'}
+    check:
+      q: 'Two transfers both read Rahim''s balance as 500 and each deducted 400. Both ran inside transactions, so why is the result still wrong?'
+      a: 'A transaction makes each job indivisible, but at the default isolation level both can read the same stale balance. Preventing that takes a lock or an atomic update.'
+
+flashcards:
+  - q: 'What is a database transaction?'
+    a: 'A group of changes that is either made permanent all together (commit) or cancelled all together (rollback).'
+    more: |
+      A job like sending money has several steps: take from one person, give to another. If the steps are saved separately, an error midway leaves half the job done. A transaction turns the steps into one indivisible job, so the in-between state is never stored.
+    ref: half-transfer
+  - q: 'What does the A in ACID (Atomicity) promise?'
+    a: 'Every step of the transaction happens, or none does. A half-done state is never left behind.'
+    more: |
+      An exception midway, a broken constraint or a server crash: whatever it is, the database undoes the earlier steps itself. In wallet terms, the debit and the delivery both happen, or neither does. Here atomic means indivisible, not "fast".
+    ref: four-promises
+  - q: 'What does the C in ACID (Consistency) depend on?'
+    a: 'On the constraints you write: NOT NULL, UNIQUE, foreign key, CHECK. The database guards only the rules you have declared.'
+    more: |
+      Consistency says a transaction takes the database from one valid state to another. But the database learns what is "valid" only from constraints. If you don't write "balance never below zero" as a CHECK constraint, protecting that rule is entirely your code's job.
+    ref: four-promises
+  - q: 'What is the I in ACID (Isolation)?'
+    a: 'Concurrent transactions don''t see each other''s half-done work. How separate they stay is set by the isolation level.'
+    more: |
+      If someone looks at a balance midway through a transfer, they see the old committed value. But isolation isn't yes or no: there are several levels, and the default level doesn't prevent every mix-up. More in [[concurrency/isolation-levels|isolation levels and anomalies]].
+    ref: four-promises
+  - q: 'What is the D in ACID (Durability)?'
+    a: 'Once a commit succeeds, the change is permanent. A crash or power cut afterwards doesn''t lose it.'
+    more: |
+      Before answering a commit, the database writes the change to its write-ahead log on disk. After a crash, it reads that log on restart and restores all committed work. So receiving "success" means the data is safe.
+    ref: four-promises
+  - q: 'Does Doctrine''s flush() use a transaction?'
+    a: 'Yes. It sends all pending changes in one transaction; if one fails, everything rolls back.'
+    more: |
+      That is why calling flush() several times in one job is dangerous: each flush is its own transaction, so the first can commit while the second fails. Change all the entities and call flush() once at the end, and the whole job becomes atomic on its own.
+    ref: doctrine-transactions
+  - q: 'When do you need wrapInTransaction() in Doctrine?'
+    a: 'When one job mixes several steps, locks, DQL or raw SQL that must share a transaction. It flushes and commits for you at the end.'
+    more: |
+      It issues BEGIN, runs your closure, then calls flush() and COMMIT, and returns the closure's return value. On an exception it issues ROLLBACK, closes the EntityManager and rethrows. A pessimistic lock needs an open transaction, so it is mandatory in that case.
+    ref: doctrine-transactions
+  - q: 'Why is it dangerous to send an email, SMS or HTTP call inside a transaction?'
+    a: 'A rollback can''t recall them, and the transaction stays open, holding locks, for as long as the call takes.'
+    more: |
+      The database can only undo its own changes. If an SMS goes out and then the commit fails, the customer gets false news. And when a slow gateway stretches the transaction, other requests pile up behind those rows. The rule: commit first, then do outside work, through a queue where possible.
+    ref: side-effects-inside
+  - q: 'Does a transaction prevent race conditions by itself?'
+    a: 'No. At the default isolation level, two transactions can read the same stale value and calculate from it; you need a lock or an atomic update.'
+    more: |
+      A transaction guarantees each job finishes completely or not at all. But if two transactions both read a balance of 500 and both deduct 400, each is flawless and the result is still wrong. The fix is a [[concurrency/locking|lock]] or an [[concurrency/atomic-operations|atomic update]].
+    ref: what-it-protects
+
+quiz:
+  - q: 'In the code below, an exception is thrown just before the second flush(). What is left in the database?'
+    lang: php
+    code: |
+      $order->markPaid();
+      $em->flush();
+
+      $wallet->withdraw($order->getTotal());
+      $em->flush();
+    hint: 'How many transactions does each flush() run, and when is each one committed?'
+    options:
+      - text: 'The order stays paid, but no money is taken from the wallet'
+        correct: true
+        why: 'The first flush() was committed earlier as its own transaction. A later exception can no longer undo it.'
+      - text: 'Both changes roll back on their own'
+        correct: false
+        why: 'Rollback only undoes the changes of a running transaction. The first flush()''s transaction ended long ago.'
+      - text: 'Nothing is saved, because Doctrine saves everything together at the end of the request'
+        correct: false
+        why: 'Doctrine doesn''t wait for the end of the request; the SQL is sent and committed the moment flush() is called.'
+      - text: 'Money is taken from the wallet, but the order stays pending'
+        correct: false
+        why: 'The other way round. withdraw() only changed the entity in memory; the second flush() never ran, so it never reached the database.'
+    ref: half-transfer
+  - q: 'When a transaction is rolled back, which of these return to their earlier state?'
+    hint: 'Which things does the database keep track of, and which are out of its reach?'
+    options:
+      - text: 'An UPDATE made in that transaction'
+        correct: true
+        why: 'The database erases every change of the same transaction itself. That is Atomicity.'
+      - text: 'An INSERT made in that transaction'
+        correct: true
+        why: 'A new row is part of the transaction too; after a rollback it was never there.'
+      - text: 'An email sent from inside the transaction'
+        correct: false
+        why: 'The mail server isn''t part of the database transaction. Once sent, an email can''t be recalled.'
+      - text: 'A charge made at a payment gateway from inside the transaction'
+        correct: false
+        why: 'The gateway is a separate system. Your database rollback tells it nothing; you would have to issue a refund separately.'
+      - text: 'A value written to the Redis cache from inside the transaction'
+        correct: false
+        why: 'Redis is a separate system; a rollback in the SQL database doesn''t reach it, and the stale value stays.'
+    ref: side-effects-inside
+  - q: 'The balance column has CHECK (balance >= 0). A transaction tries to set a balance to −100 and the database refuses to commit. Which ACID promise is this?'
+    hint: 'Here a declared rule is being enforced.'
+    options:
+      - text: 'Atomicity'
+        correct: false
+        why: 'Atomicity says all steps happen or none do. The point here is refusing to let a rule be broken.'
+      - text: 'Consistency'
+        correct: true
+        why: 'The database refuses to store a state that violates a declared constraint. That is Consistency.'
+      - text: 'Isolation'
+        correct: false
+        why: 'Isolation is about how concurrent transactions affect each other; here there is only one transaction.'
+      - text: 'Durability'
+        correct: false
+        why: 'Durability says committed data survives a crash. Here nothing is being committed at all.'
+    ref: four-promises
+  - q: 'Sumi''s handler changes three entities and calls flush() once at the end. The third UPDATE violates a constraint. What happens to the first two?'
+    hint: 'How does flush() send the pending changes?'
+    options:
+      - text: 'The first two stay saved, only the third is dropped'
+        correct: false
+        why: 'That would leave a half-done state. flush() runs all the changes in one transaction precisely to prevent it.'
+      - text: 'They roll back too, because flush() runs all changes in one transaction'
+        correct: true
+        why: 'flush() does its own BEGIN … COMMIT. If one SQL statement fails, everything rolls back and the EntityManager is closed.'
+      - text: 'Doctrine fixes the third one and retries automatically'
+        correct: false
+        why: 'Doctrine neither fixes nor retries anything; it throws the exception.'
+    ref: doctrine-transactions
+  - q: 'Which statements about wrapInTransaction() are true?'
+    hint: 'What does it do inside the database, and what is beyond its reach?'
+    options:
+      - text: 'It calls flush() and COMMIT itself when the closure ends'
+        correct: true
+        why: 'So you don''t write a separate flush() inside, and you also get the closure''s return value back.'
+      - text: 'On an exception it issues ROLLBACK and closes the EntityManager'
+        correct: true
+        why: 'After a failed transaction the state of the in-memory entities can no longer be trusted, so the EntityManager is closed.'
+      - text: 'It also rolls back an HTTP call made from inside'
+        correct: false
+        why: 'It only undoes database changes; whatever went out to an outside system is beyond its reach.'
+      - text: 'It automatically queues up two requests that touch the same row'
+        correct: false
+        why: 'Queueing requests takes a lock (for example PESSIMISTIC_WRITE). With only a transaction, both can read the same stale value at once.'
+    ref: doctrine-transactions
+  - q: 'A transaction calls an SMS gateway that sometimes takes 20 seconds. What is the biggest risk?'
+    hint: 'During those 20 seconds, what state is the database transaction in?'
+    options:
+      - text: 'The database will commit the transaction by itself after 20 seconds'
+        correct: false
+        why: 'The database never commits on its own; the transaction stays open until your code says otherwise.'
+      - text: 'The transaction stays open holding locks, so other requests pile up on those rows'
+        correct: true
+        why: 'A long transaction means long locks. Under load the waiting requests accumulate until the whole site slows down.'
+      - text: 'There is no risk; the longer the transaction, the safer the data'
+        correct: false
+        why: 'The opposite: the shorter the transaction, the less time locks are held. Safety comes from the right boundaries, not from length.'
+      - text: 'If the SMS fails, the database will retry sending it'
+        correct: false
+        why: 'The database knows nothing about SMS. Retrying needs a queue and a worker.'
+    ref: side-effects-inside
+  - q: 'Two requests simultaneously read the same wallet balance, calculate and write. Both are inside wrapInTransaction(), but there is no lock. What can happen?'
+    hint: 'Which balance did each of them see at the start?'
+    options:
+      - text: 'Because there is a transaction, the second waits for the first by itself'
+        correct: false
+        why: 'A plain SELECT takes no lock, so both read the same value at once.'
+      - text: 'The database cancels both transactions'
+        correct: false
+        why: 'At the default isolation level the database sees no problem here and lets both commit.'
+      - text: 'One overwrites the other''s change, so the balance ends up wrong'
+        correct: true
+        why: 'Both calculated from the same stale balance, and whoever writes last wins. This is a lost update.'
+      - text: 'The data is lost after the commit'
+        correct: false
+        why: 'Durability works fine: the wrong value is stored permanently.'
+    ref: what-it-protects

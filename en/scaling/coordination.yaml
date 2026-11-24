@@ -1,0 +1,364 @@
+slides:
+  - slug: two-leaders
+    title: 'Two servers, both thinking "I''m the leader"'
+    kind: story
+    tldr: 'When only one of many servers should do a job, you have to pick a leader. If the network stalls, both can believe they''re the leader, and the job runs twice.'
+    keywords: ['leader election', 'split brain', 'double execution', 'cron', 'two leaders', 'coordination']
+    blocks:
+      - type: metaphor
+        icon: school
+        title: 'A school with two head teachers'
+        body: |
+          When the head teacher goes on leave, the deputy is supposed to take charge. But the deputy's phone was off, so she never learned that the head had come back. Both of them posted a holiday notice, and both of them collected the exam fees.
+      - type: visual
+        kind: sequence
+        caption: 'A payroll cron on two servers: both believed they were the leader'
+        actors:
+          - {id: a, label: 'Server A', icon: server, tip: 'It was the leader before. Now it is stuck for a while on the network or a GC pause.'}
+          - {id: b, label: 'Server B', icon: server, tip: 'Hearing nothing from A, it concluded that A had died.'}
+          - {id: db, label: 'Payroll table', icon: db, tip: 'The database won''t object by itself, whoever writes.'}
+        messages:
+          - {from: a, to: db, label: 'I''m the leader: paying May''s salaries'}
+          - {at: a, note: 'Stuck for 20 seconds (no heartbeat)', tone: warn}
+          - {from: b, to: db, label: 'A is silent. I''m the leader, paying salaries', tip: 'B has no way of knowing that A isn''t dead, only stuck.'}
+          - {from: a, to: db, label: 'Back, and paying the rest too', tone: bad}
+          - {at: db, note: 'The same salary deducted twice', tone: bad, tip: 'Each of them had a reason to think it was the leader. This is exactly split brain.'}
+      - type: quote
+        body: 'On many servers, "only one does it" means someone becomes leader by agreement of the majority.'
+    aside:
+      - type: problem
+        body: 'From the outside you can''t tell whether a server has died or is just slow. So B deciding alone that "A is dead" is dangerous. This segment teaches how to decide together.'
+      - type: terms
+        items:
+          - {term: 'Leader election', meaning: 'A rule for choosing one server out of many, and choosing a new one when the leader dies.'}
+          - {term: 'Split brain', meaning: 'When the network splits in two and both halves think they''re the leader.'}
+    check:
+      q: 'Why can''t B be sure that A has died?'
+      a: 'From the outside, a dead server looks the same as a slow one or one stuck on the network. Getting no reply doesn''t mean "dead".'
+
+  - slug: quorum-majority
+    title: 'Quorum: decisions pass by majority'
+    kind: concept
+    tldr: 'A quorum is a majority (N/2 + 1). That many members must agree for a decision to pass. If the network splits in two, only one side can hold a majority.'
+    keywords: ['quorum', 'majority', 'split brain', 'network partition', 'odd number', 'consensus']
+    blocks:
+      - type: metaphor
+        icon: users
+        title: 'A five-member village council'
+        body: |
+          A village council (a shalish committee) has 5 members, and a verdict needs at least 3 to agree. Rain washes out the road and the council splits into a group of 3 and a group of 2. What happens? The group of 3 can give a verdict and the group of 2 can't. So the two groups can never hand down opposite verdicts.
+      - type: visual
+        kind: table
+        caption: 'How many nodes can die while the system keeps working'
+        headers: ['Nodes (N)', 'Quorum', 'Can lose']
+        rows:
+          - cells: ['1', '1', '0']
+            tip: 'With a single node, its death stops everything. That is a SPOF.'
+          - cells: ['3', '2', '1']
+            tip: 'The smallest realistic cluster. Even if one dies, the other two still make a majority.'
+          - cells: ['4', '3', '1']
+            tip: 'One more than 3 nodes, but the same fault tolerance (1). The extra node only adds cost.'
+          - cells: ['5', '3', '2']
+            tip: 'Very common in production. Even with two dead, the remaining three can still decide.'
+          - cells: ['7', '4', '3']
+            tip: 'More nodes means every decision talks to more members, so it is slower. That is why you rarely go beyond 7.'
+      - type: quote
+        body: 'Quorum = N/2 + 1. Keep the number of nodes odd: an even number is extra cost, not extra tolerance.'
+    aside:
+      - type: remember
+        body: 'Two halves can''t both be a majority. All of consensus stands on that one fact.'
+      - type: tips
+        items:
+          - 'Put the nodes in different racks or availability zones, so that a single incident can''t take out the majority.'
+    check:
+      q: 'A 5-node cluster splits into 3 and 2 by a network fault. Which side can accept writes?'
+      a: 'The side with 3 nodes, because it holds a majority (quorum = 3). The 2-node side can''t make any new decisions.'
+
+  - slug: raft-election
+    title: 'Raft: choosing a leader and matching the log'
+    kind: concept
+    tldr: 'In Raft one leader takes all writes and sends them to followers, and a write is final only once a majority has it. If the leader goes quiet, a vote picks a new one.'
+    keywords: ['Raft', 'Paxos', 'consensus', 'etcd', 'ZooKeeper', 'term', 'heartbeat', 'log replication']
+    blocks:
+      - type: metaphor
+        icon: building
+        title: 'The chairman of the council'
+        body: |
+          The chairman regularly tells everyone, "I'm here." When nothing has been heard for a while, the member who loses patience first says, "We need a new chairman, vote for me." With 3 votes, that member becomes chairman. The chairman writes the verdict and sends it round, and once 3 members accept it, the verdict is final.
+      - type: visual
+        kind: steps
+        caption: 'The core cycle of Raft'
+        steps:
+          - {title: '1. Everyone is a follower', body: 'Stay quiet while the leader''s heartbeats arrive', tip: 'The leader keeps sending small messages (heartbeats) to say it is alive.'}
+          - {title: '2. Timeout, candidate', body: 'No heartbeat: raise the term and ask for votes', tip: 'Each member has a different timeout (say a random 150-300ms), so they don''t all become candidates together.'}
+          - {title: '3. Majority vote, leader', body: 'With a quorum, it becomes the new leader', tip: 'In each term a member casts just one vote. So two leaders can''t be elected in the same term.', tone: accent}
+          - {title: '4. It sends the log', body: 'The leader sends each write to the followers', tip: 'All writes pile up in one ordered log. Matching that log is the real work of consensus.'}
+          - {title: '5. Final once a majority agrees', body: 'When a quorum acks, the write is committed', tip: 'A committed write is never lost, even if the leader dies. A new leader can only come from members who know about it.'}
+      - type: points
+        title: 'Don''t write it yourself, use it'
+        style: check
+        items:
+          - 'etcd (Raft): all of Kubernetes'' state lives here.'
+          - 'ZooKeeper (Zab, close to Paxos): older Kafka versions, Hadoop. Consul uses Raft too.'
+          - 'Paxos came before Raft with the same guarantees, but it is far harder to understand and to build.'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Term', meaning: 'The number of an election round; it goes up with each new election. Nobody obeys a leader from an old term.'}
+          - {term: 'Committed', meaning: 'Written to a majority of nodes, so it can''t be lost any more.'}
+      - type: refs
+        items:
+          - {to: 'data/consistency-models', label: 'Linearizable and other consistency models'}
+    check:
+      q: 'Why can''t two leaders exist in the same term in Raft?'
+      a: 'Each member votes only once per term, and becoming leader takes a majority of votes. Two different majorities can''t both give the same votes.'
+
+  - slug: distributed-lock
+    title: '"Only one runs it" with Symfony Lock'
+    kind: howto
+    tldr: 'For ordinary cases, give a job to one runner at a time with Symfony Lock''s LockFactory. Always set a TTL, call refresh() during long jobs, and release() at the end.'
+    keywords: ['Symfony Lock', 'LockFactory', 'distributed lock', 'TTL', 'refresh', 'cron', 'mutual exclusion']
+    blocks:
+      - type: text
+        body: |
+          Back to the payroll cron. Take a named lock for each month's job: if you get it, do the work, and if you don't, return. Change the DSN and the same code runs on a Redis, PostgreSQL or ZooKeeper lock.
+      - type: code
+        lang: yaml
+        file: 'config/packages/lock.yaml'
+        code: |
+          framework:
+              lock: '%env(LOCK_DSN)%'
+              # LOCK_DSN=redis://redis:6379
+              # LOCK_DSN=postgresql+advisory://app:secret@db/shop
+              # LOCK_DSN=zookeeper://zk1:2181,zk2:2181,zk3:2181
+        marks:
+          - {line: 2, tip: 'A single DSN decides the store. You can move away from Redis without changing the code.'}
+      - type: code
+        lang: php
+        file: 'src/Payroll/PayrollRunner.php'
+        variant: good
+        code: |
+          public function run(string $month): void
+          {
+              $lock = $this->lockFactory->createLock('payroll:'.$month, ttl: 60);
+
+              if (!$lock->acquire()) {
+                  return;                       // another server is running this month's payroll
+              }
+
+              try {
+                  foreach ($this->employees->unpaidFor($month) as $employee) {
+                      $this->payroll->pay($employee, $month);
+                      $lock->refresh();         // still working: another 60 seconds
+                  }
+              } finally {
+                  $lock->release();
+              }
+          }
+        marks:
+          - {line: 3, tip: 'Thanks to the ttl, even if the server dies mid-job, the lock frees itself after 60 seconds. Without a ttl the lock would stay stuck forever.'}
+          - {line: 12, tip: 'It extends the lease on every step. But this alone is not safety: after a pause you can still lose the lock (next slide).'}
+    aside:
+      - type: tips
+        items:
+          - 'This lock is for the "don''t run the job twice" kind of benefit. Where a mistake costs money or stock, don''t rely on a lock alone.'
+          - 'Keep the payment idempotent per employee: a unique constraint on (employee_id, month) means a second payment is impossible even if the lock slips.'
+      - type: refs
+        items:
+          - {to: 'concurrency/locking', label: 'Kinds of locks and how to use them'}
+          - {to: 'payments/idempotency-keys', label: 'Idempotency keys'}
+    check:
+      q: 'What happens if createLock() gets no ttl, or a very large one, and the server dies?'
+      a: 'The lock stays held for a long time or forever, and nobody else can pick up the job. So give a short TTL and call refresh() while the work runs.'
+
+  - slug: fencing-token
+    title: 'When a lock expires: the fencing token'
+    kind: pitfall
+    tldr: 'If the lock holder pauses or slows down, the lock expires and someone else gets it, yet the first process wakes up and keeps writing. The fix is a fencing token: the storage itself rejects the stale token.'
+    keywords: ['fencing token', 'lease expiry', 'GC pause', 'Redlock', 'monotonic token', 'lock safety']
+    blocks:
+      - type: metaphor
+        icon: ticket
+        title: 'Walking up with an old token'
+        body: |
+          At a bank you take token number 33 and go to get a drink of water. By the time you're back, number 34 has been called. The clerk looks at your 33 and says, "That token is cancelled." You yourself don't know your turn has passed, so cancelling it is the counter's job.
+      - type: visual
+        kind: sequence
+        caption: 'The database stops the slowed-down A'
+        actors:
+          - {id: lock, label: 'Lock service', icon: lock, tip: 'With every lock it grants, it hands out an ever-increasing token.'}
+          - {id: a, label: 'Worker A', icon: server, tip: 'It gets the lock first, then freezes in a 40-second pause.'}
+          - {id: b, label: 'Worker B', icon: server, tip: 'It gets the lock after A''s lease has expired.'}
+          - {id: db, label: 'Database', icon: db, tip: 'It checks the token on every write and honours only the newest.'}
+        messages:
+          - {from: a, to: lock, label: 'I need the lock'}
+          - {from: lock, to: a, label: 'Here, token = 33', dashed: true}
+          - {at: a, note: 'GC pause for 40 seconds, lease expires', tone: warn}
+          - {from: b, to: lock, label: 'I need the lock'}
+          - {from: lock, to: b, label: 'Here, token = 34', dashed: true}
+          - {from: b, to: db, label: 'Write (token 34)', tone: good}
+          - {from: a, to: db, label: 'Write (token 33)', tone: bad, tip: 'A still thinks the lock is its own.'}
+          - {at: db, note: '33 < 34, rejected', tone: good, tip: 'The last line of defence is the database, not the lock service. It recognises the stale token.'}
+      - type: code
+        lang: sql
+        file: 'Lock + fenced write (PostgreSQL)'
+        variant: good
+        code: |
+          -- taking the lock and bumping the token in one atomic step
+          UPDATE job_locks
+             SET holder = :me, token = token + 1, expires_at = now() + interval '30 seconds'
+           WHERE name = 'payroll' AND expires_at < now()
+          RETURNING token;
+
+          -- check the token on every write
+          UPDATE payroll_runs
+             SET status = 'paid', last_token = :token
+           WHERE id = :run AND last_token <= :token;
+          -- 0 rows affected means you are a stale leader: stop
+        marks:
+          - {line: 3, tip: 'The token increases together with the lock grant. If you fetch it from a sequence after getting the lock, a pause in between can put things in the wrong order.'}
+          - {line: 10, tip: '<= because the same leader can write several times with the same token. When a lower token arrives, no row is updated.'}
+      - type: quote
+        body: 'A lock expires, and its holder doesn''t know it. So the last line of defence is the storage, not the lock holder.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'A single Redis lock can be lost on failover: if the primary dies before the write reaches the replica, the new primary doesn''t know the lock.'
+          - 'etcd''s revision, ZooKeeper''s zxid and sequence nodes naturally give an increasing token; the storage still has to check it.'
+      - type: when
+        use:
+          - 'If doing the job twice only costs a little: a plain Symfony Lock is enough'
+        avoid:
+          - 'If money or stock changes: don''t trust a lock alone without a fencing token or idempotency'
+      - type: refs
+        items:
+          - {to: 'time/clocks-lie', label: 'Why you can''t trust a clock to time out a lease'}
+    check:
+      q: 'Why can''t the lock holder itself be sure its lock is still valid?'
+      a: 'While it was paused or stuck on the network it was asleep, and the lease expired and someone else got the lock. On waking it has no way to tell, which is why the storage must check the token.'
+
+flashcards:
+  - q: 'Why do you need leader election, and what is split brain?'
+    a: 'When only one party may do a job, you must pick one. If the network splits and both halves think they''re the leader, that is split brain.'
+    more: |
+      From the outside you can't tell whether a server has died or is just stuck. So instead of deciding alone, you choose the leader by a majority vote. Otherwise the same salary, the same email or the same job runs twice.
+    ref: two-leaders
+  - q: 'What is a quorum, and how big is it for N nodes?'
+    a: 'A majority: N/2 + 1 (integer division). 2 for 3 nodes, 3 for 5 nodes, 4 for 7 nodes.'
+    more: |
+      A decision passes only when a quorum agrees. If the network splits in two, the halves can't both be a majority, so you never get two leaders at the same time.
+    ref: quorum-majority
+  - q: 'Why do consensus clusters use an odd number of nodes, like 3 or 5?'
+    a: 'An extra node in an even count adds no tolerance. 4 nodes survive only 1 failure, same as 3, but cost more.'
+    more: |
+      With 3 nodes the quorum is 2, and 1 can die. With 4 nodes the quorum is 3, and still only 1 can die. With 5 nodes the quorum is 3, and 2 can die. More nodes means talking to more members on every decision, so it gets slower.
+    ref: quorum-majority
+  - q: 'How does Raft work in a nutshell?'
+    a: 'One leader takes all writes and sends the log to followers; a write is final when a majority acks. If the leader goes quiet, a vote elects a new one.'
+    more: |
+      Every election has a term number, and in each term a member casts a single vote. Paxos gives similar guarantees, but Raft was designed to be easy to understand and to build. More in [[data/consistency-models|consistency models]].
+    ref: raft-election
+  - q: 'What are etcd and ZooKeeper used for?'
+    a: 'Consensus-based services for keeping small but critical data (config, leaders, locks) reliably. etcd uses Raft, ZooKeeper uses Zab.'
+    more: |
+      Kubernetes keeps all its state in etcd. You won't write Raft yourself; you use these for leader election, locks and service discovery. They aren't a place for big data: little data, high reliability.
+    ref: raft-election
+  - q: 'What are the three rules for using Symfony Lock?'
+    a: 'Set a TTL, call refresh() during long jobs, and release() in a finally block. Without a TTL, a dead server leaves the lock held forever.'
+    more: |
+      Create the lock with `$factory->createLock($name, ttl: 60)` and return if `acquire()` fails. A lock only gives the "don't run it twice" convenience; where money or stock is involved you need a fencing token or idempotency.
+    ref: distributed-lock
+  - q: 'What does a fencing token do?'
+    a: 'An increasing number is handed out with the lock, and the storage rejects any older (lower) number. So an expired lock holder can''t do damage.'
+    more: |
+      A lock holder stuck in a pause doesn't know its lock is gone. So the final check lives in the storage: `WHERE last_token <= :token`. The token must be bumped in the same atomic step as the lock grant. etcd's revision and ZooKeeper's zxid give exactly this kind of token.
+    ref: fencing-token
+
+quiz:
+  - q: 'A 5-node etcd cluster splits into 3 and 2 nodes because of a network problem. What happens?'
+    hint: 'quorum = N/2 + 1. Which half has it?'
+    options:
+      - text: 'The 3-node side elects a leader and accepts writes; the 2-node side can''t accept writes'
+        correct: true
+        why: 'The 3-node side reaches the quorum (3). The 2-node side can''t pass any decision, so there is no split brain.'
+      - text: 'Both sides elect their own leader and take separate writes'
+        correct: false
+        why: 'This is exactly what a quorum prevents. Two halves can''t both be a majority.'
+      - text: 'The whole cluster shuts down'
+        correct: false
+        why: 'The 3-node side stays up; only the 2-node side is stalled.'
+      - text: 'The 2-node side becomes leader because the smaller side votes faster'
+        correct: false
+        why: 'Speed decides nothing. Becoming leader takes the votes of a quorum.'
+    ref: quorum-majority
+  - q: 'The monthly payroll cron exists on both servers. Which measures stop the same salary from being paid twice?'
+    hint: 'One measure picks who does the job, another guards the final result.'
+    options:
+      - text: 'Taking a lock named payroll:<month> with Symfony LockFactory'
+        correct: true
+        why: 'Only one can pick up the job at a time, so in the normal case the second one returns.'
+      - text: 'Inserting salary rows with a unique constraint on (employee_id, month)'
+        correct: true
+        why: 'Even if the lock slips, the database won''t accept a second row. This is the last line of defence.'
+      - text: 'Having the cron check at the start whether today''s salary has been paid, and start paying if not'
+        correct: false
+        why: 'That is check-then-act. Two servers look at the same moment, both see "not paid", and both pay.'
+      - text: 'Syncing the two servers'' clocks and running one of them 1 second later'
+        correct: false
+        why: 'Clocks aren''t exact, and with the delay both will still do the work. It doesn''t choose a single one.'
+    ref: distributed-lock
+  - q: 'Where is the risk in the code below?'
+    lang: php
+    code: |
+      $lock = $factory->createLock('report-export', ttl: 5);
+      if ($lock->acquire()) {
+          $this->exportAllOrders();      // usually takes 10 minutes
+          $lock->release();
+      }
+    hint: 'The job takes 10 minutes and the lock lasts 5 seconds.'
+    options:
+      - text: 'The lock expires after 5 seconds and another server starts the same export; it needs refresh() and try/finally'
+        correct: true
+        why: 'The ttl is far shorter than the job. Without refresh() the lock slips away by itself, and on an exception release() never runs either.'
+      - text: 'It should throw an exception when acquire() fails'
+        correct: false
+        why: 'Quietly returning on failure is the normal behaviour; someone else doing the work isn''t a problem.'
+      - text: 'Making the ttl 1 day fixes everything'
+        correct: false
+        why: 'If the server dies, the lock stays held for a day. A short ttl plus refresh() is the right way.'
+      - text: 'The ttl plays no role, release() protects the lock'
+        correct: false
+        why: 'release() only runs on normal completion; if the process dies, only the ttl frees the lock.'
+    ref: distributed-lock
+  - q: 'The lock service gives A token 33. A goes into a 40-second GC pause, the lock expires, B gets token 34 and writes. A wakes up and tries to write with token 33. What happens in a fenced database?'
+    hint: 'Compare 33 with the last token the database has seen.'
+    options:
+      - text: 'The database sees 33 < 34 and rejects A''s write'
+        correct: true
+        why: 'In WHERE last_token <= :token the check 34 <= 33 fails, so nothing is updated. A learns it is no longer the leader.'
+      - text: 'A''s write lands on top of B''s, because A arrived later'
+        correct: false
+        why: 'That is what would happen without fencing. With the token check it no longer does.'
+      - text: 'The lock service blocks A''s write'
+        correct: false
+        why: 'The lock service isn''t on the write path. The blocking is the storage''s job.'
+      - text: 'Both writes get merged'
+        correct: false
+        why: 'Nothing is merged. A write with a stale token is thrown away completely.'
+    ref: fencing-token
+  - q: 'The team wants a 4-node etcd cluster because it must be better than 3. What do you advise?'
+    hint: 'How many nodes can die in a 3-node and in a 4-node cluster?'
+    options:
+      - text: 'Use 3 or 5 nodes; with 4, fault tolerance equals 3''s (1 node) and it only costs more'
+        correct: true
+        why: 'With 4 nodes the quorum is 3, so two failures stop it. 3 nodes also tolerate exactly one, at lower cost.'
+      - text: '4 is better, because it works even with 2 dead'
+        correct: false
+        why: 'With 2 of 4 dead, the remaining 2 are below the quorum (3), and the cluster stalls.'
+      - text: 'Use 2 nodes, it is cheaper'
+        correct: false
+        why: 'With 2 nodes the quorum is 2, so one death stalls it, which is even worse tolerance than a single node.'
+      - text: 'The number of nodes doesn''t matter at all'
+        correct: false
+        why: 'The quorum calculation depends directly on the count; that is what sets the fault tolerance.'
+    ref: quorum-majority

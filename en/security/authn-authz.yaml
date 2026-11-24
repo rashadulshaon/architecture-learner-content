@@ -1,0 +1,471 @@
+slides:
+  - slug: invoice-number-plus-one
+    title: 'Change one number in the URL, read someone else''s invoice'
+    kind: story
+    tldr: 'Checking that the user is logged in is not enough: before returning anything, check that it belongs to this user. Otherwise you have an IDOR.'
+    keywords: ['IDOR', 'BOLA', 'broken access control', 'object level authorization', 'other users data', 'invoice leak']
+    blocks:
+      - type: text
+        body: |
+          Rahim's billing app shows nothing without a login, so he feels safe. One day Karim opens his own invoice and notices the address is `/api/invoices/1042`. Out of curiosity he types `1043` at the end, and another company's invoice, address and amounts all appear. Karim cracked no password. The app simply forgot to ask **whose invoice it is**.
+      - type: code
+        lang: php
+        file: 'src/Controller/InvoiceController.php'
+        variant: bad
+        code: |
+          #[Route('/api/invoices/{id}', methods: ['GET'])]
+          #[IsGranted('IS_AUTHENTICATED_FULLY')]   // only checks: is the user logged in?
+          public function show(Invoice $invoice): JsonResponse
+          {
+              // nobody checks whose invoice this is
+              return $this->json($invoice, context: ['groups' => 'invoice:read']);
+          }
+        marks:
+          - {line: 2, tip: 'This only proves the person is logged in. It does not check whether the invoice is theirs.'}
+          - {line: 3, tip: 'Symfony loads whatever invoice `{id}` points to. 1043 or 9999, it makes no difference to it.'}
+      - type: visual
+        kind: sequence
+        caption: 'Karim only changed the id, and nobody asked who owns the invoice'
+        actors:
+          - {id: karim, label: 'Karim', icon: user, tip: 'A legitimate user, logged in with his own password. His own invoice is 1042.'}
+          - {id: api, label: 'API', icon: api, tip: 'The Symfony controller. It only checks that the request carries a valid login.'}
+          - {id: db, label: 'Database', icon: db, tip: 'Every company''s invoices sit in one table. It returns whichever id is asked for.'}
+        messages:
+          - {from: karim, to: api, label: 'GET /api/invoices/1043', tip: 'He just added one to the last digit of his own 1042.'}
+          - {at: api, note: 'Logged in? Yes. Done.', tone: warn, tip: 'This is the only check. The question "is this invoice Karim''s?" is never asked.'}
+          - {from: api, to: db, label: 'fetch id = 1043'}
+          - {from: db, to: api, label: 'another company''s invoice', dashed: true}
+          - {from: api, to: karim, label: '200 OK with the full invoice', dashed: true, tone: bad, tip: 'To the server this is a normal, successful request, so no error is even logged.'}
+          - {at: karim, note: 'Next: 1044, 1045, 1046...', tone: bad, tip: 'A tiny script can download every invoice of every company within minutes.'}
+    aside:
+      - type: story
+        title: 'The number one risk on the list'
+        body: |
+          Broken Access Control is number one on OWASP's Top 10 web risks, and BOLA is number one on its API risks. Both are exactly this mistake. The reason is simple: exploiting it takes no hacking tools, only the curiosity to change a number in a URL.
+      - type: terms
+        items:
+          - {term: 'IDOR', meaning: 'Insecure Direct Object Reference: changing an id to get at someone else''s data.'}
+          - {term: 'BOLA', meaning: 'Broken Object Level Authorization: the name IDOR goes by in the API world.'}
+    check:
+      q: 'How did Karim read another company''s invoice without cracking any password?'
+      a: 'The app only checked that he was logged in. It never asked whether the invoice was his, so changing the id was enough to fetch any invoice.'
+
+  - slug: two-questions
+    title: 'Two different questions: who are you, and is this yours?'
+    kind: concept
+    tldr: 'Authentication (AuthN) checks who you are; authorization (AuthZ) decides whether you may do this action on this thing.'
+    keywords: ['authentication', 'authorization', 'AuthN', 'AuthZ', '401 vs 403', 'identity check', 'permissions']
+    blocks:
+      - type: metaphor
+        icon: box
+        title: 'The counter at a courier office'
+        body: |
+          To collect a parcel you first show your national ID at the counter. That is **authentication**: are you really Rahim? Then the clerk checks the register to see whether the parcel you're asking for was addressed to Rahim. That is **authorization**. A genuine ID still doesn't entitle Rahim to Karim's parcel. And this second check happens for every parcel, not once a day.
+      - type: visual
+        kind: table
+        caption: 'The two questions side by side, at the courier office and in your API'
+        headers: ['', 'Authentication (AuthN)', 'Authorization (AuthZ)']
+        rows:
+          - cells: ['The question', 'Who are you?', 'May you do this to this thing?']
+            tip: 'The first answer is a person (or a service). The second is yes or no, and it depends on which thing and which action.'
+          - cells: ['At the courier office', 'Showing the ID at the counter', 'Matching the parcel to your name']
+            tip: 'The ID check happens once. But if you ask for ten parcels, the name is matched ten times.'
+          - cells: ['When it happens', 'Once, at the start of the request', 'On every action, for every thing']
+            tip: 'The identity is worked out once and reused for the whole request. Permission is checked every time a thing is touched.'
+          - cells: ['Based on', 'Password, session cookie, token', 'Role, ownership, business rules']
+            tip: 'Proof of identity comes from the user. The permission rules live in your server code and data; the user never sends them.'
+          - cells: ['When it fails', '401 Unauthorized', '403 Forbidden']
+            tip: '401 means "identify yourself first". 403 means "I know who you are, but this is not for you", and logging in again won''t help.'
+      - type: quote
+        body: 'Authentication says who you are. Authorization says what you can do. Passing one does not pass the other.'
+    aside:
+      - type: remember
+        body: 'The N in AuthN is for name: who you are. The Z in AuthZ is for zone: which areas you may enter.'
+      - type: tips
+        items:
+          - 'When a user asks for someone else''s thing, many APIs return 404 instead of 403, so even its existence isn''t revealed. Pick one and use it everywhere.'
+          - 'Authorization is meaningless without authentication: until you know who is asking, you can''t decide what they may do.'
+      - type: refs
+        items:
+          - {to: 'api/error-design', label: 'Which error gets which status code'}
+    check:
+      q: 'A logged-in user tries to cancel someone else''s order. Which status code should the server return, and why not 401?'
+      a: '403 Forbidden (or 404 to hide that the order exists). 401 means "identify yourself"; here the identity is known, the user just has no permission for this action on this thing.'
+
+  - slug: where-in-symfony
+    title: 'Where everything lives in Symfony Security'
+    kind: howto
+    tldr: 'The firewall''s authenticator does AuthN. access_control, #[IsGranted] and voters do AuthZ, from coarse to fine in three layers.'
+    keywords: ['firewall', 'authenticator', 'access_control', 'IsGranted', 'voter', 'security.yaml', 'Symfony Security', 'deny by default']
+    blocks:
+      - type: text
+        body: |
+          Symfony has separate machinery for the two questions. The **firewall**'s authenticator reads the request's session cookie or token and works out who the user is. Permission is then checked in three layers: `access_control` guards a whole URL area, `#[IsGranted]` guards one action, and a **voter** checks ownership of one specific thing.
+      - type: visual
+        kind: flow
+        caption: 'The guards a request passes before it reaches the controller'
+        nodes:
+          - {id: req, label: 'Request', sub: 'with cookie or token', icon: browser, col: 0, row: 0, tip: 'A request from a browser or mobile app. The proof of identity travels in a cookie or the Authorization header.'}
+          - {id: fw, label: 'Firewall', sub: 'authenticator: AuthN', icon: shield, col: 1, row: 0, tip: 'The ID check at the courier counter. It reads the proof and finds the user; that identity is then used for the whole request.'}
+          - {id: ac, label: 'access_control', sub: 'by URL: AuthZ', icon: filter, col: 2, row: 0, tip: 'Coarse rules: which role is needed to enter this path. It knows nothing about any particular invoice or order.'}
+          - {id: ctrl, label: '#[IsGranted]', sub: 'by action: AuthZ', icon: code, col: 3, row: 0, tip: 'A guard placed on one controller action. It can check roles, and it can also ask a voter.'}
+          - {id: voter, label: 'Voter', sub: 'by object: AuthZ', icon: check, tone: accent, col: 4, row: 0, tip: 'The finest layer: "does this invoice belong to this user?" Only this layer stops IDOR.'}
+          - {id: e401, label: '401', sub: 'log in first', icon: lock, tone: bad, col: 1, row: 1.5, tip: 'Returned when someone with no identity reaches a protected area, or when the cookie or token is no longer valid. The user must log in again.'}
+          - {id: e403, label: '403', sub: 'not allowed', icon: cross, tone: bad, col: 3, row: 1.5, tip: 'The identity is known, but the role or ownership doesn''t match. Logging in again won''t change this answer.'}
+        edges:
+          - {from: req, to: fw, label: 'The request arrives, carrying a session cookie or token'}
+          - {from: fw, to: e401, label: 'No proof, or invalid proof: answer 401', tone: bad}
+          - {from: fw, to: ac, label: 'Identity found: the user is now Rahim'}
+          - {from: ac, to: ctrl, label: 'URL rule passed: under /api a login is enough'}
+          - {from: ctrl, to: voter, label: 'The action asks: may Rahim see this invoice?'}
+          - {from: voter, to: e403, label: 'If the invoice isn''t Rahim''s, answer 403', tone: bad}
+          - {from: voter, to: ctrl, label: 'Only if he owns it does the action run: 200', tone: good, dashed: true}
+      - type: code
+        lang: yaml
+        file: 'config/packages/security.yaml'
+        code: |
+          security:
+              firewalls:
+                  main:
+                      lazy: true
+                      provider: app_user_provider
+                      json_login:                  # AuthN: checks email and password
+                          check_path: api_login
+                      logout:
+                          path: api_logout
+
+              access_control:                      # AuthZ: coarse, by URL
+                  - { path: ^/api/login, roles: PUBLIC_ACCESS }
+                  - { path: ^/api/admin, roles: ROLE_ADMIN }
+                  - { path: ^/api,       roles: IS_AUTHENTICATED_FULLY }
+        marks:
+          - {line: 6, tip: 'This is an authenticator. After a successful login Symfony stores the identity in the session and recognizes later requests by their cookie.'}
+          - {line: 12, tip: 'Only the first rule that matches from the top applies. So specific paths go first and general ones last.'}
+          - {line: 14, tip: 'The default is closed: any new route you add under /api can''t be entered without a login.'}
+      - type: quote
+        body: 'The default answer is "no". Permission must be granted separately, on purpose.'
+    aside:
+      - type: commands
+        title: 'See what is configured'
+        items:
+          - {cmd: 'php bin/console debug:firewall main', desc: 'Which authenticators are active on the main firewall'}
+          - {cmd: 'php bin/console debug:config security access_control', desc: 'The URL rules, in the order they apply'}
+          - {cmd: 'php bin/console debug:container --tag=security.voter', desc: 'Every voter registered in the app'}
+      - type: terms
+        items:
+          - {term: 'Firewall', meaning: 'The configuration of which URLs verify identity, and how.'}
+          - {term: 'Authenticator', meaning: 'Takes the proof from the request (password, cookie, token) and finds the user.'}
+          - {term: 'Voter', meaning: 'Answers one yes/no question: may this user do this action on this thing?'}
+      - type: refs
+        items:
+          - {to: 'security/sessions-tokens', label: 'How identity reaches the request: session or token'}
+    check:
+      q: '`access_control` requires a login on the `^/api` path. Why do you still need a voter to stop IDOR?'
+      a: '`access_control` only looks at the URL and the role; it doesn''t know whose invoice `/api/invoices/1043` is. Only a voter, or a query that filters by owner, can check ownership of a specific thing.'
+
+  - slug: object-level-check
+    title: 'Checking ownership on every object: the voter'
+    kind: howto
+    tldr: 'Write the ownership rule in one voter and call it with #[IsGranted] on each action. For lists, filter by owner in the query itself.'
+    keywords: ['voter', 'IsGranted subject', 'object level check', 'ownership check', 'CurrentUser', 'ownership', 'IDOR fix']
+    blocks:
+      - type: text
+        body: |
+          Put the courier clerk's question, "is this parcel in this person's name?", in one place: a **voter**. Every action that touches an invoice then calls that same rule through `#[IsGranted]`. When the rule changes, you change one file, not forty controllers.
+      - type: code
+        lang: php
+        file: 'src/Security/Voter/InvoiceVoter.php'
+        variant: good
+        code: |
+          final class InvoiceVoter extends Voter
+          {
+              public const VIEW = 'INVOICE_VIEW';
+
+              protected function supports(string $attribute, mixed $subject): bool
+              {
+                  return self::VIEW === $attribute && $subject instanceof Invoice;
+              }
+
+              protected function voteOnAttribute(
+                  string $attribute,
+                  mixed $subject,
+                  TokenInterface $token,
+                  ?Vote $vote = null,
+              ): bool {
+                  $user = $token->getUser();
+                  if (!$user instanceof User) {
+                      return false;                 // no identity at all
+                  }
+
+                  // is this parcel in this person's name?
+                  return $subject->getCompany() === $user->getCompany();
+              }
+          }
+        marks:
+          - {line: 7, tip: 'This voter only responds to the INVOICE_VIEW question on an Invoice object. For everything else it abstains.'}
+          - {line: 18, tip: 'No login means a straight "no". A voter''s default answer should always be no.'}
+          - {line: 22, tip: 'The real rule is this one line: the invoice''s company must be the same as the user''s company.'}
+      - type: code
+        lang: php
+        file: 'src/Controller/InvoiceController.php'
+        variant: good
+        code: |
+          #[Route('/api/invoices/{id}', methods: ['GET'])]
+          #[IsGranted(InvoiceVoter::VIEW, subject: 'invoice')]
+          public function show(Invoice $invoice): JsonResponse
+          {
+              return $this->json($invoice, context: ['groups' => 'invoice:read']);
+          }
+
+          #[Route('/api/invoices', methods: ['GET'])]
+          public function index(#[CurrentUser] User $user, InvoiceRepository $invoices): JsonResponse
+          {
+              // for lists, no voter: filter by owner in the query itself
+              return $this->json(
+                  $invoices->findBy(['company' => $user->getCompany()], ['id' => 'DESC'], 50),
+                  context: ['groups' => 'invoice:read'],
+              );
+          }
+        marks:
+          - {line: 2, tip: 'Naming the argument in subject sends the $invoice below to the voter. If permission is denied, the response is 403 before the action even runs.'}
+          - {line: 9, tip: '#[CurrentUser] provides the authenticated user from the session or token, never from a request parameter.'}
+          - {line: 13, tip: 'The filtering by company happens in the database, so other companies'' rows never even reach PHP.'}
+      - type: quote
+        body: 'Wherever an id comes from (URL, body or query string), check ownership before you use it.'
+    aside:
+      - type: tips
+        items:
+          - 'If you build the object by hand, call `$this->denyAccessUnlessGranted(InvoiceVoter::VIEW, $invoice)` inside the action. It does the same job.'
+          - 'Use separate attributes for writes: INVOICE_EDIT, INVOICE_DELETE. Being able to view something doesn''t mean being able to change it.'
+          - 'Write a small unit test for the voter: owner gives yes, another company gives no, no login gives no.'
+      - type: refs
+        items:
+          - {to: 'security/authorization-models', label: 'Organizing rules by role, attribute and relationship'}
+          - {to: 'security/multi-tenancy', label: 'Filtering by company across the whole app'}
+    check:
+      q: 'Why does the invoice detail action use a voter while the list action does not?'
+      a: 'Fetching thousands of rows and running a voter on each is slow, and it breaks pagination. So the query itself filters by the logged-in user''s company and returns only their rows.'
+
+  - slug: classic-authz-mistakes
+    title: 'Four familiar gaps where other people''s data leaks'
+    kind: pitfall
+    tldr: 'Taking userId from the request, hiding buttons in the UI, treating a UUID as a lock, and checking only GET: all four are broken authorization.'
+    keywords: ['broken access control', 'mass assignment', 'function level authorization', 'UUID', 'hidden button', 'common mistakes', 'userId parameter']
+    blocks:
+      - type: text
+        body: |
+          IDOR doesn't always show up as a number in the URL. The four mistakes below look different, but the disease is the same: the server trusted the client instead of checking for itself.
+      - type: code
+        lang: php
+        file: 'src/Controller/OrderController.php'
+        variant: bad
+        code: |
+          #[Route('/api/orders', methods: ['GET'])]
+          public function index(Request $request, OrderRepository $orders): JsonResponse
+          {
+              // the client itself says whose orders to show
+              $userId = $request->query->getInt('userId');
+
+              return $this->json($orders->findBy(['user' => $userId]));
+          }
+        marks:
+          - {line: 5, tip: 'Change ?userId=7 to ?userId=8 and you get someone else''s orders. Never take identity from a request parameter.'}
+      - type: code
+        lang: php
+        file: 'src/Controller/OrderController.php'
+        variant: good
+        code: |
+          #[Route('/api/orders', methods: ['GET'])]
+          public function index(#[CurrentUser] User $user, OrderRepository $orders): JsonResponse
+          {
+              // identity comes from the verified session or token
+              return $this->json($orders->findBy(['user' => $user]));
+          }
+        marks:
+          - {line: 2, tip: 'The client can no longer say "I am user 8". The server knows for itself who is logged in.'}
+      - type: visual
+        kind: table
+        caption: 'Four gaps, why they break, and the right fix'
+        headers: ['Mistake', 'Why it breaks', 'The right way']
+        rows:
+          - cells: ['Taking identity from the request', 'The client can send anything', 'Use the user from the session or token']
+            tip: 'If userId, companyId or role comes from the body, query or a header, the client sets its own permissions.'
+          - cells: ['Hiding the button only in the UI', 'The API can be called directly', 'Check on the server, on every action']
+            tip: 'Hiding a "Delete" button with v-if in Vue only hides it from view. Anyone can call the endpoint with curl or DevTools, so the server is the last line of defense.'
+          - cells: ['Assuming a UUID is safe', 'Ids leak: links, logs, emails', 'Keep the UUID, but still check ownership']
+            tip: 'A UUID is hard to guess, but it isn''t secret. Knowing an id is not the same as having permission.'
+          - cells: ['Checking only GET', 'PATCH and DELETE stay open', 'Check every method separately']
+            tip: 'It is very common to put a voter on the read action and forget the update or delete action. Attackers try every method.'
+      - type: quote
+        body: 'What the client sends is a request, not proof. The server works out who is asking and what they may do.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'The admin menu is hidden, but the `/api/admin/*` routes have no role check. This is called broken function-level authorization.'
+          - 'Accepting `roles` or `isAdmin` in a profile-update body (mass assignment). Keep only the allowed fields in the DTO.'
+          - 'Forgetting the check on file download, export and report endpoints. They hand out data too.'
+      - type: remember
+        body: 'Three questions for every endpoint: who is asking? which thing? which action?'
+      - type: refs
+        items:
+          - {to: 'api/thin-clients', label: 'Decisions on the server, the client only displays'}
+          - {to: 'security/input-validation', label: 'Never trust input'}
+    check:
+      q: 'The invoice id is now a UUID, nearly impossible to guess. Why can''t you skip the ownership check?'
+      a: 'A UUID is hard to guess but not secret: it leaks through links, emails, logs and screenshots. Without the check, whoever gets hold of an id gets the data.'
+
+flashcards:
+  - q: 'What is the difference between authentication and authorization?'
+    a: 'Authentication checks who you are. Authorization decides whether you may do a particular action on a particular thing.'
+    more: |
+      At the courier office, showing your ID is authentication; matching the parcel to your name is authorization. Identity is checked once at the start of the request, but permission is checked separately for every thing. Passing one does not pass the other.
+    ref: two-questions
+  - q: 'What does IDOR mean?'
+    a: 'Getting someone else''s data by changing an id in the URL or body, because the server never checked that the thing belongs to this user.'
+    more: |
+      The full name is Insecure Direct Object Reference; in the API world it is also called BOLA. If changing `/api/invoices/1042` to `1043` returns another user's invoice, that is IDOR. No tool is needed to exploit it, and every request looks normal in the server log, so it can go unnoticed for a long time.
+    ref: invoice-number-plus-one
+  - q: '401 versus 403: when do you use which?'
+    a: '401: no identity or invalid proof, so log in. 403: the identity is known, but this action is not allowed.'
+    more: |
+      On a 401, the client should send the user to the login page or refresh the token. On a 403, logging in again is pointless because the permission itself is missing. To hide that someone else's thing exists, many APIs return 404 instead of 403. That is acceptable as long as the same rule is used everywhere.
+    ref: two-questions
+  - q: 'Where do AuthN and AuthZ live in Symfony?'
+    a: 'AuthN: the firewall''s authenticator. AuthZ: `access_control` (by URL), `#[IsGranted]` (by action) and voters (by object).'
+    more: |
+      An authenticator (such as `json_login`, `form_login` or `access_token`) finds the user from the request's cookie or token. Permission is then checked in three layers, from coarse to fine. The first two only understand roles; only a voter can check ownership of one specific object.
+    ref: where-in-symfony
+  - q: 'What does a Symfony voter do?'
+    a: 'It answers a yes/no question: may this user do this action on this object? The rule lives in one place.'
+    more: |
+      A voter has two methods: `supports()` decides whether the question is its business, and `voteOnAttribute()` runs the actual rule. Writing `#[IsGranted('INVOICE_VIEW', subject: 'invoice')]` on a controller makes Symfony call the voter. More in [[security/authorization-models|authorization models]].
+    ref: object-level-check
+  - q: 'How do you stop a list endpoint from leaking other people''s data?'
+    a: 'Filter by the logged-in user (or their company) in the query itself, instead of fetching everything and filtering afterwards.'
+    more: |
+      Fetching every row and running a voter in a loop makes the query slow, breaks pagination counts, and leaks data the moment one condition is forgotten. A query like `findBy(['company' => $user->getCompany()])` never lets other people's rows out of the database at all.
+    ref: object-level-check
+  - q: 'Is hiding a button in Vue a form of authorization?'
+    a: 'No, it only makes the UI nicer to use. The API can be called directly, so the real check must happen on the server, on every action.'
+    more: |
+      The user has full control over everything that runs in their browser: they can open DevTools and reveal a hidden button, or call the endpoint with curl. Hiding something in the UI only hides it from view. The server should treat every request as if a stranger wrote it.
+    ref: classic-authz-mistakes
+  - q: 'Does using a UUID as the id solve IDOR?'
+    a: 'No. A UUID makes guessing harder, but once an id leaks the data is open. You still need an ownership check.'
+    more: |
+      A UUID is not a secret. It travels in shared links, emails, logs, browser history and screenshots. Security should rest on "does this user have permission?", not on "does this user know the id?". A UUID is one extra hurdle, not a lock.
+    ref: classic-authz-mistakes
+  - q: 'What does deny by default mean?'
+    a: 'If no rule matches, the answer is "no". A new route is closed automatically, and opening it takes a deliberate decision.'
+    more: |
+      With `^/api` → `IS_AUTHENTICATED_FULLY` as the last `access_control` rule, a new endpoint can't be left open by mistake. The opposite approach, everything open and closing routes one by one, creates a hole the moment you forget a route. The same goes for voters: when in doubt, return `false`.
+    ref: where-in-symfony
+
+quiz:
+  - q: 'What is the security problem in the action below?'
+    lang: php
+    code: |
+      #[Route('/api/documents/{id}/download', methods: ['GET'])]
+      #[IsGranted('ROLE_USER')]
+      public function download(Document $document): BinaryFileResponse
+      {
+          return $this->file($document->getPath());
+      }
+    hint: 'Who has ROLE_USER? And what comes back when you change {id}?'
+    options:
+      - text: 'Any logged-in user can change the id and download someone else''s file, because there is no ownership check'
+        correct: true
+        why: '`ROLE_USER` only says the person is logged in. To check whether the document is theirs you would need a voter or a query that filters by owner.'
+      - text: 'Using `ROLE_ADMIN` instead of `ROLE_USER` would fix it'
+        correct: false
+        why: 'Then ordinary users couldn''t even download their own files. The problem is not at the role level but in object ownership.'
+      - text: 'Using POST instead of GET would make it safe'
+        correct: false
+        why: 'Changing the HTTP method does not add an ownership check; changing the id in a POST is just as easy.'
+      - text: 'There is no problem, since `#[IsGranted]` is already there'
+        correct: false
+        why: '`#[IsGranted]` is there, but it only checks the role. It has no idea which document is being requested.'
+    ref: invoice-number-plus-one
+  - q: 'Sumi''s session has expired and she calls `/api/orders`. Raju, while logged in, tries to delete someone else''s order. Who gets which status code?'
+    hint: 'Whose identity does the server not know, and whose identity does it know but lack permission?'
+    options:
+      - text: 'Sumi gets 403, Raju gets 401'
+        correct: false
+        why: 'That is backwards. 401 is for missing identity, 403 for missing permission.'
+      - text: 'Sumi gets 401, Raju gets 403'
+        correct: true
+        why: 'Sumi''s proof of identity is no longer valid, so she must log in (401). The server knows Raju, but he has no permission for the action (403).'
+      - text: 'Both get 401'
+        correct: false
+        why: 'If Raju got a 401, his app would make him log in again, yet logging in would change nothing because the permission itself is missing.'
+      - text: 'Both get 400 Bad Request'
+        correct: false
+        why: '400 means the request is malformed. Here the requests are fine; the issue is identity and permission.'
+    ref: two-questions
+  - q: 'Which of these are authorization tasks (not authentication)?'
+    hint: 'Which ones answer "what can you do" rather than "who are you"?'
+    options:
+      - text: 'Checking a password'
+        correct: false
+        why: 'Matching a password verifies proof of identity. That is authentication.'
+      - text: 'Checking whether an order belongs to this user'
+        correct: true
+        why: 'Deciding whether a user may act on one specific thing is object-level authorization.'
+      - text: 'Letting only ROLE_ADMIN into the `/api/admin` path'
+        correct: true
+        why: 'The identity is already known; what is being decided is whether this user may enter this area. That is authorization.'
+      - text: 'Verifying a token''s signature'
+        correct: false
+        why: 'Signature verification tells you whether the token is genuine, that is, whether the proof of identity is valid. That is authentication.'
+      - text: 'Deciding whether the user may delete an invoice'
+        correct: true
+        why: 'Whether an action is allowed, yes or no, is exactly what an authorization decision is.'
+    ref: two-questions
+  - q: 'In Symfony, which part works out the user''s identity from the request?'
+    hint: 'At the courier office, who looks at the ID: the counter, or the parcel register?'
+    options:
+      - text: 'A voter'
+        correct: false
+        why: 'A voter doesn''t find the identity; it takes an already-known identity and decides on permission.'
+      - text: '`access_control`'
+        correct: false
+        why: '`access_control` matches URL and role to let someone in or block them. That is an authorization layer.'
+      - text: 'The firewall''s authenticator'
+        correct: true
+        why: 'The authenticator reads the cookie, password or token and finds the user. That is authentication.'
+      - text: '`#[IsGranted]`'
+        correct: false
+        why: '`#[IsGranted]` is a permission guard on an action; the identity has already been settled before it runs.'
+    ref: where-in-symfony
+  - q: 'The `/api/invoices` list holds 10,000 invoices from many companies. What is the best way to keep other companies'' invoices out of the response?'
+    hint: 'Do other people''s rows need to leave the database at all?'
+    options:
+      - text: 'Fetch every invoice and run a voter on each one in a loop'
+        correct: false
+        why: 'It works, but it is slow, breaks pagination counts, and pulls other people''s data into memory for no reason.'
+      - text: 'Filter by the logged-in user''s company in the query itself'
+        correct: true
+        why: 'Other companies'' rows never leave the database. It is fast, pagination stays correct, and there is less room for mistakes.'
+      - text: 'Send everything and filter in Vue, showing only the user''s own'
+        correct: false
+        why: 'By then the data has already reached the browser; anyone can open the Network tab and see it all.'
+      - text: 'Ask the client to send `?companyId=`'
+        correct: false
+        why: 'The client could then send any companyId, which is exactly the IDOR problem.'
+    ref: object-level-check
+  - q: 'A team did the following to stop IDOR. Which ones actually protect?'
+    hint: 'Which ones check on the server, and which just make things harder or hide them?'
+    options:
+      - text: 'Checking ownership with a voter on every object'
+        correct: true
+        why: 'This is the core fix: whatever the id is, if the thing isn''t the user''s, the answer is 403.'
+      - text: 'Replacing auto-increment ids with UUIDs'
+        correct: false
+        why: 'Guessing gets harder, but once an id leaks the data is open. It is an extra hurdle, not a fix.'
+      - text: 'Taking identity from `#[CurrentUser]`, not from a `userId` in the body'
+        correct: true
+        why: 'The identity then comes from the verified session or token; the client can''t claim to be someone else.'
+      - text: 'Hiding links and buttons to other people''s data in Vue'
+        correct: false
+        why: 'Hiding things in the UI doesn''t close the endpoint; when the API is called directly, the server is the only guard.'
+    ref: classic-authz-mistakes

@@ -1,0 +1,312 @@
+slides:
+  - slug: unstated-assumptions
+    title: 'What the design doesn''t say is what bites'
+    kind: story
+    tldr: 'Every design document describes the happy path. The breakages hide in the unstated assumptions, and a reviewer''s job is to drag them into the open.'
+    keywords: ['design review', 'assumptions', 'happy path', 'unstated assumptions', 'failure modes', 'review']
+    blocks:
+      - type: text
+        body: |
+          Rahim wrote the checkout design: "When the user presses Pay, we call the Payment API; on success the order becomes paid and an email goes out." It reads clearly and everyone nodded. But behind every sentence sits an unstated assumption, and any one of them can turn out to be wrong on some bad night.
+      - type: visual
+        kind: table
+        caption: 'What the design says vs what it quietly assumes'
+        headers: ['The design says', 'It quietly assumes']
+        rows:
+          - cells: ['The Payment API is called', 'It always answers within 2 seconds']
+            tip: 'In reality the API can be slow or never answer. With no wait limit, our own server hangs along with it.'
+          - cells: ['On success the order becomes paid', 'The news of success will always reach us']
+            tip: 'The money is taken, but the connection drops before the answer arrives. Now we don''t know whether the charge happened.'
+          - cells: ['The email goes out', 'The email service is never down']
+            tip: 'If a failed email fails the whole order, an optional step is breaking the main job.'
+          - cells: ['The user presses Pay', 'They press it exactly once']
+            tip: 'On a slow network people press two or three times. Each press is a separate request and the money can be taken several times.'
+    aside:
+      - type: story
+        title: 'The Friday-night double charge'
+        body: |
+          Nobody in the design review asked, "What if Pay is pressed twice?" On a Friday night with a slow network, 17 customers were charged twice. No line of code was wrong. The mistake was an unstated assumption: "the user will press it only once."
+      - type: remember
+        body: 'The most dangerous sentence in a design is the one nobody wrote.'
+    check:
+      q: 'Behind the design line "the Payment API is called", which unstated assumption is dangerous?'
+      a: 'That the API always answers quickly. If it is slow or silent and there is no wait limit, our own server gets stuck too.'
+
+  - slug: four-questions
+    title: 'The four-question checklist'
+    kind: concept
+    tldr: 'Ask four questions at every step: what if it fails, what if it arrives twice, what if it is slow, what if we run it again? A good review starts here.'
+    keywords: ['review checklist', 'failure modes', 'idempotency', 'timeout', 'retry', 'failure paths']
+    blocks:
+      - type: metaphor
+        icon: building
+        title: 'The engineer who approves a house plan'
+        body: |
+          Looking at a plan, the engineer doesn't say "lovely". They ask: what happens if a water pipe bursts? Where does the lift stop in a power cut? Will the foundation take two more floors? They didn't build the house, so their eyes are on the bad days. A design reviewer is exactly that engineer.
+      - type: visual
+        kind: table
+        caption: 'The four questions at each step, and what a good answer looks like'
+        headers: ['Question', 'What to look for', 'A good answer']
+        rows:
+          - cells: ['What if it fails?', 'timeouts, partial success', 'timeout + fallback + the states written down']
+            tip: 'The money was taken but the order isn''t paid. Who repairs such in-between states must be written down.'
+          - cells: ['What if it arrives twice?', 'double click, a message delivered twice', 'idempotency key or unique constraint']
+            tip: 'Will the result stay the same if the same job arrives twice? If not, money, emails or stock will be hit twice.'
+          - cells: ['What if it is slow?', 'a slow dependency', 'short timeout, queue, limits']
+            tip: 'Waiting is the most expensive thing: one slow system holds the threads of the others and slows everyone down.'
+          - cells: ['What if we run it again?', 'retry storms, unknown outcomes', 'safe to retry, with backoff']
+            tip: 'A retry is the same request sent again. If running the job twice isn''t safe, the retry is itself a new accident.'
+      - type: quote
+        body: 'At every arrow ask: what if this step fails, arrives twice, is slow, or is run again?'
+    aside:
+      - type: tips
+        items:
+          - 'Ask the four questions of your own design too. It''s hard to spot mistakes in what you wrote yourself, so keep the questions written down.'
+          - 'Ask questions, don''t pass verdicts: instead of "this is wrong", say "what happens if the charge succeeds but we time out?"'
+      - type: refs
+        items:
+          - {to: 'payments/idempotency-keys', label: 'Arrives twice: idempotency keys'}
+          - {to: 'resilience/containing-failure', label: 'Fails: containing the damage'}
+    check:
+      q: 'Why ask "what if we run it again?" separately, when "what if it arrives twice?" is already covered?'
+      a: 'Arriving twice has an outside cause (the user, the messaging system). Running again is our own decision (a retry). A retry needs its own thought about unknown outcomes and retry storms.'
+
+  - slug: review-worked-example
+    title: 'A design review, hands on'
+    kind: howto
+    tldr: 'Ask the four questions of the happy-path checkout code to find four gaps, then fix the code for each and write review comments that carry the question.'
+    keywords: ['worked example', 'timeout', 'Idempotency-Key', 'Messenger', 'review comments', 'checkout']
+    blocks:
+      - type: text
+        body: |
+          This is the code behind Rahim's design. Run your eye over it with the four questions in hand: where is there no timeout, where can it run twice, and where does a slow email hold up the whole job?
+      - type: code
+        lang: php
+        file: 'src/Controller/CheckoutController.php'
+        variant: bad
+        code: |
+          public function pay(Order $order): JsonResponse
+          {
+              $this->http->request('POST', 'https://pay.example/charge', [
+                  'json' => ['amount' => $order->total(), 'order' => (string) $order->id()],
+              ])->toArray();                 // no timeout, no key
+
+              $order->markPaid();
+              $this->em->flush();
+              $this->mailer->send($this->receiptFor($order));   // email is slow or fails
+
+              return $this->json(['ok' => true]);
+          }
+        marks:
+          - {line: 3, tip: 'No timeout and no Idempotency-Key. A slow answer will hang the server, and a retry or double click can charge twice.'}
+          - {line: 9, tip: 'If the mail server is slow or down, the request fails even after the money was taken. The email could have been sent later.'}
+      - type: code
+        lang: php
+        file: 'src/Controller/CheckoutController.php'
+        variant: good
+        code: |
+          public function pay(Order $order): JsonResponse
+          {
+              $this->http->request('POST', 'https://pay.example/charge', [
+                  'timeout' => 5,
+                  'headers' => ['Idempotency-Key' => $order->paymentKey()],
+                  'json' => ['amount' => $order->total(), 'order' => (string) $order->id()],
+              ])->toArray();
+
+              $order->markPaid();
+              $this->em->flush();
+              $this->bus->dispatch(new SendReceipt($order->id()));   // email later, in a worker
+
+              return $this->json(['ok' => true]);
+          }
+        marks:
+          - {line: 4, tip: 'Never wait more than five seconds. A slow API can''t hold the whole server hostage.'}
+          - {line: 5, tip: 'Every order gets one fixed key. If the same order arrives twice, the Payment API doesn''t charge a second time.'}
+          - {line: 11, tip: 'The email goes to the queue. If it fails, Messenger retries it on its own, and the customer''s order is not held up.'}
+      - type: points
+        title: 'The three parts of a good review comment'
+        style: number
+        items:
+          - 'The question: "If Pay arrives twice, what reaches the Payment API?"'
+          - 'The risk: "The money could be taken twice and the customer will complain."'
+          - 'The suggestion: "Could we send an Idempotency-Key?"'
+    aside:
+      - type: pitfalls
+        items:
+          - 'This code still has a small gap: if flush succeeds but the process dies before dispatch, the email is lost. The full fix is an outbox.'
+          - 'Setting a `timeout` doesn''t tell you the outcome: after a timeout you still don''t know whether the money was taken, so you need a status check or a webhook.'
+      - type: refs
+        items:
+          - {to: 'workflows/outbox-inbox', label: 'Saving the DB and the message safely together: outbox'}
+          - {to: 'payments/unknown-outcomes', label: 'After a timeout the outcome is unknown'}
+    check:
+      q: 'In the good code, why was the email moved out of the request, and in answer to which question?'
+      a: '"What if it is slow or fails?" A slow or failing email no longer holds up the order, and the queue retries it.'
+
+  - slug: pre-mortem
+    title: 'Pre-mortem: stage the failure in advance'
+    kind: pitfall
+    tldr: 'A review fails when everyone looks only at the happy path. In a pre-mortem you assume the project has already sunk, then hunt for the reasons.'
+    keywords: ['pre-mortem', 'risk', 'failure scenarios', 'risk discovery', 'optimism bias']
+    blocks:
+      - type: text
+        body: |
+          Design reviews often fail because everyone shares the author's enthusiasm and nobody wants to ask the awkward question. A **pre-mortem** breaks that pressure. A post-mortem happens after the death; a pre-mortem happens before: "Imagine it is six months from now and the project has sunk. Why did it sink?" Raising fears is now the assignment.
+      - type: visual
+        kind: steps
+        caption: 'The five steps of a pre-mortem, about 30 minutes in all'
+        steps:
+          - {title: '1. Jump ahead', body: '"Six months from now, the project has failed."', tip: 'Treat failure as something that already happened and people say "because" instead of "what if", and the fear drops.'}
+          - {title: '2. Write alone', body: 'Everyone writes reasons for 5 minutes', tip: 'Writing alone first stops the loudest voice from taking over the whole discussion.'}
+          - {title: '3. Pool them', body: 'Gather everyone''s list in one place', tip: 'A worry that lived in one head is now in front of everyone.'}
+          - {title: '4. Vote', body: 'Which are the likeliest and most damaging?', tip: 'Not all risks are equal. Weigh likelihood and damage together and pick the top three.'}
+          - {title: '5. Assign work', body: 'One owner and one remedy for each', tip: 'Without an owner and a remedy it is just a list of worries. The design changes only when work is assigned.'}
+      - type: code
+        lang: text
+        file: 'pre-mortem-result.md'
+        code: |
+          Assume: six months from now the checkout project has failed.
+
+          Reason                         Likelihood  Damage  Owner   Remedy
+          Money charged twice            high        high    Rahim   Idempotency-Key
+          Payment API slow, server hung  medium      high    Karim   timeout 5s, circuit breaker
+          Email failure fails the order  medium      low     Salma   email via queue
+    aside:
+      - type: pitfalls
+        items:
+          - 'Attacking the person, not the design: "Why didn''t you think of this?" Ask instead, "Has this been considered?"'
+          - 'Spending hours on small things (names, formatting) while the hard-to-reverse decisions (data model, API) slip by.'
+          - 'Commenting and then going quiet. A review isn''t finished until every risk has an owner and a remedy.'
+      - type: when
+        use: ['Before finalising a big or hard-to-reverse design', 'Before adopting a new technology or a new integration']
+        avoid: ['Small decisions you could change in one afternoon']
+    check:
+      q: 'Why does a pre-mortem say "the project has sunk" rather than "the project might sink"?'
+      a: 'When failure is treated as having happened, people feel safe saying what they fear and why. With "might sink", optimism pressure keeps everyone quiet.'
+
+flashcards:
+  - q: 'What is a design reviewer''s real job?'
+    a: 'To pull out the author''s unstated assumptions and the failure paths, not just to back the happy path.'
+    more: |
+      A design document almost always describes the happy path. A reviewer asks like an engineer, "what if the pipe bursts?", because they didn't build the thing and so their eyes are on the bad days.
+    ref: unstated-assumptions
+  - q: 'What are the four core questions of a design review?'
+    a: 'What if it fails? What if it arrives twice? What if it is slow? What if we run it again (retry)?'
+    more: |
+      You can ask these four at every arrow or step. Behind them sit timeouts, idempotency, queues and safe retries. More in [[four-questions|the four-question checklist]].
+    ref: four-questions
+  - q: 'What is a good answer to "what if it arrives twice?"'
+    a: 'Make the job idempotent: running the same job several times gives the same result, for example with an Idempotency-Key or a unique constraint.'
+    more: |
+      Double clicks, retries and messages delivered twice all really happen. With an idempotency key, the Payment API returns the first result on the second request instead of charging again.
+    ref: four-questions
+  - q: 'What is the minimum protection when you call another system?'
+    a: 'A timeout, being safe to retry (idempotency), and a plan for what happens on failure.'
+    more: |
+      Without a timeout, a slow system holds your threads and slows you down too. In Symfony HttpClient you set the wait limit with the `timeout` option.
+    ref: review-worked-example
+  - q: 'Why move a step like an email out of the request and into a queue?'
+    a: 'If the email is slow or fails, the main job isn''t held up, and the queue retries by itself.'
+    more: |
+      Separating a step that is not a condition of the main job is a typical result of a design review. When you dispatch a message in Symfony Messenger, a worker does the job later and the user doesn't wait.
+    ref: review-worked-example
+  - q: 'What does a good review comment contain?'
+    a: 'A question, a risk and a suggestion, all three, aimed at the design and not the person.'
+    more: |
+      Saying "this is wrong" puts the author on the defensive. A question like "what happens if it is pressed twice?" lets them see the gap themselves. Adding the risk and a suggestion steers the talk toward a solution.
+    ref: review-worked-example
+  - q: 'What is a pre-mortem?'
+    a: 'Assuming before the project starts that it has already failed, then working out together why.'
+    more: |
+      A post-mortem happens after the death; a pre-mortem happens before. Treating failure as having happened lets people voice their fears openly. At the end, each big risk gets one owner and one remedy.
+    ref: pre-mortem
+
+quiz:
+  - q: 'The design says: "When the user presses Pay, the Payment API is called." Which question is the most useful in review?'
+    hint: 'What do people do when the network is slow?'
+    options:
+      - text: 'If Pay is pressed twice or the request is retried, what reaches the Payment API?'
+        correct: true
+        why: 'This is the "what if it arrives twice?" question, and it is where the need for an Idempotency-Key comes from.'
+      - text: 'What colour should the button be?'
+        correct: false
+        why: 'That can be changed in one afternoon; it doesn''t deserve the review''s precious time.'
+      - text: 'Which PHP version will this run on?'
+        correct: false
+        why: 'Useful to know, but it isn''t a question that uncovers failure paths.'
+      - text: 'Who wrote this design, and are they experienced?'
+        correct: false
+        why: 'Judge the design, not the author. Experienced people have gaps too.'
+    ref: unstated-assumptions
+  - q: 'Which problems in the code below should a design review catch?'
+    lang: php
+    code: |
+      $this->http->request('POST', 'https://sms.example/send', [
+          'json' => ['to' => $order->phone(), 'text' => 'Order confirmed'],
+      ])->toArray();
+
+      $order->markConfirmed();
+      $this->em->flush();
+    hint: 'What if the SMS is slow, fails, or the request runs again?'
+    options:
+      - text: 'There is no timeout, so a slow SMS server will hang the request'
+        correct: true
+        why: 'With no wait limit, a dependency''s slowness becomes our own slowness directly.'
+      - text: 'If the SMS fails the order is never confirmed, yet the SMS is not a condition of the main job'
+        correct: true
+        why: 'If `toArray()` throws, we never reach markConfirmed. The SMS should go through a queue.'
+      - text: 'If the request runs again the customer gets two SMS messages, and there is no key'
+        correct: true
+        why: 'A retry or a double click can send the same SMS twice; nothing provides idempotency.'
+      - text: 'flush() is called at the end and should have been called earlier'
+        correct: false
+        why: 'Ordering is a fair question, but the position of flush() isn''t the main gap in this code.'
+    ref: review-worked-example
+  - q: 'Everyone on the team likes the design and nobody objects, but the project feels risky. What should you do?'
+    hint: 'No objections doesn''t mean it is safe.'
+    options:
+      - text: 'Run a pre-mortem: assume the project has failed and have everyone write the reasons alone'
+        correct: true
+        why: 'Treating failure as having happened gives even quiet members the nerve to write down the risks.'
+      - text: 'Call an even bigger review meeting and walk everyone through the design again'
+        correct: false
+        why: 'You''d get the same happy-path discussion again, with no safe way to raise the risks.'
+      - text: 'Treat no objections as approval and move ahead'
+        correct: false
+        why: 'Silence is often pressure or optimism, not proof that the design is flawless.'
+      - text: 'Treat the most senior person''s opinion as final'
+        correct: false
+        why: 'That just swaps the problem: one person''s view is final and there is still no list of risks.'
+    ref: pre-mortem
+  - q: 'Which of these are good design review comments?'
+    hint: 'A question, a risk, a suggestion, and never aimed at the person.'
+    options:
+      - text: '"If the payment times out, how will we know whether the money was taken? We could add a status check or a webhook."'
+        correct: true
+        why: 'It has a specific question, a risk and a suggestion, all three.'
+      - text: '"This design is bad, rewrite it."'
+        correct: false
+        why: 'There is no reason and no path forward. The author gets defensive instead of learning.'
+      - text: '"If sending the email fails, the order fails too. What about moving it to a queue?"'
+        correct: true
+        why: 'The risk is clear, and the fix is offered as a question.'
+      - text: '"You''re new here; why didn''t you think of this?"'
+        correct: false
+        why: 'This attacks the person, not the design, and it shuts the discussion down.'
+    ref: review-worked-example
+  - q: 'A design has the step: "save the order, then notify the inventory service". If the inventory service is 10 seconds slow, what is the biggest risk?'
+    hint: 'With no wait limit, where do the waiting threads pile up?'
+    options:
+      - text: 'Waiting requests pile up and our own server becomes slow or unresponsive too'
+        correct: true
+        why: 'A slow dependency holds our workers or threads, so the slowness spreads. A short timeout and a queue are the remedy.'
+      - text: 'The inventory service will speed up on its own'
+        correct: false
+        why: 'Slowness doesn''t fix itself; our own design needs a way to cope with it.'
+      - text: 'The order data won''t be saved to the database'
+        correct: false
+        why: 'The save already happened; the problem is the wait after it.'
+      - text: 'No risk, 10 seconds is a small amount of time'
+        correct: false
+        why: 'At peak time, with many requests arriving every second, hundreds of requests get stuck in 10 seconds.'
+    ref: four-questions

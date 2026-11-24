@@ -1,0 +1,399 @@
+slides:
+  - slug: three-prices
+    title: 'The same phone, three prices'
+    kind: story
+    tldr: 'If the discount or price calculation lives in the client''s code, every client gives a different answer, and users can change that calculation themselves before sending it.'
+    keywords: ['business logic', 'thin client', 'duplicated logic', 'price calculation', 'client trust', 'business rules']
+    blocks:
+      - type: text
+        body: |
+          A phone costs 10,000 taka, with a 10% discount running. On Rahim's website the discount calculation is in JavaScript, in the iOS app it is in separate code (by mistake it says 12%), and on the partner's site the calculation doesn't exist at all. In one month support got: "I saw 9,000 on the website, why is checkout 10,000?" On top of that, one buyer opened DevTools, changed `total` to 1 taka and sent it, and the server accepted it.
+      - type: visual
+        kind: table
+        caption: 'The price four clients show for the same cart'
+        headers: ['Client', 'Price shown', 'Reason']
+        rows:
+          - cells: ['Web (Vue)', '9,000 taka', '10% discount in JavaScript']
+            tip: 'This calculation is correct, but it exists only in the web code. Nobody else knows about it.'
+          - cells: ['iOS app', '8,800 taka', '12% discount by mistake']
+            tip: 'A different developer, a different language, a different mistake. A fix takes days to get through the App Store.'
+          - cells: ['Android app', '9,000 taka', '10% in separate code']
+            tip: 'It matches this time, but if the discount becomes 12% it must be changed in three places again, and one will be missed.'
+          - cells: ['Partner''s site', '10,000 taka', 'No discount code at all']
+            tip: 'Your rules never reach an outside partner. They only see what the server returns.'
+      - type: quote
+        body: 'A client is code in the user''s hands. Don''t believe what it says. Only what the server decided is true.'
+    aside:
+      - type: story
+        title: 'The one-taka phone'
+        body: |
+          In a small e-commerce site, the checkout API trusted the `price` sent by the client. Someone set the price to 1 taka and ordered dozens of phones. There was no bug in the code, only trust placed in the wrong party.
+      - type: terms
+        items:
+          - {term: 'Business logic', meaning: 'The rules of the business: prices, discounts, who may do what, when something is cancelled.'}
+          - {term: 'Thin client', meaning: 'A client that makes no decisions of its own and only shows the server''s decisions.'}
+    check:
+      q: 'What goes wrong if the discount calculation is written separately for web, iOS and Android?'
+      a: 'The three may show three prices, a rule change has to be made separately in all three, and users can alter the client''s calculation and send it.'
+
+  - slug: server-decides
+    title: 'The client shows, the server decides'
+    kind: concept
+    tldr: 'Business decisions (price, permissions, rules) are written once on the server. The client only shows the result and does small up-front checks for the user''s convenience.'
+    keywords: ['thin client', 'server authority', 'client validation', 'single source of truth', 'who decides']
+    blocks:
+      - type: metaphor
+        icon: shop
+        title: 'One shop, three counters'
+        body: |
+          The shop has three counters but only one ledger, in the owner's room. The boys at the counters read the price from the ledger and announce it, instead of making it up in their heads. Add more counters and the prices still match, because the rules live in one place.
+      - type: visual
+        kind: compare
+        caption: 'Whose job is what'
+        columns:
+          - title: 'Client (Vue, mobile)'
+            tone: default
+            icon: browser
+            tip: 'The screen in front of the user. Its job is to show things quickly and nicely, not to make decisions.'
+            items:
+              - 'Laying out results, language, dates, money formatting'
+              - 'Up-front convenience checks: does the email contain @'
+              - 'Showing or hiding buttons from a flag the server sent'
+          - title: 'Server (Symfony)'
+            tone: accent
+            icon: server
+            tip: 'The place where the real decisions are made. Everyone gets the same answer from here.'
+            items:
+              - 'Calculating price, discount and tax'
+              - 'Who may do what: permissions'
+              - 'The real validation, stock and all business rules'
+      - type: quote
+        body: 'Client checks are for convenience, server checks are for security. Nothing is final unless the server says so.'
+    aside:
+      - type: remember
+        body: 'The client shows, the server decides.'
+      - type: when
+        use:
+          - 'Keep in the client: layout, animation, up-front form checks, cached UI state'
+        avoid:
+          - 'Don''t keep in the client: price, discount, permissions, stock, payment rules'
+      - type: refs
+        items:
+          - {to: 'security/input-validation', label: 'Why validation on the server is mandatory'}
+    check:
+      q: 'The email field already has an up-front check in the client. Why validate again on the server?'
+      a: 'A client check is only a convenience. Anyone calling the API directly or changing the code skips it, so the real check has to be on the server.'
+
+  - slug: server-computes-price
+    title: 'The server builds the price, the client only sends items'
+    kind: howto
+    tldr: 'The client sends only the product id and quantity. The server works out the price, discount and total from its own database and returns them.'
+    keywords: ['price calculation', 'MapRequestPayload', 'trust client', 'total', 'discount', 'pricing']
+    blocks:
+      - type: text
+        body: |
+          In the old code the client sent `total` and `discount`, and the server stored them as they were. Turn that around: the client only says what it wants to buy, and the server calculates using the real prices in the database. The calculation goes back in the response, so the client only displays it.
+      - type: code
+        lang: php
+        file: 'src/Controller/OrderController.php'
+        variant: bad
+        code: |
+          #[Route('/api/orders', methods: ['POST'])]
+          public function create(Request $request, EntityManagerInterface $em): JsonResponse
+          {
+              $data = $request->toArray();
+
+              $order = new Order($this->getUser());
+              $order->setTotal($data['total']);        // trusts the client's calculation
+              $order->setDiscount($data['discount']);  // the discount too, on the client's word
+              $em->persist($order);
+              $em->flush();
+
+              return $this->json(['id' => $order->getId()], 201);
+          }
+        marks:
+          - {line: 7, tip: 'Change total in DevTools and 1 taka goes straight in here. The server verifies nothing.'}
+          - {line: 8, tip: 'The size of the discount is decided by the user too. Anyone can take any discount.'}
+      - type: code
+        lang: php
+        file: 'src/Service/PriceCalculator.php'
+        variant: good
+        code: |
+          final readonly class PriceCalculator
+          {
+              public function __construct(
+                  private ProductRepository $products,
+                  private DiscountPolicy $discounts,
+              ) {
+              }
+
+              /** @param list<CartItem> $items only the product id and quantity */
+              public function quote(array $items): Quote
+              {
+                  $subtotal = 0;
+                  foreach ($items as $item) {
+                      $product = $this->products->find($item->productId)
+                          ?? throw new ProductNotFoundException($item->productId);
+
+                      $subtotal += $product->getPricePaisa() * $item->quantity;
+                  }
+
+                  $discount = $this->discounts->forSubtotal($subtotal);
+
+                  return new Quote($subtotal, $discount, $subtotal - $discount);
+              }
+          }
+        marks:
+          - {line: 14, tip: 'The price comes from the database, not from what the client says. An unknown product throws an exception.'}
+          - {line: 17, tip: 'In paisa (whole numbers). Keep money in floats and fraction errors pile up.'}
+          - {line: 20, tip: 'The discount rule lives in one place, DiscountPolicy. To go from 10% to 12%, touch only this.'}
+    aside:
+      - type: tips
+        items:
+          - 'The controller just takes `#[MapRequestPayload] CreateOrderRequest` and calls PriceCalculator. No calculation in the controller.'
+          - 'Return `subtotal`, `discount` and `total` in the response, so the client doesn''t calculate at all, it only shows.'
+          - 'Always keep money in whole numbers (paisa), never floats.'
+      - type: refs
+        items:
+          - {to: 'ledgers/modeling-money', label: 'Modelling money: why not float'}
+    check:
+      q: 'In a checkout API, what does the client send and what doesn''t it, and who calculates the price?'
+      a: 'The client sends the product id and quantity. It does not send total or discount. The server calculates the price from the real prices in the database and its own rules.'
+
+  - slug: abilities-flag
+    title: 'Who decides whether to show the button'
+    kind: howto
+    tldr: 'The permission rule lives on the server (a Voter). Send `abilities` flags in the response and the client shows or hides buttons from them; the server checks again on the real action.'
+    keywords: ['Voter', 'IsGranted', 'abilities', 'permissions in UI', 'v-if', 'permissions', 'button']
+    blocks:
+      - type: text
+        body: |
+          When should the "Cancel order" button show? If you write `if (order.status === 'placed' && order.owner === me)` in Vue, the rule has now been written a second time, and when you change it in one place the other stays out of date. Better to let the server decide with a Voter, and say in the response "this user can do this".
+      - type: code
+        lang: php
+        file: 'src/Controller/Api/V1/OrderController.php'
+        variant: good
+        code: |
+          #[Route('/api/v1/orders/{id}', methods: ['GET'])]
+          public function show(Order $order): JsonResponse
+          {
+              return $this->json([
+                  'id' => $order->getId(),
+                  'status' => $order->getStatus()->value,
+                  'abilities' => [
+                      'cancel' => $this->isGranted(OrderVoter::CANCEL, $order),
+                  ],
+              ]);
+          }
+
+          #[Route('/api/v1/orders/{id}/cancel', methods: ['POST'])]
+          #[IsGranted(OrderVoter::CANCEL, subject: 'order')]
+          public function cancel(Order $order, OrderCanceller $canceller): JsonResponse
+          {
+              $canceller->cancel($order);
+
+              return $this->json(null, Response::HTTP_NO_CONTENT);
+          }
+        marks:
+          - {line: 7, tip: 'The decision is made by calling the same Voter. The client gets only the result, not the rule.'}
+          - {line: 13, tip: 'The real cancel uses the same Voter too. Whatever the client''s flag says, the server checks again.'}
+      - type: code
+        lang: vue
+        file: 'src/components/CancelButton.vue'
+        variant: good
+        code: |
+          <script setup lang="ts">
+          defineProps<{ order: { id: number; abilities: { cancel: boolean } } }>()
+          const emit = defineEmits<{ cancel: [id: number] }>()
+          </script>
+
+          <template>
+            <button v-if="order.abilities.cancel" @click="emit('cancel', order.id)">
+              Cancel order
+            </button>
+          </template>
+        marks:
+          - {line: 7, tip: 'v-if only looks at the server''s flag. When the rule changes, the client''s code doesn''t have to.'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'Hiding a button with a flag is not security, only good UX. If the real action''s endpoint has no permission check, anyone can call the API directly.'
+          - 'When the permission rule changes, say "cancelling is allowed for 1 hour even after shipping", change the server''s Voter; the client stays untouched.'
+      - type: refs
+        items:
+          - {to: 'security/authorization-models', label: 'Voters and permission models'}
+    check:
+      q: 'Is the permission job done once the button is hidden in Vue? Why, or why not?'
+      a: 'No. Hiding is only UX. Anyone can call the endpoint directly, so the server must check again with #[IsGranted].'
+
+  - slug: bff-briefly
+    title: 'BFF: the shape changes, not the rules'
+    kind: compare
+    tldr: 'A Backend for Frontend joins and trims data to fit each client''s screen. The business rules still stay in the core server, not in the BFF.'
+    keywords: ['BFF', 'backend for frontend', 'aggregation', 'API composition', 'mobile backend']
+    blocks:
+      - type: text
+        body: |
+          The web and mobile screens differ, so the shape of the data they need differs too. You can put a thin server in front of each client, called a BFF. It calls the core services and builds a single response that fits the screen. But it only changes the shape: the decisions about price or permissions stay in the core services.
+      - type: visual
+        kind: flow
+        caption: 'One BFF per client, the same core services underneath'
+        nodes:
+          - {id: web, label: 'Web', sub: 'Vue app', icon: browser, col: 0, row: 0, tip: 'A big screen, showing a lot of information at once.'}
+          - {id: mobile, label: 'Mobile app', sub: 'small screen', icon: mobile, col: 0, row: 2, tip: 'A small screen and a slow network, so it wants less and more concise data.'}
+          - {id: bffweb, label: 'Web BFF', sub: 'shaped for the screen', icon: layers, col: 1.5, row: 0, tip: 'Joins data for the web screen. There are no business rules here.'}
+          - {id: bffmobile, label: 'Mobile BFF', sub: 'small response', icon: layers, col: 1.5, row: 2, tip: 'Trims the same data down for mobile and sends it in fewer round trips.'}
+          - {id: core, label: 'Core service', sub: 'price, permissions, rules', icon: api, tone: accent, col: 3, row: 1, tip: 'All the business decisions are here, in one place. However many BFFs there are, the answer comes from here.'}
+          - {id: db, label: 'Database', sub: 'the real data', icon: db, col: 4, row: 1, tip: 'Only the core service touches the database.'}
+        edges:
+          - {from: web, to: bffweb, label: 'The web calls its own BFF'}
+          - {from: mobile, to: bffmobile, label: 'The mobile app calls its own BFF'}
+          - {from: bffweb, to: core, label: 'The BFF fetches data from the core service'}
+          - {from: bffmobile, to: core, label: 'The mobile BFF takes from the same service'}
+          - {from: core, to: db, label: 'The core service reads from the database'}
+      - type: points
+        title: 'What belongs in a BFF, and what doesn''t'
+        style: check
+        items:
+          - 'Belongs: calling several services and building one response, trimming and arranging data'
+          - 'Belongs: client-specific shape and language-related formatting'
+          - 'Doesn''t belong: price, discount, permissions, cancellation rules'
+    aside:
+      - type: when
+        use:
+          - 'Web and mobile screens really differ, and different teams build them'
+        avoid:
+          - 'When there is only one client. You''d be running an extra server for nothing'
+          - 'When you put business rules in the BFF. The rules get duplicated in two places again'
+      - type: refs
+        items:
+          - {to: 'api/api-styles', label: 'GraphQL solves a similar problem too'}
+    check:
+      q: 'What goes wrong if you keep the discount calculation in a BFF?'
+      a: 'Every BFF ends up with its own copy of the calculation, and the "three prices in three places" problem comes right back. The rules should stay in the core service.'
+
+flashcards:
+  - q: 'What does thin client mean?'
+    a: 'A client that makes no business decisions itself; it only shows what the server gives it and sends the user''s input.'
+    more: |
+      Rules like price, discount, permissions and stock are written once on the server. Web, mobile and partners all get the same answer. The client's job is to display things and be convenient.
+    ref: server-decides
+  - q: 'What are the three problems with keeping business rules in the client?'
+    a: 'A separate (possibly wrong) copy in each client, a release everywhere to change a rule, and users can alter the calculation themselves.'
+    more: |
+      A mobile app can be stuck in app store review, and old versions run for months. A partner's site doesn't have your rules at all. And browser DevTools can change any value being sent.
+    ref: three-prices
+  - q: 'Why can''t you trust the `total` the client sends?'
+    a: 'A user can change any value using DevTools or by calling the API directly. The price has to come from the server''s own calculation.'
+    more: |
+      The right design: the client sends only the product id and quantity. The server takes the real prices from the database, works out the subtotal, discount and total, and returns them. The client just displays them.
+    ref: server-computes-price
+  - q: 'Which checks are fine in the client, and which aren''t?'
+    a: 'Fine: up-front checks for the user''s convenience (does the email contain @). Wrong: having the client as the only check.'
+    more: |
+      Client checks give quick feedback, but can be skipped at any time. The real validation and rules are always on the server. Having both is good, having only the client is dangerous.
+    ref: server-decides
+  - q: 'How does the client know which button to show if the rules are on the server?'
+    a: 'The response carries `abilities`-style flags, such as `cancel: true`. The client shows or hides the button from them.'
+    more: |
+      The server runs the Voter and reports the result, and the client never learns the rule. Even so, the real action's endpoint must check again with #[IsGranted], because hiding a button is not security.
+    ref: abilities-flag
+  - q: 'What is a BFF (Backend for Frontend)?'
+    a: 'Backend for Frontend: a thin server per client that joins and trims the core services'' data to fit that client''s screen.'
+    more: |
+      Its job is to merge, say, three API calls into one response for mobile. But price and permission rules don't go here, they stay in the core service. Otherwise the rules get duplicated across the BFFs.
+    ref: bff-briefly
+  - q: 'When is a BFF not needed?'
+    a: 'When there is only one client, or web and mobile need almost the same thing. Then the extra server is just a burden.'
+    more: |
+      A BFF brings the cost of running and deploying an extra service. You only get the benefit when the screens really differ and different teams build them. GraphQL solves a similar problem too.
+    ref: bff-briefly
+
+quiz:
+  - q: 'What is the biggest problem in the code below?'
+    lang: php
+    code: |
+      $data = $request->toArray();
+
+      $order = new Order($this->getUser());
+      $order->setTotal($data['total']);
+      $order->setDiscount($data['discount']);
+    hint: 'What happens if someone opens the browser''s DevTools and changes `total`?'
+    options:
+      - text: 'The total and discount sent by the client are trusted directly, so anyone can set whatever price they like'
+        correct: true
+        why: 'Price and discount should be the server''s calculation. The client should send only the product id and quantity.'
+      - text: 'toArray() is slow, json_decode() is faster'
+        correct: false
+        why: 'The speed difference is negligible. The big problems are security and where the rules live.'
+      - text: 'Passing the user to the Order constructor is wrong'
+        correct: false
+        why: 'Attaching the order''s owner is correct. The problem is total and discount.'
+      - text: 'setDiscount() should be called before setTotal()'
+        correct: false
+        why: 'Changing the order fixes nothing, the main problem is the source.'
+    ref: server-computes-price
+  - q: 'Which of these jobs can safely stay in the client?'
+    hint: 'Which is only display and convenience, and which is a business decision?'
+    options:
+      - text: 'Formatting money and dates for display'
+        correct: true
+        why: 'This is only presentation. A wrong format looks bad, but doesn''t harm the business.'
+      - text: 'An up-front check on the email field, so the user catches mistakes quickly'
+        correct: true
+        why: 'Fine for convenience, but the real validation must still exist on the server.'
+      - text: 'Calculating how much a coupon code takes off'
+        correct: false
+        why: 'The discount is a business rule. In the client it gets duplicated and can be altered.'
+      - text: 'The final decision on whether the user may cancel the order'
+        correct: false
+        why: 'Permission is the server''s decision. The client only shows a button from the server''s flag.'
+    ref: server-decides
+  - q: 'A Vue app shows the cancel button with `v-if="order.status === ''placed'' && order.ownerId === me.id"`. Rahim says, "The server has the rule too, so there is no problem." What is the best answer?'
+    hint: 'In how many places is the rule written?'
+    options:
+      - text: 'That''s fine, because having the rule in two places makes it safer'
+        correct: false
+        why: 'When the rule changes, the two places will drift apart. Security comes from the server''s check, not from a duplicate rule.'
+      - text: 'Keep the rule in the server''s Voter and send an `abilities.cancel` flag in the response; Vue just looks at the flag'
+        correct: true
+        why: 'The rule is written once, and when it changes the client stays the same. The server runs the Voter again on the real action too.'
+      - text: 'The client''s rule is fine, throw away the server''s Voter'
+        correct: false
+        why: 'Without a check on the server, anyone can call the API directly and cancel.'
+      - text: 'Always show the button, and the server will say "no" on click'
+        correct: false
+        why: 'It is safe, but shows the user a pointless failure. With a flag the UX stays good too.'
+    ref: abilities-flag
+  - q: 'After building separate BFFs for mobile and web, someone proposes: "Let''s put the discount calculation in the mobile BFF, so the core service stays small." What do you say?'
+    hint: 'What happens if the web BFF doesn''t have the discount calculation?'
+    options:
+      - text: 'Right, the BFF is just for mobile anyway'
+        correct: false
+        why: 'If the rule is in the mobile BFF, you will have to write it separately in the web BFF, and prices won''t match again.'
+      - text: 'No. The rules stay in the core service; the BFF only changes the shape'
+        correct: true
+        why: 'When business rules are in one place, every client and every BFF gets the same answer.'
+      - text: 'Drop the BFF and let mobile go straight to the database'
+        correct: false
+        why: 'Going straight to the database is dangerous for both security and rules.'
+      - text: 'Copying the discount calculation into both BFFs is fine, just be careful'
+        correct: false
+        why: 'Copied code drifts apart when it changes, and being careful can''t prevent that.'
+    ref: bff-briefly
+  - q: 'A partner calls your API directly and uses neither your Vue app nor your mobile app. What would happen to them if the business rules lived in the client?'
+    hint: 'Does your client code ever reach the partner?'
+    options:
+      - text: 'Nothing, because the partner would write their own rules'
+        correct: false
+        why: 'Then you have separate rules again, and prices wouldn''t match. That is exactly the problem.'
+      - text: 'The rules would never reach them, so they would get the wrong price or permissions'
+        correct: true
+        why: 'The client''s code only runs in your apps. With the rules on the server, the partner gets the same answer.'
+      - text: 'The partner would automatically run the Vue app''s code'
+        correct: false
+        why: 'A partner only calls the API over HTTP and runs no client code.'
+      - text: 'A rate limit would solve it'
+        correct: false
+        why: 'A rate limit is for a different problem (load). It doesn''t fill the gap of missing rules.'
+    ref: three-prices

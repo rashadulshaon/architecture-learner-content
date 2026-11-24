@@ -1,0 +1,443 @@
+slides:
+  - slug: something-went-wrong
+    title: '"Something went wrong"'
+    kind: story
+    tldr: 'If every error is a meaningless message, or hidden inside a 200 OK, the client can do nothing: not fix it, not retry, not even stop.'
+    keywords: ['error response', 'status code', '200 with error', 'error message', 'wrong message', 'API error']
+    blocks:
+      - type: text
+        body: |
+          When Rahim's API gets a bad email, it returns `200 OK` with `{"success": false, "msg": "error"}`, and when the server breaks it returns a `500` with a long stack trace. The Vue app shows "Something went wrong" in every case. The user can't tell whether to fix the email or just wait. Worse, the app sometimes resends the bad email three times, as if sending it again would make the email valid.
+      - type: visual
+        kind: compare
+        caption: 'Two kinds of answer to the same bad email'
+        columns:
+          - title: 'Rahim''s useless error'
+            tone: bad
+            icon: cross
+            tip: 'Neither a machine nor a person can do anything with this answer.'
+            items:
+              - 'Status 200, yet the job wasn''t done'
+              - 'Message: "error" (what is wrong, which field?)'
+              - 'A stack trace leaks when the server breaks'
+              - 'The client can''t tell whether to retry'
+          - title: 'A useful error'
+            tone: good
+            icon: check
+            tip: 'Status, reason and code together tell the client what to do next.'
+            items:
+              - 'Status 422: the input is wrong'
+              - 'Which field and why: email_invalid'
+              - 'Server internals stay inside'
+              - 'The client knows: resending won''t help'
+      - type: quote
+        body: 'An error is the API telling the user and the client: what is wrong, whose fault it is, and what to do now.'
+    aside:
+      - type: story
+        title: 'Failure inside a 200 OK'
+        body: |
+          A banking app returned 200 even for failed transactions, with "failed" written inside. Monitoring counted only 5xx, so the dashboard stayed green while users' money was stuck. When a status code lies, every tool (cache, monitoring, retry) goes the wrong way.
+      - type: terms
+        items:
+          - {term: 'Status code', meaning: 'The three-digit number in a response that says how the job went: 2xx success, 4xx the client''s mistake, 5xx the server''s mistake.'}
+    check:
+      q: 'If a failed job returns 200 OK with success: false in the body, which tools go the wrong way?'
+      a: 'Monitoring, caching and retry policy, because they all go by the status code. Seeing 200, they assume everything is fine.'
+
+  - slug: status-families
+    title: 'Status codes, like a courier''s return slip'
+    kind: concept
+    tldr: '2xx is success, 4xx is your (the client''s) mistake, 5xx is our (the server''s) mistake. Each code says whose fault it is, and whether sending again can help.'
+    keywords: ['400', '401', '403', '404', '409', '422', '429', '500', 'status code family', 'status codes']
+    blocks:
+      - type: metaphor
+        icon: truck
+        title: 'A courier''s return slip'
+        body: |
+          When a courier returns a parcel, the slip gives the reason. "Wrong address" means sending it again is pointless until you fix the address. "Nobody home" means trying again may work. "Problem at our warehouse" means the fault is the courier's, so try again a bit later.
+      - type: visual
+        kind: table
+        caption: 'The most useful status codes and what they mean'
+        headers: ['Code', 'Meaning', 'Whose fault']
+        rows:
+          - cells: ['400 / 422', 'The input is wrong or incomplete', 'The client''s']
+            tip: '400: the request could not be understood at all (broken JSON). 422: it was understood, but the values are not acceptable (a bad email). Sending again without fixing it is pointless.'
+          - cells: ['401', 'I don''t know who you are (not logged in)', 'The client''s']
+            tip: 'No token, or the token has expired. You can try once after renewing the token.'
+          - cells: ['403', 'I know who you are, but you have no permission', 'The client''s']
+            tip: 'You are logged in, but this action isn''t for you. Sending again changes nothing.'
+          - cells: ['404', 'There is no such thing', 'The client''s']
+            tip: 'A wrong URL or something that was deleted. For security reasons a 404 is often used in place of a 403 too.'
+          - cells: ['409', 'Conflicts with the current state', 'The situation''s']
+            tip: 'For example the stock ran out, or someone else changed it first. The client has to look at the new state and decide.'
+          - cells: ['429', 'Too many requests', 'The client''s']
+            tip: 'The rate limit was exceeded. Look at the Retry-After header and try again a little later.'
+          - cells: ['500 / 502 / 503 / 504', 'A problem with the server or a machine in front of it', 'Ours']
+            tip: 'There is nothing for the client to do. 502/503/504 are usually temporary, so retrying is fine.'
+      - type: quote
+        body: 'A server mistake is 5xx, a client mistake is 4xx. The status itself says whose fault it is.'
+    aside:
+      - type: remember
+        body: '4xx: "you change something", 5xx: "we are fixing it".'
+      - type: pitfalls
+        items:
+          - 'Mixing up 404 and 403: answering 404 for someone else''s order hides that it exists, while 403 leaks the fact that the order is there.'
+          - 'A 400 for every mistake, or a 500 for every mistake: the client then can''t tell what kind of mistake it was.'
+      - type: refs
+        items:
+          - {to: 'api/request-path', label: 'Which hop 502, 503 and 504 come from'}
+    check:
+      q: 'A user is logged in but tries to open someone else''s order. 401 or 403, and why?'
+      a: '403. The server knows who they are (so not 401), but they have no permission for this action. Many APIs also return 404 to hide that the order exists.'
+
+  - slug: problem-json
+    title: 'One error shape everybody knows: problem+json'
+    kind: howto
+    tldr: 'Return every error in one mould, the application/problem+json shape from RFC 9457: type, title, status, detail, plus your own machine-readable code.'
+    keywords: ['problem+json', 'RFC 9457', 'RFC 7807', 'exception listener', 'error code', 'machine-readable error']
+    blocks:
+      - type: text
+        body: |
+          This time Rahim decided that every error would go out in the same mould. There is a standard shape for it: **problem+json**. Alongside `status`, `title` and `detail` it carries a `code`, which the client's code reads. People read `detail` (the message can change), and code reads `code` (it never changes).
+      - type: visual
+        kind: flow
+        caption: 'The path from an exception to problem+json'
+        nodes:
+          - {id: ctrl, label: 'Controller', sub: 'throws an exception', icon: code, col: 0, row: 1, tip: 'When a business rule is broken it throws its own exception, such as InsufficientStockException. It doesn''t think about HTTP here.'}
+          - {id: listener, label: 'ExceptionListener', sub: 'maps in one place', icon: gear, tone: accent, col: 2, row: 1, tip: 'It catches every exception in one place and decides the status and code. Otherwise each controller invents its own errors.'}
+          - {id: client, label: 'Vue app', sub: 'reads the code and decides', icon: browser, col: 4, row: 1, tip: 'It decides from the code, not the message, which screen or which correction to show.'}
+        edges:
+          - {from: ctrl, to: listener, label: 'The exception reaches the listener'}
+          - {from: listener, to: client, label: '409 + application/problem+json', tone: good, tip: 'The status gives the kind, and the code in the body gives the exact reason.'}
+      - type: code
+        lang: php
+        file: 'src/EventListener/ApiProblemListener.php'
+        variant: good
+        code: |
+          #[AsEventListener]
+          final class ApiProblemListener
+          {
+              public function __invoke(ExceptionEvent $event): void
+              {
+                  if (!str_starts_with($event->getRequest()->getPathInfo(), '/api/')) {
+                      return;
+                  }
+                  $e = $event->getThrowable();
+                  $violations = $e->getPrevious() instanceof ValidationFailedException
+                      ? $e->getPrevious()->getViolations() : null;
+
+                  [$status, $code] = match (true) {
+                      $e instanceof InsufficientStockException => [409, 'stock_insufficient'],
+                      null !== $violations => [422, 'validation_failed'],
+                      $e instanceof HttpExceptionInterface => [$e->getStatusCode(), 'http_error'],
+                      default => [500, 'internal_error'],
+                  };
+
+                  $body = [
+                      'type' => 'https://shop.example/problems/'.$code,
+                      'title' => Response::$statusTexts[$status],
+                      'status' => $status,
+                      'code' => $code,
+                      'detail' => $status < 500 ? $e->getMessage() : 'Something went wrong on the server',
+                  ];
+                  if (null !== $violations) {
+                      $body['errors'] = $this->errors($violations);
+                  }
+
+                  $event->setResponse(new JsonResponse($body, $status, [
+                      'Content-Type' => 'application/problem+json',
+                  ]));
+              }
+          }
+        marks:
+          - {line: 10, tip: 'When #[MapRequestPayload] validation fails, Symfony throws an HttpException whose previous is a ValidationFailedException.'}
+          - {line: 14, tip: 'This picks the status and a fixed code from our own exception. This is what the client reads.'}
+          - {line: 25, tip: 'For a 5xx the real message is not given to the client. A leaked stack trace or SQL helps an attacker.'}
+      - type: code
+        lang: json
+        file: 'response: 409 Conflict'
+        code: |
+          {
+            "type": "https://shop.example/problems/stock_insufficient",
+            "title": "Conflict",
+            "status": 409,
+            "code": "stock_insufficient",
+            "detail": "Only 2 in stock, 5 requested"
+          }
+        marks:
+          - {line: 5, tip: 'The client decides from this code. Even if the detail''s language or wording changes, the code stays the same.'}
+    aside:
+      - type: tips
+        items:
+          - 'Keep error codes short, English, snake_case and permanent: stock_insufficient. They are part of the API contract, and once given they can''t be changed.'
+          - 'Put a request id in every error response, so a user''s complaint can be matched to your log.'
+      - type: refs
+        items:
+          - {to: 'api/contracts-versioning', label: 'Error codes are part of the contract too'}
+    check:
+      q: 'Why should client code decide by the `code` field and not the `detail` message?'
+      a: 'detail is for people, and its language or wording can change. code is fixed and part of the contract, so client code can depend on it.'
+
+  - slug: validation-errors
+    title: 'Validation errors: what is wrong in which field'
+    kind: howto
+    tldr: 'Return all the mistakes in a form at once, each with its field, a machine-readable code and a message, so the client can show the right error beside each input.'
+    keywords: ['validation error', '422', 'MapRequestPayload', 'Validator', 'violations', 'field error', 'form errors']
+    blocks:
+      - type: text
+        body: |
+          On a registration form the email is wrong and the password is too short. If you return only the first mistake, the user fixes it, sends again and gets stuck on the second. So put all the mistakes together in an `errors` list, each with its `field` and a fixed `code`.
+      - type: code
+        lang: php
+        file: 'src/Dto/RegisterRequest.php'
+        variant: good
+        code: |
+          final readonly class RegisterRequest
+          {
+              public function __construct(
+                  #[Assert\NotBlank(message: 'Email is required', payload: ['code' => 'email_required'])]
+                  #[Assert\Email(message: 'Email is invalid', payload: ['code' => 'email_invalid'])]
+                  public string $email = '',
+
+                  #[Assert\Length(
+                      min: 8,
+                      minMessage: 'Use at least 8 characters',
+                      payload: ['code' => 'password_too_short'],
+                  )]
+                  public string $password = '',
+              ) {
+              }
+          }
+        marks:
+          - {line: 4, tip: 'The fixed code goes in the payload. The message can change when the language changes, the code can''t.'}
+          - {line: 6, tip: 'There is a default value, so even if the field doesn''t arrive at all, you get a validation error, not a PHP type error.'}
+      - type: code
+        lang: php
+        file: 'src/EventListener/ApiProblemListener.php'
+        variant: good
+        code: |
+          private function errors(ConstraintViolationListInterface $violations): array
+          {
+              $errors = [];
+              foreach ($violations as $v) {
+                  $constraint = $v instanceof ConstraintViolation ? $v->getConstraint() : null;
+
+                  $errors[] = [
+                      'field' => $v->getPropertyPath(),
+                      'code' => $constraint?->payload['code'] ?? 'invalid',
+                      'message' => (string) $v->getMessage(),
+                  ];
+              }
+
+              return $errors;
+          }
+        marks:
+          - {line: 8, tip: 'The name of the field with the mistake. The client uses it to put the message beside the right input.'}
+          - {line: 9, tip: 'The fixed code from the DTO''s payload, or a generic invalid if there is none.'}
+      - type: visual
+        kind: table
+        caption: 'The errors list of a 422 for a bad email and a short password'
+        headers: ['field', 'code', 'message']
+        rows:
+          - cells: ['email', 'email_invalid', 'Email is invalid']
+            tip: 'The client sees this code, shows a red message under the email input and focuses it.'
+          - cells: ['password', 'password_too_short', 'Use at least 8 characters']
+            tip: 'The second mistake is in the same response, so the user doesn''t have to keep coming back.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Don''t leak extra information in a message like "wrong password" or "email not registered": it lets an attacker work out which emails exist.'
+          - 'Even with validation in the client, validation on the server is mandatory. Client validation is only a convenience for the user.'
+      - type: refs
+        items:
+          - {to: 'security/input-validation', label: 'The real reason for input validation'}
+    check:
+      q: 'Why is it better to return all the mistakes in the `errors` list instead of just the first one?'
+      a: 'The user can see and fix all the mistakes in one go. Otherwise they fix one, resend, and repeat, which is annoying.'
+
+  - slug: blind-retry
+    title: 'Blind retry: charged twice'
+    kind: pitfall
+    tldr: 'Retry only errors that are temporary, and only work that does no harm if done twice. GET, PUT and DELETE are safe; POST isn''t, unless there is an idempotency key.'
+    keywords: ['retry', 'idempotent', 'idempotency key', 'retryable error', '503', 'POST retry', 'try again']
+    blocks:
+      - type: text
+        body: |
+          A call to the payment endpoint `POST /payments` times out. The app decides it "failed", sends it again, and the user's money is charged twice. A timeout doesn't mean the job wasn't done, it means no answer arrived. If the job is **idempotent** (doing it again and again gives the same result), sending again is safe, otherwise not.
+      - type: visual
+        kind: table
+        caption: 'Which events deserve a retry'
+        headers: ['Event', 'Retry?', 'Why']
+        rows:
+          - cells: ['Network error or timeout', 'Only if idempotent', 'Unknown whether the job was done']
+            tip: 'No answer doesn''t mean it wasn''t done. Safe for GET, PUT and DELETE. For POST, not without an idempotency key.'
+          - cells: ['429 Too Many Requests', 'Yes, obeying Retry-After', 'Temporary load']
+            tip: 'The server itself says how long to hold off. Sending before that only makes the wait longer.'
+          - cells: ['502 / 503 / 504', 'Yes, with backoff', 'Temporary problem']
+            tip: 'With a 504 the job may already have been done, so this retry too is safe only for idempotent work.'
+          - cells: ['500', 'Carefully, not too many times', 'A bug gives the same result']
+            tip: 'If there is a bug in the code, the same request fails the same way every time. Try once at most.'
+          - cells: ['400 / 422', 'No', 'The input is wrong']
+            tip: 'Sending again without fixing the input gets the same answer. It only adds load on the server.'
+          - cells: ['401 / 403 / 404', 'No', 'A permission or existence problem']
+            tip: 'With a 401 you can try once after renewing the token, but sending again doesn''t change the others.'
+      - type: code
+        lang: ts
+        file: 'src/api/retry.ts'
+        variant: good
+        code: |
+          const IDEMPOTENT = ['GET', 'HEAD', 'PUT', 'DELETE', 'OPTIONS']
+          const TRANSIENT = [408, 429, 502, 503, 504]
+
+          export function canRetry(
+            method: string,
+            status: number | null, // null = no response arrived
+            hasIdempotencyKey: boolean,
+          ): boolean {
+            const safeToRepeat = IDEMPOTENT.includes(method) || hasIdempotencyKey
+            if (!safeToRepeat) return false // POST: it might end up done twice
+
+            if (status === null) return true
+            return TRANSIENT.includes(status)
+          }
+        marks:
+          - {line: 9, tip: 'First decide whether doing the job twice does harm. If it does, there is no need to look at anything else.'}
+          - {line: 12, tip: 'Retry only when no response arrived (network, timeout) or the status is temporary. Never for 400 or 422.'}
+      - type: quote
+        body: 'Retry only on temporary errors, and only for work that does no harm if done twice.'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Idempotent', meaning: 'Repeating the same request gives the same result as doing it once. For example DELETE /orders/5.'}
+          - {term: 'Idempotency key', meaning: 'A unique mark made by the client, which lets the server avoid doing the same job twice.'}
+      - type: refs
+        items:
+          - {to: 'payments/idempotency-keys', label: 'Making POST safe with an idempotency key'}
+          - {to: 'api/rate-limiting', label: 'Backoff and jitter'}
+    check:
+      q: 'What is the risk if the app simply resends after a timeout on POST /payments, and how do you make it safe?'
+      a: 'A timeout doesn''t mean the job wasn''t done, only that no answer arrived, so the money may be charged twice. With an idempotency key the server won''t do the same job a second time.'
+
+flashcards:
+  - q: 'Why is it wrong to return 200 OK with "success: false" in the body for a failed job?'
+    a: 'If the status code lies, monitoring, caching and retry tools all make the wrong decision.'
+    more: |
+      Monitoring usually counts 5xx, so a failure hidden in a 200 shows green on the dashboard. A cache may keep the 200, and the client's ordinary error handling never runs. For a failure, return a real 4xx or 5xx.
+    ref: something-went-wrong
+  - q: 'What is the main difference between 4xx and 5xx?'
+    a: '4xx means the client''s mistake (it has to fix the request and resend). 5xx means the server''s mistake (nothing for the client to do).'
+    more: |
+      Like the courier: with "wrong address" it is no use unless you fix it (4xx), and with "problem at our warehouse" the fault is the courier's (5xx). This split tells you whether a retry can help. With a 4xx, sending again is usually pointless.
+    ref: status-families
+  - q: 'What is the difference between 401 and 403?'
+    a: '401: I don''t know who you are (not logged in or a bad token). 403: I know who you are, but you have no permission for this.'
+    more: |
+      With a 401, a new token or logging in may fix it. With a 403, sending again changes nothing, you need permission. When someone tries to open another person's data, many APIs return 404 to hide that it exists.
+    ref: status-families
+  - q: 'What is the difference between 422 and 409?'
+    a: '422: the input itself isn''t acceptable (a bad email). 409: the input is fine, but it conflicts with the current state (out of stock).'
+    more: |
+      With a 422, fix it and resend and the job works. With a 409 the client has to look at the new state and decide: ask for fewer, or wait. In both, the body should carry a fixed code.
+    ref: status-families
+  - q: 'What is problem+json?'
+    a: 'A standard JSON shape for describing errors (RFC 9457) with type, title, status and detail; you can add your own code too.'
+    more: |
+      The Content-Type is `application/problem+json`. If every error goes out in one mould, the client can handle all of them with the same code. Add your own fixed `code`, and the client decides from the code without reading the message.
+    ref: problem-json
+  - q: 'Which errors can be retried?'
+    a: 'Temporary ones: 429 (obeying Retry-After), 502/503/504, network errors and timeouts, and even then only for idempotent work.'
+    more: |
+      400, 401, 403, 404 and 422 are input or permission mistakes, and sending again gets the same answer. With a 500, if there is a bug, it breaks the same way every time. Before a retry, ask: does doing this job twice do harm?
+    ref: blind-retry
+  - q: 'Which HTTP methods are idempotent?'
+    a: 'GET, HEAD, PUT, DELETE and OPTIONS. POST usually isn''t, so you make it safe with an idempotency key.'
+    more: |
+      Idempotent means repeating the same request gives the same result as doing it once. Run DELETE /orders/5 twice and the order is deleted only once. But run POST /payments twice and the money may be charged twice.
+    ref: blind-retry
+
+quiz:
+  - q: 'What is wrong with the response in the code below?'
+    lang: php
+    code: |
+      if (!$user = $users->findByEmail($dto->email)) {
+          return $this->json(['success' => false, 'msg' => 'error'], 200);
+      }
+    hint: 'To monitoring, caching and client code, does this look like a success or a failure?'
+    options:
+      - text: 'It uses 200 for a failure, and the message is meaningless'
+        correct: true
+        why: 'If the status lies, every tool goes the wrong way. It should have been a correct 4xx, with the reason given by a fixed code.'
+      - text: 'Using json() is wrong, it should use Response'
+        correct: false
+        why: 'json() is fine. The problem is the quality of the status and the message.'
+      - text: 'findByEmail is slow'
+        correct: false
+        why: 'Speed isn''t the issue here, the shape of the error response is.'
+      - text: 'There is no problem, because the client will understand from the body'
+        correct: false
+        why: 'Tools don''t read the body, they look at the status. And the client learns nothing from "error" either.'
+    ref: something-went-wrong
+  - q: 'A user is logged in but is trying to open someone else''s order. What is the most correct status?'
+    hint: 'Does the server know who they are?'
+    options:
+      - text: '401 Unauthorized'
+        correct: false
+        why: '401 means the identity is unknown. Here the identity is known and the permission is missing.'
+      - text: '403 Forbidden (or 404, to hide that it exists)'
+        correct: true
+        why: 'The identity is known but there is no permission, hence 403. If you want to keep the order''s existence secret, a 404 is acceptable too.'
+      - text: '500 Internal Server Error'
+        correct: false
+        why: 'This isn''t a server mistake, it is a lack of permission on the client''s side.'
+      - text: '200 OK, with "no permission" in the body'
+        correct: false
+        why: 'If you return 200 for a failure, the tools assume everything is fine.'
+    ref: status-families
+  - q: 'In which of these cases may the client retry automatically?'
+    hint: 'Could sending again change the result? And does doing it twice do harm?'
+    options:
+      - text: 'GET /products returned 503'
+        correct: true
+        why: 'GET is idempotent, and 503 is temporary. Retrying with backoff is safe.'
+      - text: 'POST /register returned 422'
+        correct: false
+        why: '422 means the input is wrong. Sending it again without fixing it gets the same answer.'
+      - text: 'PUT /profile/7 timed out'
+        correct: true
+        why: 'PUT is idempotent. Even if it runs twice, the profile ends up in the same state.'
+      - text: 'POST /payments timed out and there is no idempotency key'
+        correct: false
+        why: 'It is unknown whether the job was done, and if it runs twice the money is charged twice. Retrying without a key is dangerous.'
+    ref: blind-retry
+  - q: 'Rahim''s Vue app wants to show the right message beside the email input when it gets a validation error. What is most useful to have in the response?'
+    hint: 'How will the client know which input has which mistake?'
+    options:
+      - text: 'Just one message: "Form invalid"'
+        correct: false
+        why: 'The client doesn''t know which input is wrong. It can only show a generic message everywhere.'
+      - text: 'An `errors` list: each mistake''s field, fixed code and message'
+        correct: true
+        why: 'The client uses the field to put the message beside the right input, and the code to decide the behaviour.'
+      - text: 'Only the message of the first mistake'
+        correct: false
+        why: 'The user fixes it, resends and gets stuck on the second mistake, going round and round.'
+      - text: 'A stack trace, so the developer can understand'
+        correct: false
+        why: 'A stack trace is no use to the user, and it creates a security risk too.'
+    ref: validation-errors
+  - q: 'Why does the API''s error response carry both `"code": "stock_insufficient"` and `"detail": "Only 2 in stock"`, and not just detail?'
+    hint: 'What happens to the client''s code when the wording of detail changes?'
+    options:
+      - text: 'You could drop detail, the code alone is enough'
+        correct: false
+        why: 'People and debugging need detail. The two have different jobs.'
+      - text: 'detail can change, so client code reads the fixed code. detail is for people'
+        correct: true
+        why: 'If the language or wording changes, code that depends on detail breaks. The code is part of the contract, so it stays fixed.'
+      - text: 'They do the same job, it is only extra safety'
+        correct: false
+        why: 'Safety has nothing to do with it; it is about stability and readability.'
+      - text: 'RFC 9457 says so, and there is no need to know why'
+        correct: false
+        why: 'The RFC gives the mould, and if you understand the reason you will use it properly.'
+    ref: problem-json

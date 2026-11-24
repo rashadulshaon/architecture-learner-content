@@ -1,0 +1,335 @@
+slides:
+  - slug: three-missing-payments
+    title: 'The gateway says 1000, my books say 997'
+    kind: story
+    tldr: 'Your own ledger and the outside statement are two separate truths. If nobody compares them, missing or extra transactions hide for months.'
+    keywords: ['reconciliation', 'statement', 'mismatch', 'gateway report', 'matching books', 'discrepancy']
+    blocks:
+      - type: text
+        body: |
+          At month end the gateway's statement shows 1000 successful payments, but our ledger has 997. There's no error log and no customer complaint. Three people were charged, yet their orders are still "pending". The reason: the gateway took the money and sent its reply, but our server timed out at that exact moment.
+      - type: visual
+        kind: sequence
+        caption: 'The money was taken, but we never found out'
+        actors:
+          - {id: app, label: 'Our app', icon: server, tip: 'Calls the gateway for the customer''s payment. Records "pending" in its own ledger.'}
+          - {id: gw, label: 'Gateway', icon: card, tip: 'Takes the money from the bank. Records the transaction as "paid" in its own statement.'}
+        messages:
+          - {from: app, to: gw, label: 'charge 500 taka, ref: pay_881'}
+          - {from: gw, to: app, label: 'Success (but lost on the way)', dashed: true, tone: bad, tip: 'Our app timed out and never received the reply.'}
+          - {at: app, note: 'Ledger: pay_881 still pending', tone: warn}
+          - {at: gw, note: 'Statement: pay_881 paid, 500 taka', tone: bad, tip: 'The outside truth and our truth are now different.'}
+      - type: quote
+        body: 'Your books and the outside books are two separate truths. Without regular matching, errors quietly pile up.'
+    aside:
+      - type: story
+        title: 'A surprise six months later'
+        body: |
+          A company learned in its annual audit, six months on, that the gateway showed 400,000 taka more than its own records. A retry bug had meant some payments were never written to the ledger. Daily matching would have caught it on day one.
+      - type: problem
+        body: 'Outside systems (banks, gateways) keep their own version of the truth. Unless you regularly check that your books agree with theirs, you won''t know.'
+    check:
+      q: 'There is no error log and nobody complained. How can 3 payments still be out of step?'
+      a: 'The gateway took the money, but we never got the reply, so our ledger stayed "pending". No exception was raised in the code; the two books simply differ.'
+
+  - slug: match-and-break
+    title: 'The matching key and six kinds of break'
+    kind: concept
+    tldr: 'Join every line in the two books with an immutable reference. Anything that doesn''t join, or doesn''t agree on amount, is a break.'
+    keywords: ['matching key', 'break', 'unmatched', 'reference id', 'cutoff', 'timing difference']
+    blocks:
+      - type: metaphor
+        icon: wallet
+        title: 'A bKash agent''s end of day'
+        body: |
+          At night, a bKash agent checks every line of their own notebook against the bKash statement. The key they match on is the transaction ID (TrxID), not the time or the amount, because many transactions share the same amount. Whatever doesn't match gets circled in red ink. That red circle is a **break**.
+      - type: visual
+        kind: table
+        caption: 'Types of break and their likely causes'
+        headers: ['Break type', 'Meaning', 'Likely cause']
+        rows:
+          - cells: ['missing_in_ledger', 'They have it, we don''t', 'timeout, lost webhook']
+            tip: 'The money was taken and we don''t know it. The most dangerous type.'
+          - cells: ['missing_at_provider', 'We have it, they don''t', 'A failed payment marked "success"']
+            tip: 'We assumed the payment went through; the gateway knows nothing about it. Releasing the goods is a loss.'
+          - cells: ['amount_mismatch', 'Amounts differ between sides', 'Fee deducted, rounding, wrong amount']
+            tip: 'The reference matched but the amount didn''t. Often down to a fee or a currency difference.'
+          - cells: ['duplicate', 'Same reference twice', 'retry, double webhook']
+            tip: 'The same transaction was counted twice, usually when idempotency isn''t right.'
+          - cells: ['status_mismatch', 'Status differs (paid/refunded)', 'A refund or chargeback we never saw']
+            tip: 'The amount agrees but the status doesn''t, for example refunded at the gateway but paid in our books.'
+          - cells: ['timing', 'Today here, tomorrow there', 'Cutoff time, T+1 settlement']
+            tip: 'Not a real error, just a difference in which day it falls on. It matches in the next day''s statement.'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Break', meaning: 'A line that doesn''t match between the two books. One break means one investigation to do.'}
+          - {term: 'Matching key', meaning: 'An immutable reference that identifies the same transaction on both sides, such as the gateway''s payment id.'}
+      - type: tips
+        items:
+          - 'Save the gateway reference in your own table at the moment you create the payment. It is hard to find later.'
+          - 'Flag timing breaks separately, so they don''t raise false alarms every day.'
+    check:
+      q: 'Why match on a reference id rather than "compare the amount and the time"?'
+      a: 'Many transactions can share an amount and a time, so matching on those pairs up the wrong ones. A reference id is unique per transaction.'
+
+  - slug: daily-reconcile-job
+    title: 'The daily job: fetch the statement, match, write breaks'
+    kind: howto
+    tldr: 'Load the statement into a table, find breaks with one FULL OUTER JOIN, and run a console command every morning with the Symfony Scheduler.'
+    keywords: ['FULL OUTER JOIN', 'recon_break', 'Symfony Scheduler', 'AsCronTask', 'console command', 'daily job']
+    blocks:
+      - type: text
+        body: |
+          The method has three steps. First, load the provider's statement (file or API) into a `statement_line` table. Second, run a `FULL OUTER JOIN` against `ledger_payment`: whatever fails to match on either side is a break. Third, write the results to `recon_break` with a UNIQUE on `(day, provider, ref)`, so that running the job twice never inserts the same break twice.
+      - type: code
+        lang: sql
+        file: 'The query that finds breaks'
+        variant: good
+        code: |
+          WITH l AS (SELECT ref, amount_minor FROM ledger_payment  WHERE day = :day),
+               s AS (SELECT ref, amount_minor FROM statement_line WHERE day = :day)
+          INSERT INTO recon_break (day, provider, ref, category, our_minor, their_minor)
+          SELECT :day, 'gw', COALESCE(l.ref, s.ref),
+                 CASE WHEN s.ref IS NULL THEN 'missing_at_provider'
+                      WHEN l.ref IS NULL THEN 'missing_in_ledger'
+                      ELSE 'amount_mismatch' END,
+                 l.amount_minor, s.amount_minor
+            FROM l FULL OUTER JOIN s ON s.ref = l.ref
+           WHERE l.ref IS NULL OR s.ref IS NULL
+              OR l.amount_minor <> s.amount_minor
+          ON CONFLICT (day, provider, ref) DO NOTHING;
+        marks:
+          - {line: 4, tip: 'COALESCE takes whichever side has the reference. Either side can be empty.'}
+          - {line: 5, tip: 'If it''s not in the statement it is missing_at_provider; if it''s not in the ledger it is missing_in_ledger.'}
+          - {line: 12, tip: 'On a second run the same break is not inserted again, so the job is safe to re-run.'}
+      - type: code
+        lang: php
+        file: 'src/Command/ReconcileCommand.php'
+        variant: good
+        code: |
+          #[AsCommand(name: 'app:reconcile', description: 'Reconciles the books for one day')]
+          #[AsCronTask('0 3 * * *')]
+          final class ReconcileCommand extends Command
+          {
+              public function __construct(private readonly Reconciler $reconciler)
+              {
+                  parent::__construct();
+              }
+
+              protected function configure(): void
+              {
+                  $this->addArgument('date', InputArgument::OPTIONAL, 'Which day', 'yesterday');
+              }
+
+              protected function execute(InputInterface $in, OutputInterface $out): int
+              {
+                  $day = new \DateTimeImmutable($in->getArgument('date'));
+                  $breaks = $this->reconciler->run($day);   // fetches the statement, runs the query
+                  $out->writeln(sprintf('%s: %d breaks', $day->format('Y-m-d'), $breaks));
+
+                  return Command::SUCCESS;
+              }
+          }
+        marks:
+          - {line: 2, tip: 'The Symfony Scheduler runs this command every day at 3 a.m. To keep it running you need `messenger:consume scheduler_default`.'}
+          - {line: 12, tip: 'Without an argument it means "yesterday". You can also re-run any earlier day by hand.'}
+    aside:
+      - type: commands
+        title: 'Commands to run it'
+        items:
+          - {cmd: 'php bin/console app:reconcile 2026-11-20', desc: 'Re-reconcile a specific day'}
+          - {cmd: 'php bin/console messenger:consume scheduler_default', desc: 'Keep the Scheduler running'}
+      - type: tips
+        items:
+          - 'Send an alert when the break count is above 0. If it stays silent, nobody will look.'
+          - 'For how the statement file gets fetched, see [[ledgers/batch-files|Batch file integration]].'
+    check:
+      q: 'Why is `recon_break` UNIQUE on `(day, provider, ref)`, and why `ON CONFLICT DO NOTHING`?'
+      a: 'If the job runs twice (a retry, or by hand), the same break would be inserted twice. UNIQUE plus DO NOTHING makes the job safe to run again and again.'
+
+  - slug: dont-plug-the-gap
+    title: 'Don''t edit your books to hide a gap'
+    kind: pitfall
+    tldr: 'Updating the ledger to close a break is wrong. Open the break, find the cause, then close it with a correcting entry.'
+    keywords: ['break resolution', 'plug figure', 'corrective entry', 'write-off', 'resolving mismatches', 'correction']
+    blocks:
+      - type: text
+        body: |
+          The easy temptation when you see a gap: "The bank's figure must be right, so I'll just put it in the ledger." The numbers now match, but the reason for the mistake is buried for good. The right way: keep the break open, find the cause, then write a new correcting entry and close the break.
+      - type: code
+        lang: php
+        file: 'Resolving a break'
+        variant: bad
+        code: |
+          // make it match the outside figure
+          $db->executeStatement(
+              'UPDATE ledger_entry SET amount_minor = ? WHERE id = ?',
+              [$break->theirMinor, $entryId],
+          );
+        marks:
+          - {line: 2, tip: 'The old amount is gone. Why it was wrong and who changed it can never be known.'}
+      - type: code
+        lang: php
+        file: 'Resolving a break'
+        variant: good
+        code: |
+          $break->investigate($user, 'the gateway webhook was lost');
+
+          $txId = $ledger->post(
+              memo: "Reconciliation correction: {$break->ref}",
+              postings: $postingsForMissingPayment,
+          );
+
+          $break->resolve($user, correctedBy: $txId);
+        marks:
+          - {line: 1, tip: 'Who, when and why are recorded on the break itself. That is the evidence of the investigation.'}
+          - {line: 3, tip: 'The mistake is fixed in a new transaction; no earlier entry changes.'}
+          - {line: 8, tip: 'The break is linked to the transaction that closed it, so an auditor can go straight there later.'}
+      - type: visual
+        kind: steps
+        caption: 'The life of a break'
+        steps:
+          - {title: '1. Open', body: 'The nightly job writes the break; nobody has looked yet', tip: 'In this state the break counts as outstanding; old open breaks are the real risk.'}
+          - {title: '2. Investigating', body: 'An owner finds the cause and writes it down', tip: 'A break with no owner gets no attention, so naming one is mandatory.'}
+          - {title: '3. Resolved', body: 'A new entry is written and linked to the break', tip: 'The ledger changes only by adding a new entry.'}
+          - {title: '4. Written off', body: 'A small amount, closed with a second person''s approval', tip: 'You can''t chase a tiny amount forever, but the decision is written down and approved.'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'If open breaks pile up, eventually nobody looks at them. Alert on age (for example, older than 3 days).'
+      - type: refs
+        items:
+          - {to: 'recovery/corrective-actions', label: 'Correcting entries and data fixes'}
+          - {to: 'payments/unknown-outcomes', label: 'The "we don''t know" state'}
+    check:
+      q: 'If you run an UPDATE to make the ledger match the statement, what exactly is lost?'
+      a: 'The cause of the gap and its history. The numbers match, but if the same bug happens again there is no way to catch it.'
+
+flashcards:
+  - q: 'What is reconciliation?'
+    a: 'Comparing your own ledger line by line against an outside system''s statement (bank, gateway) and finding the differences.'
+    more: |
+      Both sides keep their own version of the truth. Without matching, lost webhooks, double retries or wrong amounts sit unnoticed for months. So it is a routine daily job, not a once-a-year task.
+    ref: three-missing-payments
+  - q: 'What key is used to match lines between the two books?'
+    a: 'An immutable reference id, such as the gateway''s payment id. Not the amount or the time.'
+    more: |
+      Many people can send the same amount at the same time, so matching on amount and time pairs up the wrong ones. If you store the reference in your own table when you create the payment, matching later is easy.
+    ref: match-and-break
+  - q: 'What is a "break" in reconciliation?'
+    a: 'A line that doesn''t match between the two books: missing on one side, a different amount, or a different status.'
+    more: |
+      Every break has a category, an owner and a status (open, investigating, resolved). That way a gap doesn't get buried; it becomes an item of investigation work.
+    ref: match-and-break
+  - q: 'What do the `missing_in_ledger` and `missing_at_provider` breaks mean?'
+    a: 'The first: it exists outside but not in our ledger (money taken, we don''t know). The second: we have it, they don''t.'
+    more: |
+      The first usually comes from a lost webhook or a timeout. The second is dangerous: we assumed the payment went through, but the gateway knows nothing about it, and if we release the goods the loss is ours.
+    ref: match-and-break
+  - q: 'What is a timing difference, and why is it not a real error?'
+    a: 'The same transaction falls on one day in one book and another day in the other (cutoff or T+1 settlement). It matches in the next day''s statement.'
+    more: |
+      If you don't flag these separately, false alarms go off every day and people learn to ignore alerts. If it still doesn't match the day after, though, it is a real break.
+    ref: match-and-break
+  - q: 'Why should the daily reconciliation job be idempotent?'
+    a: 'The job can be run again and again (a retry or by hand). With UNIQUE (day, provider, ref) and DO NOTHING, the same break is never inserted twice.'
+    more: |
+      You can safely re-run it if the server dies halfway or you want to reconcile an earlier day again. This fits nicely with the Symfony Scheduler's `#[AsCronTask]` and a console command.
+    ref: daily-reconcile-job
+  - q: 'Why is running an UPDATE on the ledger to close a break wrong?'
+    a: 'It erases the history and the cause. The right way: record the cause on the break, write a new correcting entry, then close the break.'
+    more: |
+      Making the numbers match isn't the real goal. The goal is to learn why they differed so it doesn't happen again. If you cover it with an UPDATE, nobody will catch the same bug the next time.
+    ref: dont-plug-the-gap
+
+quiz:
+  - q: 'The gateway statement has pay_881 (500 taka, paid), but our ledger doesn''t. What type of break is this, and what comes first?'
+    hint: 'They have it, we don''t.'
+    options:
+      - text: 'missing_in_ledger; find the cause and write a correcting entry'
+        correct: true
+        why: 'The money was taken and we don''t know it. You find the cause (timeout, lost webhook) and fix it with a new entry.'
+      - text: 'missing_at_provider; refund the customer'
+        correct: false
+        why: 'Here the gateway does have the transaction, so this is not missing_at_provider.'
+      - text: 'timing; just wait and do nothing'
+        correct: false
+        why: 'If it still doesn''t match in the next day''s statement, it is a real break. Waiting needs a limit.'
+      - text: 'duplicate; delete one of them'
+        correct: false
+        why: 'Our ledger has no line for it at all, so a duplicate is out of the question.'
+    ref: match-and-break
+  - q: 'Which of these make good matching keys for reconciliation?'
+    hint: 'Something unique to each transaction that never changes.'
+    options:
+      - text: 'The payment id given by the gateway'
+        correct: true
+        why: 'It is unique per transaction and present on both sides.'
+      - text: 'Our own idempotency key or merchant reference'
+        correct: true
+        why: 'We create it ourselves and the gateway returns it in the statement, so it matches on both sides.'
+      - text: 'The amount and the time down to the minute'
+        correct: false
+        why: 'Many transactions can share the same amount in the same minute.'
+      - text: 'The customer''s name and the amount'
+        correct: false
+        why: 'The same customer can send the same amount twice, and the wrong lines will get paired.'
+    ref: match-and-break
+  - q: 'The nightly reconcile job crashed the server partway and stopped. It was run again in the morning. What happens in `recon_break` if UNIQUE and ON CONFLICT DO NOTHING are in place?'
+    hint: 'What happens when the same break tries to go in again?'
+    options:
+      - text: 'Breaks already inserted are not inserted again; the new ones are'
+        correct: true
+        why: 'UNIQUE plus DO NOTHING makes the job safe to run again.'
+      - text: 'Every break is inserted twice'
+        correct: false
+        why: 'The UNIQUE constraint won''t allow it.'
+      - text: 'The job stops with an error and someone has to clean the table by hand'
+        correct: false
+        why: 'ON CONFLICT DO NOTHING means no error is raised.'
+      - text: 'The earlier breaks are deleted and written afresh'
+        correct: false
+        why: 'DO NOTHING means the old rows are not touched at all.'
+    ref: daily-reconcile-job
+  - q: 'Why is the code below a problem?'
+    lang: php
+    code: |
+      foreach ($breaks as $b) {
+          $db->executeStatement(
+              'UPDATE ledger_payment SET amount_minor = ? WHERE ref = ?',
+              [$b->theirMinor, $b->ref],
+          );
+          $b->close();
+      }
+    hint: 'Where did the old amount go?'
+    options:
+      - text: 'It silently changes the ledger amounts and erases the cause and history of the gap'
+        correct: true
+        why: 'The right way: record the cause, write a new correcting entry, then close the break.'
+      - text: 'The foreach is slow; it should be a batch update'
+        correct: false
+        why: 'Speed isn''t the issue; the problem is the lost history.'
+      - text: '`close()` should be called first'
+        correct: false
+        why: 'Even with the order changed, the UPDATE on the ledger is the real problem.'
+      - text: 'No problem, the amounts match now'
+        correct: false
+        why: 'Even if they match, the cause of the error is unknown, and the same bug can''t be caught if it happens again.'
+    ref: dont-plug-the-gap
+  - q: 'The gateway statement dates a payment 21 November, but our ledger recorded it at 11:59 p.m. on 20 November. What happens in the 20 November job?'
+    hint: 'What happens when the cutoff differs between the two sides?'
+    options:
+      - text: 'The day differs, so a timing break appears, and it matches the next day'
+        correct: true
+        why: 'A cutoff difference is not a real error; flagging it separately avoids false alarms.'
+      - text: 'The payment is lost forever'
+        correct: false
+        why: 'It will be there in the next day''s statement; only the day is different.'
+      - text: 'The ledger date must be changed to the 21st'
+        correct: false
+        why: 'Ledger entries can''t be changed, and the cause is the cutoff, not the date.'
+      - text: 'A duplicate break will be created'
+        correct: false
+        why: 'It is a single transaction; it is just seen on two different days.'
+    ref: match-and-break

@@ -1,0 +1,335 @@
+slides:
+  - slug: twelve-kitchens
+    title: 'A team of 10, 12 services'
+    kind: story
+    tldr: 'A small team that splits into 12 services on day one gets none of the benefits, only the extra burden of networks, deploys and debugging.'
+    keywords: ['microservices', 'monolith', 'distributed monolith', 'premature split', 'service sprawl']
+    blocks:
+      - type: text
+        body: |
+          A startup with 10 developers wanted to be "modern", so in the first month they split the app into 12 services. Now a single "place order" request passes through five services. When one is slow, everyone is slow, and finding where the bug is takes hours. The developers spend more time on the glue between services than on features.
+      - type: visual
+        kind: compare
+        caption: 'From one app to twelve services: what changed'
+        columns:
+          - title: 'A single app'
+            tone: good
+            icon: box
+            tip: 'A method call inside one process is fast and safe, and you can understand the whole app at once.'
+            items:
+              - 'One method call, in microseconds'
+              - 'One deploy, one log'
+              - 'Data stays consistent in one transaction'
+              - 'You can run the whole thing on your own machine'
+          - title: '12 services'
+            tone: bad
+            icon: puzzle
+            tip: 'Each network call between services is slow, can fail, and needs extra code.'
+            items:
+              - 'Every call crosses the network and can break'
+              - '12 deploys, 12 logs, 12 places to look'
+              - 'Transactions break; reconciling data is hard'
+              - '12 containers in Docker just to run the system'
+      - type: quote
+        body: 'Microservices solve an organisational problem, not a code problem. With a small team, there is no such problem.'
+    aside:
+      - type: story
+        title: 'The wedding kitchen'
+        body: |
+          For a 200-guest wedding, the cooks in one big kitchen work side by side, talk, and share the salt and chilli. Split that same job into 12 small kitchens and each has to coordinate by phone, and if one runs late, the whole meal is late.
+      - type: refs
+        items:
+          - {to: 'thinking/conways-law', label: 'Conway''s Law'}
+    check:
+      q: 'Why is starting a small team with 12 services trouble?'
+      a: 'Every call crosses the network, so it''s slower and more fragile, and deploys, logs and data reconciliation all multiply by twelve, yet you get none of the benefit of separate teams.'
+
+  - slug: three-shapes
+    title: 'Three shapes: monolith, modular monolith, microservices'
+    kind: concept
+    tldr: 'A monolith is one lump, a modular monolith has separate rooms in one house, and microservices are separate houses; the real difference is how firm the boundaries are.'
+    keywords: ['modular monolith', 'monolith', 'microservices', 'module boundary', 'service']
+    blocks:
+      - type: metaphor
+        icon: building
+        title: 'A hall, flats and separate homes'
+        body: |
+          A monolith is one big hall where everybody can touch everything. A modular monolith is separate flats in one building: there are walls, you go in through a door, but the foundation and roof are shared. Microservices are separate homes, where getting from one to another means crossing the road.
+      - type: visual
+        kind: table
+        caption: 'Comparing the three shapes'
+        headers: ['', 'Monolith', 'Modular monolith', 'Microservices']
+        rows:
+          - cells: ['Deploy', 'One', 'One', 'Each separately']
+            tip: 'A modular monolith still has one deploy. That''s what spares you the complexity of microservices.'
+          - cells: ['Code boundaries', 'None, everyone calls everything', 'Modules and a public API', 'Process and network']
+            tip: 'The problem with a monolith isn''t being a monolith, it''s having no boundaries. A modular monolith brings boundaries back.'
+          - cells: ['Database', 'One, everyone touches every table', 'One, each module owns its tables', 'Each service has its own']
+            tip: 'In a modular monolith, reading another module''s tables directly is forbidden; you ask through that module''s API.'
+          - cells: ['Calls between modules', 'Method call', 'Method call', 'HTTP or messages']
+            tip: 'In a modular monolith, calls are still cheap and safe. The network cost comes only with microservices.'
+          - cells: ['Team', '1-20 people together', 'Together or a few groups', 'Large, independent teams']
+            tip: 'Team size is the biggest factor. Independent deploys only pay off when you have independent teams.'
+    aside:
+      - type: remember
+        body: 'A monolith isn''t bad by itself. A monolith without boundaries is.'
+      - type: terms
+        items:
+          - {term: 'Module', meaning: 'The code for one business capability, with its own data and a public door.'}
+          - {term: 'Distributed monolith', meaning: 'Split into services, but coupled so tightly they can''t be deployed except together.'}
+    check:
+      q: 'What is the main difference between a modular monolith and microservices?'
+      a: 'A modular monolith has boundaries but runs as one process with one deploy. In microservices every boundary crosses the network and is deployed separately.'
+
+  - slug: modular-monolith-symfony
+    title: 'Building a modular monolith in Symfony'
+    kind: howto
+    tldr: 'Under src/, make a folder per business capability, give each an Api interface, and hold only IDs, not other modules'' entities.'
+    keywords: ['Symfony modules', 'public API', 'facade', 'deptrac', 'bounded context', 'module boundary']
+    blocks:
+      - type: text
+        body: |
+          In a modular monolith, each folder under `src/` is one business capability. Every module has exactly one public door, the interfaces in its `Api/` folder. Other modules call those interfaces, never the internal entities or repositories. And instead of making a Doctrine relation to another module's entity, keep only its ID.
+      - type: code
+        lang: text
+        file: 'src/'
+        code: |
+          src/
+            Billing/
+              Api/BillingApi.php             <- the only file others call
+              Domain/Invoice.php
+              Infrastructure/DoctrineInvoiceRepository.php
+            Shipping/
+              Api/ShippingApi.php
+              Application/ScheduleDelivery.php
+              Domain/Delivery.php
+            Catalog/
+              Api/CatalogApi.php
+              Domain/Product.php
+        marks:
+          - {line: 3, tip: 'The public door. Everything outside it is internal to the module, and nobody outside may touch it.'}
+      - type: code
+        lang: php
+        file: 'src/Shipping/Application/ScheduleDelivery.php'
+        variant: good
+        code: |
+          final readonly class ScheduleDelivery
+          {
+              public function __construct(
+                  private BillingApi $billing,
+                  private DeliveryRepository $deliveries,
+              ) {
+              }
+
+              public function __invoke(string $orderId): void
+              {
+                  if (!$this->billing->isPaid($orderId)) {
+                      throw new \DomainException('Order has not been paid');
+                  }
+
+                  // Delivery keeps only the orderId string, not Billing's entity
+                  $this->deliveries->save(Delivery::forOrder($orderId));
+              }
+          }
+        marks:
+          - {line: 4, tip: 'Shipping doesn''t know which classes Billing has. It knows only the BillingApi interface.'}
+          - {line: 15, tip: 'Linking by ID means that even if Billing becomes a separate service later, nothing in Shipping''s tables will change.'}
+    aside:
+      - type: commands
+        title: 'Guarding the boundaries'
+        items:
+          - {cmd: 'vendor/bin/deptrac analyse', desc: 'Catches any module calling another module''s internal classes'}
+      - type: pitfalls
+        items:
+          - 'A `ManyToOne` to another module''s Doctrine entity leaves the boundary existing only in the folder name.'
+          - 'Don''t return entities from an Api interface; return small DTOs or plain values.'
+      - type: refs
+        items:
+          - {to: 'thinking/evolutionary-architecture', label: 'Guarding boundaries with Deptrac'}
+    check:
+      q: 'What goes wrong if the Shipping module has a `ManyToOne` to Billing''s Invoice entity?'
+      a: 'The two modules become tied to the same table structure. A change inside Billing breaks Shipping, and splitting them into services later becomes close to impossible.'
+
+  - slug: where-to-cut
+    title: 'Where to draw boundaries, and when to split into services'
+    kind: compare
+    tldr: 'Draw boundaries by business capability and data ownership, not by technical layer; split into a service only when you need a separate team and separate scaling.'
+    keywords: ['business capability', 'data ownership', 'service boundary', 'when to split', 'bounded context']
+    blocks:
+      - type: text
+        body: |
+          Draw a boundary in the wrong place and every feature has to touch two or three modules. Two questions keep boundaries right: which business capability is this (payments, delivery, catalogue), and who owns this data? Splitting by technical layer, such as a "database service", is completely the wrong way.
+      - type: visual
+        kind: compare
+        caption: 'Good and bad ways to draw boundaries'
+        columns:
+          - title: 'By business capability'
+            tone: good
+            icon: check
+            tip: 'A feature usually falls within one business capability, so changes stay inside one module.'
+            items:
+              - 'Billing, Shipping, Catalog'
+              - 'Each is the sole owner of its data'
+              - 'Others ask only through the public API'
+              - 'A new feature usually lands in one module'
+          - title: 'By technology'
+            tone: bad
+            icon: cross
+            tip: 'Every feature passes through every layer, so a single change touches every service.'
+            items:
+              - 'ControllerService, DatabaseService'
+              - 'Everyone writes to the same tables'
+              - 'One feature means changes in every service'
+              - 'Separate services, but deployed together'
+      - type: points
+        title: 'Check before splitting into separate services'
+        style: check
+        items:
+          - 'A separate team wants to deploy without waiting for others.'
+          - 'This part has scaling or security needs very different from the rest.'
+          - 'The boundary has held steady in the modular monolith for months, not moving around.'
+          - 'You have people to carry the cost of running it (monitoring, CI, data reconciliation).'
+      - type: quote
+        body: 'Build a modular monolith first. Cut only once the boundaries have proven durable, and only if you have a reason.'
+    aside:
+      - type: when
+        use:
+          - 'Modular monolith: most new projects and small to mid-sized teams.'
+          - 'Microservices: many teams that need separate scaling and separate releases.'
+        avoid:
+          - 'Splitting into services only because "everyone does it" or for your CV.'
+      - type: refs
+        items:
+          - {to: 'thinking/ddd', label: 'DDD: bounded contexts'}
+          - {to: 'data/schema-design', label: 'Data ownership and schema'}
+    check:
+      q: 'Which two questions are most useful when drawing service boundaries?'
+      a: 'Which business capability is this, and who is the sole owner of this data? When the answers are clear, the boundary lasts and changes stay inside one module.'
+
+flashcards:
+  - q: 'What problem do microservices actually solve?'
+    a: 'An organisational one: letting many teams change and deploy independently without waiting on each other.'
+    more: |
+      You don't need microservices for tidy code or for speed; a modular monolith gives you that too. A small team doesn't have the problem, so the solution just becomes extra weight.
+    ref: twelve-kitchens
+  - q: 'What are the four real costs of microservices?'
+    a: 'Slow, failure-prone network calls; separate deploys and logs; broken transactions; and the complexity of running the whole system.'
+    more: |
+      A method call inside one process is almost free and doesn't fail. A call between services brings timeouts, retries and partial failures. Once data is split across several databases, one transaction can't keep everything consistent.
+    ref: twelve-kitchens
+  - q: 'What is a modular monolith?'
+    a: 'One app and one deploy, with firm business-capability modules inside, each with its own public API and its own data.'
+    more: |
+      It keeps the simplicity of a monolith (one deploy, method calls, one transaction) and adds the tidy boundaries of microservices. And if the boundaries are right, turning a module into a separate service later is easy.
+    ref: three-shapes
+  - q: 'What is a distributed monolith?'
+    a: 'An app split into services but coupled so tightly that changing one means deploying them all together.'
+    more: |
+      It has all the costs of microservices and none of the benefit of independence. It usually comes from wrong boundaries or from everyone sharing one database. A modular monolith with real boundaries is far better.
+    ref: three-shapes
+  - q: 'How should one module talk to another?'
+    a: 'Through the other module''s public `Api` interface, holding only its ID rather than its entity.'
+    more: |
+      If you use another module's Doctrine relation or call its repository directly, the boundary exists only in name. With an interface and IDs, the rest of the code stays nearly the same even if the module later becomes a separate service. Deptrac can guard this in CI.
+    ref: modular-monolith-symfony
+  - q: 'By what rule should service boundaries be drawn?'
+    a: 'By business capability and data ownership, so that each service is the sole owner of its data.'
+    more: |
+      Splitting by technical layer (Controller, Database) is wrong, because every feature passes through all the layers. Splitting by business capability keeps most features in one place. More in [[thinking/ddd|DDD and bounded contexts]].
+    ref: where-to-cut
+  - q: 'When is it reasonable to turn a module into a separate service?'
+    a: 'When a separate team wants to deploy independently, it needs separate scaling, and the boundary has been stable for months.'
+    more: |
+      "A big app" or "everyone does it" aren't reasons. You also need people to carry the cost of running a service (monitoring, CI, data reconciliation). If these conditions aren't met, staying with a modular monolith is better.
+    ref: where-to-cut
+
+quiz:
+  - q: 'Which of these are real costs of microservices?'
+    hint: 'Think about the difference between a method call inside one process and a network call.'
+    options:
+      - text: 'Calls between services are slow and can fail'
+        correct: true
+        why: 'On a network you need timeouts, retries and handling of partial failure, none of which a method call needed.'
+      - text: 'One feature''s data is split across several databases, so transactions break'
+        correct: true
+        why: 'An ACID transaction in one database doesn''t cross service boundaries, so reconciling data becomes a separate job.'
+      - text: 'The code always has to be rewritten from PHP into another language'
+        correct: false
+        why: 'Changing language isn''t mandatory. That''s an option, not a cost.'
+      - text: 'Each service needs its own deploy, log and monitoring'
+        correct: true
+        why: 'The more services, the more deploy pipelines and the more places to look.'
+    ref: twelve-kitchens
+  - q: 'What problem does the code below create?'
+    lang: php
+    code: |
+      // src/Shipping/Domain/Delivery.php
+      #[ORM\Entity]
+      class Delivery
+      {
+          #[ORM\ManyToOne(targetEntity: \App\Billing\Domain\Invoice::class)]
+          private Invoice $invoice;
+      }
+    hint: 'What inside Billing is the Shipping module holding on to?'
+    options:
+      - text: 'Shipping is tied to Billing''s entity, so the boundary exists only in the folder name'
+        correct: true
+        why: 'If Invoice''s table changes, Shipping breaks, and later splitting Billing into a service becomes hard.'
+      - text: 'It should be OneToMany instead of ManyToOne'
+        correct: false
+        why: 'The direction of the relation isn''t the problem; the problem is a relation crossing a module boundary.'
+      - text: 'Doctrine annotations are outdated, so this is wrong'
+        correct: false
+        why: 'This is an attribute, which is correct in modern Doctrine.'
+      - text: 'No problem, they''re in the same app anyway'
+        correct: false
+        why: 'Even in one app, ignoring boundaries ends the modular monolith, and everything gets tangled.'
+    ref: modular-monolith-symfony
+  - q: 'A team of eight is starting a new booking app. What is the smartest way to begin?'
+    hint: 'The team is small, the boundaries are still unknown and features change fast.'
+    options:
+      - text: 'A modular monolith with modules by business capability and clear boundaries'
+        correct: true
+        why: 'You get a simple deploy, and wrong boundaries are easy to fix. Later, if there''s a reason, you can split a module off.'
+      - text: 'Every feature a separate service from the start'
+        correct: false
+        why: 'The boundaries aren''t known yet, and a wrong cut is hard to correct inside services.'
+      - text: 'One app with no boundaries, code however you like'
+        correct: false
+        why: 'That makes the biggest complaint about monoliths, the tangle, come true.'
+      - text: 'A separate database, and everything else in one file'
+        correct: false
+        why: 'Splitting data alone doesn''t make a boundary; boundaries are needed in both code and data.'
+    ref: three-shapes
+  - q: 'A company built "UserService", "DatabaseService" and "NotificationService", all using the same database. Adding one feature touches all three. Where is the problem?'
+    hint: 'What are the boundaries based on, and who owns the data?'
+    options:
+      - text: 'The boundaries follow technology, and the data has no single owner'
+        correct: true
+        why: 'Boundaries by business capability would keep a feature in one place, and everyone writing to one database makes a distributed monolith.'
+      - text: 'There are too few services'
+        correct: false
+        why: 'The number isn''t the problem; what the boundaries are based on is.'
+      - text: 'Writing services in PHP is wrong'
+        correct: false
+        why: 'The language is irrelevant here.'
+      - text: 'The network is slow'
+        correct: false
+        why: 'A slow network would slow everything, but a feature touching three places comes from wrong boundaries.'
+    ref: where-to-cut
+  - q: 'Which of these is a reasonable reason to turn a module into a separate service?'
+    hint: 'Look for organisation and scale needs, not "popularity".'
+    options:
+      - text: 'It needs a very different scale from the rest of the app, and a separate team owns it'
+        correct: true
+        why: 'A separate team and separate scaling make the cost of running a service worthwhile.'
+      - text: 'Big companies do it this way'
+        correct: false
+        why: 'Their teams and problems aren''t like yours; their solution can be a burden for you.'
+      - text: 'The code feels a bit messy'
+        correct: false
+        why: 'Splitting messy code into services makes it more complex; fix the modules and boundaries first.'
+      - text: 'To learn a new technology'
+        correct: false
+        why: 'For learning there are small projects; in production everyone bears the cost.'
+    ref: where-to-cut

@@ -1,0 +1,451 @@
+slides:
+  - slug: retry-storm-story
+    title: 'When everyone retries at once, the service can''t get back up'
+    kind: story
+    tldr: 'In a partial failure, if everyone retries immediately, traffic grows and a recovering service falls over again. This is called a retry storm.'
+    keywords: ['retry storm', 'partial failure', 'thundering herd', 'retry', 'intermittent failure', 'payment gateway']
+    blocks:
+      - type: metaphor
+        icon: phone
+        title: 'Redialling a busy hotline'
+        body: |
+          The electricity office hotline is busy. Everyone thinks, "It didn't connect, I'll dial again," and keeps pressing redial every second. The line gets even more crowded, and people with a real emergency can't get through either. In code, that redial is a retry. When everyone does it at the same moment, it becomes a **retry storm**.
+      - type: text
+        body: |
+          A service doesn't always go down completely. Often it is in a **partial failure**: say, 50 out of every 100 calls to the payment gateway are failing. Now each of your failed calls immediately retries 3 more times. The numbers below show the result.
+      - type: visual
+        kind: bars
+        caption: 'Capacity is 150 a second: without retries 100, with 3 retries about 190'
+        items:
+          - {label: 'Normal traffic', value: 100, display: '100/second', tone: good, tip: 'One attempt per call. The gateway handles this easily.'}
+          - {label: 'Gateway capacity', value: 150, display: '150/second', tone: default, tip: 'Send more than this and the gateway fails even more. This limit is the real constraint.'}
+          - {label: 'With 3 retries', value: 190, display: 'about 190/second', tone: bad, tip: '100 × (1 + 0.5 + 0.25 + 0.125) ≈ 190. If 50% fail, half of the calls at each step try again.'}
+      - type: quote
+        body: 'Sending more requests to a failing service just drowns it further.'
+    aside:
+      - type: story
+        title: 'The service that could not recover'
+        body: |
+          A payment gateway slowed down for a few seconds. Every app retried at once, and traffic tripled. The gateway never got the chance to recover and stayed failing for an hour. The original problem would have been over in a minute; the retries turned it into an hour-long one.
+      - type: terms
+        items:
+          - {term: 'Partial failure', meaning: 'The service is not fully down: some requests fail or are slow. The hardest state to handle.'}
+          - {term: 'Retry storm', meaning: 'Many clients resending failed calls at once, multiplying the load on the service.'}
+    check:
+      q: 'The gateway is failing 50% of calls. If you add 3 immediate retries, roughly how many times more traffic is that, and what follows?'
+      a: 'About 1.9 times. Traffic above capacity makes the gateway fail even more, which triggers more retries, and it never gets a chance to recover.'
+
+  - slug: circuit-breaker-states
+    title: 'Circuit breaker: protecting the house like a fuse'
+    kind: concept
+    tldr: 'A circuit breaker counts failed calls. At the threshold it stops calling altogether (open), later tries one test call (half-open), and on success switches back on (closed).'
+    keywords: ['circuit breaker', 'closed', 'open', 'half-open', 'fail fast', 'fuse']
+    blocks:
+      - type: metaphor
+        icon: bolt
+        title: 'The MCB or fuse at home'
+        body: |
+          When the wiring shorts, the MCB (a household circuit breaker) cuts the line by itself so a fire doesn't start. After a while you gently flip the switch back: if all is well it keeps running, and if it shorts again it trips immediately. In code, that is exactly a circuit breaker: the healthy state is **closed**, the cut state is **open**, and the testing state is **half-open**.
+      - type: visual
+        kind: flow
+        animate: false
+        caption: 'The three states of a circuit breaker and the four transitions'
+        nodes:
+          - {id: closed, label: 'CLOSED', sub: 'all calls go through', icon: check, tone: good, col: 0, row: 2, tip: 'The normal state. Every call goes to the service, and the breaker quietly counts failures.'}
+          - {id: open, label: 'OPEN', sub: 'no call goes through', icon: cross, tone: bad, col: 4, row: 2, tip: 'Calls return at once (fail fast) with a fallback answer. The load on the service is zero.'}
+          - {id: half, label: 'HALF-OPEN', sub: 'one test call', icon: switch, tone: warn, col: 2, row: 0, tip: 'A few calls are let through to see whether the service has recovered. Not all of them, so it isn''t flooded again.'}
+        edges:
+          - {from: closed, to: open, label: '5 failures in a row', tone: bad, tip: 'At the threshold the fuse trips. The threshold is set by a number of failures or a percentage.'}
+          - {from: open, to: half, label: 'after 30 seconds', tone: warn, tip: 'The service is given time to recover. Not a single call goes through meanwhile.'}
+          - {from: half, to: closed, label: 'test succeeds', tone: good, tip: 'The call came back fine, so the fuse is switched back on.'}
+          - {from: half, to: open, label: 'test fails', tone: bad, dashed: true, tip: 'It hasn''t recovered yet. Cut again for 30 seconds, nothing gets through.'}
+      - type: text
+        body: |
+          A breaker's job is not to prevent failure but to **reduce the cost of failure**: while open, a worker doesn't sit waiting out a 2-second timeout, it returns a fallback answer immediately. And the service gets a rest.
+      - type: quote
+        body: 'When a service is sick, stop calling it, and test it in small doses to see when it is better.'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Fail fast', meaning: 'When you know a call will fail, say so immediately instead of waiting.'}
+          - {term: 'Threshold', meaning: 'How many failures it takes before the breaker trips: for example 5 in a row, or a 50% rate.'}
+      - type: remember
+        body: 'CLOSED runs, OPEN is cut, HALF-OPEN is a test: on success it switches back on, otherwise it is cut again.'
+      - type: refs
+        items:
+          - {to: 'resilience/graceful-degradation', label: 'What to answer while OPEN'}
+    check:
+      q: 'The breaker is OPEN. A user presses checkout. What does their request get, and what does the gateway get?'
+      a: 'The user gets a fallback answer immediately, with no timeout wait. The gateway gets no call at all, so it is free of load and can recover.'
+
+  - slug: backoff-jitter-retry
+    title: 'How to retry properly: backoff and jitter'
+    kind: howto
+    tldr: 'Wait longer before each retry (exponential backoff), and add a little randomness to that wait (jitter). Symfony RetryableHttpClient does both from config.'
+    keywords: ['exponential backoff', 'jitter', 'RetryableHttpClient', 'retry_failed', 'max_retries', 'idempotency key']
+    blocks:
+      - type: text
+        body: |
+          The hotline mistake was redialling again and again at once. The right way: wait a little the first time, then double it, then double again. That is **exponential backoff**. But if everyone comes back at the exact same moment, you get another crowd, so add a bit of randomness to each wait. That is **jitter**.
+      - type: code
+        lang: yaml
+        file: 'config/packages/framework.yaml'
+        variant: good
+        code: |
+          framework:
+              http_client:
+                  scoped_clients:
+                      payment.client:
+                          base_uri: 'https://api.gateway.example'
+                          timeout: 2
+                          max_duration: 6
+                          retry_failed:
+                              max_retries: 3
+                              delay: 500          # 500 ms before the first retry
+                              multiplier: 2       # doubles each time: 500, 1000, 2000
+                              max_delay: 4000     # never more than 4 seconds, however large it gets
+                              jitter: 0.3         # ±30% randomness
+                              http_codes: [429, 502, 503, 504]
+        marks:
+          - {line: 9, tip: 'max_retries 3 means 4 attempts in all: the first one and 3 retries. The more repeated calls, the more load on the gateway.'}
+          - {line: 13, tip: 'jitter: 0.3 varies each wait by up to 30% either way, so clients don''t all return at the same instant.'}
+          - {line: 14, tip: 'Retry only temporary errors. 400, 404 and 422 mean the call itself is wrong, and sending it a hundred times won''t fix it.'}
+      - type: code
+        lang: php
+        file: 'src/Payment/GatewayClient.php'
+        variant: good
+        code: |
+          public function __construct(private readonly HttpClientInterface $paymentClient)
+          {
+          }
+
+          public function status(string $paymentId): array
+          {
+              // GET is safe: the result is the same however many times it is retried
+              return $this->paymentClient->request('GET', "/v1/payments/$paymentId")->toArray();
+          }
+
+          public function charge(string $orderId, int $paisa): array
+          {
+              // POST: with the same Idempotency-Key, a retry won't charge the money twice
+              return $this->paymentClient->request('POST', '/v1/charges', [
+                  'headers' => ['Idempotency-Key' => 'order-'.$orderId],
+                  'json' => ['amount' => $paisa],
+              ])->toArray();
+          }
+        marks:
+          - {line: 1, tip: 'Because the argument is named $paymentClient, Symfony injects the scoped client payment.client, retries included.'}
+          - {line: 14, tip: 'Retrying means the same call may go out more than once. The danger is a POST without a key: charged twice. With a key, the gateway recognises the second one.'}
+      - type: visual
+        kind: table
+        caption: 'Wait times over three retries: 500 ms, doubling, jitter ±30%'
+        headers: ['Which retry', 'Average wait', 'Actual, with jitter']
+        rows:
+          - cells: ['First', '500 ms', '350-650 ms']
+            tip: 'Starts from delay: 500. With 30% jitter, any value in this range can occur.'
+          - cells: ['Second', '1,000 ms', '700-1,300 ms']
+            tip: 'multiplier: 2, so double the previous one. The wait grows each time, giving the service more time.'
+          - cells: ['Third', '2,000 ms', '1,400-2,600 ms']
+            tip: 'max_delay is 4,000, so this is still under the cap. With more retries it would stop at 4 seconds.'
+      - type: quote
+        body: 'Retry with growing waits (backoff), with randomness (jitter), and only on temporary errors.'
+    aside:
+      - type: tips
+        items:
+          - 'Where a user is waiting, total time = attempts × timeout + waits. Here that is 4 × 2 + 3.5 = 11.5 seconds, so use fewer retries.'
+          - 'Retry only safe or idempotent calls: GET, and POST only with an Idempotency-Key.'
+      - type: pitfalls
+        items:
+          - 'Backoff without jitter makes all clients return together, and the crowd arrives in repeated waves (a thundering herd).'
+          - 'Retry is not a substitute for a timeout. Every attempt needs its own timeout.'
+      - type: refs
+        items:
+          - {to: 'payments/idempotency-keys', label: 'How idempotency keys work'}
+          - {to: 'resilience/containing-failure', label: 'A timeout on every call'}
+    check:
+      q: 'Backoff but no jitter: what happens when 1,000 clients fail together, and what does jitter change?'
+      a: 'They all return after exactly 500 ms, then 1000 ms, sending 1,000 calls at once in repeated waves. Jitter spreads those calls out over time and flattens the waves.'
+
+  - slug: simple-breaker-symfony
+    title: 'A small circuit breaker with Symfony Cache'
+    kind: howto
+    tldr: 'Keep the failure count and the "cut until" time in Symfony Cache. While cut, skip the call and go straight to the fallback; otherwise call, and on success reset the count to zero.'
+    keywords: ['circuit breaker', 'Symfony Cache', 'CacheItemPoolInterface', 'fallback', 'Redis', 'small breaker']
+    blocks:
+      - type: text
+        body: |
+          You don't need a whole library: one small class is enough. Keep the state (how many failures, and until when it is cut) in the cache. If the cache is Redis, every server sees the same state, so when one server decides the service is sick, all of them know.
+      - type: code
+        lang: php
+        file: 'src/Resilience/CircuitBreaker.php'
+        variant: good
+        code: |
+          final class CircuitBreaker
+          {
+              public function __construct(
+                  private readonly CacheItemPoolInterface $cache,
+                  private readonly int $threshold = 5,
+                  private readonly int $openSeconds = 30,
+              ) {
+              }
+
+              public function call(string $name, callable $action, callable $fallback): mixed
+              {
+                  $item = $this->cache->getItem('breaker.'.$name);
+                  ['fails' => $fails, 'until' => $until] = $item->get() ?? ['fails' => 0, 'until' => 0];
+
+                  if ($until > time()) {
+                      return $fallback();                  // OPEN: the call is never made
+                  }
+
+                  try {
+                      $result = $action();                 // CLOSED, or the HALF-OPEN test
+                      $item->set(['fails' => 0, 'until' => 0]);
+                  } catch (ExceptionInterface) {           // network errors only
+                      ++$fails;
+                      $until = $fails >= $this->threshold ? time() + $this->openSeconds : 0;
+                      $item->set(['fails' => $fails, 'until' => $until]);
+                      $result = $fallback();
+                  }
+
+                  $this->cache->save($item->expiresAfter(300));
+
+                  return $result;
+              }
+          }
+        marks:
+          - {line: 16, tip: 'If until is in the future, the breaker is OPEN. The fallback returns at once and the network is never touched.'}
+          - {line: 20, tip: 'Once until has passed, execution comes through this path: this is half-open. fails is still at the threshold, so a single failure cuts it again.'}
+          - {line: 21, tip: 'One success resets the count: it counts consecutive failures, not the total.'}
+          - {line: 22, tip: 'Symfony\Contracts\HttpClient\Exception\ExceptionInterface. A bug in your own code (a TypeError) is not counted here.'}
+      - type: code
+        lang: php
+        file: 'src/Shipping/ShippingCalculator.php'
+        variant: good
+        code: |
+          public function chargeFor(string $district, int $weightGrams): int
+          {
+              return $this->breaker->call(
+                  'courier',
+                  fn () => $this->courier->chargeFor($district, $weightGrams),
+                  fn () => self::DEFAULT_CHARGE_PAISA,   // fallback: a fixed default charge
+              );
+          }
+        marks:
+          - {line: 4, tip: 'Separate breakers by name: even if courier is cut, the payment breaker runs on its own.'}
+          - {line: 6, tip: 'What the fallback should be is a business decision. It is the subject of the next lesson, graceful degradation.'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'Count only network or 5xx failures. If you trip the breaker on 4xx caused by a user''s bad input, you will shut off a healthy service.'
+          - 'In half-open this small version can let many requests through as tests at once. With heavy traffic, use Symfony Lock or a dedicated library.'
+      - type: tips
+        items:
+          - 'Keep the cache pool in Redis, or each server learns separately. You can use `framework.cache.app` or a dedicated pool.'
+          - 'Send a log and a metric whenever the breaker trips, because it is the best signal that a service is sick.'
+      - type: refs
+        items:
+          - {to: 'resilience/graceful-degradation', label: 'What makes a good fallback'}
+    check:
+      q: 'In this code the threshold is 5 and openSeconds is 30. When does the 6th call reach the service, and when not?'
+      a: 'After the 5th failure, no call goes through for 30 seconds (OPEN). The first call after those 30 seconds is the test: on success it runs normally, on failure it is blocked for another 30 seconds.'
+
+  - slug: retry-multiplication
+    title: 'Pitfall: retries at every layer, with no retry budget'
+    kind: pitfall
+    tldr: '3 retries at each layer means 4 × 4 × 4 = 64 calls. Keep retries in a single layer, and cap retries to a small share of total traffic (a retry budget).'
+    keywords: ['retry budget', 'retry amplification', 'layered retries', 'RetryStrategyInterface', 'RateLimiter', 'budget']
+    blocks:
+      - type: text
+        body: |
+          Each layer thinks, for its own good, "let me add a few retries." But retries multiply, they don't add. If the Vue app retries 3 times, the Symfony API 3 times and the gateway client 3 times, one click can mean up to 4 × 4 × 4 = 64 calls. Look at the three layers below.
+      - type: visual
+        kind: layers
+        caption: 'One click, three layers, 3 retries each: up to 64 calls at the gateway'
+        layers:
+          - {label: 'Vue app', sub: '4 attempts', tone: warn, tip: 'When the browser call fails, it sends again by itself. Every attempt is a new request to the API.'}
+          - {label: 'Symfony API', sub: '4 attempts for each one', tone: warn, tip: 'For every request, the API may itself call the gateway 4 times. Here 4 × 4 = 16.'}
+          - {label: 'Gateway client', sub: '4 attempts for each one', tone: bad, tip: 'All the retries below add up to 16 × 4 = 64. The sick gateway takes the most pressure here.'}
+      - type: code
+        lang: php
+        file: 'src/Resilience/BudgetedRetryStrategy.php'
+        variant: good
+        code: |
+          final class BudgetedRetryStrategy implements RetryStrategyInterface
+          {
+              public function __construct(
+                  private readonly RetryStrategyInterface $inner,
+                  private readonly RateLimiterFactory $retryBudgetLimiter,
+              ) {
+              }
+
+              public function shouldRetry(
+                  AsyncContext $context,
+                  ?string $responseContent,
+                  ?TransportExceptionInterface $exception,
+              ): ?bool {
+                  $should = $this->inner->shouldRetry($context, $responseContent, $exception);
+                  if (true !== $should) {
+                      return $should;
+                  }
+
+                  // is there a retry token left? If not, this call fails right here
+                  return $this->retryBudgetLimiter->create('payment')->consume()->isAccepted();
+              }
+
+              public function getDelay(
+                  AsyncContext $context,
+                  ?string $responseContent,
+                  ?TransportExceptionInterface $exception,
+              ): int {
+                  return $this->inner->getDelay($context, $responseContent, $exception);
+              }
+          }
+        marks:
+          - {line: 14, tip: 'The real strategy (GenericRetryStrategy) decides first: is this error retryable at all?'}
+          - {line: 20, tip: 'Take a token only if it is retryable. With a token_bucket at 10/second, retries stay at about 10% of 100 rps.'}
+      - type: quote
+        body: 'Retries live in one layer, and their budget is about 10% of total traffic.'
+    aside:
+      - type: tips
+        items:
+          - 'Wire the strategy in with `new RetryableHttpClient($inner, new BudgetedRetryStrategy(new GenericRetryStrategy(), $limiter), 3)`.'
+          - 'When the budget''s tokens run out, return the fallback straight away. A breaker and a budget work well together.'
+      - type: when
+        use: ['Retry in the lowest layer (the one closest to the gateway)', 'The upper layers try once, then fail fast or use a fallback']
+        avoid: ['Retries at every layer "for its own safety"', 'Retries with no budget']
+      - type: refs
+        items:
+          - {to: 'messaging/dlq-retries', label: 'Queue retries and dead letters'}
+    check:
+      q: 'Which single layer should hold the retries, and why? And what does a retry budget stop?'
+      a: 'The lowest layer, because it is the one that knows whether an error is temporary, and putting retries higher up multiplies the calls. A budget stops retries from exceeding a small share of total traffic.'
+
+flashcards:
+  - q: 'What is a retry storm?'
+    a: 'Many clients resending failed calls at once, multiplying the load on a sick service so that it can never recover.'
+    more: |
+      If 50% of calls fail and each failed call retries 3 times immediately, traffic rises to about 1.9 times. Past the service's capacity it fails even more, and even more retries follow. A minor problem becomes an hours-long disaster.
+    ref: retry-storm-story
+  - q: 'What is a partial failure, and why is it harder than a full outage?'
+    a: 'The service is not fully down: some calls fail or are slow. It is hard to spot, and retries sometimes succeed, which adds load.'
+    more: |
+      A service that is completely down returns an error at once and is easy to understand. A partially failing one answers sometimes and not at other times. So the code thinks "one more try will work," and everyone does it together.
+    ref: retry-storm-story
+  - q: 'What are the three states of a circuit breaker?'
+    a: 'CLOSED: all calls go through. OPEN: no call goes through, the fallback is returned at once. HALF-OPEN: a few calls are let through as a test.'
+    more: |
+      It goes from closed to open after several failures in a row. After a while (say 30 seconds) it goes half-open. If the test succeeds it returns to closed, and if it fails it opens again. Just like a fuse: protection first, and a chance to see whether it has recovered afterwards.
+    ref: circuit-breaker-states
+  - q: 'Why is it good to stop calls while the breaker is OPEN?'
+    a: 'Since the call will fail anyway, you return a fallback at once instead of holding a worker for the timeout, and the sick service gets time to recover.'
+    more: |
+      Two gains at once: your workers stay free (fail fast), and the sick service is relieved of load. Without a breaker, every call drags out to the 2-second timeout and the worker pool runs out quickly.
+    ref: circuit-breaker-states
+  - q: 'What do exponential backoff and jitter each do?'
+    a: 'Backoff lengthens the wait before each retry (500 ms, 1000 ms, 2000 ms). Jitter randomises that wait so clients don''t all come back together.'
+    more: |
+      With backoff alone, all clients return at the same instant, in repeated waves. Jitter flattens those waves. In Symfony retry_failed you can set both `multiplier` and `jitter` in config.
+    ref: backoff-jitter-retry
+  - q: 'Which errors should you retry, and which not?'
+    a: 'Temporary ones: timeout, 429, 502, 503, 504. With 400, 404 and 422 the call itself is wrong, and retrying will never fix it.'
+    more: |
+      If you retry a POST, send an Idempotency-Key, or the same action may happen twice (such as charging money twice). In Symfony, fix the list of codes with `http_codes`.
+    ref: backoff-jitter-retry
+  - q: 'What is a retry budget, and why do you need one?'
+    a: 'A cap on how many retries are allowed, as a small share of total traffic (say 10%). It shuts the door on retry storms.'
+    more: |
+      With retries at every layer, calls multiply: 4 × 4 × 4 = 64. So keep retries in one layer, and stop retrying when the budget's tokens run out. You can add a budget by building a custom RetryStrategyInterface with Symfony RateLimiter.
+    ref: retry-multiplication
+
+quiz:
+  - q: 'Rina''s app immediately retries every failed gateway call 5 times. Today 60% of gateway calls fail, and 120 clicks arrive per second. The gateway''s capacity is 150/second. What happens?'
+    hint: 'Each failure creates another call. What does the total come to?'
+    options:
+      - text: 'Total calls exceed capacity and the gateway fails even more: a retry storm'
+        correct: true
+        why: 'Each click makes on average 1 + 0.6 + 0.36 + ... ≈ 2.4 calls, about 285 in total. That is nearly double capacity, so the gateway can''t recover.'
+      - text: 'Because of the retries, every click eventually succeeds, so there is no problem'
+        correct: false
+        why: 'Retries save some clicks, but the extra calls drown the gateway further. Then the success rate itself drops.'
+      - text: 'It will only be slower, but there will be fewer failures'
+        correct: false
+        why: 'The failure rate actually rises, because the extra load makes the gateway fail more.'
+      - text: 'The gateway is not affected, because retries are only the app''s business'
+        correct: false
+        why: 'Every retry is a genuinely new call to the gateway. The effect lands directly on the gateway.'
+    ref: retry-storm-story
+  - q: 'The breaker has a threshold of 5 and openSeconds of 30. In which situations does a call reach the service?'
+    hint: 'The states where the breaker is not cut, or where it is time for a test.'
+    options:
+      - text: 'After 3 failures in a row (still CLOSED)'
+        correct: true
+        why: 'The threshold is 5, so 3 failures haven''t tripped the breaker. Calls still go through normally.'
+      - text: '10 seconds after the 5th failure'
+        correct: false
+        why: 'It is OPEN now and the 30 seconds aren''t up. No call goes through, it goes straight to the fallback.'
+      - text: 'The first call 31 seconds after the 5th failure'
+        correct: true
+        why: 'This is the half-open test. On success the breaker is closed, on failure it opens again for 30 seconds.'
+      - text: 'Right after the 5th failure, because the last call is the measure'
+        correct: false
+        why: 'The breaker opened on the 5th failure itself. From then on, no call goes through for 30 seconds.'
+    ref: circuit-breaker-states
+  - q: 'The breaker in the code below has a problem. Which one?'
+    lang: php
+    code: |
+      try {
+          $result = $action();
+          $item->set(['fails' => 0, 'until' => 0]);
+      } catch (\Throwable) {
+          ++$fails;
+          $item->set(['fails' => $fails, 'until' => time() + 30]);
+          $result = $fallback();
+      }
+    hint: 'What changes on each failure? Where is the threshold?'
+    options:
+      - text: 'It goes OPEN for 30 seconds on the very first failure, and never checks a threshold'
+        correct: true
+        why: 'until is always set to time()+30. One small hiccup shuts the service off for 30 seconds: the breaker is far too sensitive.'
+      - text: 'Resetting fails to zero on success is wrong'
+        correct: false
+        why: 'Resetting on success is right, because we are counting consecutive failures.'
+      - text: 'Using the fallback is wrong, it should throw an exception'
+        correct: false
+        why: 'Returning an alternative answer on failure is part of what a breaker is for.'
+      - text: 'You can''t keep the state in a cache'
+        correct: false
+        why: 'A cache is the simple, effective place for it, especially Redis, where all servers see the same state.'
+    ref: simple-breaker-symfony
+  - q: 'In which cases is retrying reasonable?'
+    hint: 'Where the next attempt could succeed, and repeating does no harm.'
+    options:
+      - text: 'A GET /payments/{id} call that got a 503'
+        correct: true
+        why: '503 is temporary, and GET is safe: the result is the same however often you send it.'
+      - text: 'POST /charges with an Idempotency-Key, after a timeout'
+        correct: true
+        why: 'Because of the key, the gateway recognises the second call and the money is charged only once.'
+      - text: 'Resending the same POST after a 422 Validation Error'
+        correct: false
+        why: 'The input itself is wrong, so the same call will always fail. Retrying only adds load.'
+      - text: 'POST /charges without a key, after the connection dropped'
+        correct: false
+        why: 'If the call already reached the gateway, a second call could charge the money twice. Without a key this is dangerous.'
+    ref: backoff-jitter-retry
+  - q: 'On one click, Vue tries 4 times, the Symfony API 4 times and the gateway client 4 times (3 retries each). How many calls can reach the gateway at most, and what is the fix?'
+    hint: 'The layers multiply, they don''t add.'
+    options:
+      - text: '64; keep retries in a single layer and add a retry budget'
+        correct: true
+        why: '4 × 4 × 4 = 64. If retries sit in the lowest layer and the others try once, calls fall to 4, and a budget keeps even that in check.'
+      - text: '12; the fix is to raise the number of retries'
+        correct: false
+        why: 'Layers multiply, they don''t add. And adding retries only makes the problem worse.'
+      - text: '64; the fix is to double the retries at every layer'
+        correct: false
+        why: 'The number is right, but the fix is backwards: more retries make the product explode even more.'
+      - text: '4; there is no problem'
+        correct: false
+        why: 'That is the count for a single layer. With retries in three layers, it multiplies to 64.'
+    ref: retry-multiplication

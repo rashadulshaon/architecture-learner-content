@@ -1,0 +1,506 @@
+slides:
+  - slug: works-on-my-machine
+    title: '"But it worked on my machine!"'
+    kind: story
+    tldr: 'Set up servers by hand and local and production drift apart. A container packs the code and its environment together.'
+    keywords: ['container', 'Docker', 'works on my machine', 'image', 'environment']
+    blocks:
+      - type: text
+        body: |
+          The deploy went out on Friday night and the app crashed at once. Locally there was PHP 8.3 with the `intl` extension; the production server had PHP 8.1 and no `intl`. Nobody made a mistake. The two machines were simply different.
+      - type: metaphor
+        icon: box
+        title: 'Wedding catering'
+        body: |
+          A caterer doesn't improvise a new meal at every wedding. He cooks from one recipe, packs the food into big pots and sends them out. The **Dockerfile** is that recipe, the **image** is the cooked, sealed pot, and the **container** is the pot opened and set on the table. Whichever hall you serve it in, the food is the same.
+      - type: visual
+        kind: compare
+        caption: 'Hand-set-up servers vs a container image'
+        columns:
+          - title: 'Set up by hand'
+            tone: bad
+            icon: cross
+            tip: 'Every server drifts a little further from the others, and nobody knows what is where.'
+            items:
+              - 'PHP and extensions installed on the server by hand'
+              - 'Every server is slightly different'
+              - 'A new server takes half a day'
+              - 'Nobody is sure which version is running'
+          - title: 'Container image'
+            tone: good
+            icon: check
+            tip: 'The environment is sealed inside the image, so it behaves the same wherever you run it.'
+            items:
+              - 'PHP, extensions and code all in the image'
+              - 'Local, test and prod: the same image'
+              - 'A new instance starts in seconds'
+              - 'The image tag tells you the version'
+      - type: quote
+        body: 'Run in production the exact image you tested.'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Image', meaning: 'An unchangeable package made of your code, runtime and libraries.'}
+          - {term: 'Container', meaning: 'A process that runs an image in isolation.'}
+          - {term: 'Registry', meaning: 'A warehouse where images are stored, such as ECR or Docker Hub.'}
+      - type: remember
+        body: 'Build the image once, run it anywhere.'
+    check:
+      q: 'In the catering metaphor, what is the difference between an image and a container?'
+      a: 'The image is the cooked, sealed pot: fixed, never changing. The container is that pot opened and set on the table, in its running state.'
+
+  - slug: symfony-dockerfile
+    title: 'A production Dockerfile for Symfony'
+    kind: howto
+    tldr: 'A multi-stage build, composer --no-dev, a non-root user and a fixed tag give you a small, safe, reproducible image.'
+    keywords: ['Dockerfile', 'multi-stage', 'FrankenPHP', 'composer', 'non-root']
+    blocks:
+      - type: text
+        body: |
+          A production image shouldn't contain Composer, dev libraries or git. They only add size and give attackers more to work with. So use a **multi-stage build**: build `vendor` in the first stage and take only the result into the second. Finally, run as `www-data`, not as root.
+      - type: code
+        lang: dockerfile
+        file: 'Dockerfile'
+        variant: good
+        code: |
+          # stage 1: only build the dependencies
+          FROM composer:2 AS vendor
+          WORKDIR /app
+          COPY composer.json composer.lock symfony.lock ./
+          RUN composer install --no-dev --no-scripts --no-autoloader --prefer-dist
+          COPY . .
+          RUN composer dump-autoload --classmap-authoritative --no-dev
+
+          # stage 2: only what actually runs
+          FROM dunglas/frankenphp:1-php8.3-alpine AS app
+          ENV SERVER_NAME=:8080 APP_ENV=prod APP_DEBUG=0
+          RUN install-php-extensions pdo_mysql intl opcache
+          WORKDIR /app
+          COPY --from=vendor /app /app
+          RUN mkdir -p var \
+           && chown -R www-data:www-data var /data/caddy /config/caddy
+          USER www-data
+          EXPOSE 8080
+        marks:
+          - {line: 4, tip: 'Copy only the composer files first. When code changes, this layer comes from the cache and the build is fast.'}
+          - {line: 5, tip: '--no-dev: PHPUnit, the profiler and the like never enter the production image.'}
+          - {line: 10, tip: 'A small, specific base image. Not "latest", or today''s build and tomorrow''s could differ.'}
+          - {line: 11, tip: 'Debug off, prod mode. No secrets here: they arrive at run time.'}
+          - {line: 17, tip: 'Drop root for a normal user. Even if the app is hacked, the attacker reaches less of the system.'}
+      - type: code
+        lang: text
+        file: '.dockerignore'
+        code: |
+          .git
+          .env.local
+          var/
+          vendor/
+          node_modules/
+          tests/
+        marks:
+          - {line: 2, tip: 'If a local secrets file gets into the image, anyone with access to the registry can read it.'}
+      - type: quote
+        body: 'Secrets don''t go inside the image; pass them in from outside at run time.'
+    aside:
+      - type: commands
+        title: 'Docker commands'
+        items:
+          - {cmd: 'docker build -t shop-api:1.4.2 .', desc: 'Build the image with a version tag'}
+          - {cmd: 'docker run --rm -p 8080:8080 --env-file .env.local shop-api:1.4.2', desc: 'Run it locally to try it'}
+          - {cmd: 'docker image ls shop-api', desc: 'Check the size'}
+      - type: tips
+        items:
+          - 'Tag images with a git commit or version, and never deploy with "latest".'
+          - 'Write logs to stdout/stderr, not to files: a file dies with its container.'
+    check:
+      q: 'Why doesn''t Composer end up in the final image of a multi-stage build, and what do you gain?'
+      a: 'Composer runs only in the first stage, and the second stage copies just the finished vendor directory. The image is smaller and there is less for an attacker to use.'
+
+  - slug: kubernetes-objects
+    title: 'The four core pieces of Kubernetes'
+    kind: concept
+    tldr: 'A Pod runs the code, a Deployment keeps the count right, a Service gives a stable address and an Ingress opens the outside door. ConfigMaps and Secrets hold config.'
+    keywords: ['Kubernetes', 'Pod', 'Deployment', 'Service', 'Ingress', 'ConfigMap', 'k8s']
+    blocks:
+      - type: metaphor
+        icon: users
+        title: 'The catering manager'
+        body: |
+          The manager has his orders: "There must always be 3 cooks." If one falls ill, he calls in a replacement. Here the cook is the **Pod** and the manager's standing order is the **Deployment**. Guests don't know the cooks' names, so they order at a counter: that's the **Service**. The hall's main gate is the **Ingress**.
+      - type: visual
+        kind: flow
+        caption: 'How an outside request reaches a Pod, and what the Deployment does'
+        nodes:
+          - {id: ing, label: 'Ingress', sub: 'api.shop.example.com', icon: gateway, col: 0, row: 1, tip: 'The gate to the outside world. It looks at the hostname and path and sends the request to the right Service.'}
+          - {id: svc, label: 'Service', sub: 'shop-api', icon: lb, tone: accent, col: 1.5, row: 1, tip: 'A stable address. Even when a Pod dies and is replaced, this address stays the same.'}
+          - {id: pod1, label: 'Pod A', sub: 'shop-api:1.4.2', icon: box, col: 3, row: 0, tip: 'One running container. It is short-lived: it can die at any moment and be replaced.'}
+          - {id: pod2, label: 'Pod B', sub: 'shop-api:1.4.2', icon: box, col: 3, row: 2, tip: 'Another copy of the same image. With two of them, the site survives one dying.'}
+          - {id: dep, label: 'Deployment', sub: 'replicas: 3', icon: gear, col: 4, row: 1, tip: 'The manager. It keeps comparing the desired state (3 Pods) with the actual state and closes the gap.'}
+        edges:
+          - {from: ing, to: svc, label: 'The Ingress reads the hostname and hands the request to the Service'}
+          - {from: svc, to: pod1, label: 'The Service picks a healthy Pod and sends the request'}
+          - {from: svc, to: pod2, label: 'The next request goes to another Pod, so the load is shared'}
+          - {from: dep, to: pod1, label: 'The Deployment keeps watching: are all 3 Pods alive?', dashed: true, tone: good}
+      - type: points
+        title: 'Keep config separate'
+        style: dot
+        items:
+          - 'ConfigMap: ordinary settings (APP_ENV, feature names)'
+          - 'Secret: passwords and tokens, never in the image'
+          - 'Probe: Kubernetes itself asks "are you healthy?"'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Node', meaning: 'The server the Pods run on.'}
+          - {term: 'Readiness probe', meaning: 'A check on whether a Pod has started up and is ready to take requests.'}
+          - {term: 'Liveness probe', meaning: 'A check on whether a Pod is stuck. If it is, it gets restarted.'}
+      - type: problem
+        body: 'With docker run on one server, the app is gone as soon as the server dies. Kubernetes spreads containers over many servers, replaces any that die, and rolls out new versions gradually.'
+    check:
+      q: 'A Pod''s IP keeps changing, so how do other apps still find it?'
+      a: 'Through a Service. Its name and address are stable, and it forwards requests to whichever Pods are healthy behind it.'
+
+  - slug: k8s-manifests
+    title: 'The YAML for a Deployment and a Service'
+    kind: howto
+    tldr: 'Replicas, rolling updates, resource limits and probes: the minimum safe Deployment for a Symfony API, with its Service and Ingress.'
+    keywords: ['Deployment YAML', 'readinessProbe', 'rolling update', 'Ingress', 'resources', 'manifest']
+    blocks:
+      - type: code
+        lang: yaml
+        file: 'k8s/deployment.yaml'
+        variant: good
+        code: |
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: shop-api
+          spec:
+            replicas: 3
+            selector:
+              matchLabels: {app: shop-api}
+            strategy:
+              rollingUpdate: {maxUnavailable: 0, maxSurge: 1}
+            template:
+              metadata:
+                labels: {app: shop-api}
+              spec:
+                containers:
+                  - name: api
+                    image: registry.example.com/shop-api:1.4.2
+                    ports: [{containerPort: 8080}]
+                    envFrom:
+                      - secretRef: {name: shop-api-secrets}
+                    resources:
+                      requests: {cpu: 250m, memory: 256Mi}
+                      limits: {memory: 512Mi}
+                    readinessProbe:
+                      httpGet: {path: /health/ready, port: 8080}
+                    livenessProbe:
+                      httpGet: {path: /health/live, port: 8080}
+                      initialDelaySeconds: 10
+        marks:
+          - {line: 6, tip: 'At least 2, ideally 3. If one Pod dies or a node goes down, the rest carry on.'}
+          - {line: 10, tip: 'maxUnavailable: 0 means an old Pod is not stopped until its replacement is ready. Deploys have no downtime.'}
+          - {line: 17, tip: 'A fixed version tag. With "latest" you can''t tell which code is running, and rollback is impossible.'}
+          - {line: 20, tip: 'The secret comes from a separate object. No password is written in the image or the YAML.'}
+          - {line: 24, tip: 'Until the readiness probe passes, the Service sends this Pod nothing. Half-started apps get no traffic.'}
+      - type: code
+        lang: yaml
+        file: 'k8s/service-ingress.yaml'
+        variant: good
+        code: |
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: shop-api
+          spec:
+            selector: {app: shop-api}
+            ports:
+              - port: 80
+                targetPort: 8080
+          ---
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: shop-api
+          spec:
+            rules:
+              - host: api.shop.example.com
+                http:
+                  paths:
+                    - path: /
+                      pathType: Prefix
+                      backend:
+                        service: {name: shop-api, port: {number: 80}}
+        marks:
+          - {line: 6, tip: 'A Pod whose labels match the selector becomes a member of this Service. With a wrong label, requests go nowhere.'}
+          - {line: 9, tip: 'Port 80 outside, the container''s port 8080 inside. The Service does that translation.'}
+      - type: quote
+        body: 'A rolling update without a readiness probe just sends traffic to half-started apps.'
+    aside:
+      - type: commands
+        title: 'kubectl'
+        items:
+          - {cmd: 'kubectl apply -f k8s/', desc: 'Make the cluster match the YAML'}
+          - {cmd: 'kubectl rollout status deploy/shop-api', desc: 'Watch whether the new version is coming up'}
+          - {cmd: 'kubectl rollout undo deploy/shop-api', desc: 'Go back to the previous version'}
+          - {cmd: 'kubectl logs deploy/shop-api', desc: 'Read the logs'}
+      - type: pitfalls
+        items:
+          - 'Without a memory limit, one Pod can eat all of a node''s memory and kill its neighbours.'
+          - 'Don''t call the database in a liveness probe. If the database slows down, every Pod restarts at once.'
+      - type: refs
+        items:
+          - {to: 'observability/health-alerts', label: 'Health checks and alerts'}
+          - {to: 'resilience/zero-downtime-deploys', label: 'Zero-downtime deploys'}
+    check:
+      q: 'When a readiness probe fails, what does Kubernetes do with the Pod?'
+      a: 'The Pod isn''t killed, but the Service stops sending it requests until it is healthy again. A stuck Pod is restarted by the liveness probe.'
+
+  - slug: click-ops-trap
+    title: 'The trap of clicking things together in the console'
+    kind: pitfall
+    tldr: 'Infrastructure built by clicking is something nobody remembers, can''t be rebuilt, and lets staging and prod drift apart.'
+    keywords: ['click-ops', 'infrastructure as code', 'drift', 'IaC']
+    blocks:
+      - type: text
+        body: |
+          Fahim built staging by clicking through the cloud console. Six months later, when he set up prod, he couldn't remember which settings he had chosen. A colleague then changed a security group in the console and nobody noticed. This is called **drift**: the paper says one thing and reality says another.
+      - type: visual
+        kind: compare
+        caption: 'Click-ops vs infrastructure as code'
+        columns:
+          - title: 'Click-ops'
+            tone: bad
+            icon: cross
+            tip: 'Every setting lives in somebody''s memory, and memory makes mistakes.'
+            items:
+              - 'Nobody can tell who changed what, and when'
+              - 'Staging and prod slowly diverge'
+              - 'If everything is lost, rebuilding is nearly impossible'
+              - 'There is no way to review changes'
+          - title: 'Infrastructure as Code'
+            tone: good
+            icon: check
+            tip: 'Code means git, review, history and the ability to run it again and again.'
+            items:
+              - 'Every change has a git history'
+              - 'The same code builds staging and prod'
+              - 'If it all burns down, one command rebuilds it'
+              - 'Changes are reviewed in pull requests'
+      - type: quote
+        body: 'What isn''t written in code can''t be brought back once it''s lost.'
+    aside:
+      - type: story
+        title: 'One wrong click'
+        body: |
+          Someone on a team shrank a database instance in the console "just to test". Three days later the site slowed down and nobody could find the cause, because nothing anywhere recorded that anyone had changed anything.
+      - type: pitfalls
+        items:
+          - 'Using IaC but making emergency fixes in the console. If you don''t move them into code afterwards, drift comes right back.'
+    check:
+      q: 'What is "drift", and why is it so common with click-ops?'
+      a: 'It is the gap between what the code or docs say and what is actually running. Changes made by clicking are recorded nowhere, so the gap keeps growing.'
+
+  - slug: terraform-basics
+    title: 'Terraform: turning infrastructure into code'
+    kind: howto
+    tldr: 'In Terraform you write the desired state, check the changes with plan, review them, then apply. Keep the state file in a remote backend.'
+    keywords: ['Terraform', 'IaC', 'plan', 'apply', 'state', 'HCL']
+    blocks:
+      - type: metaphor
+        icon: map
+        title: 'The hall layout and the checklist'
+        body: |
+          Before a catering job the manager writes a checklist: how many tables, how many chairs, where the power points are. If the list changes, he fixes only the difference. **Terraform** is that checklist. You write the desired state, it compares it with what exists and changes only what differs.
+      - type: code
+        lang: text
+        file: 'infra/database.tf (HCL)'
+        variant: good
+        code: |
+          terraform {
+            backend "s3" {
+              bucket = "shop-tfstate"
+              key    = "prod/database.tfstate"
+              region = "ap-southeast-1"
+            }
+          }
+
+          resource "aws_db_instance" "main" {
+            identifier                  = "shop-prod"
+            engine                      = "mysql"
+            instance_class              = "db.t4g.medium"
+            allocated_storage           = 50
+            multi_az                    = true
+            storage_encrypted           = true
+            manage_master_user_password = true
+            vpc_security_group_ids      = [aws_security_group.db.id]
+            backup_retention_period     = 14
+            deletion_protection         = true
+          }
+        marks:
+          - {line: 2, tip: 'The state file sits in a remote bucket. The whole team sees the same state, and it isn''t stuck on one person''s laptop.'}
+          - {line: 16, tip: 'No password in the code. AWS generates one itself and keeps it in Secrets Manager.'}
+          - {line: 18, tip: '14 days of backups. Even on a managed service, this number is your decision.'}
+          - {line: 19, tip: 'Even if someone runs terraform destroy by mistake, the database won''t be deleted. You must switch this flag off by hand first.'}
+      - type: visual
+        kind: steps
+        caption: 'A safe Terraform workflow'
+        steps:
+          - {title: '1. init', body: 'Set up the provider and backend', tip: 'You only need to run it once. It connects to the remote state.'}
+          - {title: '2. plan', body: 'See the list of what will change', tip: 'Changes nothing. It only shows what would be added and what would be deleted.'}
+          - {title: '3. review', body: 'A colleague checks the plan in a pull request', tip: 'If you see destroy or replace, stop and think.'}
+          - {title: '4. apply', body: 'Run exactly the approved plan', tip: 'Best done from a CI pipeline, not from a laptop.'}
+    aside:
+      - type: commands
+        title: 'Terraform'
+        items:
+          - {cmd: 'terraform init', desc: 'First-time setup'}
+          - {cmd: 'terraform plan -out=tfplan', desc: 'Write out the list of changes'}
+          - {cmd: 'terraform apply tfplan', desc: 'Run exactly that plan'}
+      - type: pitfalls
+        items:
+          - 'The state file can contain secrets. Don''t commit it to git; keep it in an encrypted remote backend.'
+          - 'Applying without reading the plan: after a rename, Terraform may delete the old resource and create a new one, which is a disaster for a database.'
+      - type: refs
+        items:
+          - {to: 'infra/ci-cd', label: 'Plan and apply in a pipeline'}
+    check:
+      q: 'Why are `terraform plan` and `apply` kept as separate steps?'
+      a: 'Plan changes nothing and only shows what would happen. A person reviews it and applies only when sure, so a mistaken delete or replace is caught beforehand.'
+
+flashcards:
+  - q: 'What is the difference between a Docker image and a container?'
+    a: 'An image is a fixed package (code plus runtime) that never changes. A container is that image while it is running.'
+    more: |
+      You can run many containers from one image, like cooking many pots from one recipe. When a container dies, the files inside it are lost, but the image stays intact.
+    ref: works-on-my-machine
+  - q: 'What is a multi-stage build, and why use one?'
+    a: 'A Dockerfile with several stages, where only what you need from the earlier ones goes into the final image. That keeps the image small and safe.'
+    more: |
+      For Symfony, the first stage builds vendor with Composer, and the final stage holds only the PHP runtime and that vendor directory. Composer, git and dev dependencies never reach production.
+    ref: symfony-dockerfile
+  - q: 'Why is deploying with the "latest" image tag a bad idea?'
+    a: 'Because "latest" keeps changing. You can''t tell which code is running, and you can''t go back to an earlier version.'
+    more: |
+      Tag every build with a version or git commit (shop-api:1.4.2). Then you know exactly which image runs in production, and a rollback just means going back to the earlier tag.
+    ref: symfony-dockerfile
+  - q: 'Why run a container as a non-root user?'
+    a: 'If the app is hacked, the attacker still doesn''t get root power, so the damage stays limited.'
+    more: |
+      Writing USER www-data in the Dockerfile makes the process run with limited rights. Give that user ownership only of the folders it must write to, such as var/.
+    ref: symfony-dockerfile
+  - q: 'In Kubernetes, what do a Pod, a Deployment and a Service do?'
+    a: 'A Pod runs the container. A Deployment keeps a set number of Pods alive and rolls out new versions. A Service gives the Pods a stable address.'
+    more: |
+      Pods are short-lived: when one dies, its replacement gets a new IP. So nobody calls a Pod directly. Everyone calls the Service, which matches labels and forwards to healthy Pods.
+    ref: kubernetes-objects
+  - q: 'What is the difference between a readiness and a liveness probe?'
+    a: 'Readiness asks whether the Pod is ready to take traffic. Liveness asks whether it is stuck, and if so it gets restarted.'
+    more: |
+      When readiness fails, the Pod is only taken out of the Service's list for a while. When liveness fails, the Pod is killed and replaced. A liveness probe shouldn't call an outside database.
+    ref: k8s-manifests
+  - q: 'What is "click-ops", and what is wrong with it?'
+    a: 'Building infrastructure by clicking in the cloud console. Changes aren''t recorded, it can''t be rebuilt, and environments drift apart.'
+    more: |
+      The fix is Infrastructure as Code: the desired state of your infrastructure written as code, kept in git and reviewed. Then there is a history of who changed what, and if disaster strikes, one command brings everything back.
+    ref: click-ops-trap
+  - q: 'Why are plan and apply separate in Terraform?'
+    a: 'Plan only shows what will change; apply actually changes it. Reviewing the plan first catches a mistaken delete or replace.'
+    more: |
+      The safest routine is to review the plan in a pull request, and after approval let CI apply that same plan. Keep the state file in an encrypted remote backend so the whole team sees the same state.
+    ref: terraform-basics
+
+quiz:
+  - q: 'What is wrong with this Dockerfile for production?'
+    lang: dockerfile
+    code: |
+      FROM php:latest
+      COPY . /app
+      RUN composer install
+      ENV DB_PASSWORD=s3cr3t
+      CMD ["php", "-S", "0.0.0.0:80", "-t", "/app/public"]
+    hint: 'Look at four things: the tag, dev dependencies, the secret and the kind of server.'
+    options:
+      - text: 'The "latest" tag: today''s PHP and tomorrow''s may differ'
+        correct: true
+        why: 'Rebuilding could give you a different image. You need to pin a specific version.'
+      - text: 'The password is written into the image through ENV'
+        correct: true
+        why: 'Whoever gets the image gets the password. Secrets must come in from outside at run time.'
+      - text: 'composer install without --no-dev puts dev packages into production'
+        correct: true
+        why: 'Unneeded code that widens the attack surface ends up in the image.'
+      - text: 'Only the ENV name isn''t in capitals; everything else is fine'
+        correct: false
+        why: 'There is nothing wrong with the ENV name. The problems are its value and the other lines.'
+    ref: symfony-dockerfile
+  - q: 'With maxUnavailable: 0 and a readiness probe in the Deployment, what happens when you deploy a new version?'
+    hint: 'When does an old Pod get stopped?'
+    options:
+      - text: 'All the old Pods stop at once, then the new ones start'
+        correct: false
+        why: 'That is how the Recreate strategy behaves, and it causes downtime.'
+      - text: 'An old Pod stops only once a new Pod is ready, so the site stays up'
+        correct: true
+        why: 'maxUnavailable: 0 holds on to the old Pod, and the readiness probe confirms the new one is truly ready.'
+      - text: 'All traffic goes to the new Pods straight away, without waiting for the probe'
+        correct: false
+        why: 'The Service sends no traffic until readiness passes.'
+    ref: k8s-manifests
+  - q: 'Shaheen has a Service and running Pods, but requests reach nothing. What should he check first?'
+    hint: 'How does a Service know which Pods are its own?'
+    options:
+      - text: 'Whether the Service''s selector matches the Pods'' labels'
+        correct: true
+        why: 'If the labels don''t match, the Service has no Pods at all, so requests have nowhere to go.'
+      - text: 'Increase the number of Pod replicas'
+        correct: false
+        why: 'More Pods won''t help if the label is wrong. The Service still can''t see them.'
+      - text: 'Shrink the Docker image'
+        correct: false
+        why: 'Image size has nothing to do with whether requests arrive.'
+    ref: kubernetes-objects
+  - q: 'A liveness probe queries the database. What can happen if the database is slow for a few minutes?'
+    hint: 'What does Kubernetes do when liveness fails?'
+    options:
+      - text: 'Nothing; the Pod heals itself'
+        correct: false
+        why: 'Quite the opposite: when liveness keeps failing, Kubernetes kills the Pod.'
+      - text: 'Every Pod may restart at once and take the whole site down'
+        correct: true
+        why: 'The database is the problem, but the app is punished. Restarting doesn''t cure it and may make it worse.'
+      - text: 'Only the database restarts'
+        correct: false
+        why: 'Kubernetes restarts only the Pod that carries the probe, not the database.'
+    ref: k8s-manifests
+  - q: 'Staging was clicked together in the console, and six months on it behaves differently from prod. What is the root cause?'
+    hint: 'Are the changes written down anywhere?'
+    options:
+      - text: 'The cloud never applies the same setting twice'
+        correct: false
+        why: 'The same setting gives the same result. The inconsistency comes from human hands.'
+      - text: 'The changes were made by hand and aren''t in code, so drift built up'
+        correct: true
+        why: 'Someone changed one place and forgot the other. With IaC, the same code runs in both environments.'
+      - text: 'Staging is smaller, so it naturally differs'
+        correct: false
+        why: 'The size may differ, but the structure and rules should stay the same.'
+    ref: click-ops-trap
+  - q: 'A Terraform plan says aws_db_instance "must be replaced". What is the best step?'
+    hint: 'Replace means deleting the old one and building a new one.'
+    options:
+      - text: 'Apply it quickly; Terraform surely knows what it is doing'
+        correct: false
+        why: 'A replace can mean losing the database''s data. The tool knows what it will do, but not whether losing the data is acceptable.'
+      - text: 'Stop, find the cause, confirm a backup exists and, if needed, change how you write the change'
+        correct: true
+        why: 'For a database a replace is almost always dangerous. Often you can avoid it by not changing a name or a certain attribute.'
+      - text: 'Delete the state file and start again'
+        correct: false
+        why: 'Without state, Terraform won''t recognise the resources it created, and things get worse.'
+      - text: 'Turn off deletion_protection and run it'
+        correct: false
+        why: 'That flag exists to prevent exactly this accident. Turning it off removes the protection and invites trouble.'
+    ref: terraform-basics

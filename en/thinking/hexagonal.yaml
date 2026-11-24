@@ -1,0 +1,465 @@
+slides:
+  - slug: wired-to-everything
+    title: 'The service that is wired to everything'
+    kind: story
+    tldr: 'When business rules are tangled directly into Doctrine, an SMS vendor and a payment client, tests are slow and switching a vendor is misery.'
+    keywords: ['coupling', 'testability', 'vendor lock-in', 'tight coupling', 'service class', 'hard to test']
+    blocks:
+      - type: text
+        body: |
+          In Karim's `OrderService`, the rule for confirming an order, the database save, the SMS and the payment call all live in one class. To test one tiny rule (a coupon lowers the price), you need the database, the SMS vendor and the payment server. The test takes 4 seconds, and when someone asks to switch SMS vendors, you have to touch 40 files.
+      - type: visual
+        kind: flow
+        caption: 'Testing one rule drags in four things'
+        nodes:
+          - {id: test, label: 'Rule test', sub: 'does the coupon work?', icon: bug, col: 0, row: 1, tip: 'All we want is to check one business rule, yet everything else comes barging in.'}
+          - {id: svc, label: 'OrderService', sub: 'rules + all the gear together', icon: code, tone: bad, col: 1, row: 1, tip: 'Rule code and equipment code share one class. Change one and the other breaks.'}
+          - {id: db, label: 'Doctrine', sub: 'the real database', icon: db, col: 3, row: 0, tip: 'The service calls EntityManager directly. Without a real (or equivalent) database, the test can''t run.'}
+          - {id: sms, label: 'Twilio client', sub: 'the vendor''s SDK', icon: phone, col: 3, row: 1, tip: 'The vendor''s name sits inside business code. Switching vendors means rewriting this class.'}
+          - {id: pay, label: 'Payment client', sub: 'an outside server', icon: card, col: 3, row: 2, tip: 'Running the test makes real network calls: slow, and sometimes it even charges money.'}
+        edges:
+          - {from: test, to: svc, label: 'The test only wants to run one rule.'}
+          - {from: svc, to: db, label: 'To run the rule, it reaches into the database.', tone: warn}
+          - {from: svc, to: sms, label: 'Then it calls the SMS vendor''s SDK.', tone: warn}
+          - {from: svc, to: pay, label: 'Then it makes a network call to the payment server too.', tone: bad}
+    aside:
+      - type: story
+        title: 'The 40-file SMS switch'
+        body: |
+          To cut costs, the team decided to switch SMS vendors. It should have been an afternoon's job, but the vendor's SDK was spread across 40 services. It took two weeks, and two old rules broke along the way.
+      - type: problem
+        body: 'When business rules and equipment code are tangled together, tests get slow, switching vendors gets hard, and the rules themselves get hard to understand.'
+    check:
+      q: 'Why does testing the coupon rule need a database, SMS and a payment server?'
+      a: 'Because the rule''s code is wired directly to all three. If the rule lived on its own, you could run just that part and test it.'
+
+  - slug: ports-adapters
+    title: 'Ports and adapters: the phone''s charging port'
+    kind: concept
+    tldr: 'The rules sit in the middle and ask the outside world for things through interfaces (ports). The database, SMS and HTTP are adapters of those interfaces, and dependencies point from outside in.'
+    keywords: ['hexagonal architecture', 'ports and adapters', 'dependency inversion', 'clean architecture', 'port', 'adapter']
+    blocks:
+      - type: metaphor
+        icon: plug
+        title: 'A phone''s charging port'
+        body: |
+          What a phone does inside and where its power comes from are two separate things. The phone only decides what its port looks like (USB-C). Chargers, power banks and laptops all shape themselves to fit. The phone has no idea which company generated the electricity in the wall. The inside defines the port, and the outside adapts to it.
+      - type: visual
+        kind: flow
+        animate: false
+        caption: 'Rules in the middle, outside equipment plugged into ports through adapters'
+        nodes:
+          - {id: ctrl, label: 'Controller', sub: 'HTTP adapter', icon: browser, col: 0, row: 1, tip: 'Calls the rules from the outside world. This is called a driving adapter.'}
+          - {id: core, label: 'Domain + use case', sub: 'business rules', icon: home, tone: accent, col: 1, row: 1, tip: 'The most important part, in the middle. No mention of Doctrine, Symfony or any vendor here.'}
+          - {id: repo, label: 'OrderRepository', sub: 'port (interface)', icon: plug, tone: warn, col: 2, row: 0, tip: 'The rules state what they need, in business language. They don''t know who will provide it.'}
+          - {id: notif, label: 'CustomerNotifier', sub: 'port (interface)', icon: plug, tone: warn, col: 2, row: 2, tip: 'A contract for notifying someone. SMS, email or push: to the rules they are all the same.'}
+          - {id: doctrine, label: 'DoctrineOrderRepo', sub: 'DB adapter', icon: db, col: 3, row: 0, tip: 'Fulfils the port''s contract with Doctrine. This class knows the port, but the rules don''t know this class.'}
+          - {id: sms, label: 'SmsNotifier', sub: 'vendor adapter', icon: phone, col: 3, row: 2, tip: 'Fulfils the port''s contract with Symfony Notifier. Switch vendors and only this class changes.'}
+        edges:
+          - {from: ctrl, to: core, label: 'calls'}
+          - {from: core, to: repo, label: 'asks via interface'}
+          - {from: doctrine, to: repo, label: 'implements', tone: good}
+          - {from: core, to: notif, label: 'asks via interface'}
+          - {from: sms, to: notif, label: 'implements', tone: good}
+      - type: quote
+        body: 'Dependency arrows point from the outside in. The rules never know the equipment.'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Port', meaning: 'An interface written by the inner rules: "I need someone to do this for me", in business language.'}
+          - {term: 'Adapter', meaning: 'A class that fulfils a port''s interface and talks to Doctrine, SMS or HTTP.'}
+          - {term: 'Dependency inversion', meaning: 'The inner rules don''t depend on outer classes; the outer classes depend on the inner interface.'}
+      - type: remember
+        body: 'The rules define the interface, the equipment fulfils it, never the other way round.'
+    check:
+      q: 'In dependency inversion, who depends on whom, and why is that the opposite of what you''d expect?'
+      a: 'The adapter depends on the port, not the rules. Normally you''d expect the rules to depend on the database; here the dependency is turned around.'
+
+  - slug: hexagonal-in-symfony
+    title: 'Ports, use cases and adapters in Symfony'
+    kind: howto
+    tldr: 'Write the interface on the inside, inject it into the use case, and write the Doctrine or Notifier adapter on the outside. `#[AsAlias]` lets autowiring match them up.'
+    keywords: ['AsAlias', 'repository interface', 'use case', 'Symfony autowiring', 'adapter', 'readonly class']
+    blocks:
+      - type: text
+        body: |
+          First, the rules' side: two ports and one use case. Nothing from Doctrine or Symfony is `use`d here.
+      - type: code
+        lang: php
+        file: 'src/Domain + src/Application'
+        variant: good
+        code: |
+          // src/Domain/Order/OrderRepository.php — a port, in business language
+          interface OrderRepository
+          {
+              public function get(OrderId $id): Order;
+
+              public function save(Order $order): void;
+          }
+
+          // src/Application/Order/CustomerNotifier.php — another port
+          interface CustomerNotifier
+          {
+              public function orderConfirmed(Order $order): void;
+          }
+
+          // src/Application/Order/ConfirmOrderHandler.php — the use case
+          final readonly class ConfirmOrderHandler
+          {
+              public function __construct(
+                  private OrderRepository $orders,
+                  private CustomerNotifier $notifier,
+              ) {
+              }
+
+              public function __invoke(ConfirmOrder $command): void
+              {
+                  $order = $this->orders->get($command->orderId);
+                  $order->confirm();
+                  $this->orders->save($order);
+                  $this->notifier->orderConfirmed($order);
+              }
+          }
+        marks:
+          - {line: 2, tip: 'Written in the inside''s language: get and save. No QueryBuilder or EntityManager anywhere.'}
+          - {line: 19, tip: 'The use case knows only interfaces. Who stores the order or who sends the SMS, this class has no idea.'}
+          - {line: 27, tip: 'The rule lives in confirm() on the inner Order. The use case only sets the sequence: fetch, change, save, notify.'}
+      - type: text
+        body: |
+          Now the outside. Two adapters fulfil the ports' contracts, and `#[AsAlias]` tells Symfony which class serves which interface.
+      - type: code
+        lang: php
+        file: 'src/Infrastructure'
+        variant: good
+        code: |
+          // src/Infrastructure/Persistence/DoctrineOrderRepository.php
+          #[AsAlias(OrderRepository::class)]
+          final readonly class DoctrineOrderRepository implements OrderRepository
+          {
+              public function __construct(private EntityManagerInterface $em)
+              {
+              }
+
+              public function get(OrderId $id): Order
+              {
+                  return $this->em->find(Order::class, $id->value)
+                      ?? throw new OrderNotFound($id);
+              }
+
+              public function save(Order $order): void
+              {
+                  $this->em->persist($order);
+                  $this->em->flush();
+              }
+          }
+
+          // src/Infrastructure/Notification/SmsCustomerNotifier.php
+          #[AsAlias(CustomerNotifier::class)]
+          final readonly class SmsCustomerNotifier implements CustomerNotifier
+          {
+              public function __construct(private TexterInterface $texter)
+              {
+              }
+
+              public function orderConfirmed(Order $order): void
+              {
+                  $text = 'Your order has been confirmed';
+                  $this->texter->send(new SmsMessage($order->phone(), $text));
+              }
+          }
+        marks:
+          - {line: 2, tip: 'This one line teaches autowiring: whenever OrderRepository is requested, hand over this class. No YAML needed.'}
+          - {line: 12, tip: 'When nothing is found, it throws a business-language exception (OrderNotFound), not a Doctrine null or error.'}
+          - {line: 33, tip: 'The SMS goes through Symfony Notifier''s TexterInterface. To switch vendors, change the DSN.'}
+    aside:
+      - type: tips
+        items:
+          - 'Keeping Doctrine mapping attributes on the Domain entity is a practical compromise. If you want it fully clean, use XML mapping and keep the entity free of attributes.'
+          - 'A controller or a Messenger handler is a driving adapter: it only turns a request or message into a command and calls the use case.'
+      - type: refs
+        items:
+          - {to: 'thinking/layering-legacy', label: 'The older way of splitting layers'}
+    check:
+      q: 'Who injects OrderRepository into ConfirmOrderHandler, and how?'
+      a: 'Symfony''s autowiring. The Doctrine adapter carries `#[AsAlias(OrderRepository::class)]`, so the container supplies it for that interface.'
+
+  - slug: test-and-swap
+    title: 'Testing without a database, swapping a vendor in one class'
+    kind: howto
+    tldr: 'An in-memory fake of a port makes rule tests run in milliseconds, and a new vendor just means one new adapter class.'
+    keywords: ['unit test', 'in-memory fake', 'test double', 'swap vendor', 'PHPUnit', 'swap adapter']
+    blocks:
+      - type: text
+        body: |
+          Because the port exists, a test needs no real database: a plain fake class holding an array is enough. Back to the phone: for a test, you skip the wall socket and clip on a small battery instead, and the phone still runs.
+      - type: code
+        lang: php
+        file: 'tests/Support/Fakes.php'
+        code: |
+          final class InMemoryOrderRepository implements OrderRepository
+          {
+              /** @var array<string, Order> */
+              private array $orders = [];
+
+              public function get(OrderId $id): Order
+              {
+                  return $this->orders[$id->value] ?? throw new OrderNotFound($id);
+              }
+
+              public function save(Order $order): void
+              {
+                  $this->orders[$order->id()->value] = $order;
+              }
+          }
+
+          final class SpyNotifier implements CustomerNotifier
+          {
+              /** @var list<string> */
+              public array $sent = [];
+
+              public function orderConfirmed(Order $order): void
+              {
+                  $this->sent[] = $order->id()->value;
+              }
+          }
+        marks:
+          - {line: 4, tip: 'A plain array stands in for the database. save() puts the order in; get() takes it out.'}
+          - {line: 24, tip: 'The spy only remembers whom it was told to notify, so the test can check it later. No SMS is actually sent.'}
+      - type: code
+        lang: php
+        file: 'tests/Application/ConfirmOrderHandlerTest.php'
+        code: |
+          public function testConfirmingOrderSavesAndNotifies(): void
+          {
+              $orders = new InMemoryOrderRepository();
+              $notifier = new SpyNotifier();
+              $id = new OrderId('o-1');
+              $orders->save(Order::place($id, '01711000000'));
+
+              $handler = new ConfirmOrderHandler($orders, $notifier);
+              $handler(new ConfirmOrder($id));
+
+              self::assertTrue($orders->get($id)->isConfirmed());
+              self::assertSame(['o-1'], $notifier->sent);
+          }
+        marks:
+          - {line: 8, tip: 'No database, container or network. Only the rule runs, so the test finishes in milliseconds.'}
+      - type: visual
+        kind: compare
+        caption: 'Switching the SMS vendor: what changes and what doesn''t'
+        columns:
+          - title: 'What changes'
+            tone: warn
+            icon: gear
+            tip: 'Only the outside equipment. That is all you have to change.'
+            items:
+              - 'The new vendor''s Notifier bridge or adapter class'
+              - 'The DSN in .env'
+          - title: 'What stays the same'
+            tone: good
+            icon: check
+            tip: 'Everything inside stays exactly as it was. You don''t even need to re-run its tests.'
+            items:
+              - 'Order and its rules'
+              - 'ConfirmOrderHandler'
+              - 'All the rule tests'
+    aside:
+      - type: remember
+        body: 'Test the rules with fakes; test the real equipment less, in separate integration tests.'
+      - type: tips
+        items:
+          - 'Give each adapter its own integration test (the Doctrine adapter against a real database, say), so you know it really fulfils the port''s contract.'
+    check:
+      q: 'What do you gain, and what do you lose, by running rule tests on InMemoryOrderRepository instead of a real database?'
+      a: 'The test runs in milliseconds and needs no database. You lose verification of real Doctrine behaviour, which the adapter''s own integration test covers.'
+
+  - slug: leaky-port
+    title: 'The port that leaks the equipment''s name'
+    kind: pitfall
+    tldr: 'When QueryBuilder or a vendor type shows up in a port, the inside gets tangled with the equipment again. Name and type the port in business language.'
+    keywords: ['leaky abstraction', 'over-engineering', 'port design', 'QueryBuilder', 'leaking interface']
+    blocks:
+      - type: text
+        body: |
+          Creating an interface doesn't make something hexagonal. If database language seeps into the interface, it is a port in name only. A phone port stamped "this company's charger only" is no longer a port.
+      - type: code
+        lang: php
+        file: 'src/Domain/Order/OrderRepository.php'
+        variant: bad
+        code: |
+          interface OrderRepository
+          {
+              // Doctrine's type leaks: callers must learn the database's language
+              public function queryBuilder(): QueryBuilder;
+
+              // Twilio's concept leaks: the rules know the vendor's statuses
+              public function findByTwilioStatus(string $status): array;
+          }
+        marks:
+          - {line: 4, tip: 'Return a QueryBuilder and the use case builds queries itself. Doctrine has crept back inside the rules.'}
+          - {line: 7, tip: 'Switch SMS vendors and this method is dead. A port that carries a vendor''s name isn''t independent any more.'}
+      - type: code
+        lang: php
+        file: 'src/Domain/Order/OrderRepository.php'
+        variant: good
+        code: |
+          interface OrderRepository
+          {
+              /** @return list<Order> */
+              public function awaitingPaymentSince(DateTimeImmutable $time): array;
+
+              /** @return list<Order> */
+              public function pendingConfirmationFor(CustomerId $id): array;
+          }
+        marks:
+          - {line: 4, tip: 'The name is business language: "awaiting payment". How the query is done is the adapter''s private business.'}
+      - type: quote
+        body: 'Name and type your ports in the language of the business, not of the equipment.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Creating an interface for every class. Where change is unlikely and testing is easy, the class itself is enough.'
+          - 'Applying full hexagonal to a small CRUD app. It pays off only when you have complex rules or vendors that change.'
+      - type: when
+        use: ['You have complex business rules that change often', 'You may switch vendors, or use more than one']
+        avoid: ['Plain CRUD with no real rules']
+    check:
+      q: 'Which goal of hexagonal architecture fails when a port returns a `QueryBuilder`?'
+      a: 'Keeping the rules separate from the equipment. Once the use case works with Doctrine''s types, it is tangled up with Doctrine again.'
+
+flashcards:
+  - q: 'What is hexagonal architecture (ports and adapters)?'
+    a: 'Business rules sit in the middle, and outside equipment (database, HTTP, SMS) connects through adapters that fulfil interfaces (ports).'
+    more: |
+      Like a phone's USB-C port: the phone decides its port, and outside chargers are built to fit it. The rules don't know which database is used or who sends the SMS. Dependencies point from outside in.
+    ref: ports-adapters
+  - q: 'What is a port, and what is an adapter?'
+    a: 'A port is an interface written by the inner rules. An adapter is a class that fulfils that interface and talks to outside equipment.'
+    more: |
+      Example: `OrderRepository` is a port and `DoctrineOrderRepository` is its adapter. `CustomerNotifier` is another port, with `SmsCustomerNotifier` as its adapter. One port can have several adapters (a real one and an in-memory one).
+    ref: ports-adapters
+  - q: 'What is dependency inversion?'
+    a: 'The inner rules don''t depend on outer classes; they define an interface, and the outer classes depend on that interface.'
+    more: |
+      Normally the rules would call the database class, and so depend on it. Here the rules write an interface and the Doctrine adapter fulfils it, so the arrow turns around to point from outside in. More in [[ports-adapters|ports and adapters]].
+    ref: ports-adapters
+  - q: 'How do you connect an interface to its implementation in Symfony?'
+    a: 'Put `#[AsAlias(Interface::class)]` on the implementing class; autowiring then supplies it whenever that interface is requested.'
+    more: |
+      With only one implementation Symfony can autowire the interface on its own, but `#[AsAlias]` makes the intent explicit. With several implementations, choose with `#[Target]` or a separate alias.
+    ref: hexagonal-in-symfony
+  - q: 'Why are business rules easier to test in hexagonal architecture?'
+    a: 'An in-memory fake of a port lets you run the rules with no database or network, so the test finishes in milliseconds.'
+    more: |
+      `InMemoryOrderRepository` keeps orders in an array, and `SpyNotifier` just remembers whom it was asked to notify. Hand those two to the use case and the whole rule runs. The real adapters are tested separately in integration tests.
+    ref: test-and-swap
+  - q: 'What has to change when you switch vendors in hexagonal architecture?'
+    a: 'Only a new adapter class (or the DSN). The rules, the use case and the rule tests stay as they are.'
+    more: |
+      Switching SMS vendors means installing a new Notifier bridge and changing the DSN in `.env`. `Order`, `ConfirmOrderHandler` and the rule tests stay exactly as they were.
+    ref: test-and-swap
+  - q: 'When is a port called "leaky"?'
+    a: 'When equipment names creep into the port''s methods or types, such as a QueryBuilder or a vendor''s statuses.'
+    more: |
+      That tangles the inner rules with the equipment again. A good port is named in business language: `awaitingPaymentSince()`, not `QueryBuilder`. How the query runs is the adapter's secret.
+    ref: leaky-port
+
+quiz:
+  - q: 'From a hexagonal point of view, what is wrong with this use case?'
+    lang: php
+    code: |
+      final class ConfirmOrderHandler
+      {
+          public function __construct(
+              private EntityManagerInterface $em,
+              private \Twilio\Rest\Client $twilio,
+          ) {
+          }
+
+          public function __invoke(ConfirmOrder $command): void
+          {
+              $order = $this->em->find(Order::class, $command->orderId);
+              $order->confirm();
+              $this->em->flush();
+              $this->twilio->messages->create($order->phone(), ['body' => 'Confirmed']);
+          }
+      }
+    hint: 'What does the use case depend on: interfaces or real equipment classes?'
+    options:
+      - text: 'The rules depend directly on Doctrine and Twilio; with no ports, tests are slow and switching vendors is hard'
+        correct: true
+        why: 'The real equipment has come into the use case''s constructor. With interfaces (ports), these would live in adapters.'
+      - text: 'The class is `final`, so it can''t be extended'
+        correct: false
+        why: 'final is not the problem here. The problem is the direction of dependencies.'
+      - text: '`__invoke` should not be used; the method should be called handle()'
+        correct: false
+        why: 'A method name is a matter of taste; the architectural problem is elsewhere.'
+      - text: 'confirm() should live outside Order, not inside it'
+        correct: false
+        why: 'The rule belongs inside Order; moving it out would only tangle things further.'
+    ref: wired-to-everything
+  - q: 'Which of these classes should live on the outside (in Infrastructure) as "adapters"?'
+    hint: 'Which ones talk to outside equipment?'
+    options:
+      - text: 'DoctrineOrderRepository'
+        correct: true
+        why: 'It talks to Doctrine and fulfils the port''s contract, so it is an adapter.'
+      - text: 'SmsCustomerNotifier'
+        correct: true
+        why: 'It sends SMS through Symfony Notifier; everything about the vendor stays locked in here.'
+      - text: 'The confirm() rule of Order'
+        correct: false
+        why: 'That is a business rule, part of the inside. It has nothing to do with equipment.'
+      - text: 'The CustomerNotifier interface'
+        correct: false
+        why: 'That is a port, not an adapter. It is written from the inside, and the outside fulfils it.'
+    ref: ports-adapters
+  - q: 'To cut costs you have to switch SMS vendors. In a hexagonal design, what is the right thing to do?'
+    hint: 'Which class knows the vendor''s name?'
+    options:
+      - text: 'Write an adapter for the new vendor (or change the Notifier DSN); the use cases and rules stay unchanged'
+        correct: true
+        why: 'The change is small precisely because knowledge of the vendor is locked inside one adapter.'
+      - text: 'Hunt through every use case and replace the vendor''s SDK'
+        correct: false
+        why: 'That happens when hexagonal is missing, not because of it. Here the SDK lives only in the adapter.'
+      - text: 'Rename the port interface after the new vendor'
+        correct: false
+        why: 'A port speaks business language, not a vendor''s name; renaming it would mean changes everywhere.'
+      - text: 'Install the new vendor''s SDK in the Domain and update the rules'
+        correct: false
+        why: 'Putting a vendor in the Domain turns the dependency direction upside down.'
+    ref: test-and-swap
+  - q: 'What is the best way to make ConfirmOrderHandler''s test fast?'
+    hint: 'With a port in place, what can stand in for a real database?'
+    options:
+      - text: 'Run the use case with an in-memory fake of OrderRepository and a spy Notifier'
+        correct: true
+        why: 'No network or database is needed, so the test finishes in milliseconds. Only the rule gets checked.'
+      - text: 'Mock Doctrine and script the behaviour of every EntityManager call'
+        correct: false
+        why: 'It makes brittle tests tied to the internal design; with a port you don''t need this contortion at all.'
+      - text: 'Use the real database and the real Twilio in the test'
+        correct: false
+        why: 'Slow, brittle, and it can cost money.'
+      - text: 'Skip testing the rules and only check in a real browser'
+        correct: false
+        why: 'Slow and unreliable; testing the rule directly is far faster.'
+    ref: test-and-swap
+  - q: 'Which port design is fine?'
+    hint: 'Does the port''s name use the language of the business or of the equipment?'
+    options:
+      - text: '`awaitingPaymentSince(DateTimeImmutable $time): array`'
+        correct: true
+        why: 'Written in business language; the adapter decides how the query runs.'
+      - text: '`queryBuilder(): QueryBuilder`'
+        correct: false
+        why: 'Doctrine''s type leaks out. The use case will build queries itself and the inside gets tangled with the database again.'
+      - text: '`findByTwilioStatus(string $s): array`'
+        correct: false
+        why: 'A vendor''s name has crept into the port. Switch vendors and the port itself is dead.'
+      - text: '`executeSql(string $sql): array`'
+        correct: false
+        why: 'SQL has leaked out; this isn''t a port, it is a door straight into the database.'
+    ref: leaky-port

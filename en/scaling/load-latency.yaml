@@ -1,0 +1,452 @@
+slides:
+  - slug: more-waiters-same-queue
+    title: 'Twice the servers, no faster'
+    kind: story
+    tldr: 'Add servers without measuring where it hurts and you spend money for nothing: the slow step is probably somewhere else.'
+    keywords: ['bottleneck', 'scaling', 'slow site', 'slow checkout', 'adding servers', 'measure first']
+    blocks:
+      - type: metaphor
+        icon: shop
+        title: 'The long line at the biryani restaurant'
+        body: |
+          At lunchtime the line outside a biryani restaurant stretches down the street, so the owner hires 5 more waiters, going from 5 to 10. The line doesn't shrink at all. Everyone is stuck at the single cash counter, where one person writes up every bill.
+      - type: text
+        body: |
+          Ratul's shop app went through the same thing. On sale day the site crawled, so the team doubled the app servers from 4 to 8, yet checkout still took 3 seconds. The time was going into one slow database query. The step that holds everybody up is called the **bottleneck**, after the narrow neck of a bottle.
+      - type: visual
+        kind: bars
+        caption: 'Where the 3 seconds of checkout actually went'
+        items:
+          - {label: 'Network and nginx', value: 50, display: '50ms', tone: muted, tip: 'The time for the request to reach the server and for the reply to travel back. Nothing to win here.'}
+          - {label: 'PHP code', value: 150, display: '150ms', tip: 'The app server''s own work. Doubling servers only helped this part, which is just 5% of the total time.'}
+          - {label: 'Database query', value: 2550, display: '2550ms', tone: bad, tip: 'This is the cash counter. Without an index, one query was scanning the whole table; 85% of the time goes right here.'}
+          - {label: 'Payment API', value: 250, display: '250ms', tip: 'Waiting for an outside service to answer. No matter how many servers you add, this time won''t shrink.'}
+      - type: quote
+        body: 'Measure first, then scale. Pouring power into a step that isn''t stuck buys you nothing.'
+    aside:
+      - type: problem
+        body: 'When a site is slow, the first reflex is "give it more servers". This step teaches which numbers to measure so you can tell where it is really stuck, and put your effort in the right place.'
+      - type: terms
+        items:
+          - {term: 'Bottleneck', meaning: 'The slowest step. It decides the speed of the whole system.'}
+          - {term: 'Scaling', meaning: 'Increasing a system''s capacity so it can handle more load.'}
+      - type: pitfalls
+        items:
+          - 'Adding app servers while the database is the stuck part means more connections and more queries hitting it. Things get worse, not better.'
+    check:
+      q: 'Why didn''t doubling the waiters shorten the restaurant''s line?'
+      a: 'Because everyone was stuck at the cash counter, not at the waiters. Speeding up anything other than the slowest step (the bottleneck) doesn''t make the whole thing faster.'
+
+  - slug: load-throughput-latency
+    title: 'Three numbers: load, throughput, latency'
+    kind: concept
+    tldr: 'Load is how many requests arrive, throughput is how many get finished, latency is how long one takes. Near capacity, latency shoots up.'
+    keywords: ['load', 'throughput', 'latency', 'RPS', 'capacity', 'utilization', 'queueing', 'waiting time']
+    blocks:
+      - type: metaphor
+        icon: shop
+        title: 'Counting at the restaurant door'
+        body: |
+          Count how many people walk into the restaurant each minute: that's the **load**. Count how many finish eating, pay and walk out each minute: that's the **throughput**. The time one person spends from entering to leaving is the **latency**. If the cash counter can't handle more than 10 people a minute, then even with 12 arriving per minute only 10 leave. The rest pile up in the line, and everyone's wait keeps growing.
+      - type: visual
+        kind: table
+        caption: 'The three numbers, in the restaurant and in the app'
+        headers: ['', 'In the restaurant', 'In the app', 'Unit']
+        rows:
+          - cells: ['Load', 'People entering per minute', 'Requests arriving per second', 'req/s (RPS)']
+            tip: 'The pressure comes from outside, and you don''t control it. On an Eid sale the load can jump tenfold by itself.'
+          - cells: ['Throughput', 'People leaving per minute', 'Requests finished per second', 'req/s']
+            tip: 'The work the system is actually getting done. It has a ceiling, and that ceiling is called capacity.'
+          - cells: ['Latency', 'One person''s total time', 'Time to get the reply to one request', 'ms']
+            tip: 'Waiting in line plus the real work, added together. This is the only number the user ever feels.'
+      - type: visual
+        kind: bars
+        caption: 'The busier the server, the more latency jumps (each job takes 10ms, simple queue model)'
+        items:
+          - {label: '50% busy', value: 20, display: '20ms', tone: good, tip: 'The server is idle half the time, so almost nobody has to wait in line.'}
+          - {label: '80% busy', value: 50, display: '50ms', tip: 'The work itself is still 10ms, but waiting in line adds up to five times the total.'}
+          - {label: '90% busy', value: 100, display: '100ms', tone: warn, tip: 'Just 10% more load and latency doubled. This is where the trouble starts.'}
+          - {label: '95% busy', value: 200, display: '200ms', tone: bad, tip: 'Another 5% and it doubles again. At 100% the line never empties.'}
+      - type: quote
+        body: 'Never plan to keep a server 100% busy. Past 70-80% the line builds up and latency jumps.'
+    aside:
+      - type: remember
+        body: 'Load goes in, throughput comes out, latency is the wait in between.'
+      - type: terms
+        items:
+          - {term: 'RPS / QPS', meaning: 'Requests (or queries) per second, the unit for measuring load and throughput.'}
+          - {term: 'Capacity', meaning: 'The maximum throughput the system can deliver.'}
+          - {term: 'Utilization', meaning: 'The percentage of its capacity that a resource is busy.'}
+      - type: refs
+        items:
+          - {to: 'resilience/load-shedding', label: 'What to do when load exceeds capacity'}
+          - {to: 'thinking/estimation', label: 'Back-of-the-envelope QPS math'}
+    check:
+      q: 'Load is rising, throughput is stuck at one value and latency keeps growing. What does that mean?'
+      a: 'The system has hit its capacity. The extra requests aren''t being finished, they''re piling up in line, so everyone''s wait grows.'
+
+  - slug: percentiles-tail-latency
+    title: 'Averages lie: p50, p95, p99'
+    kind: concept
+    tldr: 'The average hides the slow requests. p95 and p99 show how long your worst-served users are waiting.'
+    keywords: ['percentile', 'p50', 'p95', 'p99', 'tail latency', 'average', 'median', 'SLO']
+    blocks:
+      - type: metaphor
+        icon: stopwatch
+        title: '95 happy, 5 furious'
+        body: |
+          Out of 100 customers at the restaurant, 95 got their food in 10 minutes and 5 got it an hour later. The average works out to 12.5 minutes, which sounds fine, yet 5 people stormed out angry. So sort everyone by wait time. **p50** means half the customers were served faster than this, **p95** means 95 out of 100, and **p99** means 99 out of 100. That slow stretch at the end is called **tail latency**.
+      - type: visual
+        kind: bars
+        caption: 'The same checkout endpoint over the last hour: average vs percentiles'
+        items:
+          - {label: 'p50 (median)', value: 120, display: '120ms', tone: good, tip: 'Half of all requests finished faster than this. It is the experience of a "typical" user.'}
+          - {label: 'Average', value: 310, display: '310ms', tone: muted, tip: 'A few very slow requests dragged the average up. Almost nobody actually got an answer in this time, so the number is nobody''s real experience.'}
+          - {label: 'p95', value: 900, display: '900ms', tone: warn, tip: 'One request in every 20 is slower than this. An SLO is usually written in terms of this number.'}
+          - {label: 'p99', value: 4200, display: '4200ms', tone: bad, tip: 'One request in every 100 takes more than 4 seconds. You would never spot this by looking at the average.'}
+      - type: text
+        body: |
+          p99 sounds rare, but it isn't. If building one page takes 20 internal calls, about 18% of pages, roughly 1 in every 5 or 6 users, include at least one call as slow as the p99.
+      - type: code
+        lang: sql
+        file: 'Percentiles from request_log (PostgreSQL)'
+        code: |
+          SELECT
+              round(avg(duration_ms))                                    AS avg_ms,
+              percentile_cont(0.50) WITHIN GROUP (ORDER BY duration_ms)  AS p50,
+              percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms)  AS p95,
+              percentile_cont(0.99) WITHIN GROUP (ORDER BY duration_ms)  AS p99
+          FROM request_log
+          WHERE route = 'checkout'
+            AND created_at > now() - interval '1 hour';
+        marks:
+          - {line: 2, tip: 'The average is only here for comparison. Base your decisions on the three percentile lines below it.'}
+          - {line: 5, tip: 'Sorts all rows by duration_ms and picks the value at the 99% position. That is p99.'}
+          - {line: 7, tip: 'Measure each endpoint separately. Mix every route together and a slow endpoint disappears among the fast ones.'}
+      - type: quote
+        body: 'Don''t measure latency with averages. p50 shows the typical experience, p99 the worst. Look at both.'
+    aside:
+      - type: terms
+        items:
+          - {term: 'p50 (median)', meaning: 'The middle value: half the requests are faster, half slower.'}
+          - {term: 'p99', meaning: 'Faster than 99% of requests; the other 1% are slower still.'}
+          - {term: 'Tail latency', meaning: 'The latency of the few slowest requests (p99, p99.9).'}
+      - type: tips
+        items:
+          - 'Write goals as percentiles: "checkout p95 under 300ms". "Fast on average" is not a goal.'
+          - 'You can''t add up or average the p99s of separate servers. Merge their histograms first, then compute.'
+          - 'Your biggest shoppers send the most requests, so they are the ones who land in the tail most often.'
+      - type: refs
+        items:
+          - {to: 'observability/metrics-slos', label: 'Metrics, SLIs, SLOs and error budgets'}
+    check:
+      q: 'Why is it wrong to look at an average latency of 310ms and say "all good"?'
+      a: 'The average hides slow requests behind the fast ones. Here p99 is over 4 seconds: 1 request in 100 is very slow, and the average gives you no way to see it.'
+
+  - slug: littles-law
+    title: 'Little''s Law: how many are inside at once?'
+    kind: concept
+    tldr: 'Requests in flight = requests arriving per second × average latency. This one multiplication sizes your workers and connections.'
+    keywords: ['Little''s Law', 'concurrency', 'php-fpm', 'max_children', 'worker', 'in flight', 'pool size']
+    blocks:
+      - type: metaphor
+        icon: users
+        title: 'How many chairs do you need?'
+        body: |
+          Two people walk into the restaurant each minute, and each stays 30 minutes on average. So at any moment 2 × 30 = 60 people are inside, and you need 60 chairs. If a slow kitchen stretches each stay to 60 minutes, the same customers need 120 chairs. That multiplication is **Little's Law**: L = λ × W.
+      - type: visual
+        kind: steps
+        caption: 'The same sum for an app: how many PHP-FPM workers do you need?'
+        steps:
+          - {title: '1. Measure load (λ)', body: 'At the busiest time, 200 requests arrive per second.', tip: 'λ (lambda) is the arrival rate. Take the peak figure from the nginx access log or your metrics, not the all-day average.'}
+          - {title: '2. Measure average latency (W)', body: 'One request takes 0.25 seconds on average.', tip: 'W is how long a request stays inside the system on average. This formula needs the average, not a percentile.'}
+          - {title: '3. Multiply (L)', body: '200 × 0.25 = 50 requests in flight at once.', tone: accent, tip: 'L is the number of requests inside at the same moment. In PHP-FPM every running request occupies one worker, so you need at least 50 workers.'}
+          - {title: '4. Add headroom', body: 'Add 20% spare: max_children = 60.', tip: 'You need some idle workers to absorb sudden bursts. But check that it fits in RAM: 60 × 60MB ≈ 3.6GB.'}
+          - {title: '5. Think of a slow day', body: 'If W becomes 1 second, L = 200: four times the workers.', tone: bad, tip: 'The load didn''t grow at all, only the database got slow. Yet every worker gets stuck and new requests join the queue. This is how one slow query stops the whole site.'}
+      - type: code
+        lang: ini
+        file: '/etc/php/8.3/fpm/pool.d/www.conf'
+        code: |
+          ; L = 200 req/s x 0.25s = 50 requests in flight  ->  keep 20% spare, so 60
+          pm = static
+          pm.max_children = 60
+
+          ; the page that shows "active processes" and "listen queue"
+          pm.status_path = /fpm-status
+
+          ; a stuck request must not hold a worker forever
+          request_terminate_timeout = 30s
+        marks:
+          - {line: 3, tip: 'At most 60 requests run at once. Request number 61 waits in line (the listen queue).'}
+          - {line: 6, tip: 'If the listen queue stays above zero, either workers are too few or latency has grown.'}
+    aside:
+      - type: remember
+        body: 'How many are inside = how fast they arrive × how long they stay.'
+      - type: terms
+        items:
+          - {term: 'λ (arrival rate)', meaning: 'How many requests arrive per second.'}
+          - {term: 'W', meaning: 'How long a request stays in the system on average, including time waiting in line.'}
+          - {term: 'L (concurrency)', meaning: 'The average number of requests inside the system at the same moment.'}
+      - type: tips
+        items:
+          - 'The same formula sizes a database connection pool, a queue worker fleet, even the headcount of a call centre.'
+          - 'Before adding workers, see whether you can cut W. Halve the latency and you need half the workers.'
+    check:
+      q: '100 requests arrive per second and the average latency is 0.5 seconds. How many requests are in flight at once?'
+      a: '100 × 0.5 = 50. So you need at least 50 workers, plus some spare. If latency grows to 1 second, you need 100.'
+
+  - slug: find-the-bottleneck
+    title: 'Find the bottleneck before you scale'
+    kind: howto
+    tldr: 'Measure how much time each step of a request takes. Fix the step that takes the longest or fills up first.'
+    keywords: ['bottleneck', 'profiling', 'Stopwatch', 'USE method', 'saturation', 'finding bottlenecks', 'measuring']
+    blocks:
+      - type: text
+        body: |
+          The restaurant owner only needed to look at where the line was forming. In an app, measurement does that looking for you: write down the time of each step of a slow request, and see how full each resource is.
+      - type: points
+        title: 'Four steps to find it'
+        style: number
+        items:
+          - 'Pick the slow endpoint by its p95/p99, not by a hunch.'
+          - 'Split its time: PHP code, database queries, outside APIs, waiting in line.'
+          - 'For each resource check three things: how busy it is, whether a queue is building, whether errors appear.'
+          - 'Fix the biggest slice, then measure again. The bottleneck will move somewhere else.'
+      - type: code
+        lang: php
+        file: 'src/Checkout/CheckoutService.php'
+        variant: good
+        code: |
+          final class CheckoutService
+          {
+              public function __construct(
+                  private readonly StockReserver $stock,
+                  private readonly PaymentGateway $gateway,
+                  private readonly Stopwatch $stopwatch,
+                  private readonly LoggerInterface $logger,
+              ) {
+              }
+
+              public function checkout(Cart $cart): Receipt
+              {
+                  $this->stopwatch->start('stock');
+                  $this->stock->reserve($cart);                 // database work
+                  $stockMs = $this->stopwatch->stop('stock')->getDuration();
+
+                  $this->stopwatch->start('payment');
+                  $receipt = $this->gateway->charge($cart);     // outside API
+                  $paymentMs = $this->stopwatch->stop('payment')->getDuration();
+
+                  $this->logger->info('checkout.timing', [
+                      'stock_ms' => $stockMs,
+                      'payment_ms' => $paymentMs,
+                  ]);
+
+                  return $receipt;
+              }
+          }
+        marks:
+          - {line: 6, tip: 'Symfony''s Stopwatch component, which autowires in. In dev these steps also show up in the Profiler''s Performance tab.'}
+          - {line: 15, tip: 'stop() returns an event; getDuration() gives the time in milliseconds. A separate number per step shows who is guilty.'}
+          - {line: 21, tip: 'In production the numbers go to a structured log. From there you can compute p95/p99 per step.'}
+      - type: visual
+        kind: table
+        caption: 'What it looks like when each resource fills up, and where to look'
+        headers: ['Resource', 'Sign it is full', 'Where to look']
+        rows:
+          - cells: ['App server CPU', '90%+ busy, load average above core count', 'top, server metrics']
+            tip: 'This is the only case where adding app servers directly helps.'
+          - cells: ['PHP-FPM workers', 'active = max_children, listen queue > 0', 'the /fpm-status page']
+            tip: 'All workers busy doesn''t mean the CPU is short. Most of the time they are sitting and waiting on a slow database or API.'
+          - cells: ['Database connections', 'close to max_connections, many waiting', 'pg_stat_activity']
+            tip: 'Once connections run out, new requests can''t even reach the database. Adding app servers makes this run out faster.'
+          - cells: ['Database queries', 'some queries run for seconds on end', 'slow query log, EXPLAIN ANALYZE']
+            tip: 'This is where most CRUD app bottlenecks are found: a missing index, or N+1 queries.'
+          - cells: ['Outside APIs', 'timeouts and slow replies rising', 'your own timing logs']
+            tip: 'More servers won''t fix this. You need timeouts, a cache, or to move the work to a queue.'
+    aside:
+      - type: commands
+        title: 'Measuring tools within reach'
+        items:
+          - {cmd: 'EXPLAIN (ANALYZE, BUFFERS) SELECT ...', desc: 'where the query really spends its time'}
+          - {cmd: 'SELECT state, count(*) FROM pg_stat_activity GROUP BY state;', desc: 'how many database connections are busy, how many idle'}
+          - {cmd: 'curl -s http://127.0.0.1/fpm-status', desc: 'active workers and the listen queue'}
+          - {cmd: 'top', desc: 'CPU, memory and load average'}
+      - type: pitfalls
+        items:
+          - 'Don''t make production decisions from measurements on your laptop. On a table of 100 rows every query is fast.'
+          - 'Change five things at once and you won''t know which one helped. Change one, then measure.'
+      - type: refs
+        items:
+          - {to: 'hands-on/prototyping-profiling', label: 'Profiling: measure, then optimise'}
+          - {to: 'data/indexing', label: 'Indexes and reading a query plan'}
+    check:
+      q: 'Of checkout''s 3 seconds, 2.5 go into one query. What happens if you double the app servers?'
+      a: 'Latency stays about the same, and the database gets more pressure. Fix the query first (an index, a smaller query), then measure again to find the next bottleneck.'
+
+flashcards:
+  - q: 'What is the difference between load and throughput?'
+    a: 'Load is how many requests arrive per second. Throughput is how many actually get finished per second.'
+    more: |
+      In a healthy system the two are equal: whatever arrives gets finished. Once load goes past capacity, throughput stops rising and the extra requests pile up in line. The throughput graph flattens while the latency graph climbs steeply.
+    ref: load-throughput-latency
+  - q: 'What is latency?'
+    a: 'The total time from sending a request to getting the reply: waiting in line plus the actual work.'
+    more: |
+      This is the only number the user feels. Even when the work takes the same time, a busy server adds waiting in line and latency grows. It is usually measured in milliseconds (ms).
+    ref: load-throughput-latency
+  - q: 'Why is judging a system by its average latency a mistake?'
+    a: 'The average hides slow requests behind the fast ones. Even with a healthy-looking average, 1-5% of users can have a terrible experience.'
+    more: |
+      If 95 people are served in 10 minutes and 5 in an hour, the average is 12.5 minutes, yet 5 people were badly served. That is why latency is always read as percentiles: p50, p95, p99. More in [[observability/metrics-slos|metrics and SLOs]].
+    ref: percentiles-tail-latency
+  - q: 'p99 latency is 2 seconds. What does that mean?'
+    a: '99% of requests finished within 2 seconds; the remaining 1% took even longer.'
+    more: |
+      Sort all requests by time, and the value at the 99% position is p99. Likewise p50 (the median) is the middle value and p95 the value at 95%. With 1 million requests a day, that 1% is 10,000 slow requests.
+    ref: percentiles-tail-latency
+  - q: 'Why does tail latency (p99) matter even though it sounds rare?'
+    a: 'A page made of many internal calls quickly becomes likely to hit at least one slow call: with 20 calls, about 18%.'
+    more: |
+      If each call is fast 99% of the time, the chance that all 20 are fast is 0.99 to the power of 20, about 82%. In the other 18% of pages at least one call is slow, and the whole page waits on it. Heavy users also land in the tail more often.
+    ref: percentiles-tail-latency
+  - q: 'What does Little''s Law say?'
+    a: 'L = λ × W: the average number of requests in flight = requests arriving per second × the average time one request takes.'
+    more: |
+      If 2 people enter the restaurant each minute and each stays 30 minutes, 60 are always inside. In an app, this L tells you how many PHP-FPM workers or database connections you need. The formula holds while the system is in a steady state, meaning what arrives also gets finished.
+    ref: littles-law
+  - q: '200 requests per second, average latency 0.25s. How many PHP-FPM workers do you need?'
+    a: '200 × 0.25 = 50 requests in flight, so at least 50 workers; with 20% headroom, about 60.'
+    more: |
+      In PHP-FPM every running request occupies one worker. If latency rises to 1 second, the same load needs 200 workers, which is why a slow database fills up every worker so fast. Before adding workers, check that they fit in RAM.
+    ref: littles-law
+  - q: 'What is a bottleneck, and what happens if you speed up anything else?'
+    a: 'The slowest step, or the first to fill up. Speeding up anything other than the bottleneck barely changes the total speed.'
+    more: |
+      If everyone is stuck at the cash counter, adding waiters doesn't shorten the line. If 2.5 of an app's 3 seconds go into one query, doubling the app servers doesn't help and only adds pressure on the database. Fix one bottleneck and the next one shows up elsewhere, so measure again.
+    ref: find-the-bottleneck
+  - q: 'What happens to latency once a server is more than 80% busy?'
+    a: 'A line starts to form, and latency doesn''t rise steadily, it jumps. Near 100%, the wait becomes unbounded.'
+    more: |
+      In a simple queue model where the work takes 10ms, latency is 20ms at 50% busy, 100ms at 90% and 200ms at 95%. That is why capacity planning treats 70-80% utilization as the limit, leaving room for sudden bursts.
+    ref: load-throughput-latency
+
+quiz:
+  - q: 'Checkout in Ratul''s shop takes 3 seconds. Measuring shows 2.5 seconds go into one database query, while the app servers'' CPU is only 20% busy. What should be the first move?'
+    hint: 'At the restaurant, where was the line forming: at the waiters, or at the cash counter?'
+    options:
+      - text: 'Go from 4 to 8 app servers'
+        correct: false
+        why: 'The app servers are already mostly idle (20% CPU). More of them means more connections and queries on the database, and latency won''t drop.'
+      - text: 'Look at the query with EXPLAIN ANALYZE and fix the index or the size of the query'
+        correct: true
+        why: '85% of the time goes into this one place, so this is the bottleneck. Fixing it reduces total latency the most.'
+      - text: 'Double PHP-FPM''s max_children'
+        correct: false
+        why: 'More workers means more requests running the same slow query at once, which makes the database even slower.'
+      - text: 'Add a nice loading animation to the Vue app'
+        correct: false
+        why: 'The wait will look prettier, but 3 seconds will still be 3 seconds.'
+    ref: find-the-bottleneck
+  - q: 'The team runs the query below and says, "Checkout is fast, the average is 280ms." Where is the gap in that conclusion?'
+    lang: sql
+    code: |
+      SELECT round(avg(duration_ms)) AS avg_ms
+      FROM request_log
+      WHERE route = 'checkout';
+      -- avg_ms: 280
+    hint: 'If 95 people are served in 10 minutes and 5 in an hour, what is the average?'
+    options:
+      - text: 'The average can''t tell you how many users get very slow replies; you need p95 and p99'
+        correct: true
+        why: 'A few requests of 4-5 seconds barely move the average. Compute p95/p99 with percentile_cont and the tail becomes visible.'
+      - text: 'They should have used max() instead of avg()'
+        correct: false
+        why: 'max jumps because of a single odd request (say, a one-off network blip), so it says nothing about the system''s normal state.'
+      - text: 'The number is wrong because round() was used'
+        correct: false
+        why: 'round only trims the decimals. The problem isn''t precision, it''s choosing the wrong yardstick.'
+      - text: 'There is no gap: 280ms means everyone gets fast replies'
+        correct: false
+        why: 'With a 280ms average, p99 can still be several seconds. The average is nobody''s real experience.'
+    ref: percentiles-tail-latency
+  - q: 'Which of these statements about percentiles are correct?'
+    hint: 'The number after p says what percent of requests finished within that time.'
+    options:
+      - text: 'p50 is the median: half the requests finish faster than this'
+        correct: true
+        why: 'The middle value of the sorted list is p50, and it shows the typical user''s experience.'
+      - text: 'p99 = 2s means about 1 request in every 100 takes more than 2 seconds'
+        correct: true
+        why: '99% of requests finish within that time; the remaining 1% are slower still.'
+      - text: 'Averaging the p99 of three servers gives the p99 of the whole system'
+        correct: false
+        why: 'You can''t average percentiles. Combine the requests (or histograms) of all servers first, then compute.'
+      - text: 'p99 is not always greater than or equal to the average, so you don''t need to look at it'
+        correct: false
+        why: 'In real latency data, p99 is almost always far above the average, and that is exactly why you have to look at it separately.'
+    ref: percentiles-tail-latency
+  - q: 'An API receives 300 requests per second at 200ms average latency. PHP-FPM has max_children = 40. What will happen?'
+    hint: 'Little''s Law: requests in flight = arrival rate × average time.'
+    options:
+      - text: 'Nothing: 40 workers are enough for 300 requests per second'
+        correct: false
+        why: '300 × 0.2 = 60 requests are in flight at once, which is more than 40.'
+      - text: 'About 60 workers are needed, so requests will pile up in line and latency will keep rising'
+        correct: true
+        why: 'L = 300 × 0.2 = 60. With only 40 workers, the rest wait in the listen queue, so latency grows even more.'
+      - text: 'You need 300 workers, because every request needs its own worker'
+        correct: false
+        why: 'One worker can finish five 200ms requests in a second. You need as many workers as requests in flight at once, not as total requests.'
+      - text: 'The number of workers has nothing to do with latency'
+        correct: false
+        why: 'If latency doubles, the same load needs twice the workers. The W in the formula is exactly the latency.'
+    ref: littles-law
+  - q: 'The dashboard shows load rising from 500 to 800 requests per second, throughput stuck at 600, and latency growing minute by minute. Which explanation is the best?'
+    hint: 'What is in must equal what is out, so where is the difference going?'
+    options:
+      - text: 'The system''s capacity is about 600 req/s; the extra 200 pile up in line every second'
+        correct: true
+        why: 'Throughput that stops rising marks the capacity limit. The gap between arrivals and departures accumulates in the queue, so latency never stops growing.'
+      - text: 'The monitoring tool is wrong, because load and throughput are always equal'
+        correct: false
+        why: 'They are equal only when healthy. Once capacity is exceeded, throughput falls behind, and that is the signature of overload.'
+      - text: 'Users'' internet connections have slowed down'
+        correct: false
+        why: 'Then throughput wouldn''t sit at a capacity-like number, and latency wouldn''t grow in step with load.'
+      - text: 'Everything is fine, since throughput hasn''t dropped'
+        correct: false
+        why: 'Even if throughput hasn''t dropped, 200 requests pile up every second. Timeouts will start soon.'
+    ref: load-throughput-latency
+  - q: 'Which signs say the bottleneck is in the database rather than the app servers?'
+    hint: 'Where a resource is full, a line forms. Where it is empty, the resource sits idle.'
+    options:
+      - text: 'App server CPU is 20% busy, yet requests are slow'
+        correct: true
+        why: 'An idle app server is waiting for somebody else''s reply, usually the database''s.'
+      - text: 'In pg_stat_activity almost all connections are busy or waiting'
+        correct: true
+        why: 'Database connections filling up means the line is forming right there.'
+      - text: 'After adding app servers, latency got even worse'
+        correct: true
+        why: 'More app servers put more pressure on a stuck database. That is exactly what happens when the bottleneck is in the database.'
+      - text: 'Every app server''s CPU is 95% busy and the database is nearly idle'
+        correct: false
+        why: 'Here the line is at the app servers. This is the one case where adding app servers is the right fix.'
+    ref: find-the-bottleneck
+  - q: 'Building a product page takes 20 internal service calls. Each call has a p99 latency of 1 second. Roughly what percentage of pages will have at least one call slower than 1 second?'
+    hint: 'Work out the chance that all 20 calls are fast, then subtract from 100%.'
+    options:
+      - text: 'About 1%'
+        correct: false
+        why: '1% is the chance that one single call is slow. With 20 calls the risk grows a lot.'
+      - text: 'About 18%'
+        correct: true
+        why: 'The chance that all 20 are fast is 0.99 to the power of 20, about 82%. So roughly 18% of pages have at least one slow call.'
+      - text: 'About 50%'
+        correct: false
+        why: 'You would need around 70 calls to reach 50%. With 20 calls the risk is about 18%.'
+      - text: '0%, because p99 means 99% are fast'
+        correct: false
+        why: '99% fast means 1% slow, and across many calls those 1%s add up to something big.'
+    ref: percentiles-tail-latency

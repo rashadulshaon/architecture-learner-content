@@ -1,0 +1,348 @@
+slides:
+  - slug: five-sms-for-one-order
+    title: 'Five SMS for one order, and the one that mattered never arrived'
+    kind: story
+    tldr: 'Blast every event to every channel and users get fed up and opt out. Then when a provider breaks, the urgent message is the one that gets lost.'
+    keywords: ['notification', 'spam', 'opt-out', 'multi-channel', 'notification fatigue']
+    blocks:
+      - type: metaphor
+        icon: shop
+        title: 'The neighbourhood pharmacy''s news'
+        body: |
+          To say "your medicine has arrived", the pharmacy boy calls, texts and even visits the same customer, five times a day. In the end the customer blocks his number. Then the day some urgent insulin actually arrives, the call doesn't connect and nobody tries another way. A notification system's job is to tell the right person, through the right channel, once.
+      - type: visual
+        kind: compare
+        caption: 'News of the same order: everyone on every channel vs organised'
+        columns:
+          - title: 'What many people do'
+            tone: bad
+            icon: cross
+            tip: 'Fire on every channel whenever something happens. Easy to build, but tiring for the user.'
+            items:
+              - 'Order, payment, packing, shipping: 4 SMS and 4 emails'
+              - 'The user turned SMS off, and it still goes out'
+              - 'A retry sends the same message twice'
+              - 'When the SMS provider is down, the OTP never arrives'
+          - title: 'What should happen'
+            tone: good
+            icon: check
+            tip: 'Each message follows the user''s preferences, goes out once, and takes a fallback route when something breaks.'
+            items:
+              - 'Urgent events stand alone, the rest go into one digest'
+              - 'It goes only through the channel the user picked'
+              - 'A dedup key means the same message goes once'
+              - 'If a provider breaks, the message isn''t dropped but takes a fallback'
+      - type: quote
+        body: 'A notification''s job isn''t to send messages. It is to tell the right person, through the right channel, exactly once.'
+    aside:
+      - type: story
+        title: 'The digital wallet''s annoyance'
+        body: |
+          A wallet app sent a push, an SMS and an email for every small transaction. Within a few months many users switched off all messages, and then nobody received the urgent security alerts either.
+      - type: problem
+        body: 'Something happening and telling the user about it are two separate decisions. The second has to weigh preferences, repetition, load and provider failures.'
+    check:
+      q: 'When users get fed up with too many notifications, what is the biggest loss?'
+      a: 'They switch off all messages, so later the urgent ones (OTP, security) no longer reach them either.'
+
+  - slug: notification-pipeline
+    title: 'The notification pipeline: preferences, dedup, provider'
+    kind: concept
+    tldr: 'An event doesn''t go straight to SMS. First the user''s preferences, then dedup and throttling, and finally the provider, with a failover if one breaks.'
+    keywords: ['notification pipeline', 'preferences', 'deduplication', 'provider failover', 'digest', 'throttling']
+    blocks:
+      - type: metaphor
+        icon: shop
+        title: 'The pharmacy''s notebook'
+        body: |
+          The pharmacy notebook says: Rahim wants to be told by phone only, and never after 9 p.m. Before telling anyone, the boy checks the notebook, checks whether the same news went out yesterday, and only then calls. If the call doesn't connect, he tries the younger brother's number. Every step is a separate decision.
+      - type: visual
+        kind: flow
+        caption: 'From one event to the user: one decision at each step'
+        nodes:
+          - {id: ev, label: 'OrderShipped', sub: 'the event', icon: bell, col: 0, row: 0, tip: 'A domain event. There is no channel or provider name in it.'}
+          - {id: pref, label: 'Check preferences', sub: 'which channels are on', icon: list, col: 1.5, row: 0, tip: 'The user''s choices: which kinds of message, on which channels. If it is switched off, it ends right here.'}
+          - {id: guard, label: 'Dedup + throttle', sub: 'once, within limits', icon: filter, tone: accent, col: 3, row: 0, tip: 'This is where it checks whether the same message already went out, and how many have gone in the last hour.'}
+          - {id: sms1, label: 'SMS provider A', sub: 'primary', icon: phone, col: 3, row: 1.5, tip: 'The first-choice provider.'}
+          - {id: sms2, label: 'SMS provider B', sub: 'fallback', icon: phone, tone: warn, col: 1.5, row: 1.5, tip: 'Used when A fails, so an urgent message isn''t lost.'}
+          - {id: user, label: 'User', sub: 'got the message', icon: user, tone: good, col: 0, row: 1.5, tip: 'The person the message was meant for, after passing every step.'}
+        edges:
+          - {from: ev, to: pref, label: 'When an event arrives, the user''s preferences are checked first'}
+          - {from: pref, to: guard, label: 'SMS is on, so the message goes through dedup and throttling'}
+          - {from: guard, to: sms1, label: 'It is new and within limits, so it goes to provider A'}
+          - {from: sms1, to: sms2, label: 'If A fails, the same message goes to B', tone: warn, dashed: true}
+          - {from: sms2, to: user, label: 'The message reaches the user', tone: good}
+      - type: quote
+        body: 'Preferences first, each message once, and when one provider breaks, another.'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Preference', meaning: 'Which kinds of message the user wants on which channel.'}
+          - {term: 'Throttling', meaning: 'A cap on how many messages one person gets in a given period.'}
+          - {term: 'Digest', meaning: 'Collecting many small updates into one summary message.'}
+          - {term: 'Failover', meaning: 'Switching to a backup provider when the primary one fails.'}
+      - type: pitfalls
+        items:
+          - 'OTP and security messages sit outside opt-out. Marketing never does.'
+    check:
+      q: 'A user has SMS switched off but needs a password-reset OTP. How do you handle it?'
+      a: 'Rules by event type: OTP and security messages are transactional, so they go out on an urgent channel regardless of preferences. Marketing and ordinary updates respect preferences.'
+
+  - slug: symfony-notifier
+    title: 'Symfony Notifier: channels, preferences and failover'
+    kind: howto
+    tldr: 'Build a Notification in Notifier, take the channels from the user''s preferences, and add a backup provider with failover(...) in the transport DSN.'
+    keywords: ['Symfony Notifier', 'Notification', 'texter_transports', 'failover', 'Recipient', 'channel policy']
+    blocks:
+      - type: code
+        lang: php
+        file: 'src/Notification/OrderNotifier.php'
+        variant: good
+        code: |
+          final readonly class OrderNotifier
+          {
+              public function __construct(
+                  private NotifierInterface $notifier,
+                  private PreferenceRepository $prefs,
+              ) {}
+
+              public function shipped(Order $order): void
+              {
+                  $user = $order->getUser();
+                  $channels = $this->prefs->enabledChannels($user, 'order_shipped'); // ['email','sms']
+                  if ([] === $channels) {
+                      return;                       // the user doesn't want it
+                  }
+
+                  $subject = 'Order #'.$order->getId().' has shipped';
+                  $notification = (new Notification($subject, $channels))
+                      ->content('The courier will arrive tomorrow.')
+                      ->importance(Notification::IMPORTANCE_HIGH);
+
+                  $recipient = new Recipient($user->getEmail(), $user->getPhone());
+                  $this->notifier->send($notification, $recipient);
+              }
+          }
+        marks:
+          - {line: 11, tip: 'Preferences come from our own table. Notifier only sends; it doesn''t decide.'}
+          - {line: 17, tip: 'The second argument is the list of channels, meaning which channels it will go out on.'}
+          - {line: 21, tip: '`Recipient` holds both the email and the phone; each channel uses the one it needs.'}
+      - type: code
+        lang: yaml
+        file: 'config/packages/notifier.yaml'
+        variant: good
+        code: |
+          framework:
+              notifier:
+                  texter_transports:
+                      # if the first fails, the second; if both fail, an exception
+                      sms: 'failover(%env(SMS_PROVIDER_A_DSN)% %env(SMS_PROVIDER_B_DSN)%)'
+                  channel_policy:
+                      urgent: ['sms', 'email']
+                      high: ['email']
+                      low: ['email']
+        marks:
+          - {line: 5, tip: '`failover(...)` tries them in order. No code changes, only the DSN.'}
+          - {line: 7, tip: 'If you give no channels, the Notification''s importance picks the channels according to this policy.'}
+    aside:
+      - type: tips
+        items:
+          - 'Each SMS provider in Bangladesh has its own DSN. If Notifier has no bridge for yours, you can write a small transport yourself.'
+          - 'Mailer has a `failover(...)` DSN too, with the same idea.'
+          - 'Notifier sends synchronously. Route it through Messenger so the request doesn''t slow down.'
+      - type: refs
+        items:
+          - {to: 'messaging/dlq-retries', label: 'When sending fails: retries and the DLQ'}
+    check:
+      q: 'Do you have to change code to add a second SMS provider in Notifier?'
+      a: 'No. Just turn the `texter_transports` DSN into `failover(A B)`. If the first provider fails, Notifier automatically tries the second.'
+
+  - slug: dedup-throttle-digest
+    title: 'The same message once, and a digest when there are too many'
+    kind: pitfall
+    tldr: 'Retries and redeliveries send a message twice, so stop that with a dedup key. Past the limit, hold messages back with a rate limiter and collect them in a digest.'
+    keywords: ['dedup key', 'RateLimiter', 'digest', 'throttle', 'idempotent notification', 'duplicate notification']
+    blocks:
+      - type: text
+        body: |
+          Sending a notification is message processing too, so a retry can send the same SMS twice. The fix is a **dedup key** (for example `order_shipped:501:user7`) that goes into a UNIQUE table only once. And once a user would receive more than three in an hour, the rest aren't sent immediately but collected in a digest.
+      - type: code
+        lang: php
+        file: 'src/Notification/SafeSender.php'
+        variant: good
+        code: |
+          public function send(User $user, string $dedupKey, Notification $n): void
+          {
+              $claimed = $this->db->executeStatement(
+                  'INSERT INTO notification_log (dedup_key) VALUES (?) ON CONFLICT DO NOTHING',
+                  [$dedupKey],
+              );
+              if (0 === $claimed) {
+                  return;                                    // already sent
+              }
+
+              if (!$this->perUserLimiter->create((string) $user->getId())->consume()->isAccepted()) {
+                  $this->digest->add($user, $n);             // goes out later, together
+                  return;
+              }
+
+              try {
+                  $this->notifier->send($n, new Recipient($user->getEmail(), $user->getPhone()));
+              } catch (\Throwable $e) {
+                  $this->db->delete('notification_log', ['dedup_key' => $dedupKey]);
+                  throw $e;                                  // so the retry tries again
+              }
+          }
+        marks:
+          - {line: 4, tip: 'With UNIQUE on dedup_key, the second message can''t get in.'}
+          - {line: 11, tip: 'Past the limit it goes straight to the digest. Nothing is lost; it just goes out later.'}
+          - {line: 19, tip: 'If sending fails, we remove the mark. Otherwise the retry is skipped and the message is never sent.'}
+      - type: code
+        lang: yaml
+        file: 'config/packages/rate_limiter.yaml'
+        code: |
+          framework:
+              rate_limiter:
+                  per_user:
+                      policy: 'sliding_window'
+                      limit: 3
+                      interval: '1 hour'
+        marks:
+          - {line: 5, tip: 'At most 3 notifications per person per hour. The autowire name is `$perUserLimiter`.'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'Set the dedup mark before sending and forget to remove it when sending fails, and the message is lost for good.'
+          - 'Don''t forget to send what you collect in the digest on time; a scheduled job should empty it.'
+      - type: refs
+        items:
+          - {to: 'api/rate-limiting', label: 'Rate limiting'}
+    check:
+      q: 'Which is right for building a dedup key: a random UUID or the identity of the event?'
+      a: 'The identity of the event, such as `order_shipped:501:user7`. A retry produces the same key, which is how the duplicate is caught; a random UUID is new each time and makes the check useless.'
+
+flashcards:
+  - q: 'What is the core job of a notification system?'
+    a: 'To tell the right person, through their preferred channel, exactly once, and to make sure an urgent message isn''t lost even if a provider breaks.'
+    more: |
+      Something happening and telling the user about it are two separate decisions. The second has to weigh preferences, repetition, load and provider failures, which is why it needs a pipeline of its own.
+    ref: notification-pipeline
+  - q: 'Why are user preferences the first step of a notification pipeline?'
+    a: 'Sending on a channel the user switched off is annoying, and for marketing it can also be a legal problem. If it is switched off, stop right here.'
+    more: |
+      Preferences are stored per pair of message type and channel, for example ("order_shipped", "sms"). OTP and security messages are transactional, so they run under separate rules outside opt-out.
+    ref: notification-pipeline
+  - q: 'What should a notification dedup key look like?'
+    a: 'It should be based on the identity of the event, like `order_shipped:501:user7`. Not a random id, because a retry then gets a different key and the duplicate goes undetected.'
+    more: |
+      The key goes into a UNIQUE table. If the insert succeeds, the message is new; if it conflicts, it already went out. If sending fails, you have to remove the mark, or the retry is skipped for good.
+    ref: dedup-throttle-digest
+  - q: 'How do throttling and a digest work together?'
+    a: 'A rate limiter sets a cap per person. Past the cap, messages aren''t dropped but collected in a digest, and later go out as one summary.'
+    more: |
+      For example, the small updates that arrive after the third in an hour go together into one email. The user isn't annoyed and nothing is lost. Urgent messages sit outside this cap.
+    ref: dedup-throttle-digest
+  - q: 'What is provider failover, and how do you do it in Symfony Notifier?'
+    a: 'Sending through a backup provider when the primary one fails. In Notifier, write `failover(A B)` in the DSN.'
+    more: |
+      No code changes, only the `texter_transports` DSN. If the first throws an exception, the second is tried. If both fail, an exception is thrown, and that is where Messenger's retry comes in.
+    ref: symfony-notifier
+  - q: 'How does Notifier decide which channels a message goes to?'
+    a: 'From the list of channels on the Notification, or from `channel_policy` by importance. Building the list from the user''s preferences is best.'
+    more: |
+      Notifier only sends. Which channel each user wants has to come from our own table, so a small service reads the preferences, builds the list of channels and passes it to the Notification.
+    ref: symfony-notifier
+  - q: 'What is the rule for OTP and marketing messages and a user''s preferences?'
+    a: 'OTP and security messages are transactional and go out on an urgent channel. Marketing always respects the user''s opt-in and opt-out.'
+    more: |
+      A user who has switched off all SMS still needs the password-reset code. So the rules differ by message type, and they are written out explicitly in code.
+    ref: notification-pipeline
+
+quiz:
+  - q: 'One order sends five SMS and the user is annoyed. Which fixes are right?'
+    hint: 'Does every event need to be its own message the moment it happens?'
+    options:
+      - text: 'Collect the small events in a digest and send one summary'
+        correct: true
+        why: 'When several small updates go in one message, the count drops and no information is lost.'
+      - text: 'Check the user''s preferences and send only on the channel they want'
+        correct: true
+        why: 'Respecting preferences removes the messages on unwanted channels.'
+      - text: 'Turn SMS off and keep only email, for everyone'
+        correct: false
+        why: 'That hurts both urgent messages and users who prefer SMS.'
+      - text: 'Wait 5 seconds before each event'
+        correct: false
+        why: 'Waiting doesn''t reduce the number of messages, it only delays them.'
+    ref: five-sms-for-one-order
+  - q: 'Which is the correct order for the pipeline?'
+    hint: 'Decide first, send afterwards.'
+    options:
+      - text: 'Check preferences, then dedup/throttle, then send to the provider'
+        correct: true
+        why: 'Unwanted or duplicate messages are dropped before they reach the provider, which also saves cost.'
+      - text: 'Send to the provider, then check preferences'
+        correct: false
+        why: 'Checking preferences after sending is pointless; the message has already gone.'
+      - text: 'Dedup, then send, then preferences last'
+        correct: false
+        why: 'Send without respecting preferences and users who opted out still get the message.'
+    ref: notification-pipeline
+  - q: 'SMS provider A is often down. How do you stop OTPs being lost?'
+    lang: yaml
+    code: |
+      framework:
+          notifier:
+              texter_transports:
+                  sms: '%env(SMS_PROVIDER_A_DSN)%'
+    hint: 'How can you name two providers in the DSN?'
+    options:
+      - text: 'Change the DSN to `failover(%env(SMS_PROVIDER_A_DSN)% %env(SMS_PROVIDER_B_DSN)%)`'
+        correct: true
+        why: 'When A fails, Notifier tries B itself, with no code changes.'
+      - text: 'Swallow the failure in a try/catch when sending the OTP'
+        correct: false
+        why: 'Swallow the failure and the OTP never goes out, and nobody knows.'
+      - text: 'Send through both providers every time'
+        correct: false
+        why: 'The user gets two OTPs and the cost doubles. Failover is for when the first one fails.'
+    ref: symfony-notifier
+  - q: 'What is wrong with this code?'
+    lang: php
+    code: |
+      $claimed = $this->db->executeStatement(
+          'INSERT INTO notification_log (dedup_key) VALUES (?) ON CONFLICT DO NOTHING',
+          [$dedupKey],
+      );
+      if (0 === $claimed) {
+          return;
+      }
+      $this->notifier->send($n, $recipient);
+    hint: 'What happens if sending fails after the mark is set?'
+    options:
+      - text: 'If sending fails the mark stays, so the retry skips it and the message is never sent'
+        correct: true
+        why: 'The mark was set but nothing was sent. The retry will see "already sent" and return.'
+      - text: '`ON CONFLICT DO NOTHING` can''t prevent duplicates'
+        correct: false
+        why: 'The UNIQUE constraint together with this clause does prevent duplicates.'
+      - text: 'Returning is wrong; it should throw an exception'
+        correct: false
+        why: 'Quietly dropping the duplicate is right; it isn''t a failure.'
+    ref: dedup-throttle-digest
+  - q: 'Which messages may still go out (on an urgent channel) after the user has opted out of SMS?'
+    hint: 'Without the message, the user can''t do what they came to do.'
+    options:
+      - text: 'A password-reset OTP'
+        correct: true
+        why: 'It is transactional; without it the user can''t get into their account.'
+      - text: 'A promotion for a new offer'
+        correct: false
+        why: 'Marketing must always honour opt-out.'
+      - text: 'A security alert about a suspicious login'
+        correct: true
+        why: 'It matters for account safety, so it is usually kept outside opt-out.'
+      - text: 'The weekly newsletter'
+        correct: false
+        why: 'It is promotional, and the user can switch it off if they want.'
+    ref: notification-pipeline

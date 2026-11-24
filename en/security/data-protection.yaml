@@ -1,0 +1,477 @@
+slides:
+  - slug: stolen-dump
+    title: 'The database dump was stolen. What was inside?'
+    kind: story
+    tldr: 'A database leaves the building sooner or later (backups, bugs, theft). So store the data in a way that a thief who gets it still can''t read it.'
+    keywords: ['data breach', 'database dump', 'defense in depth', 'data leak', 'plain text password']
+    blocks:
+      - type: metaphor
+        icon: book
+        title: 'The corner shop''s credit ledger'
+        body: |
+          The corner shop's credit ledger lists everyone's name, address and what they owe. If the ledger is stolen, the thief learns everything about everyone. But suppose real names were written only in a code the shopkeeper understood, and the code list was kept in a separate safe: the thief would have the ledger and still understand nothing. Data protection is exactly this idea.
+      - type: visual
+        kind: compare
+        caption: 'The same dump, two different outcomes: what the thief got'
+        columns:
+          - title: 'An unprotected dump'
+            tone: bad
+            icon: warning
+            tip: 'After a theft every loss is direct: passwords open accounts on other sites too, and an NID number lets someone steal an identity.'
+            items:
+              - 'Passwords: 123456 and rahim@2024 can be read directly'
+              - 'NID and phone numbers all in plain text'
+              - 'Card numbers stored with their CVV'
+              - 'Emails and tokens scattered through the logs'
+          - title: 'A protected dump'
+            tone: good
+            icon: shield
+            tip: 'The thief holds only meaningless bytes. To get the real values, they would have to break into a separate safe (the key).'
+            items:
+              - 'Passwords: argon2id hashes, which can''t be reversed'
+              - 'NID and phone: encrypted, with the key kept elsewhere'
+              - 'Cards: only the payment provider''s token'
+              - 'No personal data in the logs'
+      - type: quote
+        body: 'Assume the database will be stolen one day. Store the data so the thief gets nothing.'
+    aside:
+      - type: problem
+        body: 'Guarding the entrance (firewall, passwords) is not enough. Backups, wrong permissions, SQL injection or one employee''s mistake can send data outside. The data''s own protection is the last wall.'
+      - type: terms
+        items:
+          - {term: 'PII', meaning: 'Personally Identifiable Information: name, phone, NID, email, address; anything that can identify a person.'}
+          - {term: 'Defense in depth', meaning: 'Protection in several layers instead of one, so when one breaks the others still hold.'}
+    check:
+      q: 'The server has a firewall, so why does the data inside the database need protection too?'
+      a: 'Because data leaves around the firewall: backups, SQL injection, an employee''s mistake. If the data protects itself, the damage stays limited even after a theft.'
+
+  - slug: password-hashing
+    title: 'Passwords: fry them, don''t store them'
+    kind: concept
+    tldr: 'Hash passwords, don''t encrypt them: use a slow, salted algorithm (argon2id/bcrypt) from which the original password can''t be recovered.'
+    keywords: ['password hashing', 'argon2id', 'bcrypt', 'salt', 'PasswordHasher', 'password storage']
+    blocks:
+      - type: metaphor
+        icon: fire
+        title: 'Frying an egg'
+        body: |
+          Once you've fried an egg, you can't turn it back into a raw one. That's a hash. Afterwards you can still ask "is this fried egg from that egg?" by frying again the same way. Salt is a different spice on every egg: the same password looks different each time, so one prepared lookup table can't match them all. And frying slowly (a slow hash) means every guess costs the thief a lot of time.
+      - type: visual
+        kind: table
+        caption: 'Ways to store a password, and why each is right or wrong'
+        headers: ['Method', 'Reversible?', 'Verdict']
+        rows:
+          - cells: ['Plain text', 'Yes, directly', 'Never']
+            tip: 'The moment the database leaks, every password is out in the open.'
+          - cells: ['Encryption (reversible)', 'Yes, with the key', 'Wrong']
+            tip: 'If the key is stolen, all the passwords come back at once. There is no need to get passwords back at all.'
+          - cells: ['MD5, SHA-256 (fast hashes)', 'No, but guessing is very fast', 'Wrong']
+            tip: 'These were made for file checks, so they are fast. An attacker can make billions of guesses per second.'
+          - cells: ['argon2id, bcrypt (slow + salted)', 'No', 'Right']
+            tip: 'Deliberately slow, with a different salt in every hash. Each guess is expensive.'
+      - type: code
+        lang: yaml
+        file: 'config/packages/security.yaml'
+        variant: good
+        code: |
+          security:
+              password_hashers:
+                  Symfony\Component\Security\Core\User\PasswordAuthenticatedUserInterface: 'auto'
+        marks:
+          - {line: 3, tip: '"auto" means the best available on the server (usually argon2id or bcrypt today). If that changes in future, old hashes upgrade themselves at login.'}
+      - type: code
+        lang: php
+        file: 'src/Service/Registration.php'
+        variant: good
+        code: |
+          public function register(string $email, #[\SensitiveParameter] string $plain): User
+          {
+              $user = new User($email);
+              $user->setPassword($this->hasher->hashPassword($user, $plain));
+
+              $this->em->persist($user);
+              $this->em->flush();
+
+              return $user;
+          }
+        marks:
+          - {line: 1, tip: '#[\SensitiveParameter] (PHP 8.2+) hides the password value in stack traces and logs.'}
+          - {line: 4, tip: 'UserPasswordHasherInterface generates the salt itself and stores it inside the full string, so no separate column is needed.'}
+      - type: quote
+        body: 'Never store a password in plain text or encrypted: use a slow, salted hash.'
+    aside:
+      - type: tips
+        items:
+          - 'In login checks, the Symfony authenticator does both isPasswordValid and the rehash of old hashes for you; don''t compare by hand.'
+          - 'If your password reset has a "send me my old password" feature, that proves passwords can be recovered, which means they are stored wrongly. Send only a reset link.'
+      - type: remember
+        body: 'Passwords: hash, salt, slow. Not encryption.'
+      - type: refs
+        items:
+          - {to: 'security/account-recovery', label: 'How to store reset tokens'}
+    check:
+      q: 'Why is it wrong to store passwords encrypted with AES?'
+      a: 'Encryption can be reversed with the key. If the key or the server is stolen, every password opens at once. A hash can''t be reversed, so the original password is never recovered.'
+
+  - slug: encrypt-fields
+    title: 'Encryption: in transit, on disk, and per field'
+    kind: howto
+    tldr: 'TLS for the journey, disk/DB encryption for storage, and app-level sodium encryption for the most sensitive fields. Each of the three stops a different danger.'
+    keywords: ['encryption at rest', 'TLS', 'HTTPS', 'sodium_crypto_secretbox', 'field encryption', 'encryption']
+    blocks:
+      - type: metaphor
+        icon: lock
+        title: 'The courier, the warehouse and the private locker'
+        body: |
+          On the road, the courier's sealed envelope (TLS) can't be opened and read by anyone along the way. The warehouse lock (disk encryption) helps if a thief breaks in and carries the goods away, but the warehouse staff can still open everything. So the most valuable items go in a separate private locker (field encryption), whose key even the warehouse staff don't have.
+      - type: visual
+        kind: table
+        caption: 'Three layers of encryption: what each stops and what it doesn''t'
+        headers: ['Layer', 'Stops', 'Does not stop']
+        rows:
+          - cells: ['In transit (TLS/HTTPS)', 'Eavesdropping on the network', 'Theft of a server or DB']
+            tip: 'TLS is needed everywhere: browser to server and server to DB, even on the internal network.'
+          - cells: ['On disk (at rest)', 'Theft of a disk or backup', 'SQL injection, a hacked app']
+            tip: 'A running server reads the disk in the clear on its own. If the app is hacked, everything is visible.'
+          - cells: ['Per field (field-level)', 'A database leak, SQL injection', 'A hacked app itself']
+            tip: 'Only for sensitive fields (NID, card-related data), because searching and sorting them gets harder.'
+      - type: code
+        lang: php
+        file: 'src/Security/FieldEncryptor.php'
+        variant: good
+        code: |
+          final class FieldEncryptor
+          {
+              public function __construct(
+                  #[Autowire(env: 'base64:FIELD_ENCRYPTION_KEY')]
+                  private readonly string $key, // a 32-byte key
+              ) {
+              }
+
+              public function encrypt(string $plain): string
+              {
+                  $nonce = random_bytes(SODIUM_CRYPTO_SECRETBOX_NONCEBYTES);
+
+                  return base64_encode($nonce.sodium_crypto_secretbox($plain, $nonce, $this->key));
+              }
+
+              public function decrypt(string $stored): string
+              {
+                  $raw = base64_decode($stored, true);
+                  $n = SODIUM_CRYPTO_SECRETBOX_NONCEBYTES;
+                  $plain = sodium_crypto_secretbox_open(
+                      substr($raw, $n), substr($raw, 0, $n), $this->key
+                  );
+
+                  if (false === $plain) {
+                      throw new \RuntimeException('Could not decrypt');
+                  }
+
+                  return $plain;
+              }
+          }
+        marks:
+          - {line: 4, tip: 'The key comes from the environment or the vault, not from the code. The base64: processor produces the binary key. See secrets-management.'}
+          - {line: 11, tip: 'A fresh random nonce every time. Reusing a nonce with the same key breaks the encryption.'}
+          - {line: 20, tip: 'secretbox is authenticated: if anyone alters the data, open() returns false, so a wrong value is never read silently.'}
+      - type: quote
+        body: 'Never invent your own algorithm; use a vetted library like sodium.'
+    aside:
+      - type: tips
+        items:
+          - 'No page without HTTPS: redirect HTTP to HTTPS on the server and send the HSTS header (Strict-Transport-Security). Use TLS 1.2 or higher.'
+          - 'Use TLS for the DB connection too (on a managed DB it is usually one setting). An internal network is not automatically safe.'
+          - 'You can''t run WHERE directly on an encrypted column. To search, you have to keep a separate hash (a blind index), which adds complexity.'
+      - type: refs
+        items:
+          - {to: 'security/secrets-management', label: 'Where to keep the encryption key'}
+    check:
+      q: 'Disk encryption is on, so why can SQL injection still leak NID numbers?'
+      a: 'A running database reads the disk in the clear, so queries coming through the app see every value in plain form. Field-level encryption doesn''t open without the app''s key.'
+
+  - slug: envelope-kms
+    title: 'Envelope encryption: the key to the keys'
+    kind: concept
+    tldr: 'Each piece of data gets its own data key, and those keys are locked with a master key in a KMS. The master key never leaves the KMS.'
+    keywords: ['KMS', 'envelope encryption', 'data key', 'key rotation', 'key management']
+    blocks:
+      - type: metaphor
+        icon: bank
+        title: 'Bank lockers and the master vault'
+        body: |
+          In a bank, every locker has its own small key. Those small keys are in turn locked in the bank's master vault, which never leaves the bank. To open a locker, you ask the manager: "Please take my key out of the vault." The KMS is that master vault, and a data key is the key to one locker.
+      - type: visual
+        kind: flow
+        caption: 'Envelope encryption: data is encrypted with a data key, and the data key is locked by the KMS key'
+        nodes:
+          - {id: app, label: 'Symfony app', sub: 'does the encrypting', icon: api, tone: accent, col: 0, row: 1, tip: 'It never knows the master key. It only takes a small data key and encrypts data with it.'}
+          - {id: kms, label: 'KMS', sub: 'master key lives here', icon: key, col: 1.5, row: 0, tip: 'AWS KMS, Google Cloud KMS or Vault. The master key stays inside and never comes out.'}
+          - {id: db, label: 'Database', sub: 'data + locked key', icon: db, tone: good, col: 3, row: 1, tip: 'Holds the encrypted data and, next to it, the locked data key. Neither is readable without the other.'}
+        edges:
+          - {from: app, to: kms, label: 'The app asks the KMS for a new data key'}
+          - {from: kms, to: app, label: 'The KMS returns the data key in two forms: open and locked', dashed: true}
+          - {from: app, to: db, label: 'The app stores the encrypted data and the locked key', tone: good}
+      - type: code
+        lang: php
+        file: 'src/Security/EnvelopeEncryptor.php'
+        variant: good
+        code: |
+          public function encrypt(string $plain): EncryptedBlob
+          {
+              $result = $this->kms->generateDataKey([
+                  'KeyId' => $this->keyId,
+                  'KeySpec' => 'AES_256',
+              ]);
+              $dek = $result['Plaintext'];
+
+              $nonce = random_bytes(SODIUM_CRYPTO_SECRETBOX_NONCEBYTES);
+              $cipher = $nonce.sodium_crypto_secretbox($plain, $nonce, $dek);
+              sodium_memzero($dek);
+
+              return new EncryptedBlob($cipher, $result['CiphertextBlob']);
+          }
+        marks:
+          - {line: 3, tip: 'generateDataKey of Aws\Kms\KmsClient returns two forms of the same key: Plaintext (to encrypt with) and CiphertextBlob (to store).'}
+          - {line: 11, tip: 'Wipe the open key from memory as soon as you are done. Only the locked form is stored.'}
+      - type: quote
+        body: 'The master key never leaves the KMS; the app stores only the locked data key.'
+    aside:
+      - type: problem
+        body: 'If one key covers all the data, then once it is stolen everything is lost, and changing it means re-encrypting all the data. With envelopes, rotating the master key only requires locking the small data keys again.'
+      - type: tips
+        items:
+          - 'You don''t have to call the KMS for every piece of data; a data key can be cached in memory for a limited time.'
+          - 'Limit who can decrypt through the KMS with an access policy, and keep an audit log of every decrypt.'
+      - type: terms
+        items:
+          - {term: 'KMS', meaning: 'Key Management Service: a secure service for creating, storing and using keys.'}
+          - {term: 'DEK / KEK', meaning: 'The DEK encrypts the data; the KEK (the master key) locks the DEK.'}
+    check:
+      q: 'Why does rotating the master key in envelope encryption not mean re-encrypting the whole database?'
+      a: 'Because the data is encrypted with data keys. When the master key changes, you only lock the small data keys again with the new master key.'
+
+  - slug: pii-in-logs
+    title: 'Personal data: keep less, show it masked, keep it out of logs'
+    kind: pitfall
+    tldr: 'Don''t keep what you can do without. Mask it when showing it, tokenize cards, and make sure logs don''t turn into a secret warehouse of personal data.'
+    keywords: ['PII', 'masking', 'tokenization', 'log redaction', 'Monolog processor', 'data minimization', 'GDPR']
+    blocks:
+      - type: metaphor
+        icon: ticket
+        title: 'The locker slip and the hidden number'
+        body: |
+          When you leave your belongings in a bank locker, you get only a slip; even if you lose it, nobody gets your things. bKash shows a number as 017****89 on screen: you recognize it at a glance, but you can't make out the real number. The first is tokenization, the second is masking.
+      - type: visual
+        kind: table
+        caption: 'Which technique, and when'
+        headers: ['Technique', 'Real value recoverable?', 'When']
+        rows:
+          - cells: ['Masking (017****89)', 'No, permanently hidden', 'When displaying on screen or in logs']
+            tip: 'For display or logs only. It is not a way of keeping the real value safe.'
+          - cells: ['Tokenization', 'Yes, but only at the provider', 'Card numbers']
+            tip: 'We keep only a token. The real card sits in the payment provider''s vault, which lowers our PCI risk.'
+          - cells: ['Encryption', 'Yes, with a key', 'NID, addresses, anything needed later']
+            tip: 'For information you truly must read back. The key lives in a separate safe.'
+          - cells: ['Hash', 'No', 'Passwords, verification codes']
+            tip: 'When you only need to know "does it match?". The original value is no longer needed.'
+      - type: code
+        lang: php
+        file: 'src/Observability/RedactSensitive.php'
+        variant: good
+        code: |
+          #[AsMonologProcessor]
+          final class RedactSensitive implements ProcessorInterface
+          {
+              private const KEYS = ['password', 'token', 'authorization', 'card_number', 'nid'];
+
+              public function __invoke(LogRecord $record): LogRecord
+              {
+                  return $record->with(context: $this->redact($record->context));
+              }
+
+              private function redact(array $data): array
+              {
+                  foreach ($data as $key => $value) {
+                      if (is_array($value)) {
+                          $data[$key] = $this->redact($value);
+                      } elseif (in_array(strtolower((string) $key), self::KEYS, true)) {
+                          $data[$key] = '[REDACTED]';
+                      }
+                  }
+
+                  return $data;
+              }
+          }
+        marks:
+          - {line: 1, tip: 'A processor written once works on every log channel, so there is a last fence even when someone makes a mistake.'}
+          - {line: 14, tip: 'It also walks into arrays nested inside the context. Checking only the top level would leak nested data.'}
+      - type: points
+        title: 'Rules for handling PII'
+        style: check
+        items:
+          - 'Data minimization: don''t ask for or store information you can work without.'
+          - 'Retention: decide how long you keep it, and delete it when the time is up.'
+          - 'Know every PII field: where it lives and who can read it.'
+          - 'PII also ends up in logs, error reports and analytics; check those too.'
+      - type: quote
+        body: 'Don''t keep what you don''t need to keep, and don''t let what you do keep reach the logs.'
+    aside:
+      - type: refs
+        items:
+          - {to: 'observability/logging-tracing', label: 'Structured logs and what not to write'}
+          - {to: 'security/supply-chain-compliance', label: 'GDPR, PCI DSS: as rules'}
+    check:
+      q: 'What is the difference in protection between storing a card number encrypted in our own database and tokenizing it?'
+      a: 'With encryption, the real card stays with us and the risk rests on our key. With tokenization, the real card stays with the provider and we keep only a meaningless token.'
+
+flashcards:
+  - q: 'What is the idea of keeping the damage limited even if the database is stolen?'
+    a: 'Defense in depth: protect the data itself (hash, encryption, tokens), so even if the outer wall falls the thief can''t read anything.'
+    more: |
+      A firewall and passwords only block the way in. But backups, SQL injection and an employee's mistake can send data outside. So the data's own protection works as the last wall.
+    ref: stolen-dump
+  - q: 'What is the key difference between hashing and encryption for passwords?'
+    a: 'Encryption can be reversed with a key; a hash can''t. A password only has to be matched, never read back.'
+    more: |
+      At login, the password the user typed is hashed again and compared with the stored hash. So the original password never has to be kept anywhere. If you encrypt instead, one stolen key opens every password at once.
+    ref: password-hashing
+  - q: 'Why are MD5 or SHA-256 wrong for passwords?'
+    a: 'They are fast. An attacker can make billions of guesses per second and crack the passwords. A password hash must be deliberately slow.'
+    more: |
+      argon2id and bcrypt deliberately spend time and memory, so each guess is expensive. They also include a salt, so the same password gives a different hash each time and precomputed lists (rainbow tables) don't work.
+    ref: password-hashing
+  - q: 'What is the right way to hash passwords in Symfony?'
+    a: 'Set `auto` under `password_hashers` and use `UserPasswordHasherInterface::hashPassword()`.'
+    more: |
+      `auto` picks the best algorithm available on the server. If the best algorithm changes later, old hashes upgrade themselves at login. The salt doesn't need separate storage; it lives inside the hash string.
+    ref: password-hashing
+  - q: 'What do TLS, disk encryption and field encryption each stop?'
+    a: 'TLS: eavesdropping on the way. Disk: theft of a disk or backup. Field: a database leak and SQL injection.'
+    more: |
+      Each layer is for a different danger, and none replaces another. A running database reads the disk in the clear, so disk encryption does nothing against SQL injection. The most sensitive fields need app-level encryption.
+    ref: encrypt-fields
+  - q: 'Why does sodium secretbox need a new nonce every time?'
+    a: 'Using the same nonce twice with the same key breaks the encryption. So use a random nonce each time and store it with the ciphertext.'
+    more: |
+      A nonce isn't secret; it just must be used once. It is attached to the front of the ciphertext so it is available when decrypting. secretbox is authenticated, so if anyone alters the data, decryption fails.
+    ref: encrypt-fields
+  - q: 'What is envelope encryption?'
+    a: 'Data is encrypted with a data key, and that data key is locked by the master key in a KMS.'
+    more: |
+      The master key never leaves the KMS. The app asks the KMS to create or unlock data keys. To rotate the master key you only lock the data keys again; you don't re-encrypt all the data.
+    ref: envelope-kms
+  - q: 'What is the difference between tokenization and masking?'
+    a: 'With tokenization the real value stays with the provider and we keep a token. Masking only hides part of a value when it is shown.'
+    more: |
+      Masking (017****89) is for display or logs, not for protecting data. With tokenization our database never holds the real card number at all, so a leak costs us nothing and our PCI burden shrinks.
+    ref: pii-in-logs
+
+quiz:
+  - q: 'Arif''s registration code is below. What is the problem?'
+    lang: php
+    code: |
+      $user->setPassword(hash('sha256', $plain));
+      $em->persist($user);
+      $em->flush();
+    hint: 'If a thief gets the dump, how many guesses per second can they make?'
+    options:
+      - text: 'SHA-256 is fast and unsalted, so the hashes are easy to crack; it needs UserPasswordHasherInterface'
+        correct: true
+        why: 'A fast hash makes every guess cheap. A slow, salted argon2id or bcrypt is what passwords need.'
+      - text: 'persist() and flush() can''t be called together'
+        correct: false
+        why: 'Calling them together is normal; the problem is the kind of hash.'
+      - text: 'It should have been encrypted with AES, not hashed'
+        correct: false
+        why: 'Encryption is reversible; if the key is stolen, every password leaks at once.'
+      - text: 'md5 would be better than sha256 because it is shorter'
+        correct: false
+        why: 'MD5 is even faster and broken, so it is even worse.'
+    ref: password-hashing
+  - q: 'Which of these are correct rules for storing passwords?'
+    hint: 'Does a password ever need to be read back?'
+    options:
+      - text: 'A slow, salted hash (argon2id or bcrypt)'
+        correct: true
+        why: 'Each guess is expensive, and the same password produces different hashes.'
+      - text: 'Keeping Symfony''s password_hashers set to auto, so old hashes upgrade themselves'
+        correct: true
+        why: 'Even if the best algorithm changes in future, hashes get renewed at login.'
+      - text: 'Encrypting with AES, so "I forgot my password" can send the old one'
+        correct: false
+        why: 'A feature that sends the password back is itself a bad design. You send a reset link, not the old password.'
+      - text: 'Plain text in the database, but with a password on the database'
+        correct: false
+        why: 'Once someone gets past the database password, everything is open. Each user''s password must be protected individually.'
+    ref: password-hashing
+  - q: 'An app has an encrypted database disk, yet SQL injection leaked users'' NID numbers. What was needed?'
+    hint: 'In front of whom does disk encryption stand open?'
+    options:
+      - text: 'App-level encryption on the NID field, with the key kept outside the database'
+        correct: true
+        why: 'Even if the database leaks, the NID can''t be read without the key.'
+      - text: 'A stronger algorithm for the disk encryption'
+        correct: false
+        why: 'Disk encryption stands open to a running database, so changing the algorithm doesn''t help.'
+      - text: 'TLS on the DB connection'
+        correct: false
+        why: 'TLS stops eavesdropping on the way; the answer to a SQL injection comes back in the clear all the same.'
+      - text: 'Base64-encoding the NID'
+        correct: false
+        why: 'Base64 is encoding, not encryption; anyone can reverse it in one line.'
+    ref: encrypt-fields
+  - q: 'Why is the encryption in the code below not safe?'
+    lang: php
+    code: |
+      private const NONCE = '0123456789abcdef01234567';
+
+      public function encrypt(string $plain): string
+      {
+          return base64_encode(
+              sodium_crypto_secretbox($plain, self::NONCE, $this->key)
+          );
+      }
+    hint: 'What happens if you use the same key and the same nonce twice?'
+    options:
+      - text: 'The nonce is fixed, so it gets reused with the same key and the encryption breaks'
+        correct: true
+        why: 'Every time, take a new nonce from random_bytes() and store it with the ciphertext.'
+      - text: 'It shouldn''t call base64_encode'
+        correct: false
+        why: 'Base64 is only for convenient storage; it isn''t a problem.'
+      - text: 'MD5 would have been better than secretbox'
+        correct: false
+        why: 'MD5 is a hash, not encryption; you could never get the data back.'
+    ref: encrypt-fields
+  - q: 'What are the advantages of envelope encryption with a KMS?'
+    hint: 'Where does the master key live, and what does it take to change it?'
+    options:
+      - text: 'The master key never leaves the KMS to reach the app or the database'
+        correct: true
+        why: 'Even if the app is hacked, no copy of the master key can be found.'
+      - text: 'Changing the master key only means locking the data keys again'
+        correct: true
+        why: 'The data doesn''t have to be re-encrypted, so rotation is cheap.'
+      - text: 'One key for all the data, so it is simple'
+        correct: false
+        why: 'That is the opposite of an envelope; if one key leaks, all the data opens.'
+      - text: 'You can keep the master key in the app, without a KMS'
+        correct: false
+        why: 'Then you lose the benefit of a KMS. If the app holds the master key, it is also a way to steal it.'
+    ref: envelope-kms
+  - q: 'The app''s logs sometimes contain a whole request body, including passwords and NID numbers. What is the best fix?'
+    hint: 'Which step works even when someone makes a mistake?'
+    options:
+      - text: 'Tell everyone: don''t write passwords to the logs'
+        correct: false
+        why: 'People will make mistakes. What a machine can guarantee shouldn''t be left to a rule.'
+      - text: 'Redact the sensitive keys as [REDACTED] with a Monolog processor, and stop logging bodies'
+        correct: true
+        why: 'It is written once and works on every log channel, and less information is written in the first place.'
+      - text: 'Give only admins access to the log files'
+        correct: false
+        why: 'A good extra layer, but logs travel to many tools and stay for a long time; it doesn''t stop the leak.'
+      - text: 'Set the log level to error everywhere'
+        correct: false
+        why: 'Changing the level doesn''t change which data goes in.'
+    ref: pii-in-logs

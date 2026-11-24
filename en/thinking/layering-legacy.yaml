@@ -1,0 +1,410 @@
+slides:
+  - slug: fat-controller
+    title: 'A 600-line controller: afraid to change the discount rule'
+    kind: story
+    tldr: 'When HTTP, SQL, business rules and email are mixed in one controller, even a tiny rule change means understanding the whole file.'
+    keywords: ['fat controller', 'layering', 'separation of concerns', 'business logic', 'thin controller']
+    blocks:
+      - type: text
+        body: |
+          In Rahim's app, the whole order job lives in one controller: reading the JSON, running SQL, calculating the discount and sending the email. Six months later the rule changes: "10% off above 5000 taka, but 15% on a first order". The same rule is needed in another API and an admin page too. But the rule is trapped inside the controller, so copying it is the only way.
+      - type: code
+        lang: php
+        file: 'src/Controller/OrderController.php'
+        variant: bad
+        code: |
+          #[Route('/orders', methods: ['POST'])]
+          public function create(Request $r, Connection $db, MailerInterface $mailer): Response
+          {
+              $data = json_decode($r->getContent(), true);
+              $price = $db->fetchOne('SELECT price FROM product WHERE id = ?', [$data['id']]);
+              $total = $price * $data['qty'];
+
+              if ($total > 5000) {
+                  $total = $total * 0.9; // the discount rule, inside the controller
+              }
+
+              $db->insert('orders', ['user_id' => $this->getUser()->getId(), 'total' => $total]);
+              $mailer->send(new Email());
+
+              return new Response('ok');
+          }
+        marks:
+          - {line: 4, tip: 'The HTTP job: reading the request. That does belong in a controller, but nothing more than that.'}
+          - {line: 9, tip: 'A business rule. If it''s needed elsewhere you have to copy it, and copies never stay identical.'}
+          - {line: 12, tip: 'Raw SQL. Rename the table and the controller breaks too.'}
+    aside:
+      - type: problem
+        body: 'With four kinds of work in one file, you can''t change, test or reuse any one of them separately.'
+      - type: remember
+        body: 'The more files you must touch to change one rule, the less tidy the code.'
+    check:
+      q: 'What happens when the discount rule lives in the controller and another API needs it?'
+      a: 'You copy it, and when the rule changes later, every copy has to be changed separately. Forget one and two places show two different prices.'
+
+  - slug: layers-and-direction
+    title: 'Three layers, and one direction of dependency'
+    kind: concept
+    tldr: 'The controller knows only HTTP, the service holds business rules, the repository fetches and stores data; and dependencies run only from top to bottom.'
+    keywords: ['controller service repository', 'dependency direction', 'layered architecture', 'use case', 'layers']
+    blocks:
+      - type: metaphor
+        icon: shop
+        title: 'The restaurant''s waiter, cook and storeroom'
+        body: |
+          The waiter takes the order and delivers the food, but doesn't cook. The cook knows the recipes but doesn't know the customer's table. The storekeeper only fetches and stores ingredients and knows no recipes. Because the three jobs are separate, you can change the waiter (from a delivery app to phone orders) and the cook's cooking doesn't change.
+      - type: visual
+        kind: layers
+        caption: 'Three layers, top to bottom'
+        layers:
+          - {label: 'Controller', sub: 'Knows HTTP: request, response, status', tone: default, tip: 'The waiter. Only takes input, calls the service and shapes the reply. No business rules here.'}
+          - {label: 'Service / Use case', sub: 'Business rules: discounts, checks, sequence of work', tone: accent, tip: 'The cook. The real rules live here, and it knows nothing of HTTP or SQL.'}
+          - {label: 'Repository', sub: 'Fetching and storing data', tone: default, tip: 'The storekeeper. This layer knows how data is obtained (Doctrine, SQL), not the rules.'}
+          - {label: 'Database', sub: 'The real data', tone: muted, tip: 'At the very bottom. Everything above leans on it, but it knows nobody.'}
+      - type: points
+        title: 'What each layer must not know'
+        style: cross
+        items:
+          - 'The service knows no `Request` or `Response`, because the rules stay the same even if HTTP changes.'
+          - 'The repository knows no discounts or business rules.'
+          - 'The controller writes no SQL and calculates no rules.'
+      - type: quote
+        body: 'Dependencies run only downward. A lower layer never knows the layer above it.'
+    aside:
+      - type: tips
+        items:
+          - 'Testing shows if the layers are right: if a service test needs an HTTP request, the layering is wrong.'
+      - type: refs
+        items:
+          - {to: 'thinking/hexagonal', label: 'Hexagonal: inverting dependencies further'}
+    check:
+      q: 'Which layering rule breaks when a service takes a `Request`?'
+      a: 'The dependency went from bottom to top: a business rule now knows HTTP. Then the same rule can''t be used from a console command or a queue handler.'
+
+  - slug: layered-symfony
+    title: 'Arranging three layers in Symfony'
+    kind: howto
+    tldr: 'The controller only binds a DTO and calls a service; the service runs the rules and uses a repository interface, with Doctrine underneath.'
+    keywords: ['MapRequestPayload', 'service class', 'repository interface', 'Doctrine', 'PlaceOrder', 'controller']
+    blocks:
+      - type: code
+        lang: php
+        file: 'src/Controller/OrderController.php'
+        variant: good
+        code: |
+          final readonly class PlaceOrderRequest
+          {
+              public function __construct(
+                  #[Assert\NotBlank] public string $productId,
+                  #[Assert\Positive] public int $quantity,
+              ) {
+              }
+          }
+
+          // the controller action
+          #[Route('/orders', methods: ['POST'])]
+          #[IsGranted('ROLE_USER')]
+          public function create(
+              #[MapRequestPayload] PlaceOrderRequest $in,
+              PlaceOrder $placeOrder,
+          ): JsonResponse {
+              $order = $placeOrder($this->getUser()->getUserIdentifier(), $in->productId, $in->quantity);
+
+              return $this->json(['id' => (string) $order->getId()], 201);
+          }
+        marks:
+          - {line: 4, tip: 'The validation rules sit in the DTO. No if-else needed in the controller.'}
+          - {line: 17, tip: 'The controller just calls one service and shapes the reply. That is its whole job.'}
+      - type: code
+        lang: php
+        file: 'src/Order/PlaceOrder.php'
+        variant: good
+        code: |
+          final readonly class PlaceOrder
+          {
+              public function __construct(
+                  private ProductRepository $products,   // interface
+                  private OrderRepository $orders,       // interface
+                  private MessageBusInterface $bus,
+              ) {
+              }
+
+              public function __invoke(string $userId, string $productId, int $qty): Order
+              {
+                  $product = $this->products->get($productId);
+
+                  // the discount rule lives inside Order, in one place
+                  $order = Order::place($userId, $product, $qty);
+
+                  $this->orders->save($order);
+                  $this->bus->dispatch(new OrderPlaced((string) $order->getId()));
+
+                  return $order;
+              }
+          }
+        marks:
+          - {line: 4, tip: 'The service knows interfaces, not Doctrine. The Doctrine implementation lives in the layer below.'}
+          - {line: 18, tip: 'No email sending here. A separate handler picks up the OrderPlaced event and sends it, so there''s no HTTP or mailer in this class.'}
+    aside:
+      - type: tips
+        items:
+          - 'Name services by the job they do (`PlaceOrder`, `CancelOrder`), not vague names like `OrderManager`.'
+          - 'One job per service makes tests easier to write.'
+      - type: refs
+        items:
+          - {to: 'messaging/background-jobs', label: 'Putting work for later on a queue'}
+    check:
+      q: 'Why is sending the email split out through an event instead of living in the `PlaceOrder` service?'
+      a: 'Placing the order and emailing are two separate jobs. Kept apart, changing one doesn''t touch the other, and a slow email doesn''t slow the order down.'
+
+  - slug: strangler-fig
+    title: 'Moving off legacy: the strangler fig, piece by piece'
+    kind: howto
+    tldr: 'Put a router in front of the old app without shutting it down, move one path at a time to new code, and delete the old code at the end.'
+    keywords: ['strangler fig', 'legacy migration', 'incremental rewrite', 'nginx routing', 'legacy']
+    blocks:
+      - type: metaphor
+        icon: building
+        title: 'A new bridge beside the old one'
+        body: |
+          You can't close a busy bridge for repairs. So a new bridge is built alongside, and traffic is moved over one lane at a time. Once the new lane works, the old lane is torn down. Moving off legacy is the same: a router goes in front, and traffic shifts path by path.
+      - type: visual
+        kind: flow
+        caption: 'The router sits in front and sends /orders to the new app'
+        nodes:
+          - {id: client, label: 'User', icon: user, col: 0, row: 1, tip: 'The user has no idea there are two apps behind the scenes.'}
+          - {id: router, label: 'Router', sub: 'nginx or API gateway', icon: gateway, tone: accent, col: 1.5, row: 1, tip: 'The heart of the strangler. Change one line here and a path moves from old to new.'}
+          - {id: legacy, label: 'Old app', sub: 'All other paths', icon: server, tone: muted, col: 3.5, row: 0, tip: 'It shrinks over time. The code for any path that has moved can be deleted from here.'}
+          - {id: modern, label: 'New Symfony app', sub: '/orders and whatever has moved', icon: api, tone: good, col: 3.5, row: 2, tip: 'Rewritten code for each moved path lives here. It keeps growing.'}
+        edges:
+          - {from: client, to: router, label: 'The user sends requests to the same address as before'}
+          - {from: router, to: modern, label: '/orders and anything else that has moved go to the new app', tone: good}
+          - {from: router, to: legacy, label: 'All other paths still go to the old app', dashed: true}
+      - type: code
+        lang: nginx
+        file: 'nginx/site.conf'
+        code: |
+          # only /orders goes to the new app, everything else to the old one
+          location /orders {
+              proxy_pass http://modern-app;
+          }
+
+          location / {
+              proxy_pass http://legacy-app;
+          }
+        marks:
+          - {line: 2, tip: 'Moving a path is this one line. If there''s trouble, remove the line and the old path is back.'}
+      - type: points
+        title: 'The steps'
+        style: number
+        items:
+          - 'Put a router in front of the old app; behaviour must not change.'
+          - 'Pick one small, low-risk path and rewrite it.'
+          - 'Run the two side by side for a while and compare the answers.'
+          - 'Shift the traffic, then delete the old code.'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Strangler fig', meaning: 'A tree that grows up the trunk of an old tree and slowly takes its place. The technique is named after it.'}
+      - type: pitfalls
+        items:
+          - 'Don''t try to move every path at once. One path, one week, one result.'
+          - 'Forget to delete the old code and both systems keep running forever.'
+    check:
+      q: 'Why is the strangler fig lower-risk than rewriting the whole app?'
+      a: 'Only one small path moves at a time, and if there''s trouble you go back with one line in the router. The whole system never changes in one day, and users notice nothing.'
+
+  - slug: anti-corruption-layer
+    title: 'Anti-corruption layer: keep the old system''s odd language out'
+    kind: concept
+    tldr: 'Don''t let the legacy system''s odd names and formats into new code; confine them to one translator class.'
+    keywords: ['anti-corruption layer', 'ACL', 'adapter', 'legacy integration', 'translator', 'legacy']
+    blocks:
+      - type: text
+        body: |
+          The old system returns `st = 'A'`, `nm`, and money as the string "1250.50". If that language spreads into the new code, the new code becomes as messy as the old. The fix is a translator in the middle: the new code speaks its own clean language, and the translator converts the old system's language for it.
+      - type: visual
+        kind: flow
+        caption: 'The translator class turns the old language into the new one'
+        nodes:
+          - {id: modern, label: 'New code', sub: 'Customer, Money', icon: code, col: 0, row: 1, tip: 'The new code uses clean names and types. It doesn''t recognise any of the old names.'}
+          - {id: acl, label: 'Anti-corruption layer', sub: 'LegacyCustomerGateway', icon: shield, tone: accent, col: 2, row: 1, tip: 'The only place where the old system''s odd names are understood. If the old system changes, only this needs touching.'}
+          - {id: legacy, label: 'Legacy system', sub: 'cid, nm, st, bal', icon: server, tone: muted, col: 4, row: 1, tip: 'The old system with its odd names and formats. None of it will leak into new code.'}
+        edges:
+          - {from: modern, to: acl, label: 'The new code asks for a customer through a clean interface'}
+          - {from: acl, to: legacy, label: 'The translator sends the request in the old language'}
+          - {from: legacy, to: acl, label: 'The answer comes back in the old format', dashed: true}
+          - {from: acl, to: modern, label: 'The translator returns a clean Customer object', tone: good, dashed: true}
+      - type: code
+        lang: php
+        file: 'src/Customer/Infrastructure/LegacyCustomerGateway.php'
+        variant: good
+        code: |
+          final readonly class LegacyCustomerGateway implements CustomerDirectory
+          {
+              public function __construct(private HttpClientInterface $legacy)
+              {
+              }
+
+              public function find(string $id): Customer
+              {
+                  $row = $this->legacy
+                      ->request('GET', '/cust.php', ['query' => ['cid' => $id]])
+                      ->toArray();
+
+                  return new Customer(
+                      id: $row['cid'],
+                      name: trim($row['nm']),
+                      active: 'A' === $row['st'],
+                      balancePaisa: (int) round((float) $row['bal'] * 100),
+                  );
+              }
+          }
+        marks:
+          - {line: 16, tip: 'The old `st` value becomes the new code''s `active` bool. This translation happens only here.'}
+          - {line: 17, tip: 'The decimal amount becomes integer paisa, because the new code doesn''t use floats for money.'}
+      - type: quote
+        body: 'Don''t let the old system''s language into new code; translate it at the border.'
+    aside:
+      - type: refs
+        items:
+          - {to: 'thinking/hexagonal', label: 'Ports and adapters'}
+          - {to: 'ledgers/third-party-integrations', label: 'Staying in sync with outside systems'}
+    check:
+      q: 'If the old system renames the `st` field, where does code have to change, given an ACL?'
+      a: 'Only in LegacyCustomerGateway. The rest of the new code knows `Customer::active`, not the old field name, so it never notices.'
+
+flashcards:
+  - q: 'What are the separate jobs of the controller, service and repository?'
+    a: 'The controller handles HTTP, the service runs business rules, and the repository fetches and stores data.'
+    more: |
+      Like the waiter, cook and storekeeper in a restaurant. A change in one (say, HTTP to a queue handler) doesn't touch the others, and each can be tested separately.
+    ref: layers-and-direction
+  - q: 'Which way do dependencies run between layers?'
+    a: 'Top to bottom. The controller knows the service and the service knows the repository, never the reverse.'
+    more: |
+      When a lower layer knows the one above (say, a `Request` inside a service), the same rule can't be used elsewhere (a console command, a queue). Go one step further and you can invert dependencies entirely; that is [[thinking/hexagonal|hexagonal]].
+    ref: layers-and-direction
+  - q: 'Why is a fat controller a problem?'
+    a: 'The business rules are trapped in the controller, so you can''t reuse them, test them separately or change them safely.'
+    more: |
+      The same rule has to be copied, and the copies drift apart over time. Move the rule into a service and one change updates every place at once.
+    ref: fat-controller
+  - q: 'Why is it wrong for a service to hold a `Request` object?'
+    a: 'It ties the business rule to HTTP, so the rule can''t be used from a console command or a queue handler.'
+    more: |
+      The controller pulls the needed values out of the `Request` and gives the service plain values or a DTO. The service then doesn't know who is calling it: a browser, a command or a test.
+    ref: layers-and-direction
+  - q: 'What is the strangler fig technique?'
+    a: 'Put a router in front of the old app, move paths to new code one at a time, and finally delete the old code.'
+    more: |
+      The name comes from a tree that grows up another tree and slowly takes its place. It carries far less risk than rewriting the whole system in one go, because every step is small and reversible.
+    ref: strangler-fig
+  - q: 'What are the four steps of the strangler fig?'
+    a: 'Put a router in front, rewrite one small path, run both side by side and compare, then shift traffic and delete the old code.'
+    more: |
+      For the first path, choose one with low risk and few dependencies (a report, say). In the last step, don't forget to delete the old code, or both systems keep running forever.
+    ref: strangler-fig
+  - q: 'What is an anti-corruption layer for?'
+    a: 'It confines the old system''s odd names and formats to one translator class so the new code stays clean.'
+    more: |
+      The translator turns the old `st = A` into the new code's `active: true`. When the old system changes, only the translator class changes. It is a form of the hexagonal adapter.
+    ref: anti-corruption-layer
+  - q: 'Why is rewriting a legacy system in one go risky?'
+    a: 'Old code holds years of hidden rules that get lost in a rewrite, and the work takes far longer than estimated.'
+    more: |
+      Throughout the rewrite the old system keeps changing, so the new one is always behind. Moving step by step means each step is checked with real users.
+    ref: strangler-fig
+
+quiz:
+  - q: 'Which layering rule does the code below break?'
+    lang: php
+    code: |
+      final readonly class ApplyDiscount
+      {
+          public function __invoke(Request $request): float
+          {
+              $total = (float) $request->query->get('total');
+
+              return $total > 5000 ? $total * 0.9 : $total;
+          }
+      }
+    hint: 'What does the business rule know that it shouldn''t?'
+    options:
+      - text: 'The service knows HTTP''s `Request`, so the dependency runs from bottom to top'
+        correct: true
+        why: 'The rule can''t be used without HTTP. The controller should pull out the value and call the service with a plain `float` or a DTO.'
+      - text: 'A 90% discount shouldn''t be given'
+        correct: false
+        why: 'Whether the calculation is right is a separate matter; the layering mistake is holding a `Request`.'
+      - text: 'A readonly class can''t have __invoke'
+        correct: false
+        why: 'A readonly class can have __invoke without any trouble.'
+      - text: 'There''s nothing wrong with this code'
+        correct: false
+        why: 'The rule is tangled up with HTTP, so it can''t be used from a console command or a queue handler.'
+    ref: layers-and-direction
+  - q: 'The developers decide to freeze the old app and rewrite everything in six months. What problems does this have compared with the strangler fig?'
+    hint: 'Does the old app stand still for six months?'
+    options:
+      - text: 'The old app keeps changing during the rewrite, so the new one is always behind'
+        correct: true
+        why: 'It''s hard to keep two codebases in step, and even when the new one is finished it lags behind the old.'
+      - text: 'The old code''s hidden rules can get lost'
+        correct: true
+        why: 'Years of bug fixes live in the code, not in documents. A rewrite drops them.'
+      - text: 'Users get the new system step by step'
+        correct: false
+        why: 'That is a strangler fig benefit. In a full rewrite everyone gets the new system at once, so mistakes are found late.'
+      - text: 'A router has to be installed'
+        correct: false
+        why: 'Installing a router is a strangler fig step, not a full-rewrite one.'
+    ref: strangler-fig
+  - q: 'A legacy API returns the balance as the string "1250.50". Where in the new code should it be converted to integer paisa?'
+    hint: 'Where do you confine the old system''s language?'
+    options:
+      - text: 'In a translator (ACL) class, so the new code only ever sees `balancePaisa`'
+        correct: true
+        why: 'The translation lives in one place, and if the old format changes, only that changes.'
+      - text: 'In every controller that needs the balance'
+        correct: false
+        why: 'If translation is scattered, the old system''s language leaks into new code and changes have to be made everywhere.'
+      - text: 'When formatting in a Twig template'
+        correct: false
+        why: 'A template is for display, not for data conversion.'
+      - text: 'No need to convert; you can calculate with the string'
+        correct: false
+        why: 'Money handled as strings or floats goes wrong; integer paisa is safe.'
+    ref: anti-corruption-layer
+  - q: 'Which of these are a controller''s job?'
+    hint: 'Think of the waiter''s job: take, call, hand back.'
+    options:
+      - text: 'Binding and validating the request into a DTO'
+        correct: true
+        why: 'Handling the language of HTTP is the controller''s job.'
+      - text: 'Calling a service and choosing the response status'
+        correct: true
+        why: 'Calling the work and shaping the HTTP reply is the controller''s responsibility.'
+      - text: 'Calculating the discount on orders above 5000 taka'
+        correct: false
+        why: 'Business rules belong in a service or the domain.'
+      - text: 'Writing straight to a table with SQL'
+        correct: false
+        why: 'Storing data is the repository''s job.'
+    ref: layered-symfony
+  - q: 'In a strangler fig setup, what config change in the router moves one path from the old app to the new one?'
+    hint: 'How does changing one rule in the router make the switch?'
+    options:
+      - text: 'Pointing that path''s `location` rule at the new app'
+        correct: true
+        why: 'One line moves the path, and removing that line moves it back.'
+      - text: 'Deleting the old app''s code'
+        correct: false
+        why: 'Deleting is the last step; first you shift the traffic and check the results.'
+      - text: 'Changing the database'
+        correct: false
+        why: 'Changing the database is a separate, big decision; moving a path doesn''t need it.'
+      - text: 'Giving users a new URL'
+        correct: false
+        why: 'Users stay on the same URL; the router switches the path behind the scenes.'
+    ref: strangler-fig

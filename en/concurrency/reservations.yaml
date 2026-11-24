@@ -1,0 +1,427 @@
+slides:
+  - slug: seat-in-limbo
+    title: 'The 10 minutes of payment: whose seat is it?'
+    kind: story
+    tldr: 'If you don''t hold the seat before payment, people pay and then hear "sold out"; if you hold it with no release, it stays blocked forever. The fix: a hold with a time limit.'
+    keywords: ['reservation', 'hold', 'seat', 'ticket', 'expiry', 'ticket booking']
+    blocks:
+      - type: metaphor
+        icon: ticket
+        title: 'The 10 minutes on an online train ticket'
+        body: |
+          When you pick a seat on an online train ticket before Eid, it is held in your name for 10 minutes. Nobody else can take it in that time. If you haven't paid within 10 minutes, the seat becomes free again. That is a hold: a claim, but with an expiry date.
+      - type: visual
+        kind: compare
+        caption: 'Three ways to handle a seat during payment'
+        columns:
+          - title: 'Book after payment'
+            tone: bad
+            icon: cross
+            tip: 'The user finds out the seat is gone only after paying. The worst experience, plus the hassle of a refund.'
+            items:
+              - 'The seat stays open during payment'
+              - 'Pay, then hear "sold out"'
+              - 'The hassle of a refund'
+          - title: 'Hold it, never release'
+            tone: bad
+            icon: warning
+            tip: 'The seat is held, but for everyone who left without paying, it stays blocked forever.'
+            items:
+              - 'Seats stuck in abandoned carts'
+              - 'The seat is free but shows "sold out"'
+              - 'Sales drop'
+          - title: 'Hold with expiry'
+            tone: good
+            icon: check
+            tip: 'The seat is guaranteed while the payment happens, and frees itself when time runs out. Both problems solved.'
+            items:
+              - 'Nobody pays and then has to turn back'
+              - 'Unused holds release on their own'
+              - 'The seat is on sale the whole time'
+    aside:
+      - type: story
+        title: 'The night Eid tickets open'
+        body: |
+          Someone holds five seats, never pays and falls asleep, while a thousand people see "sold out". With no expiry, this would happen every night. A hold with an expiry exists for exactly this reason.
+      - type: terms
+        items:
+          - {term: 'Hold', meaning: 'Keeping a thing reserved for someone for a while, until it is confirmed or the time runs out.'}
+          - {term: 'Reservation', meaning: 'The record of the whole claim, covering the hold and the later confirmation.'}
+    check:
+      q: 'Why do you need a hold with an expiry while the payment is in progress? What goes wrong with only holding, or only booking after payment?'
+      a: 'Booking after payment can leave someone who has paid without a seat. Holding with no expiry lets users who walked away block the seat forever. An expiry fixes both.'
+
+  - slug: reservation-states
+    title: 'The life of a hold: four states'
+    kind: concept
+    tldr: 'Every hold is a record: from held it becomes either confirmed, or expired or cancelled. The expiry lives in the record''s expires_at column.'
+    keywords: ['state machine', 'held', 'confirmed', 'expired', 'expires_at', 'states']
+    blocks:
+      - type: text
+        body: |
+          Rather than writing "held" on the seat itself, create a separate **reservation record**. It holds which seat, for whom, what state it is in, and `expires_at`. The state changes along three paths: confirmed when payment arrives, expired when time runs out, cancelled when the user lets go. For product stock the idea is the same, except you count `reserved` instead of seats.
+      - type: visual
+        kind: flow
+        animate: false
+        caption: 'The four states of a reservation record and the paths between them'
+        nodes:
+          - {id: held, label: 'held', sub: 'held, with an expiry', icon: hourglass, tone: accent, col: 0, row: 1, tip: 'The hold has been created. Until expires_at, the seat belongs to this user.'}
+          - {id: confirmed, label: 'confirmed', sub: 'a firm booking', icon: check, tone: good, col: 2, row: 0, tip: 'Payment has arrived. This is a final state; it never changes again.'}
+          - {id: expired, label: 'expired', sub: 'time ran out', icon: clock, tone: muted, col: 2, row: 1, tip: 'The time is up and the seat is free again. Also a final state.'}
+          - {id: cancelled, label: 'cancelled', sub: 'released by the user', icon: cross, tone: muted, col: 2, row: 2, tip: 'The user cancelled it. The seat is free at once.'}
+        edges:
+          - {from: held, to: confirmed, label: 'payment succeeds', tone: good, tip: 'Only if payment arrives before the expiry.'}
+          - {from: held, to: expired, label: 'time runs out', tone: warn, tip: 'expires_at has passed.'}
+          - {from: held, to: cancelled, label: 'cancelled', tip: 'The user pressed "release".'}
+      - type: quote
+        body: 'A hold is a claim with an expiry. The truth about the expiry lives in expires_at.'
+    aside:
+      - type: remember
+        body: 'From held you can go three ways; from confirmed, expired or cancelled there is no way back.'
+      - type: refs
+        items:
+          - {to: 'payments/payment-state-machine', label: 'Valid transitions and state machines'}
+    check:
+      q: 'Which three events take a `held` record to a final state?'
+      a: 'Successful payment gives confirmed, passing expires_at gives expired, and the user letting go gives cancelled. There is no way back from any of these three final states.'
+
+  - slug: hold-implementation
+    title: 'Building a hold: a unique index and an expiring row'
+    kind: howto
+    tldr: 'Put a partial unique index on active holds; expire stale ones before creating a new hold; if the unique rule fires, the seat is taken.'
+    keywords: ['hold seat', 'partial unique index', 'UniqueConstraintViolationException', 'Clock', 'DQL']
+    blocks:
+      - type: code
+        lang: sql
+        file: 'migration (PostgreSQL)'
+        code: |
+          CREATE TABLE reservation (
+              id          BIGSERIAL PRIMARY KEY,
+              seat_id     INT NOT NULL REFERENCES seat (id),
+              user_id     INT NOT NULL,
+              status      VARCHAR(12) NOT NULL DEFAULT 'held',
+              expires_at  TIMESTAMPTZ NOT NULL
+          );
+
+          -- Only one active claim per seat at a time; expired/cancelled rows can pile up
+          CREATE UNIQUE INDEX one_active_reservation
+              ON reservation (seat_id) WHERE status IN ('held', 'confirmed');
+        marks:
+          - {line: 10, tip: 'This one index is what prevents double-booking. If two requests insert at the same time, only one survives.'}
+          - {line: 6, tip: 'The expiry time is stored on the row itself, so you can always tell how long a hold lasts.'}
+      - type: code
+        lang: php
+        file: 'src/Service/SeatHolder.php'
+        code: |
+          public function hold(int $seatId, int $userId): Reservation
+          {
+              $now = $this->clock->now();
+
+              try {
+                  return $this->em->wrapInTransaction(function () use ($seatId, $userId, $now) {
+                      // clear out stale holds first, or the seat stays blocked forever
+                      $this->em->createQuery(
+                          "UPDATE App\Entity\Reservation r SET r.status = 'expired'
+                           WHERE r.seatId = :seat AND r.status = 'held' AND r.expiresAt <= :now"
+                      )->setParameter('seat', $seatId)->setParameter('now', $now)->execute();
+
+                      $r = new Reservation($seatId, $userId, $now->modify('+10 minutes'));
+                      $this->em->persist($r);
+
+                      return $r;   // the unique index is checked as soon as flush() runs
+                  });
+              } catch (UniqueConstraintViolationException) {
+                  throw new SeatTaken($seatId);   // someone else holds or has booked it
+              }
+          }
+        marks:
+          - {line: 3, tip: 'Take the time from ClockInterface. That way a test can move time forward by hand.'}
+          - {line: 8, tip: 'Even after a hold has run out, its row still says ''held''. The unique index treats that as active, so you must expire it first.'}
+          - {line: 18, tip: 'If someone else already got a hold, the exception arrives here, meaning this seat is no longer free.'}
+    aside:
+      - type: tips
+        items:
+          - 'For product stock, use a `reserved` column instead of per-seat rows: `UPDATE product SET reserved = reserved + :n WHERE id = :id AND stock - reserved >= :n`.'
+          - 'For stock, still keep a separate reservation row for each hold request, or at expiry you can''t tell how much to give back.'
+      - type: refs
+        items:
+          - {to: 'concurrency/atomic-operations', label: 'Unique indexes and atomic UPDATE'}
+    check:
+      q: 'When two users ask to hold the same seat at the same moment, who wins, and what does the other get?'
+      a: 'The partial unique index lets through whichever insert arrives first. The other gets a UniqueConstraintViolationException, which is shown as a SeatTaken error.'
+
+  - slug: confirm-and-cleanup
+    title: 'Confirm and clean up: expiry is the truth, cleanup is just sweeping'
+    kind: howto
+    tldr: 'When confirming, verify that expires_at is still in the future; the cleanup job only keeps things tidy, and correctness doesn''t depend on it.'
+    keywords: ['confirm reservation', 'Scheduler', 'AsPeriodicTask', 'cleanup job', 'expires_at', 'compare and swap']
+    blocks:
+      - type: code
+        lang: php
+        file: 'src/Service/SeatHolder.php'
+        code: |
+          public function confirm(int $reservationId): void
+          {
+              $confirmed = $this->em->createQuery(
+                  "UPDATE App\Entity\Reservation r SET r.status = 'confirmed'
+                   WHERE r.id = :id AND r.status = 'held' AND r.expiresAt > :now"
+              )
+                  ->setParameter('id', $reservationId)
+                  ->setParameter('now', $this->clock->now())
+                  ->execute();
+
+              if ($confirmed === 0) {
+                  throw new HoldExpired($reservationId);   // refund, or try again from scratch
+              }
+          }
+        marks:
+          - {line: 5, tip: 'The old state (held) and the expiry still being in the future are in one condition. This is compare-and-swap.'}
+          - {line: 11, tip: '0 means the hold no longer exists: it expired or was cancelled. Either way, it cannot be confirmed.'}
+      - type: code
+        lang: php
+        file: 'src/Scheduler/ReleaseExpiredHolds.php'
+        code: |
+          #[AsPeriodicTask(frequency: '1 minute', jitter: 5)]
+          final readonly class ReleaseExpiredHolds
+          {
+              public function __construct(
+                  private EntityManagerInterface $em,
+                  private ClockInterface $clock,
+              ) {
+              }
+
+              public function __invoke(): void
+              {
+                  $this->em->createQuery(
+                      "UPDATE App\Entity\Reservation r SET r.status = 'expired'
+                       WHERE r.status = 'held' AND r.expiresAt <= :now"
+                  )->setParameter('now', $this->clock->now())->execute();
+              }
+          }
+        marks:
+          - {line: 1, tip: 'Runs every minute. To run it you need a `php bin/console messenger:consume scheduler_default` worker.'}
+          - {line: 13, tip: 'Just sweeping: it keeps reports and dashboards tidy. Confirm and new holds do not depend on it.'}
+      - type: quote
+        body: 'Expiry is checked at the moment of use. The cleanup job is only a broom.'
+    aside:
+      - type: problem
+        body: 'Even if the cleanup job is down, late, or runs twice, hold correctness is intact, because confirm and a new hold each check the expiry themselves.'
+      - type: commands
+        items:
+          - {cmd: 'php bin/console debug:scheduler', desc: 'list the active schedules'}
+          - {cmd: 'php bin/console messenger:consume scheduler_default', desc: 'start the scheduler worker'}
+    check:
+      q: 'The cleanup job was down for an hour. Can an expired hold still be confirmed in that time? Why?'
+      a: 'No. The confirm UPDATE has the condition `expires_at > now`, so after the expiry it changes 0 rows and raises HoldExpired. Correctness holds even when cleanup doesn''t run.'
+
+  - slug: late-payment
+    title: 'Payment arrives after the expiry: now what?'
+    kind: pitfall
+    tldr: 'When payment is slow, the money can arrive after the hold ran out; if the seat has gone to someone else, that payment must be refunded, never quietly confirmed.'
+    keywords: ['late payment', 'refund', 'hold expired', 'webhook', 'race']
+    blocks:
+      - type: text
+        body: |
+          Rahim starts paying in the last moment of his 10 minutes, the gateway is slow, and the success notice arrives **after** the expiry. By then Karim has already held the seat. Rahim's money has been taken, but the seat is no longer his. You have to accept that this will happen, and plan for it.
+      - type: visual
+        kind: sequence
+        caption: 'The payment lands after the expiry, and Karim gets Rahim''s seat'
+        actors:
+          - {id: rahim, label: 'Rahim', icon: user, tip: 'Held seat 12 and went off to pay.'}
+          - {id: karim, label: 'Karim', icon: user, tip: 'Asked for seat 12 after Rahim''s hold ran out.'}
+          - {id: sys, label: 'Booking system', icon: server, tip: 'Handles holds and confirmations.'}
+        messages:
+          - {from: rahim, to: sys, label: 'Hold seat 12, 10:00', tip: 'The hold lasts until 10:10.'}
+          - {from: karim, to: sys, label: 'Hold seat 12, 10:11', tip: 'Rahim''s hold has expired, so Karim gets it.'}
+          - {from: rahim, to: sys, label: 'Payment succeeds, 10:12', tip: 'The gateway reported it late.'}
+          - {at: sys, note: 'confirm: 0 rows changed', tone: bad, tip: 'The WHERE needs status = held and expires_at > now; Rahim''s hold is expired, so it doesn''t match.'}
+          - {from: sys, to: rahim, label: 'Money back, no seat', tone: warn, tip: 'Send a refund request to the gateway and tell the user clearly.'}
+      - type: points
+        title: 'When a late payment arrives'
+        style: check
+        items:
+          - 'Confirm with the same CAS as before; a 0 means the seat is gone.'
+          - 'If the seat is gone, send an automatic refund through the gateway.'
+          - 'Tell the user what happened, and let them pick a new seat.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Whether it is valid to confirm a late payment when the seat is still free is a business decision. Even then, do it with a CAS, not just by looking at `status`.'
+          - 'If the hold''s expiry is shorter than the payment time, this will happen every day. Set the expiry longer than the gateway''s maximum time.'
+      - type: refs
+        items:
+          - {to: 'payments/unknown-outcomes', label: 'Handling "did it happen or not?"'}
+          - {to: 'time/expiry-timeouts', label: 'Designing expiries and deadlines'}
+    check:
+      q: 'Rahim''s payment succeeded, but the seat has gone to someone else. What is the correct system behaviour?'
+      a: 'The confirm fails (0 rows), and the system sends a refund through the gateway, tells Rahim clearly, and lets him pick another seat. It must never quietly give two people the same seat.'
+
+flashcards:
+  - q: 'What is a reservation (hold)?'
+    a: 'Keeping a seat, slot or stock reserved in someone''s name for a limited time. If it isn''t confirmed within that time, it is released again.'
+    more: |
+      For the duration of the payment or the decision, nobody else can take the thing, yet it doesn't stay blocked forever. Like the 10 minutes on an online train ticket.
+    ref: seat-in-limbo
+  - q: 'Why is booking the seat only after payment risky?'
+    a: 'Someone else can take the seat during payment. Then the user is charged and hears "sold out", and a refund is needed.'
+    more: |
+      So hold the seat first, then take payment. The hold guarantees the seat for the length of the payment. If the payment fails or is cancelled, the hold expires or is released.
+    ref: seat-in-limbo
+  - q: 'What is the problem with a hold that has no expiry?'
+    a: 'Users who left without paying keep the seat blocked forever. Others see "sold out" while the seat is actually free.'
+    more: |
+      Abandoned carts are very common. With an expiry, an unused hold ends on its own and the seat goes back on sale.
+    ref: seat-in-limbo
+  - q: 'What states can a reservation record be in?'
+    a: 'held (reserved with an expiry), confirmed (firm), expired (time ran out) and cancelled (released by the user). There is no way back from the last three.'
+    more: |
+      Everything lives in one column (status), along with expires_at. To block invalid transitions (such as expired to confirmed), every change is an UPDATE that puts the old state in its WHERE.
+    ref: reservation-states
+  - q: 'How do you make sure only one of two simultaneous hold requests for a seat gets it?'
+    a: 'Put `UNIQUE (seat_id) WHERE status IN (''held'', ''confirmed'')` on the reservation table. The second insert fails the unique constraint.'
+    more: |
+      A partial unique index sets a rule over active claims only; expired and cancelled rows can pile up. Catch the failed insert's UniqueConstraintViolationException and show SeatTaken.
+    ref: hold-implementation
+  - q: 'Why must a stale hold be cleared before creating a new one?'
+    a: 'Its row still says ''held'', so the unique index treats it as active and blocks the new hold. Expire it first.'
+    more: |
+      In the new hold's transaction, first run `UPDATE … SET status = 'expired' WHERE seat_id = :seat AND status = 'held' AND expires_at <= :now`. That way the seat frees up even if the cleanup job is late.
+    ref: hold-implementation
+  - q: 'How does a reservation work for product stock?'
+    a: 'Keep a `reserved` column next to stock. To hold: `UPDATE … SET reserved = reserved + n WHERE stock - reserved >= n`; when a hold expires, subtract it back.'
+    more: |
+      Instead of a row per seat, you count a number. Even so, you need a separate reservation row for each hold, or at expiry you can't tell how much to return.
+    ref: hold-implementation
+  - q: 'What must you check when confirming?'
+    a: 'That the state is still held and expires_at is still in the future. Both go in the WHERE of one UPDATE; if 0 rows change, the confirm did not happen.'
+    more: |
+      This is compare-and-swap. It blocks confirming a hold that has expired or been cancelled. On a 0, throw HoldExpired and point to a refund or a new seat choice.
+    ref: confirm-and-cleanup
+  - q: 'If the cleanup job is down, is the hold logic still correct?'
+    a: 'Yes. Both confirm and a new hold check expires_at themselves. Cleanup only keeps the records tidy; correctness doesn''t rest on it.'
+    more: |
+      The rule: expiry is checked at the moment of use. With Symfony Scheduler, `#[AsPeriodicTask]` can run the expiring job every minute, but it is only a broom.
+    ref: confirm-and-cleanup
+  - q: 'What do you do when payment arrives after the expiry?'
+    a: 'Confirm with a CAS; a 0 means the seat is gone, so send a refund through the gateway and tell the user. Never quietly give one seat to two people.'
+    more: |
+      Slow gateways make this inevitable. Setting the hold's expiry longer than the payment's maximum time reduces how often it happens, but never to zero. So always keep the refund path ready.
+    ref: late-payment
+
+quiz:
+  - q: 'What is the best way to handle a seat during the 10 minutes of payment?'
+    hint: 'Think of both problems: losing the seat mid-payment, and a seat blocked by a user who walked away.'
+    options:
+      - text: 'Book the seat only after payment succeeds'
+        correct: false
+        why: 'Someone else can take the seat during payment; the user is charged and then hears "sold out".'
+      - text: 'Block the seat forever as soon as it is chosen'
+        correct: false
+        why: 'The seats of people who leave without paying would never be released.'
+      - text: 'A 10-minute hold with an expiry; if it isn''t confirmed in time, the seat is freed'
+        correct: true
+        why: 'The seat is guaranteed during payment, and abandoned holds expire on their own.'
+      - text: 'Hold the seat with a timer in the browser'
+        correct: false
+        why: 'Nothing is held on the server; a client-side timer doesn''t hold a seat, it only shows the user the time.'
+    ref: seat-in-limbo
+  - q: 'From which of these states can a reservation never return?'
+    hint: 'Think of the three paths out of held.'
+    options:
+      - text: 'confirmed'
+        correct: true
+        why: 'A firm booking; this is a final state.'
+      - text: 'expired'
+        correct: true
+        why: 'The time ran out and the seat was released; the old hold never comes back to life, and you create a new one.'
+      - text: 'cancelled'
+        correct: true
+        why: 'The user released it themselves; this is also a final state.'
+      - text: 'held'
+        correct: false
+        why: 'held is the only live state; from it you can go three ways.'
+    ref: reservation-states
+  - q: 'What does the index below guarantee?'
+    lang: sql
+    code: |
+      CREATE UNIQUE INDEX one_active_reservation
+          ON reservation (seat_id) WHERE status IN ('held', 'confirmed');
+    hint: 'Which rows does the WHERE part apply the rule to?'
+    options:
+      - text: 'A seat can have only one active (held or confirmed) reservation at a time'
+        correct: true
+        why: 'Expired or cancelled rows fall outside the unique rule, so history can be kept.'
+      - text: 'Each seat will have only one reservation in its whole life'
+        correct: false
+        why: 'Because of the WHERE condition, only active rows are counted; the rest can pile up.'
+      - text: 'A user can hold only one seat'
+        correct: false
+        why: 'The index is only on seat_id, not on user_id.'
+      - text: 'A hold that has run out will expire on its own'
+        correct: false
+        why: 'An index changes nothing; stale rows must be expired first.'
+    ref: hold-implementation
+  - q: 'A user trying to create a new hold keeps getting "seat taken", though the old hold on the seat expired long ago. What could be the cause?'
+    hint: 'When the time passes, does the record''s status change by itself?'
+    options:
+      - text: 'The row still says status = held, so the unique index treats it as active; it was not expired first'
+        correct: true
+        why: 'The passing of time doesn''t change the status. Before creating a new hold, stale ones must be expired.'
+      - text: 'The database clock is wrong'
+        correct: false
+        why: 'The problem would exist even with a correct clock, because the status never changed.'
+      - text: 'The unique index shouldn''t have a WHERE clause'
+        correct: false
+        why: 'A partial index is the right design; without it, the expired rows would be the blockers.'
+    ref: hold-implementation
+  - q: 'Why is confirming safe in the code below, and what does `=== 0` mean?'
+    lang: php
+    code: |
+      $confirmed = $em->createQuery(
+          "UPDATE App\Entity\Reservation r SET r.status = 'confirmed'
+           WHERE r.id = :id AND r.status = 'held' AND r.expiresAt > :now"
+      )->setParameter('id', $id)->setParameter('now', $now)->execute();
+    hint: 'The WHERE has two conditions.'
+    options:
+      - text: '0 means the hold is no longer valid: it expired or was cancelled'
+        correct: true
+        why: 'If the two conditions don''t both match, no row changes. Then it cannot be confirmed.'
+      - text: '0 means the database was busy and a retry will do'
+        correct: false
+        why: 'The cause isn''t busyness; the conditions didn''t match. Retrying with the same expiry gives the same result.'
+      - text: '0 means the confirm succeeded, there was just nothing new to change'
+        correct: false
+        why: '0 means no row became confirmed. Treating it as success would make an expired hold look "successful" too.'
+    ref: confirm-and-cleanup
+  - q: 'Which statements about the job that releases holds are true?'
+    hint: 'Who carries the responsibility for correctness?'
+    options:
+      - text: 'Confirm and a new hold check expires_at themselves, so correctness holds even if the job is late'
+        correct: true
+        why: 'Expiry is checked at the moment of use; the job is only a broom.'
+      - text: 'With `#[AsPeriodicTask]` in Symfony Scheduler, you can run it regularly'
+        correct: true
+        why: 'If the class is invokable, the attribute alone schedules it; you only need to keep a scheduler worker running.'
+      - text: 'If the job misses a run, the seat stays blocked forever'
+        correct: false
+        why: 'A new hold first clears the stale ones, so the seat doesn''t stay blocked.'
+      - text: 'Without the job, the expires_at column is useless'
+        correct: false
+        why: 'expires_at is the truth about expiry; it works in confirm and in holds even without the job.'
+    ref: confirm-and-cleanup
+  - q: 'Rahim''s payment succeeds 2 minutes after his hold expired, and Karim has meanwhile held the seat. What should the system do?'
+    hint: 'How many rows will the confirm UPDATE change?'
+    options:
+      - text: 'Confirm Rahim and cancel Karim''s hold, because Rahim paid'
+        correct: false
+        why: 'Karim''s hold is valid; forcing the payment through over everyone creates a new injustice.'
+      - text: 'Treat Rahim''s confirm as failed, send a refund and ask him to pick a new seat'
+        correct: true
+        why: 'The CAS returns 0. Refunding the money and telling him clearly is the right course.'
+      - text: 'Give both the same seat and sort it out later'
+        correct: false
+        why: 'That is exactly double-booking, which this whole design exists to prevent.'
+      - text: 'Leave the payment as it is and tell nobody anything'
+        correct: false
+        why: 'The user''s money has been taken and nobody has told them anything: the worst possible state.'
+    ref: late-payment

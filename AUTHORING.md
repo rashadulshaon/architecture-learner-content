@@ -1,12 +1,43 @@
 # Easy Architecture — content authoring guide
 
-Easy Architecture is a visual learning site, in **Bangla**, that teaches system design and
-software architecture. You write the content. The site renders it; you never write HTML.
+Easy Architecture is a visual learning site, in **English and Bangla**, that teaches system
+design and software architecture. You write the content. The site renders it; you never write
+HTML.
 
 Read this whole guide, then read the two finished example files — they are the quality bar:
 
-- `content/start/how-to-learn.yaml`
-- `content/start/crud-to-architecture.yaml`
+- `content/bn/start/how-to-learn.yaml` (and its English edition in `content/en/start/`)
+- `content/bn/start/crud-to-architecture.yaml`
+
+## 0. Two editions, one structure
+
+The course exists twice: an **English edition** (`content/en/`, the site's default) and a
+**Bangla edition** (`content/bn/`). The learner switches between them in the header.
+
+They are **two editions, not a translation**. A sentence that is exactly right in English can
+sound stiff and foreign when carried word for word into Bangla, and the other way round. So
+each edition is written in its own natural voice (sections 2 and 2a): rephrase, reorder,
+split or merge sentences, pick the idiom a native writer would use. What must not change is
+the *teaching*: the same idea on each slide, the same facts, numbers and code behaviour.
+
+Both editions share **one structure**, so that a bookmark, a progress mark or a link points to
+the same thing in either language. The validator compares the editions and fails on any
+difference in:
+
+- slide `slug`s, their order and `kind`
+- the blocks of each slide: same `type`s in the same order, same visual `kind`, same number
+  of nodes, edges, actors, messages, layers, columns, steps, rows, bars, points and items
+- every identifier and setting: node/actor `id`, `from`/`to`/`at`, `col`/`row`, `tone`, `icon`,
+  `style`, `variant`, `lang`, `dashed`, `animate`, bar `value`
+- aside sections (same `type`s, same number of items, same `refs` targets)
+- flashcards (same number, same order, same `ref`) and quiz questions (same number and order,
+  same options in the same order with the same `correct` flags, same `ref`, `code` present or not)
+
+Free to differ: every piece of prose, `keywords` (search terms of that language — any number),
+comments inside code, and the line a code `mark` points to (when a comment wraps differently).
+
+When you write a new segment, write both editions. When you change the structure of one
+(add a slide, a node, an option), make the same change in the other.
 
 ## 1. The learner
 
@@ -19,7 +50,7 @@ Write so that **a 10-year-old could follow the idea**, and so that **an engineer
 implement it tomorrow**. Both at once. Most tutorials stop at the high-level idea; ours must
 show exactly how to do it properly.
 
-## 2. Voice and language
+## 2. Voice and language — Bangla edition
 
 - Bangla, চলিত ভাষা, friendly, addressing the learner as **তুমি**. Short sentences.
 - Precise technical terms stay in English/Latin script: cache, queue, request, response,
@@ -38,12 +69,36 @@ show exactly how to do it properly.
 - Be technically correct. State the industry-standard opinion plainly; when something is a
   genuine trade-off, say what decides it.
 
+## 2a. Voice and language — English edition
+
+- Plain, international English, as a good senior engineer would explain it to a colleague:
+  friendly, direct, addressing the learner as **you**. Short sentences, active voice,
+  contractions are fine ("don't", "it's"). Write it as if English were the original — never
+  translationese ("This is called as…", "Let us see…", "In this case what happens is…").
+- Technical terms stay as engineers say them (cache, queue, idempotency key, deploy). The
+  first time a term appears in a segment, say what it means in a few plain words.
+- ASCII digits everywhere (`10 people`, `5 minutes`). Money in the story world stays in taka
+  (`500 taka`, `Tk 500`).
+- Metaphors: keep the everyday Bangladeshi scene when it travels well — a tea stall, a biryani
+  restaurant, the corner shop's credit ledger, a train ticket counter, a mobile wallet like
+  bKash, a courier, the wedding kitchen, a bus conductor. Add the two or three words a reader
+  from elsewhere needs to picture it ("the corner shop's credit ledger, where the shopkeeper
+  writes down who owes what"). The metaphor must still map onto the mechanism point by point.
+- People keep their names (Rahim, Karim, Nadia, …); the story world is the same in both editions.
+- Every other rule of section 2 applies: no filler, no hype, no emoji, every sentence teaches.
+- Interface words, when a lesson mentions them: the four rooms are **Learn**, **Flashcards**,
+  **Quiz** and **Bookmarks**; the recall question under a slide is **Ask yourself**; the button
+  on a flashcard is **Learn more**; slide kinds are labelled Problem, Concept, Hands-on,
+  Pitfall, Compare and Recap.
+
 ## 3. Unit of work: one file per sub-segment
 
 `content/outline.yaml` lists every topic and its sub-segments (with an English `scope` note
-describing what to cover). Each sub-segment is one file:
+describing what to cover, and every title and summary in both editions:
+`title: {en: '…', bn: '…'}`). Each sub-segment is one file per edition:
 
-    content/<topic-slug>/<segment-slug>.yaml
+    content/en/<topic-slug>/<segment-slug>.yaml
+    content/bn/<topic-slug>/<segment-slug>.yaml
 
 with three top-level keys: `slides`, `flashcards`, `quiz`. Cover the segment's `scope`
 completely — nothing left unexplained — but in small steps.
@@ -119,7 +174,8 @@ links per slide (hard limit 4). Not every slide needs one. See section 8.
 - Code must be correct and realistic — real class and method names, no pseudo-code, no
   `// ...do stuff`. Show only the part that matters: **max 36 lines, max 96 columns**,
   spaces not tabs. Omit `<?php`, `namespace` and `use` lines unless they are the point.
-- Short Bangla comments inside code are welcome where they aim the eye.
+- Short comments inside code are welcome where they aim the eye — in the language of the
+  edition. Apart from its comments, the code is the same in both editions.
 - `file` is the path label (`src/Service/PaymentService.php`, `config/packages/cache.yaml`).
 
 ## 6. Flashcards
@@ -181,7 +237,9 @@ A blank line starts a new paragraph.
 ## 11. Schema reference
 
 Lengths are counted in visible characters (a Bangla letter with its vowel sign counts once;
-markup does not count). Limits are enforced by the validator.
+markup does not count). Limits are enforced by the validator. The numbers below are for the
+Bangla edition; **English limits are 1.6× larger** (the same idea takes more Latin letters,
+and they are narrower on screen) — the validator applies this for you.
 
 ### Slide
 
@@ -388,12 +446,14 @@ From the `backend/` directory:
 
     php bin/validate-content.php <topic>/<segment> [<topic>/<segment> …]
 
-It must end with `OK — no errors`. Warnings about links to segments that have "no content
+It checks both editions of each segment and that their structures match. It must end with
+`OK — no errors`. Warnings about links to segments that have "no content
 yet" are fine. Fix every error; do not delete content to silence the validator — rephrase
-or split instead. Do not edit any file outside your assigned `content/<topic>/` files.
+or split instead. Do not edit any file outside your assigned `content/<edition>/<topic>/` files.
 
 ## 13. Final checklist per file
 
+- Does each edition read as if it had been written in that language first?
 - Does the first slide make the learner feel the problem?
 - Could a 10-year-old retell each slide's idea after reading it once?
 - Does at least one slide show real, correct, paste-able Symfony (or Vue) code for doing it properly?

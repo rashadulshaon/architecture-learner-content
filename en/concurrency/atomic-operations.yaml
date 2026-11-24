@@ -1,0 +1,399 @@
+slides:
+  - slug: oversold-stock
+    title: 'The last phone, sold to two people'
+    kind: story
+    tldr: 'Put the condition and the change in one SQL statement and the database closes the gap itself: UPDATE … WHERE stock >= n, then check how many rows changed.'
+    keywords: ['atomic update', 'oversell', 'stock', 'UPDATE WHERE', 'affected rows', 'inventory']
+    blocks:
+      - type: metaphor
+        icon: ticket
+        title: 'The bus conductor''s seat card'
+        body: |
+          A bus conductor hangs a card on a seat: looking and hanging happen in one motion. If it took three steps ("see if the seat is free, think about it, then hang the card"), another passenger could sit down in the middle. An atomic operation is exactly that one motion: checking the condition and making the change happen in a single database step.
+      - type: visual
+        kind: sequence
+        caption: 'One phone in stock, two buyers at once. With a single UPDATE, only one gets it'
+        actors:
+          - {id: r1, label: 'Rahim''s order', icon: user, tip: 'Wants to buy the last phone.'}
+          - {id: r2, label: 'Karim''s order', icon: user, tip: 'Wants to buy the same phone at almost the same moment.'}
+          - {id: db, label: 'Database', icon: db, tip: 'The product row has stock = 1.'}
+        messages:
+          - {from: r1, to: db, label: 'stock = stock − 1 WHERE stock >= 1', tip: 'The condition and the change are in one statement. The database locks the row while it does it.'}
+          - {from: db, to: r1, label: '1 row changed', dashed: true, tone: good, tip: 'affected rows = 1 means Rahim got it.'}
+          - {from: r2, to: db, label: 'stock = stock − 1 WHERE stock >= 1', tip: 'Now stock is 0, so the WHERE doesn''t match.'}
+          - {from: db, to: r2, label: '0 rows changed', dashed: true, tone: warn, tip: 'affected rows = 0 means sold out. Karim is told "it''s gone".'}
+          - {at: db, note: 'stock = 0, never −1', tone: good, tip: 'There was no gap, so there is no overselling either.'}
+      - type: quote
+        body: 'Put the condition in the WHERE, then check how many rows changed.'
+    aside:
+      - type: problem
+        body: '"Read, think, write" takes three steps. When one SQL statement holds both the condition and the change, the database locks the row itself, so there is no gap.'
+      - type: terms
+        items:
+          - {term: 'Atomic operation', meaning: 'One indivisible step: nobody else can get in the middle.'}
+          - {term: 'Affected rows', meaning: 'The number of rows an UPDATE or DELETE actually changed.'}
+      - type: refs
+        items:
+          - {to: 'concurrency/race-conditions', label: 'The read-modify-write gap'}
+    check:
+      q: 'Two requests run `UPDATE … SET stock = stock - 1 WHERE stock >= 1` at once, with stock at 1. Who gets what?'
+      a: 'One gets affected rows = 1 (and the phone); the other gets 0 (sold out). stock never goes negative.'
+
+  - slug: atomic-update-doctrine
+    title: 'Atomic UPDATE in Symfony: DQL and DBAL'
+    kind: howto
+    tldr: 'Instead of getter and setter, run `SET stock = stock - :n WHERE … AND stock >= :n` through DQL or DBAL; a result of 0 means no stock.'
+    keywords: ['DQL UPDATE', 'executeStatement', 'Doctrine', 'stock', 'atomic', 'CHECK constraint']
+    blocks:
+      - type: text
+        body: |
+          In Doctrine, the easiest route is a bulk `UPDATE` in DQL. `execute()` returns how many rows changed, and that number is itself the answer to "did the condition match?". If it is 0, throw an exception, and stock can never go negative.
+      - type: code
+        lang: php
+        file: 'src/Service/StockService.php'
+        variant: good
+        code: |
+          public function take(int $productId, int $qty): void
+          {
+              $updated = $this->em->createQuery(
+                  'UPDATE App\Entity\Product p
+                   SET p.stock = p.stock - :qty
+                   WHERE p.id = :id AND p.stock >= :qty'
+              )
+                  ->setParameter('qty', $qty)
+                  ->setParameter('id', $productId)
+                  ->execute();                        // number of rows changed
+
+              if ($updated === 0) {
+                  throw new OutOfStock($productId);   // the condition didn't match
+              }
+          }
+        marks:
+          - {line: 5, tip: 'The arithmetic happens in the database, not in PHP, so it never gets mixed up with another request.'}
+          - {line: 6, tip: 'The condition and the change are in the same statement. This `p.stock >= :qty` is what prevents overselling.'}
+          - {line: 12, tip: '0 means someone took the stock earlier. Handle it as a business error, not a bug.'}
+      - type: code
+        lang: sql
+        file: 'migrations/Version2026….php (SQL)'
+        code: |
+          -- Last line of defence: even if the code is wrong, the database won't accept negative stock
+          ALTER TABLE product
+              ADD CONSTRAINT product_stock_non_negative CHECK (stock >= 0);
+        marks:
+          - {line: 3, tip: 'The CHECK constraint is the final guard. Even if some other code or script makes a mistake, it is stopped here.'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'A DQL bulk UPDATE bypasses the Unit of Work; a `$product` loaded earlier will show the old stock, so call `$em->refresh($product)`. If you use #[ORM\Version], also write `p.version = p.version + 1`.'
+          - 'There is no point if you don''t look at the result of `execute()`; if the code carries on after a 0, you get the same oversell.'
+      - type: tips
+        items:
+          - 'Without Doctrine, running SQL directly with `$connection->executeStatement($sql, $params)` returns the same number.'
+    check:
+      q: 'After a DQL bulk UPDATE, does a `$product->getStock()` loaded earlier give the right value?'
+      a: 'No, it still gives the old value, because a bulk UPDATE bypasses the Unit of Work. Call `$em->refresh($product)` if you need the new value.'
+
+  - slug: compare-and-swap
+    title: 'Compare-and-swap: "is it still in the state I expect?"'
+    kind: concept
+    tldr: 'Put the old state in the UPDATE''s WHERE (status = ''pending''); affected rows 1 means you won, 0 means someone else got there first.'
+    keywords: ['compare and swap', 'CAS', 'state transition', 'webhook', 'duplicate', 'status']
+    blocks:
+      - type: text
+        body: |
+          Compare-and-swap (CAS) means: "only put in the new value if the current value is what I think it is". In SQL, that is `WHERE status = 'pending'`. When the same payment's webhook arrives twice, both try to mark it paid, but the database lets only one win. Only the winner sends the receipt.
+      - type: visual
+        kind: sequence
+        caption: 'Two webhooks for the same payment: only the first sends a receipt'
+        actors:
+          - {id: w1, label: 'webhook 1', icon: bolt, tip: 'The first message from the payment gateway.'}
+          - {id: w2, label: 'webhook 2', icon: bolt, tip: 'A gateway retry or duplicate message, arriving at almost the same time.'}
+          - {id: db, label: 'Database', icon: db, tip: 'Order 12''s status is currently pending.'}
+        messages:
+          - {from: w1, to: db, label: 'If pending, mark paid', tip: 'UPDATE … SET status = ''paid'' WHERE id = 12 AND status = ''pending''.'}
+          - {from: db, to: w1, label: '1 row changed', dashed: true, tone: good, tip: 'w1 won. From now on, only it does the receipt work.'}
+          - {from: w2, to: db, label: 'If pending, mark paid', tip: 'By the time this UPDATE runs, status is already paid, so the WHERE doesn''t match.'}
+          - {from: db, to: w2, label: '0 rows changed', dashed: true, tone: warn, tip: 'w2 realises the work has already been done, and just quietly returns 200.'}
+      - type: code
+        lang: sql
+        file: 'src/Repository/OrderRepository.php (SQL)'
+        code: |
+          UPDATE orders
+          SET status = 'paid', paid_at = NOW()
+          WHERE id = 12 AND status = 'pending';
+          -- affected rows = 1 → I won; 0 → someone else got there first
+        marks:
+          - {line: 3, tip: 'This `status = pending` part is the compare. If the old state doesn''t match, nothing changes.'}
+    aside:
+      - type: remember
+        body: 'Put the old state in the WHERE, then count affected rows: 1 means you won.'
+      - type: refs
+        items:
+          - {to: 'payments/payment-state-machine', label: 'Valid transitions and state machines'}
+          - {to: 'payments/webhooks', label: 'Handling duplicate webhooks'}
+    check:
+      q: 'Two webhooks both try to mark an order paid with `WHERE status = ''pending''`. How do you tell which one won?'
+      a: 'Look at affected rows. The one with 1 won and sends the receipt; the one with 0 finds the work already done and quietly steps aside.'
+
+  - slug: unique-and-upsert
+    title: 'Unique constraints and upsert: keep the rule in the database'
+    kind: concept
+    tldr: 'Write the uniqueness rule as an index and the database blocks duplicates itself; upsert does "create if missing, update if present" in one statement.'
+    keywords: ['unique constraint', 'upsert', 'ON CONFLICT', 'ON DUPLICATE KEY', 'partial unique index']
+    blocks:
+      - type: text
+        body: |
+          A unique index isn't only a performance tool, it's a correctness tool. The rule "a user votes only once in a poll" doesn't belong in an `if` in your code; write it as `UNIQUE (poll_id, user_id)`. And instead of the two-step "check whether it exists first", use an **upsert**: create if missing, update if present, all in one statement.
+      - type: visual
+        kind: table
+        caption: 'When a rule becomes an index in the database'
+        headers: ['Rule', 'What the database enforces']
+        rows:
+          - cells: ['Email is unique', 'UNIQUE (email)']
+            tip: 'Two accounts cannot share one email, even when two requests arrive together.'
+          - cells: ['One vote per poll', 'UNIQUE (poll_id, user_id)']
+            tip: 'The pair of columns is unique. Even a double tap leaves just one row.'
+          - cells: ['Only one active booking per seat', 'UNIQUE (seat_id) WHERE status = ''active''']
+            tip: 'A partial unique index (PostgreSQL). There can be many cancelled bookings, but only one active.'
+          - cells: ['The same idempotency key only once', 'UNIQUE (idempotency_key)']
+            tip: 'On a retry, the second insert fails; you can then simply return the earlier response.'
+      - type: code
+        lang: sql
+        file: 'upsert — PostgreSQL / MySQL'
+        code: |
+          -- PostgreSQL: counting page views, with no race
+          INSERT INTO page_view (page_id, day, views)
+          VALUES (7, CURRENT_DATE, 1)
+          ON CONFLICT (page_id, day)
+          DO UPDATE SET views = page_view.views + 1;
+
+          -- The same thing in MySQL
+          INSERT INTO page_view (page_id, day, views) VALUES (7, CURDATE(), 1)
+          ON DUPLICATE KEY UPDATE views = views + 1;
+        marks:
+          - {line: 4, tip: 'The conflict is detected on this unique pair of columns. Without that index, upsert doesn''t work.'}
+          - {line: 5, tip: 'On a conflict, no new row is made; the existing one gets +1. There is no read in between, so there is no race.'}
+      - type: quote
+        body: 'A rule that must never be broken should live in the database, as a unique index or a CHECK.'
+    aside:
+      - type: tips
+        items:
+          - 'If you only want to know whether it already exists, use `ON CONFLICT DO NOTHING` (`INSERT IGNORE` in MySQL) and look at affected rows.'
+          - 'Doctrine ORM has no built-in upsert; for this, run native SQL through `$connection->executeStatement()`.'
+      - type: refs
+        items:
+          - {to: 'data/schema-design', label: 'Guarding the schema with constraints'}
+    check:
+      q: 'To count daily page views, what do you use instead of the two-step "check if it exists, +1 if so, create if not", and why?'
+      a: 'An upsert (`ON CONFLICT … DO UPDATE SET views = views + 1`). The unique index funnels every request onto one row, and the +1 happens inside the database, so there is no gap.'
+
+  - slug: ignored-count
+    title: 'Atomic doesn''t help if you ignore the result'
+    kind: pitfall
+    tldr: 'If you run an atomic UPDATE and never look at affected rows, the code assumes it always won and completes the order even on 0.'
+    keywords: ['affected rows', 'ignore result', 'oversell', 'silent failure', 'atomic pitfall']
+    blocks:
+      - type: text
+        body: |
+          Plenty of people write the atomic UPDATE correctly, then throw its result away. The database did keep `stock` from going negative, yet the code marks the order "confirmed", because it never learned that the UPDATE changed nothing. The buyer thinks the phone is coming, and there is no phone in stock.
+      - type: code
+        lang: php
+        file: 'src/Service/OrderService.php'
+        variant: bad
+        code: |
+          $this->em->createQuery(
+              'UPDATE App\Entity\Product p SET p.stock = p.stock - 1
+               WHERE p.id = :id AND p.stock >= 1'
+          )->setParameter('id', $productId)->execute();   // result thrown away
+
+          $order->confirm();             // there was no stock, yet it is confirmed
+          $this->em->flush();
+        marks:
+          - {line: 4, tip: 'A returned 0 means there was no stock, but the code never looks at it.'}
+          - {line: 6, tip: 'This is where the oversell begins. The UPDATE was safe, but the code is blind.'}
+      - type: code
+        lang: php
+        file: 'src/Service/OrderService.php'
+        variant: good
+        code: |
+          $taken = $this->em->createQuery(
+              'UPDATE App\Entity\Product p SET p.stock = p.stock - 1
+               WHERE p.id = :id AND p.stock >= 1'
+          )->setParameter('id', $productId)->execute();
+
+          if ($taken === 0) {
+              throw new OutOfStock($productId);   // rolls back if inside a transaction
+          }
+
+          $order->confirm();
+          $this->em->flush();
+        marks:
+          - {line: 6, tip: 'If the result is 0, stop right here. Decide before doing the rest of the work.'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'When there are several steps (reducing stock, creating the order, deducting points), keep them all inside wrapInTransaction(), or stock may drop without any order being created.'
+          - 'In MySQL, affected rows by default counts rows that actually changed, so an UPDATE that leaves a value unchanged reports 0. That isn''t an issue when decrementing stock, but remember it for other jobs.'
+      - type: refs
+        items:
+          - {to: 'concurrency/reservations', label: 'Holding stock in a reservation'}
+    check:
+      q: 'The UPDATE is safe, so why did the bad code above still oversell?'
+      a: 'The code never looked at the UPDATE''s result (the number of rows changed). A 0 meant there was no stock, but the code confirmed the order anyway.'
+
+flashcards:
+  - q: 'What is an atomic operation?'
+    a: 'A step nobody else can get in the middle of. Checking the condition and making the change happen together, which closes the gap.'
+    more: |
+      "Read, think, write" has gaps because it takes three steps. When one UPDATE statement holds both the condition and the change, the database locks the row and does both together, so no other request can slip in between.
+    ref: oversold-stock
+  - q: 'What is the SQL for safely decrementing stock?'
+    a: '`UPDATE product SET stock = stock - :n WHERE id = :id AND stock >= :n`. Then check affected rows: 0 means out of stock.'
+    more: |
+      The calculation happens in the database, not in PHP, so it never gets mixed up with another request. The `stock >= :n` part prevents negative stock. If the result is 0 in your code, throw OutOfStock.
+    ref: atomic-update-doctrine
+  - q: 'Why do affected rows matter?'
+    a: 'They tell you whether the WHERE condition matched. 1 means you got the job; 0 means someone else did it first, or the condition didn''t match.'
+    more: |
+      In Doctrine DQL, `execute()` returns this number, and in DBAL, `executeStatement()` does. If you run an atomic UPDATE and don't look at it, your code stays blind.
+    ref: ignored-count
+  - q: 'What is one limitation of a DQL bulk UPDATE?'
+    a: 'It bypasses the Unit of Work, so entities loaded earlier show stale values. Call `$em->refresh($entity)` when needed.'
+    more: |
+      Doctrine doesn't update the objects in its identity map, because the query goes straight to the database. If you use an optimistic version, you also have to write `p.version = p.version + 1` yourself in the DQL.
+    ref: atomic-update-doctrine
+  - q: 'What is compare-and-swap (CAS)?'
+    a: 'Put in the new value only if the current value is what you expect. In SQL: `UPDATE … SET status = ''paid'' WHERE status = ''pending''`.'
+    more: |
+      When two parties try the same transition at once, the database lets only one win. Affected rows of 1 means you won; 0 means you lost. Work like sending a receipt or issuing a refund is done only by the winner.
+    ref: compare-and-swap
+  - q: 'How do you make sure a duplicate webhook is handled only once?'
+    a: 'Make the old state a condition of the state-change UPDATE (WHERE status = ''pending''). Only the one with affected rows 1 does the work.'
+    more: |
+      Gateways retry, so the same webhook can arrive twice at the same moment. The second one gets 0, understands the work is done, and quietly leaves with a 200.
+    ref: compare-and-swap
+  - q: 'Why is a unique constraint a correctness tool?'
+    a: 'The uniqueness rule lives in the database, so of all the inserts that arrive together, only one survives. A check in code can''t do that.'
+    more: |
+      Emails, one vote per poll, idempotency keys: all of them can be protected with a unique index. The insert that loses throws a UniqueConstraintViolationException, which you catch to show a friendly error.
+    ref: unique-and-upsert
+  - q: 'What is an upsert, and why is it good?'
+    a: '"Create if missing, update if present" in one statement. PostgreSQL: ON CONFLICT DO UPDATE; MySQL: ON DUPLICATE KEY UPDATE.'
+    more: |
+      It avoids the race in the two-step "SELECT first, then INSERT or UPDATE". It is useful for incrementing counters, daily tallies or cache rows. Without a unique index, it doesn't work at all.
+    ref: unique-and-upsert
+  - q: 'What is a partial unique index used for?'
+    a: 'A unique rule over only some rows, such as one active booking per seat while cancelled ones can be many. In PostgreSQL: `WHERE status = ''active''`.'
+    more: |
+      `CREATE UNIQUE INDEX one_active ON booking (seat_id) WHERE status = 'active'`. The database itself prevents double-booking, even if there is a gap in the code. MySQL doesn't have it directly; you can work around it with a generated column.
+    ref: unique-and-upsert
+  - q: 'How do you stop negative stock even when the code has a bug?'
+    a: 'Add CHECK (stock >= 0) to the column. It is the last line of defence: whatever code or script makes a mistake, the database won''t accept a negative value.'
+    more: |
+      The atomic UPDATE is the first defence and the CHECK constraint is the second; with both in place, one catches what the other misses. Add it through a migration, not with hand-run SQL.
+    ref: atomic-update-doctrine
+
+quiz:
+  - q: 'Stock is 1. Two requests run the code below at the same time. What can the final state be?'
+    lang: php
+    code: |
+      $p = $em->find(Product::class, $id);
+      if ($p->getStock() >= 1) {
+          $p->setStock($p->getStock() - 1);
+          $em->flush();
+      }
+    hint: 'What stock value did each of them read?'
+    options:
+      - text: 'Both read stock 1, and two orders can be confirmed: one phone, two sales'
+        correct: true
+        why: 'There is a gap between the read and the write. Both read 1 and wrote 0, and neither failed.'
+      - text: 'The second flush() throws an exception because stock goes negative'
+        correct: false
+        why: 'Both write 0, not −1. No constraint is violated.'
+      - text: 'Doctrine cancels one of them itself'
+        correct: false
+        why: 'Doctrine takes no lock and cancels nothing; fixing that is up to you.'
+    ref: oversold-stock
+  - q: 'Which of these are correct ways to decrement stock?'
+    hint: 'Look for the ones where the condition and the decrement are in one step.'
+    options:
+      - text: 'Run `UPDATE product SET stock = stock - 1 WHERE id = 7 AND stock >= 1` and check affected rows'
+        correct: true
+        why: 'The condition and the change are in one step, and you decide from the result. There is no gap for a race.'
+      - text: 'Load with PESSIMISTIC_WRITE inside wrapInTransaction(), check stock, then decrement'
+        correct: true
+        why: 'The row lock closes the gap. Others wait in line, though it is heavier than an atomic UPDATE.'
+      - text: 'Read stock, check it with an `if`, then `setStock($s - 1)`'
+        correct: false
+        why: 'That is read-modify-write; there is no lock, so the gap remains.'
+      - text: 'Count stock with a PHP static counter'
+        correct: false
+        why: 'A static variable is separate in every process; other workers don''t see it.'
+    ref: atomic-update-doctrine
+  - q: 'Two webhooks simultaneously run `UPDATE orders SET status=''paid'' WHERE id=12 AND status=''pending''`. What are the second one''s affected rows, and what should it do?'
+    hint: 'After the first one changed the status, does the WHERE still match?'
+    options:
+      - text: '1, and it sends the receipt too'
+        correct: false
+        why: 'The status is already paid by then, so the WHERE doesn''t match. If it were 1, the receipt would go out twice.'
+      - text: '0; it realises the work is done and quietly returns success'
+        correct: true
+        why: 'This is the safe behaviour for a duplicate webhook: the work happens once, and the response is 200 both times.'
+      - text: 'An exception, because two UPDATEs may not run at the same time'
+        correct: false
+        why: 'The database runs the two serially, with no exception; the second one just changes nothing.'
+    ref: compare-and-swap
+  - q: 'What is the most reliable way to guarantee one vote per poll?'
+    hint: 'Where do all the requests meet?'
+    options:
+      - text: 'Check with `findOneBy(poll, user)` before voting'
+        correct: false
+        why: 'Another vote can slip in between the check and the insert; that is a race.'
+      - text: 'Disable the button in the frontend'
+        correct: false
+        why: 'That is only UX; a direct API call walks around it.'
+      - text: 'Add `UNIQUE (poll_id, user_id)` and catch the exception'
+        correct: true
+        why: 'The database lines up every insert and lets only one survive.'
+      - text: 'Keep the voters in a PHP static array'
+        correct: false
+        why: 'Process memory isn''t shared with other workers and is gone after a restart.'
+    ref: unique-and-upsert
+  - q: 'Which of these are good places to use an upsert?'
+    hint: 'Where do you need "create if missing, update if present"?'
+    options:
+      - text: 'Incrementing a daily page-view counter'
+        correct: true
+        why: 'With (page_id, day) unique, `ON CONFLICT DO UPDATE SET views = views + 1` counts without a race.'
+      - text: 'Recording a user''s last-active time (one row per user)'
+        correct: true
+        why: 'With user_id unique, an upsert creates or updates in one statement.'
+      - text: 'Creating an account if it doesn''t exist, in order to deduct money from its balance'
+        correct: false
+        why: 'Deducting money is conditional (is the balance enough?); `UPDATE … WHERE balance >= n` is the right tool here.'
+      - text: 'Using ON CONFLICT on a column with no unique index'
+        correct: false
+        why: 'Detecting a conflict requires a unique index or constraint; without one, the statement fails.'
+    ref: unique-and-upsert
+  - q: 'What is the problem in the code below?'
+    lang: php
+    code: |
+      $em->createQuery(
+          'UPDATE App\Entity\Product p SET p.stock = p.stock - 1
+           WHERE p.id = :id AND p.stock >= 1'
+      )->setParameter('id', $id)->execute();
+
+      $order->confirm();
+      $em->flush();
+    hint: 'What does the code do with the number execute() returns?'
+    options:
+      - text: 'The order is confirmed even when the UPDATE changed no row (0)'
+        correct: true
+        why: 'Because it ignores the result, the order completes even with no stock. Throw an exception when `=== 0`.'
+      - text: 'With `stock >= 1` in the WHERE, stock will go negative in the database'
+        correct: false
+        why: 'That very condition prevents negative stock; the problem is in the code, not the database.'
+      - text: 'Writing stock = stock − 1 in DQL is not allowed'
+        correct: false
+        why: 'It is perfectly valid and a common atomic idiom.'
+    ref: ignored-count

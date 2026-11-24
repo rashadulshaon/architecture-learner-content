@@ -1,0 +1,377 @@
+slides:
+  - slug: line-grows-forever
+    title: 'Let everyone in, and nobody gets served'
+    kind: story
+    tldr: 'When more requests arrive than you can handle, an unbounded line keeps growing and replies come after the user has left. The server works hard and achieves nothing.'
+    keywords: ['overload', 'unbounded queue', 'goodput', 'latency', 'long queue', 'capacity']
+    blocks:
+      - type: metaphor
+        icon: ticket
+        title: 'The ticket counter at Kamalapur before Eid'
+        body: |
+          One clerk sits at the counter, and each ticket takes a fixed amount of time. People join the line faster than she can serve them, and nobody is ever turned away. The line grows until the person who finally gets a ticket has already missed the train. The clerk worked all day, yet helped no one. On your server the counter is a worker, the line is a queue, and the train's departure is the user's timeout.
+      - type: visual
+        kind: flow
+        caption: '60 requests a second arrive, 50 can be served: the line never shrinks, it only grows'
+        nodes:
+          - {id: users, label: 'Users', sub: '60 requests a second', icon: users, col: 0, row: 2, tip: 'A sudden crowd on sale day. Users wait at most 30 seconds, then hit refresh or leave.'}
+          - {id: queue, label: 'Waiting line', sub: 'no limit', icon: queue, tone: warn, col: 2, row: 1, tip: 'nginx''s backlog, PHP-FPM''s line or a Messenger queue: all of them are lines. Without a limit, they grow as much as they like.'}
+          - {id: app, label: 'App server', sub: 'handles 50 a second', icon: server, tone: accent, col: 4, row: 2, tip: 'Capacity is fixed. The server does not suddenly get faster because the crowd got bigger.'}
+        edges:
+          - {from: users, to: queue, label: '60 requests a second join the line'}
+          - {from: queue, to: app, label: 'The server takes 50 a second, so the line grows by 10 every second', tone: warn}
+          - {from: app, to: users, label: 'After 10 minutes there are 6,000 in line: replies take 120 seconds', tone: bad, dashed: true, tip: '6,000 ÷ 50 = 120 seconds. Users gave up after 30 seconds, so nobody ever sees these replies.'}
+      - type: quote
+        body: 'Let in more work than you can handle and it is not that everyone gets slower. Everyone fails.'
+    aside:
+      - type: story
+        title: 'A busy server, zero results'
+        body: |
+          On campaign day, an e-commerce site's CPU sat at 100%: the server was working at full capacity every second. Yet almost no orders went through. The replies were being written to connections the clients had already closed. The server was busy, but nothing was getting done.
+      - type: terms
+        items:
+          - {term: 'Overload', meaning: 'More work arriving at once than the system can handle.'}
+          - {term: 'Goodput', meaning: 'The rate of replies users actually received in time. Count results, not busyness.'}
+    check:
+      q: 'The server is 100% busy, yet users say the site isn''t working. How is that possible?'
+      a: 'The line is so long that replies arrive after the user''s timeout. The server is handling requests whose reader is gone, so goodput is close to zero.'
+
+  - slug: reject-early
+    title: 'Keep the line short and turn the rest away at once'
+    kind: concept
+    tldr: 'Load shedding means turning away requests above your limit at the door. The rest get full-speed service, and those turned away know when to come back.'
+    keywords: ['load shedding', 'back-pressure', 'bounded queue', '429', '503', 'Retry-After', 'fail fast']
+    blocks:
+      - type: metaphor
+        icon: ticket
+        title: 'A "tickets sold out" sign at the gate'
+        body: |
+          A good station clerk steps out and announces: "We have 50 tickets today. Everyone else, please come back tomorrow." Those who got in received their tickets on time, and those turned away didn't waste their day. That is **load shedding**: deliberately refusing the work you can't handle.
+      - type: text
+        body: |
+          A line with a maximum length is a **bounded queue**. Once it is full, new requests get a 503 immediately. This is how a step further along tells the step before it "I'm full, send slower", which is called **back-pressure**. Rejecting a request costs almost nothing, while letting it in and timing it out later costs a lot.
+      - type: visual
+        kind: flow
+        caption: 'Limit 50: the first 50 get in, the other 10 are turned back at once'
+        nodes:
+          - {id: users, label: 'Users', sub: '60 requests a second', icon: users, col: 0, row: 0, tip: 'The crowd is the same as before. The difference is that the server now knows its limit.'}
+          - {id: gate, label: 'The gate', sub: 'at most 50 at a time', icon: filter, tone: accent, col: 2, row: 1, tip: 'A rate limiter or bounded queue. It counts how many are inside and lets no more in once the limit is reached.'}
+          - {id: app, label: 'App server', sub: '50 a second', icon: server, tone: good, col: 4, row: 0, tip: 'There is no line now, so every request gets to work straight away.'}
+        edges:
+          - {from: users, to: gate, label: '60 requests a second reach the gate'}
+          - {from: gate, to: app, label: 'The first 50 get in and are handled at full speed', tone: good}
+          - {from: gate, to: users, label: 'The other 10 instantly get a 503 with Retry-After: 2', tone: warn, dashed: true, tip: 'Turning someone away is not the same as failing them: the client knows to try again in 2 seconds.'}
+          - {from: app, to: users, label: 'The 50 that got in are answered in 200 ms', tone: good, dashed: true}
+      - type: visual
+        kind: table
+        caption: 'Which status code to use when turning requests away, and why'
+        headers: ['', '429 (Too Many)', '503 (Unavailable)']
+        rows:
+          - cells: ['Whose fault', 'This client is asking too much', 'The server itself is full']
+            tip: '429 is personal: one user or API key went over its limit. 503 is for everyone: the whole system is overloaded.'
+          - cells: ['When to use', 'per-user rate limit', 'overload and shedding']
+            tip: 'Even a sleepy server at night will return 429 to one client asking too much. 503 only when the server is really struggling.'
+          - cells: ['What the client does', 'Slows its own pace', 'Comes back a bit later']
+            tip: 'Send a Retry-After header in both cases, or clients will guess when to retry and add to the crowd.'
+      - type: quote
+        body: 'Saying "no" at the door is cheaper and politer than timing someone out after they got in.'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Back-pressure', meaning: 'A full step telling the step before it to slow down, so the crowd doesn''t pile up behind it.'}
+          - {term: 'Bounded queue', meaning: 'A queue with a fixed maximum size. When it is full, new items are not let in.'}
+          - {term: 'Retry-After', meaning: 'An HTTP header saying how many seconds to wait before trying again.'}
+      - type: remember
+        body: 'A line with no limit is not a line, it is a pit. Hit the limit and say "no" at once.'
+      - type: refs
+        items:
+          - {to: 'api/rate-limiting', label: 'Per-user rate limits and 429'}
+    check:
+      q: 'Doesn''t turning some users away make the site look bad? Why is it still better?'
+      a: 'Without it, everyone would wait 120 seconds and fail. With it, 50 people are served fast and the rest know right away when to come back.'
+
+  - slug: shed-with-rate-limiter
+    title: 'Shed the less important work first with Symfony RateLimiter'
+    kind: howto
+    tldr: 'Put an overall limit on the less important routes with RateLimiter, and return 503 with Retry-After when it is hit. Never put payment or checkout on the shedding list.'
+    keywords: ['RateLimiter', 'token bucket', 'priority', 'critical traffic', 'shedding', 'Retry-After']
+    blocks:
+      - type: text
+        body: |
+          Not all requests are equally important. In a crowd, shed things like search, recommendations and reports first, to save room for checkout and payment. Below is a token bucket (a bucket that refills with tokens at a steady rate): at most 50 low-priority requests per second, with one shared key (`global`) for everyone.
+      - type: code
+        lang: yaml
+        file: 'config/packages/rate_limiter.yaml'
+        variant: good
+        code: |
+          framework:
+              rate_limiter:
+                  low_priority:
+                      policy: 'token_bucket'
+                      limit: 100            # at most 100 tokens in the bucket (tolerates small bursts)
+                      rate: { interval: '1 second', amount: 50 }   # refills 50 tokens every second
+        marks:
+          - {line: 3, tip: 'From the name low_priority, Symfony autowiring creates the argument name $lowPriorityLimiter.'}
+          - {line: 5, tip: 'limit is the size of the bucket: a sudden burst of 100 is tolerated, but the sustained rate cannot exceed 50 a second.'}
+      - type: code
+        lang: php
+        file: 'src/EventListener/LoadSheddingListener.php'
+        variant: good
+        code: |
+          #[AsEventListener(event: KernelEvents::REQUEST, priority: 30)]
+          final class LoadSheddingListener
+          {
+              private const SHEDDABLE = ['/api/search', '/api/recommendations', '/api/reports'];
+
+              public function __construct(private readonly RateLimiterFactory $lowPriorityLimiter)
+              {
+              }
+
+              public function __invoke(RequestEvent $event): void
+              {
+                  $path = $event->getRequest()->getPathInfo();
+                  $sheddable = array_filter(self::SHEDDABLE, fn ($p) => str_starts_with($path, $p));
+                  if (!$event->isMainRequest() || [] === $sheddable) {
+                      return;   // checkout, payment, login: never shed
+                  }
+
+                  $limit = $this->lowPriorityLimiter->create('global')->consume();
+                  if ($limit->isAccepted()) {
+                      return;
+                  }
+
+                  $wait = max(1, $limit->getRetryAfter()->getTimestamp() - time());
+                  $event->setResponse(new JsonResponse(
+                      ['error' => 'busy', 'message' => 'Please try again shortly'],
+                      Response::HTTP_SERVICE_UNAVAILABLE,
+                      ['Retry-After' => (string) $wait],
+                  ));
+              }
+          }
+        marks:
+          - {line: 1, tip: 'priority 30: it runs before the firewall, so shed requests don''t even pay the cost of authentication.'}
+          - {line: 4, tip: 'The shedding list is written out plainly: which paths can be sacrificed, decided in advance.'}
+          - {line: 24, tip: 'A shed request ends right here. It costs nothing at the controller, the database or any external API.'}
+      - type: points
+        title: 'What to shed first'
+        style: number
+        items:
+          - 'First of all: reports, exports, anything that can be pushed to the background'
+          - 'Then: search, recommendations, live counters. The site works without them'
+          - 'Last: browsing. Shed it and users leave the site'
+          - 'Never: payment, checkout, login, health checks'
+    aside:
+      - type: tips
+        items:
+          - 'Keep the shedding list short: 3-4 paths are enough, and a longer list raises the risk of shedding the wrong path.'
+          - 'First only log how many requests would have been shed, then switch it on. A limit set by guesswork will shed healthy traffic.'
+          - 'To share the overall limit across several servers, give the limiter Redis as its cache pool. Otherwise each server counts separately.'
+      - type: when
+        use: ['To protect less important routes when a crowd suddenly arrives', 'As a safety net before a campaign or sale']
+        avoid: ['With numbers you set without measuring', 'On payment or auth routes']
+      - type: refs
+        items:
+          - {to: 'api/rate-limiting', label: 'The different rate limit policies'}
+    check:
+      q: 'Why is the shedding listener placed on kernel.request instead of in a controller?'
+      a: 'A shed request never reaches the controller, the database or external APIs. So shedding costs almost nothing, and the capacity it saves goes to the important work.'
+
+  - slug: unbounded-queue-trap
+    title: 'Pitfall: "just put it in the queue, it''ll get done later"'
+    kind: pitfall
+    tldr: 'An unbounded queue hides a crowd, it does not solve it. The line grows for hours and workers process stale jobs. Measure queue depth and return 503 at the limit.'
+    keywords: ['Messenger', 'queue depth', 'MessageCountAwareInterface', 'stale job', 'bounded queue', '202 Accepted']
+    blocks:
+      - type: text
+        body: |
+          In a CRUD app our habit is to push heavy work onto a queue and return `202 Accepted`. But when messages arrive faster than the workers can process them, the queue grows every minute. An hour later, the user who asked for one report has asked ten more times. All of them sit in the queue, and the workers keep producing that stale work.
+      - type: code
+        lang: php
+        file: 'src/Controller/ReportController.php'
+        variant: bad
+        code: |
+          #[Route('/api/reports', methods: ['POST'])]
+          public function create(MessageBusInterface $bus): JsonResponse
+          {
+              // nobody looks at how many are waiting in the queue
+              $bus->dispatch(new BuildSalesReport($this->getUser()->getId()));
+
+              return new JsonResponse(['status' => 'queued'], Response::HTTP_ACCEPTED);
+          }
+        marks:
+          - {line: 5, tip: 'However long the queue is, new work gets in. The wait stretches from hours to days.'}
+          - {line: 7, tip: '202 means "received", not "we will do it". It makes no promise about when.'}
+      - type: code
+        lang: php
+        file: 'src/Controller/ReportController.php'
+        variant: good
+        code: |
+          public function __construct(
+              #[Autowire(service: 'messenger.transport.reports')]
+              private readonly MessageCountAwareInterface $reports,
+          ) {
+          }
+
+          #[Route('/api/reports', methods: ['POST'])]
+          public function create(MessageBusInterface $bus): JsonResponse
+          {
+              if ($this->reports->getMessageCount() >= 500) {   // the queue limit
+                  return new JsonResponse(
+                      ['error' => 'busy'],
+                      Response::HTTP_SERVICE_UNAVAILABLE,
+                      ['Retry-After' => '60'],
+                  );
+              }
+
+              $bus->dispatch(new BuildSalesReport($this->getUser()->getId()));
+
+              return new JsonResponse(['status' => 'queued'], Response::HTTP_ACCEPTED);
+          }
+        marks:
+          - {line: 2, tip: 'The Doctrine, Redis and AMQP transports implement MessageCountAwareInterface. The in-memory and sync transports do not.'}
+          - {line: 10, tip: 'getMessageCount() now counts waiting messages. 500 is this queue''s limit: if the worker clears 100 a minute, nobody waits more than 5 minutes.'}
+      - type: quote
+        body: 'Every queue gets a maximum depth, and once it is reached, new work is turned away.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Set the limit from the worker''s speed: limit ÷ jobs handled per minute = longest wait. Ask whether users can tolerate that wait.'
+          - 'A limit alone is not enough: if a job has gone stale, check its age in the handler and drop it, or workers will build outdated results.'
+          - 'To protect the server itself, set pm.max_children in php-fpm and a sensible timeout in nginx, so one request can''t take another''s place.'
+      - type: refs
+        items:
+          - {to: 'messaging/background-jobs', label: 'Messenger and background jobs'}
+          - {to: 'resilience/graceful-degradation', label: 'Giving something instead of turning people away'}
+    check:
+      q: 'The queue limit is 500 and the worker finishes 100 a minute. At the limit, what is the longest wait for the last message to get in?'
+      a: '500 ÷ 100 = 5 minutes. Set your limit by doing this sum: the wait should stay within what users will tolerate, otherwise lower the limit.'
+
+flashcards:
+  - q: 'What is load shedding?'
+    a: 'When more requests arrive than you can handle, turning the extra ones away at the door at once, so the rest are served properly.'
+    more: |
+      Let everyone in and the line grows, replies arrive after the timeout, and nobody gets served. If you refuse everything above the limit, the requests that got in run at full speed. Tell the ones you turn away when to come back.
+    ref: reject-early
+  - q: 'What is back-pressure?'
+    a: 'A full step tells the step before it to slow down, so the crowd doesn''t pile up in an invisible line and the pressure goes back to its source.'
+    more: |
+      For example, when a queue is full the controller returns 503, and the client or upstream service sends less work. The pressure goes back to where the problem is being created. The opposite is silently accepting everything and piling it up inside.
+    ref: reject-early
+  - q: 'Why does goodput fall under overload?'
+    a: 'The line gets so long that replies arrive after the user''s timeout. The server works hard, but nobody benefits.'
+    more: |
+      Goodput is the replies users actually got in time. A busy server and finished work are not the same thing. Let in more than your capacity and busyness stays at 100% while goodput drops close to zero.
+    ref: line-grows-forever
+  - q: 'What is a bounded queue, and why is an unbounded one dangerous?'
+    a: 'A bounded queue has a fixed maximum size and turns new work away when full. An unbounded one lets wait time, memory and stale work grow without limit.'
+    more: |
+      An unbounded queue hides the problem: requests keep getting in, so everything looks fine. Meanwhile the wait goes from minutes to hours. Pick the limit like this: limit ÷ worker speed = longest wait.
+    ref: unbounded-queue-trap
+  - q: 'When do you return 429, and when 503?'
+    a: '429: one client went over its own limit. 503: the server itself is overloaded, and it is nobody''s fault alone.'
+    more: |
+      Rate limiting is personal, shedding is global. In both cases send a Retry-After header, or clients will guess, retry too soon and make the crowd even bigger.
+    ref: reject-early
+  - q: 'Why send a Retry-After header?'
+    a: 'It tells the client how many seconds to wait before trying again, so it doesn''t guess and retry in quick succession.'
+    more: |
+      Without Retry-After, a turned-away client sends again immediately, which doubles the crowd. You can give either a number of seconds or a date. With Symfony RateLimiter you can get it from `getRetryAfter()`.
+    ref: shed-with-rate-limiter
+  - q: 'Which work do you shed first in a crowd, and which never?'
+    a: 'Reports and exports first, then search and recommendations. Payment, checkout, login and health checks are never shed.'
+    more: |
+      Decide this before the crowd arrives, because in a hurry you will get it wrong. Write the shedding list explicitly in code. Protect most the work that brings in the business's revenue.
+    ref: shed-with-rate-limiter
+  - q: 'Why make the shedding decision in kernel.request rather than in a controller?'
+    a: 'A shed request never reaches the database or external APIs, so shedding costs almost nothing and the capacity is saved for important work.'
+    more: |
+      By the time a request reaches a controller, you have already paid for auth, session and ORM. A listener with an early, high priority avoids those costs. The closer to the door you reject, the cheaper it is.
+    ref: shed-with-rate-limiter
+
+quiz:
+  - q: 'Rahim''s API handles 50 requests a second, but on sale day 60 a second arrive. He set no limit. What will you see after 10 minutes?'
+    hint: 'Ten more arrive every second than leave. Where are they going?'
+    options:
+      - text: 'About 6,000 requests in line, a wait of about 2 minutes, and most replies arriving after the user has left'
+        correct: true
+        why: '10 × 600 = 6,000 piled up. ÷ 50 = 120 seconds. By then clients have timed out, so the server''s effort is wasted.'
+      - text: 'The server will slowly catch up, because the crowd will eventually thin out'
+        correct: false
+        why: 'The line keeps growing until the crowd thins, and it takes a long time to drain afterwards. Meanwhile users refresh and add even more load.'
+      - text: 'Every request will be slightly slower, by about a second, but will succeed'
+        correct: false
+        why: 'The delay doesn''t stay small, it keeps growing. The wait of the last person in line gets longer every second.'
+      - text: 'Only the 10 extra requests will fail, and the other 50 will be fine'
+        correct: false
+        why: 'With no limit, nobody is marked as "extra". The line makes everyone slower and in the end everyone suffers.'
+    ref: line-grows-forever
+  - q: 'In which situation is 429 right, and in which is 503?'
+    hint: 'Whose problem is it: one client''s, or the whole server''s?'
+    options:
+      - text: '429 when one API key asks for more than 100 a minute'
+        correct: true
+        why: '429 is for a client going over its own limit. It is fixed when that client slows down.'
+      - text: '503 for any low-priority request when the server is full during a sale crowd'
+        correct: true
+        why: '503 means the server can''t cope right now and nobody in particular is to blame. With Retry-After, the client knows when to return.'
+      - text: '429 for everyone when the server is full'
+        correct: false
+        why: 'With 429 a client thinks it asked for too much, but the cause is the overall crowd. A wrong signal triggers wrong behaviour.'
+      - text: 'When full, return 200 with empty JSON'
+        correct: false
+        why: '200 means success. An empty reply misleads the client and takes away its chance to retry.'
+    ref: reject-early
+  - q: 'What does the listener below return when the limit is exceeded, and where is the mistake?'
+    lang: php
+    code: |
+      $limit = $this->lowPriorityLimiter->create('global')->consume();
+      if (!$limit->isAccepted()) {
+          $event->setResponse(new JsonResponse(['error' => 'busy'], 500));
+      }
+    hint: 'What is the status code telling the client? And where does it say when the client should return?'
+    options:
+      - text: '500 is wrong, it should be 503; and there is no Retry-After header'
+        correct: true
+        why: '500 means a bug on the server. This is deliberate shedding, so use 503. Without Retry-After, clients will guess and come back too often.'
+      - text: 'No mistake, 500 is fine'
+        correct: false
+        why: 'A 500 triggers alerts and looks like a bug. You need to tell deliberate shedding apart from a bug.'
+      - text: 'Using consume() is wrong, it should be reserve()'
+        correct: false
+        why: 'consume() takes a token at once if there is one and fails without waiting if not. That is exactly what shedding needs.'
+      - text: '`create(''global'')` is wrong, it should use a per-user key'
+        correct: false
+        why: 'The goal here is to protect overall capacity, so one key for everyone. A per-user key is a separate per-user rate limit.'
+    ref: shed-with-rate-limiter
+  - q: 'During a crowd on a site, which request should be shed last of all?'
+    hint: 'Which is more tied to the business''s revenue and the user''s trust?'
+    options:
+      - text: 'The request that confirms a payment'
+        correct: true
+        why: 'The user has paid or is about to. Shedding it loses revenue and creates messy uncertain payments.'
+      - text: 'Exporting the monthly sales report'
+        correct: false
+        why: 'Nobody is harmed if it happens later. That is why it is first on the shedding list.'
+      - text: 'The "recommended for you" part of search'
+        correct: false
+        why: 'The site works without recommendations. It is second on the shedding list.'
+      - text: 'The live "how many people are viewing now" counter'
+        correct: false
+        why: 'A counter is decoration, not essential. It is the easiest thing to shed.'
+    ref: shed-with-rate-limiter
+  - q: 'The reports queue has a limit of 500. The worker finishes 100 a minute, and nobody will tolerate waiting more than 10 minutes. Which decisions are right?'
+    hint: 'limit ÷ speed = wait. And does a limit alone stop stale work?'
+    options:
+      - text: 'With a limit of 500 the longest wait is 5 minutes, within what users tolerate, so the limit can stay'
+        correct: true
+        why: '500 ÷ 100 = 5 minutes, under 10 minutes. The limit is within tolerance.'
+      - text: 'At the limit, return 503 with Retry-After to new requests'
+        correct: true
+        why: 'This way the queue stops growing and users know when to come back. That is back-pressure.'
+      - text: 'Remove the limit and keep just 1 worker, it will all finish by the end of the day'
+        correct: false
+        why: 'With no limit the wait runs into hours, and stale requests get processed too. By then the user no longer wants the answer.'
+      - text: 'When the queue is full, delete old messages and insert new ones, without telling anyone'
+        correct: false
+        why: 'Silently dropping work amounts to losing data. Turning requests away openly is the polite and safe way.'
+    ref: unbounded-queue-trap

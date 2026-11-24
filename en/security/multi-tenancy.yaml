@@ -1,0 +1,418 @@
+slides:
+  - slug: one-forgotten-where
+    title: 'One forgotten WHERE, and every company''s data in one place'
+    kind: story
+    tldr: 'When many customers (tenants) share one database, every query must filter by tenant. Forget it in one query and one customer sees another''s data.'
+    keywords: ['multi-tenancy', 'tenant isolation', 'SaaS', 'data leak', 'tenant_id', 'multi tenant']
+    blocks:
+      - type: text
+        body: |
+          Rahim's HR software (SaaS) keeps employee data for 300 companies in one database. Every query has to carry `WHERE tenant_id = ?`, and Rahim's team followed that rule. One day a new developer wrote the query for an export report and left the condition out. The HR manager of company A downloaded the Excel file and found the salary list of all 300 companies in it.
+      - type: code
+        lang: php
+        file: 'src/Repository/EmployeeRepository.php'
+        variant: bad
+        code: |
+          public function exportAll(): array
+          {
+              // forgot the tenant_id condition: employees of every company come back
+              return $this->createQueryBuilder('e')
+                  ->orderBy('e.name')
+                  ->getQuery()
+                  ->getResult();
+          }
+        marks:
+          - {line: 3, tip: 'The new developer didn''t remember. Code review struggles to catch this too, because nothing bad was written; something was just left out.'}
+      - type: visual
+        kind: flow
+        caption: 'With the condition missing, rows of every tenant come back together'
+        nodes:
+          - {id: hr, label: 'Company A HR', sub: 'tenant 7', icon: user, col: 0, row: 0, tip: 'The logged-in user, who should see only their own company''s employees.'}
+          - {id: api, label: 'API', sub: 'exportAll()', icon: api, tone: warn, col: 2, row: 0, tip: 'This query has no tenant filter.'}
+          - {id: db, label: 'employee table', sub: 'rows of 300 tenants', icon: db, col: 3, row: 1.5, tip: 'Every customer''s data sits in one table, told apart only by the tenant_id column.'}
+        edges:
+          - {from: hr, to: api, label: 'Asks for an export'}
+          - {from: api, to: db, label: 'Asks for all employees, with no tenant', tone: bad}
+          - {from: db, to: hr, label: 'The list of all 300 companies comes back', dashed: true, tone: bad}
+    aside:
+      - type: problem
+        body: 'If you rely on writing the condition by hand in every query, someone will eventually forget. Security can''t depend on human memory.'
+      - type: terms
+        items:
+          - {term: 'Tenant', meaning: 'One customer of the system (a company) whose data must stay separate from everyone else''s.'}
+          - {term: 'SaaS', meaning: 'Software as a service: offering the same software to many customers.'}
+    check:
+      q: 'The rule was to write the `tenant_id` condition by hand in every query. Why did data leak anyway?'
+      a: 'One query lacked the condition. Relying on memory makes a mistake inevitable, so the filter has to sit somewhere it is applied to every query automatically.'
+
+  - slug: three-isolation-levels
+    title: 'A bed in a shared room, a flat, or a separate house'
+    kind: concept
+    tldr: 'Three levels of tenant separation: a tenant_id in shared tables (row), a separate schema, a separate database. The more separate, the safer and the pricier.'
+    keywords: ['row-level isolation', 'schema per tenant', 'database per tenant', 'shared schema', 'noisy neighbour', 'tenant isolation levels']
+    blocks:
+      - type: metaphor
+        icon: building
+        title: 'Rental housing in Dhaka'
+        body: |
+          **Row-level**: many tenants put their beds in one room, like a bachelor mess. It's cheap, but the risk of one person's things ending up in another's hands is highest. **Schema-level**: separate flats in one building, each with its own door. **Database-level**: everyone gets their own house. And a **noisy neighbour** is the flat next door that plays music all night or uses up all the water.
+      - type: visual
+        kind: table
+        caption: 'The pros and cons of the three levels'
+        headers: ['', 'Row-level', 'Schema', 'Database']
+        rows:
+          - cells: ['How it''s separated', 'tenant_id on every row', 'A separate schema per tenant', 'A separate database per tenant']
+            tip: 'The same tables, a separate set of tables, and a separate server connection: three degrees of separation.'
+          - cells: ['Security', 'Lower: one wrong WHERE leaks', 'Medium', 'Highest']
+            tip: 'With separate databases, even a wrong query can''t touch anyone else''s data. In row-level, the only barrier is the condition being right.'
+          - cells: ['Cost and upkeep', 'Cheapest, one migration', 'Medium, a migration per schema', 'Priciest, managing thousands of databases']
+            tip: 'Running 5,000 databases for 5,000 tenants, with a migration on each, is a huge operational burden.'
+          - cells: ['Noisy neighbour', 'Biggest risk, everyone in one database', 'Medium', 'Lowest']
+            tip: 'One tenant''s heavy query can slow everyone''s database. With separate databases that effect can be contained.'
+          - cells: ['When', 'Many small tenants', 'Regulated, larger customers', 'Big customers, strict compliance']
+            tip: 'Most SaaS products start row-level. For big customers or legal requirements they give those customers their own database.'
+      - type: quote
+        body: 'The higher the risk of mixing data, the further you move from the bed toward the house, and the cost and security both go up.'
+    aside:
+      - type: when
+        use: ['Row-level: many small customers, a fast-growing SaaS', 'Database per tenant: a few large customers, strict isolation or data residency']
+        avoid: ['Database per tenant: thousands of small tenants, where the operational burden is unbearable']
+      - type: refs
+        items:
+          - {to: 'data/sharding', label: 'Another way to split data'}
+    check:
+      q: 'A large bank says it won''t sign unless its data is in a separate database. What do you do for the other 500 small customers?'
+      a: 'A separate database for the bank, and row-level for the small ones. Mixing levels according to a customer''s risk and value is the usual practice.'
+
+  - slug: doctrine-tenant-filter
+    title: 'A Doctrine filter: scoping every query by tenant automatically'
+    kind: howto
+    tldr: 'An SQLFilter adds `tenant_id = ?` to every Doctrine query for you. Enable it at the start of the request with the logged-in user''s tenant.'
+    keywords: ['Doctrine SQLFilter', 'tenant scoping', 'addFilterConstraint', 'EventListener', 'prePersist', 'tenant_id', 'row-level tenancy']
+    blocks:
+      - type: text
+        body: |
+          Think of a building guard who says "only your own flat" before anyone goes in. In Doctrine that guard is the **SQL filter**. It appends `AND tenant_id = ?` to every DQL query on its own, so developers don't have to remember. Entities that belong to a tenant implement a `TenantAware` interface.
+      - type: code
+        lang: php
+        file: 'src/Doctrine/TenantFilter.php'
+        variant: good
+        code: |
+          final class TenantFilter extends SQLFilter
+          {
+              public function addFilterConstraint(
+                  ClassMetadata $targetEntity,
+                  string $targetTableAlias,
+              ): string {
+                  // applies only to tenant-aware entities
+                  if (!$targetEntity->getReflectionClass()->implementsInterface(TenantAware::class)) {
+                      return '';
+                  }
+
+                  $tenant = $this->getParameter('tenant_id');   // quoted for us
+
+                  return sprintf('%s.tenant_id = %s', $targetTableAlias, $tenant);
+              }
+          }
+        marks:
+          - {line: 3, tip: 'Doctrine calls this method for every entity; the condition it returns is added to the query''s WHERE.'}
+          - {line: 12, tip: 'getParameter() quotes the value for you, so there is no SQL injection. Never splice user input into the string.'}
+      - type: code
+        lang: php
+        file: 'src/EventListener/TenantFilterListener.php'
+        variant: good
+        code: |
+          #[AsEventListener(event: KernelEvents::REQUEST, priority: 4)]   // after the firewall (8)
+          final class TenantFilterListener
+          {
+              public function __construct(
+                  private readonly Security $security,
+                  private readonly EntityManagerInterface $em,
+              ) {}
+
+              public function __invoke(RequestEvent $event): void
+              {
+                  $user = $this->security->getUser();
+                  if (!$event->isMainRequest() || !$user instanceof User) {
+                      return;
+                  }
+
+                  $filter = $this->em->getFilters()->enable('tenant');
+                  $filter->setParameter('tenant_id', (string) $user->getTenant()->getId());
+              }
+          }
+        marks:
+          - {line: 1, tip: 'The firewall''s listener has priority 8; we run after it, at 4, so the user is already identified.'}
+          - {line: 17, tip: 'The tenant comes from the logged-in user, never from the request''s query or headers.'}
+    aside:
+      - type: commands
+        title: 'Configuration'
+        items:
+          - {cmd: 'php bin/console debug:config doctrine orm filters', desc: 'Whether the filter is registered'}
+      - type: pitfalls
+        items:
+          - 'The filter works only on ORM/DQL queries. Raw DBAL SQL and native queries don''t get it, so they need the condition written by hand.'
+          - 'Add a prePersist listener that sets the tenant whenever a new row is written, or rows will be saved with no tenant.'
+          - 'Don''t disable this filter in the app''s main code; turn it off only deliberately, for admin or cross-tenant work.'
+    check:
+      q: 'Why is the tenant id taken from the logged-in user instead of a `?tenant=7` request parameter?'
+      a: 'The parameter is in the client''s hands; they could write someone else''s tenant and see their data. The logged-in user''s tenant is information the server has verified.'
+
+  - slug: noisy-neighbour
+    title: 'Keeping one tenant from using up everyone''s water'
+    kind: howto
+    tldr: 'A per-tenant rate limit, separate queues or worker shares, and limits on heavy jobs stop one customer''s load from slowing the rest.'
+    keywords: ['noisy neighbour', 'per-tenant rate limit', 'fair usage', 'RateLimiter', 'tenant quota', 'resource isolation']
+    blocks:
+      - type: text
+        body: |
+          In row-level tenancy all tenants share one database and one set of servers. If one customer sends a million requests an hour, the other 299 slow down. So each tenant needs its own water meter: a **per-tenant rate limit**. In Symfony's RateLimiter, use the tenant's id as the key and every customer gets a separate bucket.
+      - type: code
+        lang: yaml
+        file: 'config/packages/rate_limiter.yaml'
+        code: |
+          framework:
+              rate_limiter:
+                  tenant_api:
+                      policy: 'sliding_window'
+                      limit: 600
+                      interval: '1 minute'
+        marks:
+          - {line: 3, tip: 'The name is `tenant_api`, so Symfony autowires `RateLimiterFactory $tenantApiLimiter`.'}
+          - {line: 5, tip: 'Each tenant gets 600 requests a minute. You can raise this limit for bigger plans.'}
+      - type: code
+        lang: php
+        file: 'src/EventListener/TenantRateLimitListener.php'
+        variant: good
+        code: |
+          #[AsEventListener(event: KernelEvents::REQUEST, priority: 3)]
+          final class TenantRateLimitListener
+          {
+              public function __construct(
+                  private readonly Security $security,
+                  private readonly RateLimiterFactory $tenantApiLimiter,
+              ) {}
+
+              public function __invoke(RequestEvent $event): void
+              {
+                  $user = $this->security->getUser();
+                  if (!$event->isMainRequest() || !$user instanceof User) {
+                      return;
+                  }
+
+                  // key = tenant, so one customer's rush can't empty another's bucket
+                  $key = (string) $user->getTenant()->getId();
+                  $limit = $this->tenantApiLimiter->create($key)->consume();
+                  if (!$limit->isAccepted()) {
+                      $wait = $limit->getRetryAfter()->getTimestamp() - time();
+                      throw new TooManyRequestsHttpException($wait);
+                  }
+              }
+          }
+        marks:
+          - {line: 17, tip: 'With the tenant as the key, each tenant is counted separately. Keyed by user or IP, all employees of a big company would wrongly share one count.'}
+          - {line: 21, tip: 'It returns 429 Too Many Requests with a Retry-After time, so the client knows how long to wait before trying again.'}
+    aside:
+      - type: tips
+        items:
+          - 'Limit heavy background work per tenant too: a separate Messenger transport, or a concurrency limit per tenant.'
+          - 'Set a `statement_timeout` on heavy reports in the database, so one tenant''s query can''t hold the database up for everyone.'
+      - type: refs
+        items:
+          - {to: 'api/rate-limiting', label: 'Kinds of rate limits and their algorithms'}
+    check:
+      q: 'What changes when the rate-limit key is the tenant id instead of the user id?'
+      a: 'The limit is counted in one bucket for the whole company, so a single company''s employees together can''t eat into another company''s share. But within that company, the employees do have to share the limit.'
+
+  - slug: tenant-leak-paths
+    title: 'Four ways data seeps through even with a filter'
+    kind: pitfall
+    tldr: 'Raw SQL, background workers, cache keys and unique indexes: the Doctrine filter doesn''t reach these four places, so tenant must be handled separately there.'
+    keywords: ['tenant leak', 'Messenger worker', 'cache key', 'unique index', 'raw SQL', 'cross-tenant', 'defense in depth']
+    blocks:
+      - type: text
+        body: |
+          The filter is a good barrier, but there are gaps around it where Doctrine's guard isn't standing. The fix is the same for each: carry the tenant along explicitly, rather than guessing.
+      - type: visual
+        kind: table
+        caption: 'Four gaps, what happens, and the right way'
+        headers: ['Gap', 'What happens', 'The right way']
+        rows:
+          - cells: ['Raw SQL / DBAL', 'The filter doesn''t run; all tenants come back', 'Write `tenant_id = :t` by hand, or use the ORM']
+            tip: 'When you run SQL directly instead of DQL, the Doctrine filter doesn''t know about it. Complex report queries make this mistake most often.'
+          - cells: ['Messenger worker, cron', 'No request, so the filter is off', 'Put tenantId in the message, enable the filter in the handler']
+            tip: 'Background jobs have no logged-in user; without enabling the filter, they touch every row regardless of tenant.'
+          - cells: ['Cache key', '`report:2024` is the same for all tenants', 'Put the tenant in the key: `t7:report:2024`']
+            tip: 'A cache key without a tenant means showing company A''s report to company B.'
+          - cells: ['Unique index', 'Email must be unique across all tenants', 'unique (tenant_id, email)']
+            tip: 'Two companies can easily have an employee with the same email. A unique index without tenant means one of them can''t register.'
+      - type: code
+        lang: php
+        file: 'src/MessageHandler/BuildReportHandler.php'
+        variant: good
+        code: |
+          #[AsMessageHandler]
+          final class BuildReportHandler
+          {
+              public function __construct(private readonly EntityManagerInterface $em) {}
+
+              public function __invoke(BuildReport $message): void
+              {
+                  // no request here, so take the tenant from the message and enable the filter
+                  $this->em->getFilters()->enable('tenant')
+                      ->setParameter('tenant_id', $message->tenantId);
+
+                  // from now on every query is filtered automatically
+              }
+          }
+        marks:
+          - {line: 8, tip: 'A worker runs all day and takes messages from many tenants; set the right tenant in every handler.'}
+      - type: quote
+        body: 'The filter is a barrier, not the last line of defense. In raw SQL, workers, caches and unique indexes, carry the tenant yourself.'
+    aside:
+      - type: tips
+        items:
+          - 'For extra safety use PostgreSQL row-level security (RLS): the database itself blocks other tenants'' rows, even when the app makes a mistake.'
+          - 'Write a test for cross-tenant leaks: create two tenants, and asking for the other''s data with one tenant''s token must give 403/404.'
+    check:
+      q: 'Why isn''t the Doctrine tenant filter enabled automatically in a Messenger worker, and what should you do?'
+      a: 'The filter is enabled from the web request''s logged-in user, and a worker has no request. So put the tenantId in the message and enable the filter with that id in the handler.'
+
+flashcards:
+  - q: 'What is multi-tenancy?'
+    a: 'One piece of software serving many customers (tenants), with each customer''s data kept separate from the others.'
+    more: |
+      This is the core design of SaaS: one codebase, one deploy, many companies. The hard parts are keeping everyone's data apart and making sure nobody uses up everyone else's resources.
+    ref: one-forgotten-where
+  - q: 'What are the three levels of tenant isolation?'
+    a: 'Row-level (a tenant_id in shared tables), schema-per-tenant, and database-per-tenant. The more separation, the more security and cost.'
+    more: |
+      The comparison: a bed in a mess, a flat in a building, a separate house. Most SaaS products start row-level and give a separate database to large or strictly regulated customers.
+    ref: three-isolation-levels
+  - q: 'What is the biggest risk of row-level tenancy?'
+    a: 'Forgetting the `tenant_id` condition in a single query leaks every tenant''s data. You can''t rely on remembering it by hand.'
+    more: |
+      That is why the condition is automated, with a Doctrine filter or database row-level security. Wherever security rests on one person's memory, a gap will eventually appear.
+    ref: one-forgotten-where
+  - q: 'What does a Doctrine SQL filter do?'
+    a: 'It adds an SQL condition (such as `tenant_id = 7`) to every DQL query automatically, so developers don''t have to write it.'
+    more: |
+      `SQLFilter::addFilterConstraint()` is called for each entity and returns a piece of SQL. At the start of the request you enable it with `$em->getFilters()->enable('tenant')` and set the tenant using `setParameter`.
+    ref: doctrine-tenant-filter
+  - q: 'Where should the tenant id come from?'
+    a: 'From the verified data of the logged-in user, never from the request''s query, body or headers.'
+    more: |
+      What the client sends is a claim, not proof. Change `?tenant=7` to `8` and someone else's data would appear. The server itself knows which tenant the user belongs to.
+    ref: doctrine-tenant-filter
+  - q: 'What is a noisy neighbour?'
+    a: 'One tenant using so many resources (CPU, database, requests) that the other tenants slow down.'
+    more: |
+      The risk is highest in row-level tenancy, where everyone shares one database. To contain it, use a per-tenant rate limit, separate queues or worker shares, and timeouts on heavy queries.
+    ref: noisy-neighbour
+  - q: 'What is the benefit of keying the rate limit by tenant?'
+    a: 'Each tenant is counted separately, so one customer''s excess requests don''t reduce another customer''s share.'
+    more: |
+      In Symfony's RateLimiter, `$factory->create($tenantId)` gives each tenant its own bucket. This also makes it possible to give customers on bigger plans a higher limit.
+    ref: noisy-neighbour
+  - q: 'Where does the Doctrine filter not work?'
+    a: 'Raw DBAL SQL, native queries, and often background workers or console commands, where there is no request.'
+    more: |
+      In those places you carry the tenant by hand: put the tenantId in the message, enable the filter in the handler, write `tenant_id = :t` in raw SQL, and include the tenant in cache keys and unique indexes too.
+    ref: tenant-leak-paths
+
+quiz:
+  - q: 'A new developer forgot the tenant condition in the `exportAll()` query. Which measure makes this mistake nearly impossible?'
+    hint: 'Human memory, or an automatic mechanism?'
+    options:
+      - text: 'A rule that says everyone must pay attention in code review'
+        correct: false
+        why: 'The mistake is something missing, which is hard to catch in review. Human attention is not a reliable barrier.'
+      - text: 'A Doctrine SQL filter that adds the tenant condition to every DQL query'
+        correct: true
+        why: 'Developers don''t have to write the condition, so there is nothing to forget.'
+      - text: 'A separate repository class for each tenant'
+        correct: false
+        why: 'It doesn''t reduce the room for error; they could forget the condition in a new query again.'
+      - text: 'Hiding other tenants'' rows in Vue'
+        correct: false
+        why: 'By then the data has already reached the browser.'
+    ref: one-forgotten-where
+  - q: 'Which level separates one tenant from another most strongly, and costs the most?'
+    hint: 'Not the next-door flat, a separate house.'
+    options:
+      - text: 'Row-level'
+        correct: false
+        why: 'The cheapest, but the riskiest.'
+      - text: 'Schema-per-tenant'
+        correct: false
+        why: 'In the middle: separate like a flat, yet still one building (one database).'
+      - text: 'Database-per-tenant'
+        correct: true
+        why: 'Even a wrong query can''t touch another tenant''s data, but managing thousands of databases is expensive.'
+    ref: three-isolation-levels
+  - q: 'What is the problem with the filter below?'
+    lang: php
+    code: |
+      public function addFilterConstraint(ClassMetadata $meta, string $alias): string
+      {
+          $tenant = $_GET['tenant'];
+
+          return sprintf("%s.tenant_id = '%s'", $alias, $tenant);
+      }
+    hint: 'Where does the tenant come from, and how does it get into the SQL?'
+    options:
+      - text: 'The tenant comes from the client and goes straight into the SQL: both a data leak and SQL injection'
+        correct: true
+        why: 'Change `?tenant=` and you get someone else''s data, and breaking out of the quotes gives SQL injection. You should use `$this->getParameter()` and the logged-in user''s tenant.'
+      - text: 'No problem, since the filter is written'
+        correct: false
+        why: 'Even with a filter, the value inside it can''t be trusted.'
+      - text: 'Only `sprintf` is slow'
+        correct: false
+        why: 'Speed isn''t the issue; security is the real problem.'
+    ref: doctrine-tenant-filter
+  - q: 'In which of these places does the Doctrine tenant filter not protect you automatically?'
+    hint: 'Where there is no ORM/DQL, or no request-based login.'
+    options:
+      - text: 'A report query written in raw DBAL SQL'
+        correct: true
+        why: 'The filter only attaches to ORM queries; it never sees raw SQL.'
+      - text: 'A handler running in a Messenger worker'
+        correct: true
+        why: 'With no request, the filter was never enabled, unless the handler enables it.'
+      - text: 'A plain ORM query using `findBy([...])` in a controller'
+        correct: false
+        why: 'This is an ORM query, and the filter applies to it when it is enabled.'
+      - text: 'An ORM query using `createQueryBuilder` in a controller'
+        correct: false
+        why: 'This is an ORM/DQL query, so the filter adds its condition automatically when it is enabled.'
+    ref: tenant-leak-paths
+  - q: 'Two companies each have an employee with the email `a@x.com`, but a unique index on `user.email` stops the second one from registering. What is the fix?'
+    hint: 'Unique within what boundary?'
+    options:
+      - text: 'Drop the unique index'
+        correct: false
+        why: 'Email must be unique within a tenant; dropping the index entirely would allow duplicate accounts.'
+      - text: 'A composite unique index on `(tenant_id, email)`'
+        correct: true
+        why: 'Uniqueness holds within a tenant; the same email is fine in different tenants.'
+      - text: 'Append a random number to the email'
+        correct: false
+        why: 'Changing the user''s real email is the wrong path.'
+    ref: tenant-leak-paths
+  - q: 'One big customer sends hundreds of thousands of requests an hour and slows the other tenants. Which measures help?'
+    hint: 'Ways to limit resources per tenant.'
+    options:
+      - text: 'A per-tenant limit in Symfony RateLimiter, with the tenant id as the key'
+        correct: true
+        why: 'Each tenant has its own bucket, so one tenant''s rush doesn''t squeeze the others.'
+      - text: 'A `statement_timeout` on heavy queries, and a separate queue/worker'
+        correct: true
+        why: 'It limits how much of the database and background capacity one tenant can occupy.'
+      - text: 'Keeping all tenants'' limits in one shared bucket'
+        correct: false
+        why: 'Then one customer can empty the whole bucket and block the others.'
+      - text: 'Asking the customer to send fewer requests and changing nothing in code'
+        correct: false
+        why: 'You can''t leave the system''s stability to a customer''s good manners.'
+    ref: noisy-neighbour

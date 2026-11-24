@@ -1,0 +1,416 @@
+slides:
+  - slug: popular-is-not-right
+    title: 'A popular database, the wrong job'
+    kind: story
+    tldr: 'Pick a database by how your data will be written and queried, not by what is trendy right now.'
+    keywords: ['database choice', 'access pattern', 'MongoDB vs SQL', 'choosing a database', 'which database']
+    blocks:
+      - type: text
+        body: |
+          Rahim picked a document database for a new e-commerce project because everyone on YouTube said "it's modern, no schema needed". The first month went fast. Six months later the finance team wanted a sales report by district, and payments needed to change an order, the stock and a wallet together. In a relational database both of those are a single statement. Rahim had to build them by hand in his own code.
+      - type: visual
+        kind: compare
+        caption: 'The same decision: how it felt in month one, and what it became six months later'
+        columns:
+          - title: 'In month one'
+            tone: good
+            icon: rocket
+            tip: 'At the start there is little data and the questions are simple, so any database feels fine. A wrong choice stays hidden.'
+            items:
+              - 'No tables to create, save whatever you like'
+              - 'One order = one JSON, easy to read'
+              - 'No migrations to write'
+          - title: 'Six months later'
+            tone: bad
+            icon: warning
+            tip: 'The data was interlinked (order, product, customer) and the questions needed joins. The wrong kind of notebook had been chosen for the job.'
+            items:
+              - 'A report means stitching five collections together in code'
+              - 'The same customer''s name is spelled three ways in three places'
+              - 'An order was placed but stock never dropped: it broke halfway'
+              - 'Old documents lack the new field, so the code is full of ifs'
+      - type: quote
+        body: 'Choose a database by its access patterns, not by its popularity.'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Access pattern', meaning: 'The list of how your app will write data and how it will look it up.'}
+          - {term: 'Schema', meaning: 'The fixed shape of the data: which columns each table has and which are required.'}
+          - {term: 'Join', meaning: 'Combining rows from two tables by matching a shared column.'}
+      - type: refs
+        items:
+          - {to: 'thinking/what-is-architectural', label: 'Why choosing a database is a pillar decision'}
+    check:
+      q: 'What exactly was Rahim''s mistake? Is a document database a bad thing?'
+      a: 'No, it is not bad. The mistake was how he chose: his data was interlinked and his questions needed joins and transactions, which is relational territory. He chose by popularity instead of looking at the work.'
+
+  - slug: six-kinds-of-databases
+    title: 'Six kinds of databases, six kinds of notebooks'
+    kind: concept
+    tldr: 'Relational, document, key-value, wide-column, graph and time-series: each is built for a different kind of question.'
+    keywords: ['relational', 'document', 'key-value', 'wide-column', 'graph', 'time-series', 'database types', 'NoSQL']
+    blocks:
+      - type: metaphor
+        icon: building
+        title: 'Six notebooks in a hospital'
+        body: |
+          A hospital does not keep all its information in one kind of notebook. Admissions and bills go in a ruled register, each patient's papers go in their own file, and a chart at the bedside gets the temperature written in every hour. One question decides the kind of notebook: **how will this information be looked up later?** The six database families split along exactly the same line.
+      - type: visual
+        kind: table
+        caption: 'The six families: which hospital notebook each one is, and what it does best'
+        headers: ['Kind', 'In the hospital', 'Best at', 'Examples']
+        rows:
+          - cells: ['Relational', 'Admissions and billing register', 'Linked data, joins, transactions', 'PostgreSQL, MySQL']
+            tip: 'Tables, rows and columns, linked by IDs. Even questions nobody planned for can be asked in SQL, which makes this the most versatile family.'
+          - cells: ['Document', 'Each patient''s own file', 'Data that is always read together', 'MongoDB, Firestore']
+            tip: 'One JSON document holds everything about one thing. Documents can differ in shape, but joins between documents are weak.'
+          - cells: ['Key-value', 'Hand over a token, get a report', 'Very fast reads and writes by key', 'Redis, Memcached']
+            tip: 'You get the value only if you know the key. You cannot say "give me all the red reports". Ideal for caches, sessions and counters.'
+          - cells: ['Wide-column', 'Nationwide vaccination ledger', 'Huge write load, known queries', 'Cassandra, ScyllaDB']
+            tip: 'Data is spread across many servers by partition key. Writes are very fast, but you decide the queries first and shape the tables around them. There are no joins.'
+          - cells: ['Graph', 'Who came into contact with whom', 'Walking along relationships', 'Neo4j']
+            tip: 'Built from nodes and edges. A "friend of a friend of a friend" question becomes a deep join in SQL; here it is the natural operation.'
+          - cells: ['Time-series', 'Temperature chart by the bed', 'Measurements arriving over time', 'TimescaleDB, InfluxDB']
+            tip: 'Each row is a timestamp plus a measurement. Data is only appended, never edited, and queries ask about time windows, like "the average over the last hour".'
+    aside:
+      - type: remember
+        body: 'The kind of question picks the kind of notebook. Write down the questions first, then choose.'
+      - type: tips
+        items:
+          - 'The family borders are not rigid: PostgreSQL has JSON columns, Redis has lists and sorted sets, and DynamoDB sits between key-value and wide-column.'
+          - 'A search engine (Elasticsearch) is yet another family, covered in the [[caching/search-basics|search section]].'
+    check:
+      q: 'Server CPU readings arriving every second, and "who follows whom": which family fits each?'
+      a: 'CPU readings arrive over time and are only appended: time-series. The follow network is about walking relationships: graph (though at a small scale relational does the job fine).'
+
+  - slug: write-access-patterns-first
+    title: 'Write the access patterns first'
+    kind: howto
+    tldr: 'On one page, list what the app will do with data, how often, and with what guarantees. The database name falls out of it.'
+    keywords: ['access pattern', 'workload', 'read heavy', 'write heavy', 'workload list', 'database decision']
+    blocks:
+      - type: text
+        body: |
+          Before you think of a database name, write one page on what the app will actually do with its data. Next to each job, note three things: what the job is, how often it runs, and what you need from the database. Below is the page for an e-commerce app. Notice how most of the lines point the same way.
+      - type: code
+        lang: text
+        file: 'docs/access-patterns.md'
+        code: |
+          Job 1  Create an order: changes order + stock + payment together
+                 50/second     need: transaction, constraints
+          Job 2  "My orders" list, newest first
+                 300/second    need: lookup by customer_id, sorted result
+          Job 3  Monthly sales report by district
+                 20 per day    need: join + GROUP BY
+          Job 4  Search products by name
+                 200/second    need: full-text search
+          Job 5  Login session
+                 1000/second   need: read by key, expiry (TTL)
+
+          Decision
+          Jobs 1-3  ->  PostgreSQL (main data, source of truth)
+          Job 4     ->  PostgreSQL full-text for now; a search engine only if measured slow
+          Job 5     ->  Redis (key-value)
+        marks:
+          - {line: 2, tip: 'Changing three places together while keeping the rules intact: this one line already says the main database must be relational.'}
+          - {line: 6, tip: 'Report questions are not known in advance and keep changing. SQL gives you the freedom to ask anything.'}
+          - {line: 14, tip: 'Try the database you already have before adding a new one. The next step comes only after you have measured it slow.'}
+      - type: visual
+        kind: steps
+        caption: 'From the page to a decision in four steps'
+        steps:
+          - {title: '1. List the jobs', body: 'The app''s main 5 to 10 reads and writes, in plain words.', tip: 'Not every job, only the ones that run most often or hurt most when they go wrong.'}
+          - {title: '2. List the needs', body: 'Beside each: how often, and what you need: transaction, join, key lookup, TTL.', tip: 'If you do not know exact numbers, guess. Knowing whether it is 10 or 10 thousand is enough.'}
+          - {title: '3. Pick the main database', body: 'Whichever way most jobs point is your source of truth.', tone: accent, tip: 'For almost every business app this answer is relational, because the data is linked and money needs transactions.'}
+          - {title: '4. Split off the misfits', body: 'Only for a job that does not fit the main database, consider a second one.', tip: 'Temporary, key-based jobs such as sessions or caches are usually the first misfits, which is why Redis is so often the second database.'}
+    aside:
+      - type: tips
+        items:
+          - 'How to estimate the numbers is covered in [[thinking/estimation|back-of-the-envelope maths]].'
+          - 'This same page later becomes the evidence in your design doc for "why this database".'
+      - type: terms
+        items:
+          - {term: 'Source of truth', meaning: 'The database whose data is treated as final; everything elsewhere is a copy of it.'}
+          - {term: 'TTL', meaning: 'Time to live: how long until the data deletes itself.'}
+    check:
+      q: 'Which three things do you write beside each job on an access-pattern page?'
+      a: 'What the job is (read or write, by which key or condition), how often it runs, and what you need from the database, such as a transaction, a join, sorted results or a TTL.'
+
+  - slug: relational-by-default
+    title: 'When in doubt, go relational'
+    kind: howto
+    tldr: 'Most business data is linked, so the default is PostgreSQL or MySQL; the shapeless part can go in a JSON column.'
+    keywords: ['PostgreSQL', 'MySQL', 'JSONB', 'default database', 'JSON column', 'relational database']
+    blocks:
+      - type: text
+        body: |
+          Most business data is interlinked: a customer's orders, an order's payments. For this kind of data a relational database gives you three things ready-made: transactions, constraints, and SQL for any question you think of later. And "some of our data has no fixed shape" is no reason for a separate document database, because both PostgreSQL and MySQL have JSON columns.
+      - type: code
+        lang: php
+        file: 'src/Entity/Product.php'
+        variant: good
+        code: |
+          #[ORM\Entity]
+          class Product
+          {
+              #[ORM\Id, ORM\GeneratedValue, ORM\Column]
+              private ?int $id = null;
+
+              #[ORM\Column(length: 180)]
+              private string $name;
+
+              #[ORM\Column]
+              private int $priceInPoisha;      // every product has it: a strict column
+
+              /** @var array<string, scalar> phone RAM, shirt size: differs per product */
+              #[ORM\Column(type: Types::JSONB)]
+              private array $attributes = [];
+          }
+        marks:
+          - {line: 11, tip: 'Anything every row has, and anything you calculate or enforce rules on, is always a plain column, with NOT NULL and the right type.'}
+          - {line: 14, tip: 'On PostgreSQL this becomes a JSONB column; on MySQL it is plain JSON. Before DBAL 4.3 you wrote Types::JSON with the option jsonb => true.'}
+      - type: code
+        lang: sql
+        file: 'Searching inside JSON (PostgreSQL)'
+        code: |
+          -- JSON columns can be indexed too
+          CREATE INDEX idx_product_attributes ON product USING GIN (attributes);
+
+          -- products with 8GB of RAM
+          SELECT id, name FROM product
+          WHERE attributes @> '{"ram_gb": 8}';
+        marks:
+          - {line: 2, tip: 'A GIN index speeds up lookups by the keys and values inside the JSON. You just got the main benefit of a document database.'}
+      - type: quote
+        body: 'When in doubt, start relational. Bring in another database only when you can measure the pain.'
+    aside:
+      - type: when
+        use:
+          - 'The data is linked and the future questions are not fully known yet'
+          - 'Money, stock, bookings: anywhere that cannot live without transactions and constraints'
+        avoid:
+          - 'Hundreds of thousands of writes per second, more than one server can take'
+          - 'Temporary data read only by key, such as a cache or sessions'
+      - type: refs
+        items:
+          - {to: 'concurrency/acid', label: 'What a transaction actually gives you'}
+          - {to: 'data/schema-design', label: 'How to lay out your tables'}
+    check:
+      q: 'Products need different attributes per product. Is that alone a reason to adopt a document database?'
+      a: 'No. A relational database can hold them in a JSON column, and you can index it. Fixed facts like name and price stay in ordinary columns, with constraints.'
+
+  - slug: second-database-cost
+    title: 'A second database: when, and at what price'
+    kind: pitfall
+    tldr: 'Every new database means new backups, monitoring and syncing work; keep the truth in one place and make the rest copies of it.'
+    keywords: ['polyglot persistence', 'source of truth', 'derived data', 'dual write', 'second database', 'cost']
+    blocks:
+      - type: text
+        body: |
+          Adding a database is not just installing a library. It brings its own backups, monitoring, upgrades and 3 a.m. incidents, and they all land on your team. The hardest part is that the same fact now lives in two places, and you own keeping them in agreement. So the rule is: the truth lives in **one** place, and everything else is a copy that can be deleted and rebuilt.
+      - type: visual
+        kind: flow
+        caption: 'One source of truth, everything else a copy of it'
+        nodes:
+          - {id: app, label: 'Symfony app', icon: api, col: 0, row: 1, tip: 'The app sends every durable write to one place only. It never writes a "main" copy to two databases side by side.'}
+          - {id: pg, label: 'PostgreSQL', sub: 'source of truth', icon: db, tone: accent, col: 2, row: 1, tip: 'Orders, money, users: the final truth is here. If anything elsewhere disagrees, this one is right.'}
+          - {id: redis, label: 'Redis', sub: 'cache and sessions', icon: cache, col: 2, row: 0, tip: 'Answers needed again and again, plus sessions, with an expiry. Even if all of it vanishes you lose nothing, things are just slow for a while.'}
+          - {id: worker, label: 'Messenger worker', icon: worker, col: 3, row: 2, tip: 'Copies changes from the main database to other places in the background, and retries if it fails.'}
+          - {id: search, label: 'Search index', sub: 'copy for lookup', icon: search, col: 4, row: 1, tip: 'A separately arranged copy for fast lookup by product name. It may lag by a few seconds.'}
+        edges:
+          - {from: app, to: pg, label: 'Every write goes to PostgreSQL first: that is the truth'}
+          - {from: app, to: redis, label: 'Answers read again and again, and sessions, are kept in Redis with an expiry'}
+          - {from: pg, to: worker, label: 'News of the change travels to the worker as a message', dashed: true}
+          - {from: worker, to: search, label: 'The worker copies that change into the search index'}
+          - {from: pg, to: search, label: 'If the index is lost, it can be rebuilt entirely from PostgreSQL', tone: good}
+      - type: points
+        title: 'Three questions before adding one'
+        style: check
+        items:
+          - 'Has the pain been measured: which query, how slow, how often?'
+          - 'Can the current database fix it with an index, a cache or an extension?'
+          - 'If the new one loses its data, can it be rebuilt from the main database?'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Five databases in a small app to pad a CV: each one is another place where the system can break.'
+          - 'Writing to two databases one after the other (dual write): if one succeeds and the other fails, you have two truths.'
+      - type: refs
+        items:
+          - {to: 'workflows/outbox-inbox', label: 'Writing safely to two places: the outbox'}
+          - {to: 'thinking/build-vs-buy', label: 'The price of every new technology'}
+    check:
+      q: 'If you add a separate search engine, where does the truth about orders live, and what is the search index?'
+      a: 'The truth stays in PostgreSQL. The search index is a copy (derived data): if it breaks, delete it and rebuild it from the main database.'
+
+flashcards:
+  - q: 'What is an access pattern?'
+    a: 'The list of how the app will write and look up data: by which key or condition, how often, and with what guarantees.'
+    more: |
+      This is the real yardstick for choosing a database. Write five or ten lines like "create order: changes three tables together, 50/second" and it becomes clear which family of database you need. Popularity or a big company's choice does not answer this question.
+    ref: write-access-patterns-first
+  - q: 'Which kind of database should be the default for a new project, and why?'
+    a: 'Relational (PostgreSQL or MySQL). For linked data you get transactions, constraints and SQL for any question, all ready-made.'
+    more: |
+      Business data is almost always interlinked, and you cannot know at the start which questions will come later. Under that uncertainty a relational database is the lowest-risk choice. Data with no fixed shape does not need anything else either: JSON columns exist.
+    ref: relational-by-default
+  - q: 'What is a key-value database best at, and what can it not do?'
+    a: 'Very fast reads and writes when you know the key: caches, sessions, counters. It cannot search inside values or do joins.'
+    more: |
+      Think of the token counter at a hospital: say the token number and you get the report at once, but ask for "all diabetic patients' reports" and it cannot help. Redis and Memcached belong to this family. Core business data does not go here; temporary or rebuildable data does.
+    ref: six-kinds-of-databases
+  - q: 'When does a document database fit?'
+    a: 'When everything about one thing is read and written together, its shape varies from item to item, and you almost never join across documents.'
+    more: |
+      A CMS page or a product catalogue entry is a good example: it comes in whole and goes out whole. But when the data is interlinked (order, customer, payment) and reports need joins, a document database makes you build those joins in your own code.
+    ref: six-kinds-of-databases
+  - q: 'What does a wide-column database (like Cassandra) give you, and what does it take in return?'
+    a: 'It gives huge write capacity spread over many servers. It takes joins and ad-hoc queries: you decide the queries first and shape the tables to match.'
+    more: |
+      Data is split across servers by a partition key, so writes can scale almost without limit. But you can mostly look things up only by that key. It suits huge workloads with known queries, like chat messages, event logs and sensor data; for an ordinary business app it is extra weight.
+    ref: six-kinds-of-databases
+  - q: 'What are the three traits of time-series data?'
+    a: 'Each row is a timestamp and a measurement; data is only appended, never edited; and queries ask about time windows.'
+    more: |
+      Server CPU, sensor temperature, share prices: all of this is the same kind of data. A time-series database partitions it by time, compresses old data and deletes it when it expires. TimescaleDB is an extension of PostgreSQL itself, so you can start without adding a separate database.
+    ref: six-kinds-of-databases
+  - q: 'When do you need a graph database?'
+    a: 'When the main questions are about relationships many steps deep, such as friends of friends, fraud rings or recommendations, and SQL turns them into deep joins.'
+    more: |
+      A graph database stores nodes and edges directly, so hopping from one node to its neighbour is cheap. One or two steps of relationship (a customer's orders) work fine in relational. Think of a graph when the depth of the relationships is unknown or large.
+    ref: six-kinds-of-databases
+  - q: 'What is the hidden cost of adding a second database?'
+    a: 'Separate backups, monitoring, upgrades and skills, plus the duty of keeping the same fact in agreement in two places.'
+    more: |
+      The purchase price may be zero, but the running cost is not. Every new database is one more place where the system can break and the data can drift apart. So first check whether the current database can do the job with an index, a cache or an extension.
+    ref: second-database-cost
+  - q: 'What is the difference between a source of truth and derived data?'
+    a: 'The source of truth holds the final facts. Derived data (a cache, a search index) is a copy of it and can be rebuilt from the original if lost.'
+    more: |
+      When the same fact lives in several places, you must decide which one is the real one. Writes always go to the real one first, and the copies are updated afterwards. If you treat both as "real", one day they will disagree and nobody can say which is right.
+    ref: second-database-cost
+
+quiz:
+  - q: 'Karim''s team will build a school management app: students, classes, fees and results. It is not yet clear which questions will come later. Which database should they start with?'
+    hint: 'Are students, classes and fees separate, or linked to one another?'
+    options:
+      - text: 'A document database, because the schema will keep changing and fixed tables are a hassle'
+        correct: false
+        why: 'Changing a schema is easy in relational with migrations. But the joins across linked data and the fee transactions would have to be hand-built in a document database.'
+      - text: 'A relational database, because the data is linked and the questions are not known in advance'
+        correct: true
+        why: 'Linked data, money and unknown future questions: all three are relational strengths.'
+      - text: 'A wide-column database, because it will be easy to scale when users grow'
+        correct: false
+        why: 'One school''s data will fit on one server for many years. Giving up joins and ad-hoc queries for a problem that may never arrive is a bad trade.'
+      - text: 'A graph database, because students and classes have relationships'
+        correct: false
+        why: 'One or two steps of relationship are handled by relational foreign keys. A graph is for questions that go many steps deep.'
+    ref: relational-by-default
+  - q: 'Which of these jobs suit a key-value store such as Redis?'
+    hint: 'Which jobs have a key known in advance and can be rebuilt if the data is lost?'
+    options:
+      - text: 'The session of a logged-in user'
+        correct: true
+        why: 'The session ID is the key, reads and writes are very frequent, and you need a TTL. This is the ideal key-value job.'
+      - text: 'A per-minute counter of how many requests each client made'
+        correct: true
+        why: 'Fast increments by key and automatic expiry are exactly what a rate-limit counter needs.'
+      - text: 'A monthly sales report by district'
+        correct: false
+        why: 'It needs to scan many rows with joins and GROUP BY. A key-value store cannot search inside its values at all.'
+      - text: 'A cache of a computed product page'
+        correct: true
+        why: 'It is read by product ID, and if lost it can be rebuilt from the main database.'
+      - text: 'The primary records of orders and payments'
+        correct: false
+        why: 'These are the source of truth. They need transactions, constraints and many kinds of queries, which a key-value store does not offer.'
+    ref: six-kinds-of-databases
+  - q: 'In a factory, 5 thousand sensors send a temperature every 10 seconds. The dashboard must show "the hourly average for the last 24 hours". Which family fits this data best?'
+    hint: 'Does the data change, or is it only appended? And what is the query about?'
+    options:
+      - text: 'A graph database'
+        correct: false
+        why: 'There are no relationships to walk here, just measurements arriving over time.'
+      - text: 'A key-value store'
+        correct: false
+        why: 'It reads only by key. A time-window calculation like an hourly average over 24 hours is not its job.'
+      - text: 'A time-series database'
+        correct: true
+        why: 'A timestamp and a measurement, append-only, queried by time window: that is the very definition of time-series. With TimescaleDB you can start inside PostgreSQL.'
+      - text: 'A document database'
+        correct: false
+        why: 'You could store it there, but you would have to build time partitioning, compression and old-data deletion yourself.'
+    ref: six-kinds-of-databases
+  - q: 'A team keeps the "main" copy of each order in two databases. What is the biggest problem with this code?'
+    lang: php
+    code: |
+      $em->persist($order);
+      $em->flush();                                   // PostgreSQL
+
+      $this->mongo
+          ->selectCollection('shop', 'orders')
+          ->insertOne($order->toArray());             // MongoDB
+    hint: 'What if the server dies after the first write succeeds but before the second?'
+    options:
+      - text: 'flush() is slow, so it should write to MongoDB first'
+        correct: false
+        why: 'Reversing the order has the same danger: one can succeed and the other fail. The problem is not the order but writing separately to two places.'
+      - text: 'If the second write fails, the two databases hold different truths, and there is no way to tell which is right'
+        correct: true
+        why: 'This is a dual write. The two writes cannot be bound into one transaction, and since no source of truth is defined, a mismatch cannot be settled either.'
+      - text: 'There is no problem: data in two places is safer'
+        correct: false
+        why: 'Safety comes from backups and replication. Two "main" copies create the risk of disagreement instead.'
+      - text: 'It should use the Serializer instead of toArray()'
+        correct: false
+        why: 'That is a matter of code taste; it does not change the core risk of the data drifting apart in the slightest.'
+    ref: second-database-cost
+  - q: 'In which situations is adding a second database a reasonable decision?'
+    hint: 'Which reasons can be measured, and which are only wishes?'
+    options:
+      - text: 'One specific query was measured as slow, and indexes and caching did not fix it'
+        correct: true
+        why: 'There is a measured pain and the easy options are used up: this is the right moment for a new database.'
+      - text: 'Big companies use that database'
+        correct: false
+        why: 'Their load is not your load. Their solution may just be extra running cost for you.'
+      - text: 'If the new database loses its data, it can be rebuilt from the main database'
+        correct: true
+        why: 'Then it is derived data and there is still only one source of truth, so the risk stays under control.'
+      - text: 'One person on the team wants to learn the new technology'
+        correct: false
+        why: 'The place for learning is a side project. In production the whole team carries its backups, monitoring and night-time incidents.'
+    ref: second-database-cost
+  - q: 'A shop has attributes that differ by product type (phone RAM, shirt size). All its other data (orders, customers, payments) is interlinked. Which design is best?'
+    hint: 'Does a small part of the app justify replacing the whole database?'
+    options:
+      - text: 'Move the entire app to a document database'
+        correct: false
+        why: 'Losing order and payment transactions and joins to gain the convenience of one column is a bad trade.'
+      - text: 'Create a separate nullable column for every possible attribute'
+        correct: false
+        why: 'You would get hundreds of mostly empty columns, and every new kind of product would need a migration.'
+      - text: 'Keep a JSON column on the product table in the relational database'
+        correct: true
+        why: 'Fixed facts go in strict columns, the varying attributes go in JSON: both benefits in one database, with indexing.'
+      - text: 'Put the attributes in a separate document database and the rest in PostgreSQL'
+        correct: false
+        why: 'Splitting one product''s data across two databases brings syncing, backup and mismatch trouble, when a JSON column does the job.'
+    ref: relational-by-default
+  - q: 'A chat app writes 200 thousand messages per second. It is read in only one way: "the last 50 messages of this conversation". A single-server relational database cannot keep up with the writes. Which family fits best?'
+    hint: 'The write load is huge, but there is just one query and it is known in advance.'
+    options:
+      - text: 'A wide-column database, with the conversation ID as the partition key'
+        correct: true
+        why: 'Huge write volume spreads across many servers, and the only query goes by the partition key. This is exactly what wide-column is built for.'
+      - text: 'A graph database, because people are talking to each other'
+        correct: false
+        why: 'The question is not about walking relationships; it is about reading one conversation''s messages in order.'
+      - text: 'A key-value store, with the conversation ID as the key and the whole chat as one value'
+        correct: false
+        why: 'Every new message would rewrite the whole value, and the value would keep growing without bound.'
+      - text: 'Buy a bigger relational server'
+        correct: false
+        why: 'It will last a while, but one server has a write ceiling. With one known query, paying the price of a distributed database is worth it here.'
+    ref: six-kinds-of-databases

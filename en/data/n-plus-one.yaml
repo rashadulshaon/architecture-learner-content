@@ -1,0 +1,553 @@
+slides:
+  - slug: fifty-one-queries
+    title: '51 queries on one page'
+    kind: story
+    tldr: 'One query for the list, then one more per row: that is N+1. The code looks fine, yet the page slows down as the data grows.'
+    keywords: ['n+1', 'n plus one', 'lazy loading', 'doctrine', 'slow page', 'too many queries']
+    blocks:
+      - type: metaphor
+        icon: cart
+        title: '51 trips to the market with a shopping list'
+        body: |
+          You go to the market once and come back with a list of 50 items. Then you go back to the market separately for each item: 51 round trips in all. Buying takes no time; the time goes on the road. For a database, every query is one more trip to the market.
+      - type: text
+        body: |
+          In Rahim's order list code you can see exactly one query. But inside the loop, `getCustomer()->getName()` quietly fires another query every single time.
+      - type: code
+        lang: php
+        file: 'src/Controller/OrderController.php'
+        variant: bad
+        code: |
+          #[Route('/orders', methods: ['GET'])]
+          public function list(OrderRepository $orders): JsonResponse
+          {
+              // 1 query: the latest 50 orders
+              $latest = $orders->findBy([], ['createdAt' => 'DESC'], 50);
+
+              $rows = [];
+              foreach ($latest as $order) {
+                  $rows[] = [
+                      'id' => $order->getId(),
+                      'customer' => $order->getCustomer()->getName(),
+                      'total' => $order->getTotalAmount(),
+                  ];
+              }
+
+              return $this->json($rows);
+          }
+        marks:
+          - {line: 5, tip: 'This is the trip for the list: `SELECT … FROM orders ORDER BY created_at DESC LIMIT 50`.'}
+          - {line: 11, tip: 'One `SELECT … FROM customers WHERE id = ?` per iteration. With 50 different customers, that is 50 extra queries.'}
+      - type: visual
+        kind: bars
+        caption: 'The same code: how many queries run as the page gets more orders'
+        items:
+          - {label: '10 orders', value: 11, display: '11 queries', tip: 'It looks like this on your local machine, so nobody notices.'}
+          - {label: '50 orders', value: 51, display: '51 queries', tone: warn, tip: '1 for the list of orders, 50 for the customers.'}
+          - {label: '500 orders', value: 501, display: '501 queries', tone: bad, tip: 'Even at 1 ms per round trip, half a second goes on the road alone.'}
+          - {label: 'Written properly', value: 1, display: '1 query', tone: good, tip: 'No matter how many orders, it stays one query. The next slides show how.'}
+    aside:
+      - type: story
+        title: 'Fast in the demo, slow in production'
+        body: |
+          On your laptop the database sits on the same machine and there are 10 rows, so the page opens in a blink. In production the database is on a separate server and the page has 500 rows. Not one line of code changed; the number of round trips grew 50 times.
+      - type: terms
+        items:
+          - {term: 'N+1', meaning: 'One query for the list, plus one more for each of the list''s N rows.'}
+          - {term: 'Round trip', meaning: 'One journey from the app to the database and back with the answer.'}
+    check:
+      q: 'Where do the 51 queries on a 50-order page come from?'
+      a: 'One query fetches the 50 orders. Then the loop runs a separate query for each order''s customer: 50 more. That is 50 + 1.'
+
+  - slug: lazy-loading-proxy
+    title: 'Why Doctrine runs queries silently'
+    kind: concept
+    tldr: 'Doctrine puts an empty proxy where a related entity should be, and the first touch fires a query. Count the queries per request and N+1 shows up.'
+    keywords: ['proxy', 'lazy loading', 'profiler', 'query count', 'detect N+1', 'hydration']
+    blocks:
+      - type: text
+        body: |
+          When Doctrine loads an order, it doesn't load the customer. In its place it puts a **proxy**: an empty shell that knows only the id. The moment you call `getName()`, the proxy rushes off to the database. This is **lazy loading**: don't fetch until it's needed. For a single entity that's a benefit; inside a loop it is the 51 trips to the market.
+      - type: visual
+        kind: sequence
+        caption: 'The conversation between the app and the database on a 50-order page'
+        actors:
+          - {id: app, label: 'Symfony app', icon: server, tip: 'The controller loop runs here; every proxy touched sends out a query.'}
+          - {id: db, label: 'Database', icon: db, tip: 'Each query on its own answers quickly. The problem is how many there are.'}
+        messages:
+          - {from: app, to: db, label: 'Give me the latest 50 orders'}
+          - {from: db, to: app, label: '50 orders (customer = proxy)', dashed: true, tip: 'The order row holds only customer_id, so a shell stands in for the customer.'}
+          - {from: app, to: db, label: 'Give me customer #7', tip: 'First loop iteration: calling `getName()` made the proxy run a query.'}
+          - {from: db, to: app, label: 'Customer #7', dashed: true}
+          - {from: app, to: db, label: 'Give me customer #12'}
+          - {from: db, to: app, label: 'Customer #12', dashed: true}
+          - {at: app, note: '… and 48 more times', tone: bad, tip: '50 near-identical queries in total, differing only in the id.'}
+      - type: points
+        title: 'Three ways to spot N+1'
+        style: check
+        items:
+          - 'The Symfony Profiler''s Doctrine panel: how many queries on one page, and how many look alike.'
+          - 'The same `SELECT … WHERE id = ?` repeated row after row in the log is the signature of N+1.'
+          - 'Cap the query count in a test, so nobody can bring the mistake back later.'
+      - type: code
+        lang: php
+        file: 'tests/Controller/OrderControllerTest.php'
+        variant: good
+        code: |
+          public function testOrderListHasNoNPlusOne(): void
+          {
+              $client = static::createClient();
+              $client->enableProfiler();
+
+              $client->request('GET', '/orders');   // 50 orders in the fixture
+
+              $this->assertResponseIsSuccessful();
+              $queries = $client->getProfile()->getCollector('db')->getQueryCount();
+              $this->assertLessThanOrEqual(3, $queries);
+          }
+        marks:
+          - {line: 4, tip: 'In the test environment the profiler collects nothing by default; this line turns it on for the next request.'}
+          - {line: 10, tip: 'Whether there are 50 rows or 5,000, more than 3 queries turns the test red. If N+1 returns, you catch it immediately.'}
+      - type: quote
+        body: 'The number of queries must never grow with the number of rows.'
+    aside:
+      - type: tips
+        items:
+          - 'In the debug toolbar at the bottom of the page, the number next to the database icon is the query count. On a list page, a big number is a red flag.'
+          - 'In production, measure "queries per request" in an APM tool; that is where N+1 gets caught.'
+      - type: terms
+        items:
+          - {term: 'Proxy', meaning: 'A shell standing in for the real entity; it knows only the id and loads the rest on first use.'}
+          - {term: 'Lazy loading', meaning: 'Loading related data only when it is first asked for, not up front.'}
+          - {term: 'Hydration', meaning: 'Turning database rows into PHP objects.'}
+      - type: refs
+        items:
+          - {to: 'hands-on/prototyping-profiling', label: 'Measuring with the Profiler'}
+    check:
+      q: 'Each N+1 query is fast on its own, so why doesn''t the slow query log catch it, and what should you look at instead?'
+      a: 'No single query is slow; their number is. Look at the total queries per request, in the Profiler or with a query-count assertion in a test.'
+
+  - slug: fetch-join-and-dto
+    title: 'One query: fetch join and DTO'
+    kind: howto
+    tldr: 'Load to-one relations in the same query with a fetch join. For read-only lists, skip entities and build a DTO from just the columns you need.'
+    keywords: ['fetch join', 'addSelect', 'DTO', 'NEW operator', 'needed columns', 'query builder']
+    blocks:
+      - type: text
+        body: |
+          The way to bring back everything on the list in one trip is a **fetch join**: JOIN, then use `addSelect()` to tell Doctrine to build the joined entity right now. A plain `join()` changes nothing, and the customer stays a proxy. And if the page needs only three or four columns, don't build entities at all: use DQL's `NEW` to create a small **DTO** (an object that only carries data).
+      - type: code
+        lang: php
+        file: 'src/Repository/OrderRepository.php'
+        variant: good
+        code: |
+          /** @return list<Order> with customers, in 1 query */
+          public function findLatestWithCustomer(int $limit = 50): array
+          {
+              return $this->createQueryBuilder('o')
+                  ->addSelect('c')
+                  ->join('o.customer', 'c')
+                  ->orderBy('o.createdAt', 'DESC')
+                  ->setMaxResults($limit)
+                  ->getQuery()
+                  ->getResult();
+          }
+
+          /** @return list<OrderRow> read-only list: needed columns, not entities */
+          public function findLatestRows(int $limit = 50): array
+          {
+              return $this->getEntityManager()->createQuery(<<<'DQL'
+                  SELECT NEW App\Dto\OrderRow(o.id, c.name, o.totalAmount, o.createdAt)
+                  FROM App\Entity\Order o JOIN o.customer c
+                  ORDER BY o.createdAt DESC
+                  DQL)
+                  ->setMaxResults($limit)
+                  ->getResult();
+          }
+        marks:
+          - {line: 5, tip: 'This line makes it a fetch join: the customer''s columns join the SELECT, and Doctrine builds a real Customer instead of a proxy.'}
+          - {line: 6, tip: 'On its own this line joins only for filtering or sorting; it does not load the customer''s data.'}
+          - {line: 17, tip: 'The four columns go straight into the `OrderRow` constructor. No entity is created, so hydration is light.'}
+      - type: code
+        lang: php
+        file: 'src/Dto/OrderRow.php'
+        code: |
+          final readonly class OrderRow
+          {
+              public function __construct(
+                  public int $id,
+                  public string $customerName,
+                  public int $totalAmount,
+                  public \DateTimeImmutable $createdAt,
+              ) {
+              }
+          }
+      - type: visual
+        kind: compare
+        caption: 'When to use the full entity and when a DTO'
+        columns:
+          - title: 'Entity + fetch join'
+            icon: pencil
+            tip: 'If you will change the object and save it again you need the entity, because Doctrine then tracks the changes.'
+            items:
+              - 'When you will change it and `flush()`'
+              - 'Every column of the table comes back'
+              - 'Doctrine tracks each object, so memory use is higher'
+          - title: 'DTO (NEW)'
+            tone: good
+            icon: list
+            tip: 'For lists, reports and API responses, where the data is only displayed.'
+            items:
+              - 'When you only display it'
+              - 'Only the needed columns come back'
+              - 'Light and fast, but you can''t change and save it'
+    aside:
+      - type: pitfalls
+        items:
+          - '`join()` alone is just a JOIN, and N+1 remains. Only with `addSelect()` is it a fetch join.'
+          - 'Don''t fix this by putting `fetch: EAGER` in the entity mapping. It then loads the relation everywhere, even where you don''t need it.'
+      - type: when
+        use:
+          - 'To-one relations (order → customer): a fetch join is almost always safe'
+          - 'Display-only lists, reports, API responses: a DTO'
+        avoid:
+          - 'Fetch-joining several to-many collections at once: the rows multiply and balloon'
+      - type: refs
+        items:
+          - {to: batch-loading, label: 'Batch loading for collections'}
+    check:
+      q: 'You wrote `join()` and N+1 is still there. Which method is missing, and what does it do?'
+      a: '`addSelect()`. Without it the JOIN only helps with filtering; the customer''s columns never reach the SELECT, so Doctrine keeps the customer as a proxy.'
+
+  - slug: batch-loading
+    title: 'Batch loading for collections'
+    kind: howto
+    tldr: 'Joining a to-many collection multiplies the rows. Instead, run a second query with `IN (…)` that loads all the collections at once: 2 queries in total.'
+    keywords: ['batch loading', 'collection', 'to-many', 'IN query', 'cartesian product', 'row multiplication']
+    blocks:
+      - type: text
+        body: |
+          Now each order has to show its items too. Items are a **collection** (to-many). Join them and 50 orders × an average of 4 items gives 200 rows, each repeating the order and customer columns. A better way is **batch loading**: fetch the orders first, then fetch all their items in one query with `IN (…)`. In shopping-list terms: two shops, two trips, not 51.
+      - type: code
+        lang: php
+        file: 'src/Repository/OrderRepository.php'
+        variant: good
+        code: |
+          /** @return list<Order> with customers and items, in 2 queries */
+          public function findLatestWithItems(int $limit = 50): array
+          {
+              // query 1: orders + customers (to-one, so LIMIT is safe)
+              $orders = $this->createQueryBuilder('o')
+                  ->addSelect('c')
+                  ->join('o.customer', 'c')
+                  ->orderBy('o.createdAt', 'DESC')
+                  ->setMaxResults($limit)
+                  ->getQuery()
+                  ->getResult();
+
+              // query 2: all items and products for these orders at once
+              $ids = array_map(static fn (Order $o): int => $o->getId(), $orders);
+              $this->createQueryBuilder('o')
+                  ->addSelect('i', 'p')
+                  ->leftJoin('o.items', 'i')
+                  ->leftJoin('i.product', 'p')
+                  ->where('o.id IN (:ids)')
+                  ->setParameter('ids', $ids)
+                  ->getQuery()
+                  ->getResult();
+
+              return $orders;
+          }
+        marks:
+          - {line: 9, tip: 'No collection is joined in this query, so one order is one row and LIMIT returns exactly 50 orders.'}
+          - {line: 19, tip: 'Whether there are 50 orders or 500, fetching the items is one query; only the IN list gets longer.'}
+          - {line: 24, tip: 'You don''t need to capture the result. Doctrine won''t build the same order id twice; it fills `items` on the objects you already have.'}
+      - type: visual
+        kind: compare
+        caption: '50 orders with 4 items each, loaded three ways'
+        columns:
+          - title: 'Lazy loading'
+            tone: bad
+            icon: cross
+            tip: 'The shortest code, but a separate trip for every order''s customer and items.'
+            items:
+              - '1 + 50 + 50 = 101 queries'
+              - 'More orders, more queries'
+          - title: 'Everything in one JOIN'
+            tone: warn
+            icon: warning
+            tip: 'One query, but the order''s columns come back 4 times each, and adding another collection multiplies the rows.'
+            items:
+              - '1 query, 200 rows'
+              - 'Order columns repeat'
+              - 'LIMIT no longer works properly'
+          - title: 'Batch loading'
+            tone: good
+            icon: check
+            tip: 'The first query returns 50 rows, the second 200 items, and no column comes back twice.'
+            items:
+              - '2 queries, always'
+              - '50 + 200 rows, no repetition'
+              - 'LIMIT stays correct'
+    aside:
+      - type: remember
+        body: 'To-one → fetch join. To-many → a separate query with IN.'
+      - type: tips
+        items:
+          - 'If you only need the number of items, don''t load the collection. Count it in the same query with `COUNT(i.id)` and `GROUP BY`.'
+          - 'Doctrine can also batch for you: mark the collection with `setFetchMode()` and `FETCH_EAGER` on the query and it loads the collection with an `IN (…)` query.'
+      - type: terms
+        items:
+          - {term: 'Cartesian product', meaning: 'Joining two collections together multiplies the rows: 4 items × 3 payments = 12 rows per order.'}
+          - {term: 'Identity map', meaning: 'Within one request Doctrine builds an entity with a given id only once; later queries hand back that same object.'}
+    check:
+      q: 'How many queries does batch loading need for 50 orders and their items? And for 500 orders?'
+      a: 'Two in both cases: one for the orders, one for all the items (`IN (…)`). More rows don''t mean more queries, and that is the goal.'
+
+  - slug: pagination-with-joins
+    title: 'LIMIT with a JOIN: why does the page have fewer orders?'
+    kind: pitfall
+    tldr: 'With a collection fetch join, `setMaxResults(20)` applies to SQL rows, not orders. You get 5 orders instead of 20.'
+    keywords: ['pagination', 'setMaxResults', 'Paginator', 'LIMIT', 'fetch join', 'paging']
+    blocks:
+      - type: text
+        body: |
+          `LIMIT 20` tells the database "give me 20 **rows**", not "20 orders". Once you join the items, one order becomes 4 rows, so 20 rows yield just 5 orders, and the last order's items may even be cut off halfway. No error is raised; the page just quietly shows the wrong thing.
+      - type: code
+        lang: php
+        file: 'src/Repository/OrderRepository.php'
+        variant: bad
+        code: |
+          // I want 20 orders, but I will get 20 SQL rows
+          $orders = $this->createQueryBuilder('o')
+              ->addSelect('i')
+              ->leftJoin('o.items', 'i')
+              ->orderBy('o.createdAt', 'DESC')
+              ->setMaxResults(20)
+              ->getQuery()
+              ->getResult();
+        marks:
+          - {line: 4, tip: 'The collection JOIN: from here on, one order produces as many rows as it has items.'}
+          - {line: 6, tip: 'LIMIT counts rows after the JOIN. With 4 items per order, 20 rows = 5 orders.'}
+      - type: visual
+        kind: bars
+        caption: 'How many orders one page returns when each order has 4 items'
+        items:
+          - {label: 'What you wanted', value: 20, display: '20 orders', tip: 'You wrote `setMaxResults(20)` and expected 20 orders.'}
+          - {label: 'JOIN + LIMIT gave', value: 5, display: '5 orders', tone: bad, tip: '20 rows ÷ 4 rows per order = 5 orders. The other 15 are missing from the page.'}
+          - {label: 'Paginator gave', value: 20, display: '20 orders', tone: good, tip: 'It first picks the ids of 20 orders, then loads all their items.'}
+      - type: code
+        lang: php
+        file: 'src/Repository/OrderRepository.php'
+        variant: good
+        code: |
+          $query = $this->createQueryBuilder('o')
+              ->addSelect('i')
+              ->leftJoin('o.items', 'i')
+              ->orderBy('o.createdAt', 'DESC')
+              ->addOrderBy('o.id', 'DESC')
+              ->setFirstResult($offset)
+              ->setMaxResults(20)
+              ->getQuery();
+
+          $page = new Paginator($query, fetchJoinCollection: true);
+          $total = count($page);                // a separate COUNT query
+          $orders = iterator_to_array($page);   // exactly 20 orders, with items
+        marks:
+          - {line: 5, tip: 'If two orders share a timestamp, the order must not shuffle, so id breaks the tie.'}
+          - {line: 10, tip: '`Doctrine\ORM\Tools\Pagination\Paginator` first uses LIMIT to fetch only the order ids, then fetches the full data with `WHERE id IN (…)`.'}
+      - type: quote
+        body: 'Paginate the main entity first, then load its collection.'
+    aside:
+      - type: remember
+        body: 'LIMIT counts rows; you count orders.'
+      - type: pitfalls
+        items:
+          - 'Fetch-joining two collections together (items + payments) multiplies the rows. Even without pagination, memory balloons.'
+          - '`OFFSET` itself gets slow on deep pages. For large lists, use keyset pagination.'
+      - type: refs
+        items:
+          - {to: 'api/pagination', label: 'Pagination: offset vs cursor'}
+          - {to: batch-loading, label: 'Page first, batch-load after'}
+    check:
+      q: 'Each order averages 4 items. You fetch-join items and set `setMaxResults(20)`. How many orders do you get, and why?'
+      a: 'About 5. LIMIT returns 20 SQL rows, and after the JOIN each order takes up 4 rows.'
+
+flashcards:
+  - q: 'What is the N+1 query problem?'
+    a: 'One query for the list, then one more for each of the list''s N rows: N+1 queries in all.'
+    more: |
+      For example, on a 50-order page, fetching each order's customer name in a separate query runs 51 queries. Each query is fast, but every one pays for a round trip to the database. More rows means more queries, so the page slows down gradually.
+    ref: fifty-one-queries
+  - q: 'What does lazy loading mean in Doctrine?'
+    a: 'A proxy stands in for the related entity, and a separate query runs the first time you ask for its data.'
+    more: |
+      When Doctrine loads an order, it doesn't bring the customer along. It puts in a shell (a proxy) that knows only the id. Calling `getName()` makes the proxy run a `SELECT`. For one entity that saves work, but inside a loop it fires one query per iteration and creates N+1.
+    ref: lazy-loading-proxy
+  - q: 'Why doesn''t the slow query log catch N+1?'
+    a: 'Each query is fast on its own. What is slow is their total number in one request.'
+    more: |
+      The slow query log records only queries that take a long time by themselves. Each N+1 query may finish in 1 ms, yet 500 of them add up to half a second. So measure "queries per request" with the Symfony Profiler, an APM tool or a test's query count.
+    ref: lazy-loading-proxy
+  - q: 'How can a test stop N+1 from coming back?'
+    a: 'In a functional test, enable the profiler and assert that the `db` collector''s `getQueryCount()` stays under a limit.'
+    more: |
+      Call `$client->enableProfiler()`, send the request, then read the number from `$client->getProfile()->getCollector('db')->getQueryCount()`. Put enough rows in the fixture (say 50), otherwise the count looks small even with N+1. If the limit is exceeded, the test fails.
+    ref: lazy-loading-proxy
+  - q: 'What two things does a fetch join in Doctrine''s QueryBuilder need?'
+    a: '`join()` (or `leftJoin()`) and `addSelect()`. Without the second, the joined entity stays a proxy.'
+    more: |
+      `join()` only adds a JOIN to the SQL, which helps with filtering or sorting. Only `addSelect('c')` brings the joined entity's columns into the SELECT so Doctrine builds it from the same query. Many people write only `join()` and think N+1 is solved. It isn't.
+    ref: fetch-join-and-dto
+  - q: 'What is the benefit of a DTO instead of full entities on a list page?'
+    a: 'Only the needed columns come back, objects are cheap to build, and Doctrine doesn''t have to track changes on all those entities.'
+    more: |
+      In DQL, `SELECT NEW App\Dto\OrderRow(o.id, c.name, …)` returns the results directly as small readonly objects. It suits any page that only displays data: lists, reports, API responses. If you need to change and save, you still need the entity.
+    ref: fetch-join-and-dto
+  - q: 'Why is batch loading better than a fetch join for to-many collections?'
+    a: 'A JOIN multiplies the rows and repeats the parent''s columns. Batch loading loads every collection in a second `IN (…)` query.'
+    more: |
+      With 50 orders and 4 items each, a JOIN returns 200 rows, each carrying all the order columns. Joining two collections together multiplies the rows (a cartesian product). With batch loading, the first query fetches the orders and the second all the items: always 2 queries, no repetition.
+    ref: batch-loading
+  - q: 'What goes wrong with `setMaxResults(20)` on a collection fetch join?'
+    a: 'LIMIT applies to SQL rows, not entities, so you get fewer than 20 entities, and the last one''s collection may be incomplete.'
+    more: |
+      After the JOIN, one order becomes many rows. With 4 items per order, `LIMIT 20` gives only 5 orders. Doctrine raises no error, so the mistake slips past unnoticed. The fix: paginate the main entity first, then load the collection.
+    ref: pagination-with-joins
+  - q: 'How does Doctrine''s Paginator keep pages correct with a collection join?'
+    a: 'It first uses LIMIT to pick just the main entity ids, then loads those entities with their collections via `WHERE id IN (…)`.'
+    more: |
+      When you write `new Paginator($query, fetchJoinCollection: true)`, Doctrine splits your one query in two: one that selects the ids, then one for the full data. Calling `count()` runs a third, COUNT query. That is two or three queries, but the page gets exactly as many entities as you asked for.
+    ref: pagination-with-joins
+
+quiz:
+  - q: 'A controller loads 100 orders with `findBy()` and passes them to this template. There is no fetch join, and each order has a different customer. What is the maximum number of queries that run?'
+    lang: twig
+    code: |
+      {% for order in orders %}
+        <tr>
+          <td>{{ order.id }}</td>
+          <td>{{ order.customer.name }}</td>
+          <td>{{ order.items|length }}</td>
+        </tr>
+      {% endfor %}
+    hint: 'Count how many separate relations the loop touches.'
+    options:
+      - text: '1'
+        correct: false
+        why: 'That one query only loads the orders. Customers and items are not loaded yet, and touching them in the template runs separate queries.'
+      - text: '101'
+        correct: false
+        why: 'That counts only the 100 customer queries. `order.items|length` also runs one more query per order.'
+      - text: '201'
+        correct: true
+        why: '1 for the orders, 100 for the customers and 100 for the items collections: 201 in all.'
+      - text: '10,000'
+        correct: false
+        why: 'Queries add up, they don''t multiply: each order costs 1 for the customer and 1 for the items.'
+    ref: fifty-one-queries
+  - q: 'Rina tried to fix N+1 by joining customer with `->join()` in the repository. The Profiler still shows 51 queries. What is the most likely reason?'
+    hint: 'Joining and having the joined entity built are two different things.'
+    options:
+      - text: '`addSelect()` is missing, so the customer''s columns never came back and the customer is still a proxy'
+        correct: true
+        why: '`join()` alone just adds a SQL JOIN. Only with `addSelect()` does Doctrine build the joined entity from the same query.'
+      - text: 'She should have written `leftJoin()` instead of `join()`'
+        correct: false
+        why: 'Inner versus left changes which rows come back, not whether the customer is hydrated.'
+      - text: 'The customers table has no index'
+        correct: false
+        why: 'An index would make each query faster, but the number of queries would still be 51.'
+      - text: 'The cache wasn''t cleared'
+        correct: false
+        why: 'This is about the shape of the code''s queries, nothing to do with a cache.'
+    ref: fetch-join-and-dto
+  - q: 'Which of these are effective ways to catch N+1?'
+    hint: 'No single N+1 query is slow, so which measurement helps?'
+    options:
+      - text: 'Checking the query count for one page in the Symfony Profiler''s Doctrine panel'
+        correct: true
+        why: 'On a list page, a query count close to the row count is N+1.'
+      - text: 'Asserting on the query count in a functional test'
+        correct: true
+        why: 'After you fix it once, if someone brings it back, CI catches it.'
+      - text: 'Reading the slow log for queries over 1 second'
+        correct: false
+        why: 'Every N+1 query finishes in milliseconds, so not one of them appears in the slow log.'
+      - text: 'Checking the log for the same `SELECT … WHERE id = ?` running again and again'
+        correct: true
+        why: 'Row after row of the same-looking query, differing only in the id, is the best-known sign of N+1.'
+    ref: lazy-loading-proxy
+  - q: '50 orders, each with 4 items and 3 payments. If you fetch-join both collections, items and payments, in one query, how many rows does the database return?'
+    hint: 'When two collections are joined together, do an order''s rows add up or multiply?'
+    options:
+      - text: '50'
+        correct: false
+        why: 'Once you join a collection, an order no longer fits in one row.'
+      - text: '350'
+        correct: false
+        why: 'That is 50 × (4 + 3). But the rows of two collections don''t add: every item pairs with every payment.'
+      - text: '600'
+        correct: true
+        why: '50 × 4 × 3 = 600. That is the cartesian product, and the reason to load collections in separate queries.'
+      - text: '200'
+        correct: false
+        why: '200 would be the count with only items joined. Adding payments multiplies each row by another 3.'
+    ref: batch-loading
+  - q: 'Each order has 5 items. What will this query return?'
+    lang: php
+    code: |
+      $orders = $this->createQueryBuilder('o')
+          ->addSelect('i')
+          ->leftJoin('o.items', 'i')
+          ->orderBy('o.id', 'DESC')
+          ->setMaxResults(10)
+          ->getQuery()
+          ->getResult();
+    hint: 'What does LIMIT count: orders, or rows after the JOIN?'
+    options:
+      - text: '10 orders, 5 items each'
+        correct: false
+        why: 'That is what you wanted, but LIMIT returns 10 rows, and 10 orders would take 50 rows.'
+      - text: '2 orders'
+        correct: true
+        why: 'LIMIT returns 10 SQL rows, and each order takes up 5, so 10 ÷ 5 = 2 orders.'
+      - text: '10 orders, 1 item each'
+        correct: false
+        why: 'The rows are sorted by order, so the first 10 rows are all the items of the first 2 orders, not 10 different orders.'
+      - text: 'Doctrine throws an exception and stops'
+        correct: false
+        why: 'Doctrine raises no error. It quietly returns the wrong result, which is why this trap is dangerous.'
+    ref: pagination-with-joins
+  - q: 'An admin report page shows 5,000 rows: order id, customer name and total. Nothing will be changed. Which is the best fit?'
+    hint: 'Do you need to build full entities for data you won''t change?'
+    options:
+      - text: 'Fetch a DTO of three columns using DQL `NEW`'
+        correct: true
+        why: 'One query, only the needed columns, no entities: it saves both memory and time over 5,000 rows.'
+      - text: 'Load all the Order entities and use `fetch: EAGER` to bring the customers along'
+        correct: false
+        why: 'That hydrates 5,000 full entities plus their customers when you need three columns. EAGER also affects every other place that loads them.'
+      - text: 'Keep lazy loading and put a cache over the page'
+        correct: false
+        why: 'On a cache miss you run 5,001 queries again. The cache hides the problem rather than fixing it.'
+      - text: 'Fetch each row''s customer name with a separate API call'
+        correct: false
+        why: 'That moves N+1 from the database onto the network, which is even slower.'
+    ref: fetch-join-and-dto
+  - q: 'You need a list of orders with their items (to-many), paginated 20 per page. Which approaches give exactly 20 orders per page?'
+    hint: 'Which approaches apply LIMIT to orders, and which to the rows after the JOIN?'
+    options:
+      - text: 'Use `new Paginator($query, fetchJoinCollection: true)`'
+        correct: true
+        why: 'Paginator first picks the ids of 20 orders, then loads them with their items via `IN (…)`.'
+      - text: 'First fetch 20 orders (with only to-one joins), then fetch their items with `IN (…)`'
+        correct: true
+        why: 'In the first query one order is one row, so LIMIT gives exactly 20 orders. The second query fills the collection.'
+      - text: 'Fetch-join the items and put `setMaxResults(20)` straight on it'
+        correct: false
+        why: 'Then LIMIT applies to the rows after the JOIN, and you get far fewer than 20 orders.'
+      - text: 'Load all the orders and cut 20 with `array_slice()` in PHP'
+        correct: false
+        why: 'The count would be right, but every request would pull the whole table into memory. As data grows, the server falls over.'
+    ref: pagination-with-joins

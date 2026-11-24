@@ -1,0 +1,408 @@
+slides:
+  - slug: green-but-broken
+    title: '95% coverage, still broken in production'
+    kind: story
+    tldr: 'Coverage tells you which lines ran, not whether they are right. If most tests sit on easy code, the bugs pile up in the risky spots.'
+    keywords: ['code coverage', 'risk based testing', 'test value', 'coverage', 'tests', 'bugs']
+    blocks:
+      - type: metaphor
+        icon: lock
+        title: 'Locks on the house'
+        body: |
+          A family keeps its jewellery in a trunk and a broom on the veranda. Sensible people put a strong lock on the trunk, not on the broom. But one person decides "everything gets the same lock", fits 400 boxes with locks, and leaves the trunk with an old rusty one. Tests work the same way: put the most of them where a break hurts most. Piling tests onto easy code just to raise coverage doesn't help.
+      - type: visual
+        kind: table
+        caption: 'Coverage is 95%, yet tests and bugs are spread in exactly opposite ways'
+        headers: ['Code', 'Tests', 'Bugs last year']
+        rows:
+          - cells: ['Entity getters/setters', '400', '0']
+            tip: 'There is nothing in this code to break. It has the most lines, though, so it inflates the coverage number.'
+          - cells: ['Price and discount calculation', '3', '7']
+            tip: 'Thresholds, percentages and conditions are tangled together here. Money is directly involved, yet there are almost no tests.'
+          - cells: ['Payment webhook', '0', '4']
+            tip: 'This is where you join an outside service. Nobody wrote tests because it looked hard to mock.'
+          - cells: ['Database migrations', '0', '3']
+            tip: 'Migrations are never tested, yet one mistake puts the whole database at risk.'
+      - type: quote
+        body: 'Coverage tells you which lines ran, not which lines are safe.'
+    aside:
+      - type: story
+        title: 'Green CI, wrong price'
+        body: |
+          One team blocked every merge that dropped coverage below 90%. Everyone kept the number up by adding tests to easy classes. Meanwhile, a `>` in the discount threshold should have been `>=`. For a week, orders sitting exactly on the threshold got no discount, and no test caught it.
+      - type: terms
+        items:
+          - {term: 'Code coverage', meaning: 'The percentage of code lines that ran at least once during the tests. It doesn''t say whether they ran correctly.'}
+          - {term: 'Regression', meaning: 'Something that used to work and broke after a new change.'}
+    check:
+      q: 'Coverage is 95%, yet a bug remains in the price calculation. What could the coverage number not tell you?'
+      a: 'The pricing lines may have run once, but nobody checked whether the threshold, the percentage or the condition is right. The number counts "ran", not "correct".'
+
+  - slug: risk-pyramid
+    title: 'Test by risk: the three layers of the pyramid'
+    kind: concept
+    tldr: 'Lots of fast unit tests, some integration tests, a few end-to-end ones. Risk decides where to add more: the bigger the damage and the likelier the break, the more tests.'
+    keywords: ['test pyramid', 'unit test', 'integration test', 'end-to-end', 'risk', 'testing strategy']
+    blocks:
+      - type: text
+        body: |
+          There are three kinds of tests. A **unit test** checks one small piece in isolation, with no database or network, so it runs in milliseconds. An **integration test** runs several pieces together, with a real database or real HTTP. An **end-to-end (E2E) test** walks the whole journey from the browser to the database. The higher you go, the closer to reality the test gets, but the slower and more brittle it becomes.
+      - type: visual
+        kind: layers
+        caption: 'The pyramid: many at the bottom, few at the top'
+        layers:
+          - {label: 'End-to-end', sub: 'A few: only the main journeys', tone: bad, tip: 'For example, one path from login to placing an order. Slow (seconds to minutes), and even a small UI change can break it.'}
+          - {label: 'Integration', sub: 'Some: real database and HTTP', tone: warn, tip: 'The seams: queries, config, controllers. This is where you catch what unit tests can''t.'}
+          - {label: 'Unit', sub: 'Many: calculations and rules, in milliseconds', tone: good, tip: 'Price calculation, date rules, threshold values. They are cheap and fast, so check every value near a boundary here.'}
+      - type: points
+        title: 'Where to add tests first'
+        style: check
+        items:
+          - 'Big damage: money, data loss, security (payments, discounts, permissions)'
+          - 'Changes often: a rule everyone keeps touching'
+          - 'Complex: many conditions, or values close to a boundary'
+          - 'Seams: queries, config, outside APIs'
+      - type: quote
+        body: 'Write tests in proportion to the risk, not in proportion to the lines of code.'
+    aside:
+      - type: remember
+        body: 'The higher the layer, the more real but the slower. So: few on top, many at the bottom.'
+      - type: problem
+        body: 'Test everything end to end and the suite takes an hour, breaks all the time, and nobody runs it. Write only unit tests and you miss mistakes at the seams (a wrong query, a wrong config).'
+      - type: refs
+        items:
+          - {to: 'testing/test-types', label: 'Contract, load and chaos tests'}
+    check:
+      q: 'You want to check 10 boundary values in the price calculation. Which layer do you write them in, and why?'
+      a: 'The unit layer: it runs in milliseconds and needs no database, so dozens of values are cheap to check. The same job in E2E would be slow and brittle.'
+
+  - slug: unit-and-kernel-tests
+    title: 'PHPUnit: unit tests and KernelTestCase'
+    kind: howto
+    tldr: 'For pure calculations, use a plain TestCase with a DataProvider. For database queries or wiring between services, use KernelTestCase with the real container and database.'
+    keywords: ['PHPUnit', 'DataProvider', 'KernelTestCase', 'unit test', 'Doctrine', 'getContainer']
+    blocks:
+      - type: text
+        body: |
+          The pricing rule is an ordinary class, so you can test it without any framework. Put the values near the boundary in a `DataProvider`, so one test function runs dozens of cases. Where you need the container and a database, such as a Doctrine query, use `KernelTestCase`.
+      - type: code
+        lang: php
+        file: 'tests/Unit/DiscountCalculatorTest.php'
+        variant: good
+        code: |
+          final class DiscountCalculatorTest extends TestCase
+          {
+              #[DataProvider('cases')]
+              public function testDiscount(int $subtotalPaisa, bool $isVip, int $expected): void
+              {
+                  $calculator = new DiscountCalculator();
+
+                  self::assertSame($expected, $calculator->discountFor($subtotalPaisa, $isVip));
+              }
+
+              public static function cases(): iterable
+              {
+                  yield 'one paisa below the threshold, no discount' => [99_999, false, 0];
+                  yield 'exactly at the threshold, 10% off' => [100_000, false, 10_000];
+                  yield 'VIP gets an extra 5%' => [100_000, true, 15_000];
+                  yield 'empty cart' => [0, true, 0];
+              }
+          }
+        marks:
+          - {line: 3, tip: 'In PHPUnit 10+ the DataProvider is an attribute. The provider method must be static.'}
+          - {line: 13, tip: '99_999 and 100_000: exactly either side of the threshold. Most bugs hide right there (> versus >=).'}
+          - {line: 16, tip: 'Write readable case names. When a case fails, PHPUnit shows that name, which makes the failure easy to understand.'}
+      - type: code
+        lang: php
+        file: 'tests/Integration/OrderRepositoryTest.php'
+        variant: good
+        code: |
+          final class OrderRepositoryTest extends KernelTestCase
+          {
+              public function testFindsOnlyPendingOrdersOlderThanOneDay(): void
+              {
+                  self::bootKernel();
+                  $em = self::getContainer()->get(EntityManagerInterface::class);
+
+                  $t = static fn (string $ago) => new \DateTimeImmutable($ago);
+                  $em->persist(new Order('ORD-1', OrderStatus::Pending, $t('-2 days')));
+                  $em->persist(new Order('ORD-2', OrderStatus::Pending, $t('-1 hour')));
+                  $em->persist(new Order('ORD-3', OrderStatus::Paid, $t('-3 days')));
+                  $em->flush();
+
+                  $stale = self::getContainer()->get(OrderRepository::class)
+                      ->findStalePending(new \DateTimeImmutable('-1 day'));
+
+                  self::assertSame(['ORD-1'], array_map(fn (Order $o) => $o->number(), $stale));
+              }
+          }
+        marks:
+          - {line: 5, tip: 'bootKernel() starts the real container and Doctrine in the test environment.'}
+          - {line: 6, tip: 'self::getContainer() is the special test container, which also gives you access to private services.'}
+          - {line: 9, tip: 'Three orders of three kinds: an old pending one (should be found), a new pending one, an old paid one. The two that must not be found are checked here too.'}
+    aside:
+      - type: commands
+        title: 'PHPUnit and the test database'
+        items:
+          - {cmd: 'php bin/phpunit', desc: 'Run all tests'}
+          - {cmd: 'php bin/phpunit --filter DiscountCalculatorTest', desc: 'Run just one class'}
+          - {cmd: 'php bin/console doctrine:database:create --env=test', desc: 'Create a separate test database'}
+          - {cmd: 'php bin/console doctrine:migrations:migrate --env=test -n', desc: 'Run the migrations on the test database'}
+      - type: tips
+        items:
+          - 'dama/doctrine-test-bundle wraps each test in a transaction and rolls it back at the end, so data stays clean and tests run fast.'
+          - 'The test database should match production (PostgreSQL), not SQLite. More on that in the next topic.'
+      - type: refs
+        items:
+          - {to: 'testing/test-types', label: 'Integration tests against a real database'}
+    check:
+      q: 'In the price test, why check both the value one paisa below the threshold and the value exactly on it?'
+      a: 'Most calculation bugs live at the boundary: mixing up `>` and `>=`. Without values on both sides of the threshold, the test won''t catch that mistake.'
+
+  - slug: web-test-case
+    title: 'WebTestCase: does the HTTP path work?'
+    kind: howto
+    tldr: 'Use WebTestCase to send real HTTP requests into your app: routing, validation, serialization and security in one test. Keep browser E2E tests for the main journeys only.'
+    keywords: ['WebTestCase', 'functional test', 'HTTP test', 'Panther', 'assertResponseStatusCodeSame', 'jsonRequest']
+    blocks:
+      - type: text
+        body: |
+          HTTP is the best place to test what the client actually sees. The `WebTestCase` client sends requests into your app without a browser, so it's fast, yet routing, validation, the serializer and security are all the real thing. The table below shows how the three layers differ.
+      - type: code
+        lang: php
+        file: 'tests/Functional/CheckoutApiTest.php'
+        variant: good
+        code: |
+          final class CheckoutApiTest extends WebTestCase
+          {
+              public function testEmptyCartIsRejected(): void
+              {
+                  $client = static::createClient();
+                  $client->jsonRequest('POST', '/api/checkout', ['cartId' => 'empty-cart']);
+
+                  self::assertResponseStatusCodeSame(422);
+                  $json = $client->getResponse()->getContent();
+                  $body = json_decode($json, true, flags: JSON_THROW_ON_ERROR);
+                  self::assertArrayHasKey('violations', $body);
+              }
+
+              public function testValidCartCreatesOrder(): void
+              {
+                  $client = static::createClient();
+                  $client->jsonRequest('POST', '/api/checkout', ['cartId' => 'cart-with-2-items']);
+
+                  self::assertResponseStatusCodeSame(201);
+                  self::assertResponseHeaderSame('content-type', 'application/json');
+              }
+          }
+        marks:
+          - {line: 5, tip: 'createClient() boots a fresh kernel for every test. You start from a known state, with no leftovers from earlier tests.'}
+          - {line: 10, tip: 'Check the body, not just the status. Getting a 422 isn''t enough: verify which error was reported.'}
+      - type: visual
+        kind: table
+        caption: 'The three kinds of tests in Symfony'
+        headers: ['', 'Unit', 'Integration', 'End-to-end']
+        rows:
+          - cells: ['In Symfony', 'TestCase', 'KernelTestCase, WebTestCase', 'Panther or Playwright']
+            tip: 'Panther drives a real browser. Playwright is a separate tool, but many people use it for this.'
+          - cells: ['What it touches', 'One class, no I/O', 'Container, database, HTTP', 'Browser to database']
+            tip: 'The more parts a test touches, the more realistic it is, and the slower and more brittle.'
+          - cells: ['Speed', 'Milliseconds', 'Tens to hundreds of ms', 'Seconds or more']
+            tip: 'This is why the pyramid is widest at the bottom.'
+          - cells: ['What it catches', 'Calculation and rule errors', 'Query, config, validation errors', 'A broken main journey']
+            tip: 'Each layer catches a different kind of mistake, so none replaces another.'
+      - type: quote
+        body: 'At the HTTP layer, test exactly what the client sees: status, headers and body.'
+    aside:
+      - type: tips
+        items:
+          - 'Keep E2E tests to a handful: login, placing an order, payment. Everything else goes in the lower layers.'
+          - 'In WebTestCase, put a MockHttpClient in the test environment for outside APIs, or calls will hit the real service.'
+      - type: refs
+        items:
+          - {to: 'api/error-design', label: 'Designing error responses'}
+    check:
+      q: 'You send an empty cart to the checkout API. Why isn''t `assertResponseStatusCodeSame(422)` alone enough?'
+      a: 'A 422 can come back for any reason. Checking that the body contains violations shows why it failed, and catches a test that passes for the wrong reason.'
+
+  - slug: coverage-and-mocks-trap
+    title: 'The trap: mock-heavy tests and coverage targets'
+    kind: pitfall
+    tldr: 'A test that only checks "was the method called" passes even with the wrong price. Verify the outcome, use fakes, and treat coverage as a signal, not a goal.'
+    keywords: ['mock', 'fake', 'test double', 'Infection', 'mutation testing', 'coverage target']
+    blocks:
+      - type: text
+        body: |
+          In the test below, everything is mocked. It only checks that `save()` was called once. But `save()` is called even when the price is wrong, so the test always passes. It doesn't break when the real code changes, and it doesn't catch broken code. Both are bad.
+      - type: code
+        lang: php
+        file: 'tests/Unit/PlaceOrderTest.php'
+        variant: bad
+        code: |
+          public function testPlaceSavesOrder(): void
+          {
+              $repo = $this->createMock(OrderRepository::class);
+              $repo->expects($this->once())->method('save');   // only "save was called"
+
+              $service = new PlaceOrder($repo, new DiscountCalculator());
+              $service(new PlaceOrderCommand('cart-1', 100_000));
+              // the test passes even if the total is wrong
+          }
+        marks:
+          - {line: 4, tip: 'This line pins down how the code works inside (which method it calls). Refactor it and the test breaks, even though the code is still correct.'}
+          - {line: 8, tip: 'The real question, whether the total is right, is never asked.'}
+      - type: code
+        lang: php
+        file: 'tests/Unit/PlaceOrderTest.php'
+        variant: good
+        code: |
+          public function testPlaceOrderAppliesTenPercentDiscount(): void
+          {
+              $repo = new InMemoryOrderRepository();   // fake: really works, just in memory
+
+              $service = new PlaceOrder($repo, new DiscountCalculator());
+              $service(new PlaceOrderCommand('cart-1', 100_000));
+
+              self::assertSame(90_000, $repo->last()->totalPaisa());   // verify the outcome
+          }
+        marks:
+          - {line: 3, tip: 'A fake is a small real implementation. How it works is not your concern, only whether the result is right.'}
+          - {line: 8, tip: '100,000 - 10% = 90,000. If the price is wrong, the test fails on this line, which is exactly what you want.'}
+      - type: points
+        title: 'How to look at coverage'
+        style: dot
+        items:
+          - 'A drop in coverage is a warning sign, but high coverage is no proof of safety'
+          - 'Set a coverage target and people pile useless tests onto easy code'
+          - 'A better question: "If this line broke, would any test fail?"'
+    aside:
+      - type: tips
+        items:
+          - 'Infection (mutation testing) plants small bugs in your code on purpose and checks whether the tests catch them. Run it now and then on your most valuable code.'
+          - 'You need a mock when the call itself is the result (for example, sending an email exactly once). Even then, use a fake if you can.'
+      - type: when
+        use: ['fake: for simple dependencies like a repository, a clock or an email inbox']
+        avoid: ['mocking every internal method call', 'blocking merges at 90% coverage']
+    check:
+      q: 'You refactored the internals but the behaviour is the same, and a test broke. What is the likely cause?'
+      a: 'The test pinned down the implementation, not the result: which methods get called and how often. If it verified the outcome, the refactor wouldn''t break it.'
+
+flashcards:
+  - q: 'What is risk-based testing?'
+    a: 'Spending your testing effort in proportion to risk: more tests where a break costs more and is more likely.'
+    more: |
+      Money, data loss, security, complex conditions and seams (queries, outside APIs) are the riskiest. Getters, setters and simple code give little return on tests. Risk tells you where to spend your time.
+    ref: risk-pyramid
+  - q: 'What does the test pyramid say?'
+    a: 'Many fast unit tests at the bottom, some integration tests in the middle, a few slow end-to-end tests on top.'
+    more: |
+      The higher the layer, the more realistic the test, but also the slower and more brittle. So put many cases, like boundary values, in unit tests, seam mistakes in integration tests, and only the main journeys in E2E.
+    ref: risk-pyramid
+  - q: 'Why isn''t coverage proof of safety?'
+    a: 'Coverage counts which lines ran, not whether anyone verified that they are correct.'
+    more: |
+      A test with no assertions still runs code and raises coverage. Set a coverage target and people write useless tests for easy code. Mutation testing with Infection shows whether your tests really catch mistakes.
+    ref: green-but-broken
+  - q: 'When is a DataProvider useful in PHPUnit?'
+    a: 'When one piece of logic has many input and output cases: a single test method runs dozens of cases, especially boundary values.'
+    more: |
+      Attach a static method with the `#[DataProvider('cases')]` attribute. If you `yield 'name' => [inputs..., expected]`, a failing case shows its name. Always include the values exactly on either side of a boundary (for example 99,999 and 100,000).
+    ref: unit-and-kernel-tests
+  - q: 'What is the difference between KernelTestCase and WebTestCase?'
+    a: 'KernelTestCase boots the container so you can test services directly. WebTestCase adds a client that sends HTTP requests on top.'
+    more: |
+      Use KernelTestCase for Doctrine queries and wiring between services. Use WebTestCase for the whole HTTP path, with routing, validation, the serializer and security. Both use the real container, so they are slower than unit tests but closer to reality.
+    ref: web-test-case
+  - q: 'What is the difference between a mock and a fake, and which do you prefer?'
+    a: 'A mock verifies which methods were called. A fake is a small real implementation. Prefer fakes, because you can verify the result.'
+    more: |
+      A fake like InMemoryOrderRepository does the real work, just in memory. The test checks the outcome, not how it was reached, so it survives a refactor. You need a mock only when the call itself is the result, such as sending an email exactly once.
+    ref: coverage-and-mocks-trap
+
+quiz:
+  - q: 'Suman''s team has a rule: coverage must stay at 90%. To hit the target easily, new member Robi writes 50 tests on entity getters and setters. What happened?'
+    hint: 'Did the tests go where the bugs are?'
+    options:
+      - text: 'Coverage went up, but the risky spots are no safer'
+        correct: true
+        why: 'Getters and setters have nothing to break. The coverage number grew, but price, payment and migration code are protected no better than before.'
+      - text: 'The system got safer, because more code is tested'
+        correct: false
+        why: 'More tests don''t make a system safer. Checking the risky spots does.'
+      - text: 'Coverage went down, because more code was added'
+        correct: false
+        why: 'Adding tests for getters and setters raises coverage, if anything.'
+      - text: 'The tests got faster'
+        correct: false
+        why: 'More tests take slightly more time, and speed is not the point or the gain here anyway.'
+    ref: green-but-broken
+  - q: 'Where does adding extra tests pay off the most?'
+    hint: 'Where is the damage biggest, and where are mistakes most likely?'
+    options:
+      - text: 'Discount and tax calculation'
+        correct: true
+        why: 'Money is directly involved, thresholds and percentages are tricky, and mistakes easily slip past a reviewer.'
+      - text: 'The handler for the outside payment webhook'
+        correct: true
+        why: 'It sits at the seam with an outside system, the damage is big (money), and mistakes are likely.'
+      - text: 'Simple entity getters and setters'
+        correct: false
+        why: 'There is nothing to break, so tests here waste time.'
+      - text: 'A tiny helper that only writes logs'
+        correct: false
+        why: 'Both the damage and the complexity are low. It comes after the risky spots.'
+    ref: risk-pyramid
+  - q: 'What exactly is wrong with the test below?'
+    lang: php
+    code: |
+      $repo = $this->createMock(OrderRepository::class);
+      $repo->expects($this->once())->method('save');
+      $service = new PlaceOrder($repo, new DiscountCalculator());
+      $service(new PlaceOrderCommand('cart-1', 100_000));
+    hint: 'Would this test fail if the price were wrong?'
+    options:
+      - text: 'It only checks that save was called, so it passes even with a wrong total'
+        correct: true
+        why: 'It never verifies an outcome. A refactor of the internals can break it, yet it doesn''t catch the real bug.'
+      - text: 'DiscountCalculator should have been mocked too'
+        correct: false
+        why: 'That would hollow the test out even more. Keeping the real calculator is better.'
+      - text: 'Using $this->once() in tests is forbidden'
+        correct: false
+        why: 'It isn''t forbidden. The problem is that this is all the test checks, and not the result.'
+      - text: 'There is nothing wrong with it'
+        correct: false
+        why: 'There is: the test misses bugs, and it is needlessly brittle too.'
+    ref: coverage-and-mocks-trap
+  - q: 'Which of these does KernelTestCase verify best?'
+    hint: 'Where do you need a real container and a real database?'
+    options:
+      - text: 'That a Doctrine repository query returns the right rows'
+        correct: true
+        why: 'Query mistakes only show up against a real database. A mock in a unit test wouldn''t verify this.'
+      - text: 'The output of a date-formatting helper'
+        correct: false
+        why: 'It is a pure function and needs no container. A plain unit test is enough, and faster.'
+      - text: 'A full journey in the browser, from login to placing an order'
+        correct: false
+        why: 'That is a job for E2E (Panther or Playwright).'
+      - text: '10 cases for the price percentage thresholds'
+        correct: false
+        why: 'That is a job for a unit test and a DataProvider, which runs in milliseconds.'
+    ref: unit-and-kernel-tests
+  - q: 'A team wrote every test as an E2E (browser) test. The suite takes 45 minutes and often breaks for no reason. Which decisions are right?'
+    hint: 'Think of the pyramid.'
+    options:
+      - text: 'Move calculation cases like boundary values into unit tests'
+        correct: true
+        why: 'Unit tests run in milliseconds, and hundreds of cases are cheap to check.'
+      - text: 'Keep E2E to just 2-3 main journeys'
+        correct: true
+        why: 'With fewer slow, brittle tests, the suite becomes fast and reliable.'
+      - text: 'Add even more E2E tests, since they are the most realistic'
+        correct: false
+        why: 'They are realistic, but slow and brittle. Adding more makes the problem worse.'
+      - text: 'Switch off the tests that break'
+        correct: false
+        why: 'Switching tests off throws the protection away. Moving them to the right layer is the fix.'
+    ref: web-test-case

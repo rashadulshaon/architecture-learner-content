@@ -1,0 +1,386 @@
+slides:
+  - slug: give-password-to-app
+    title: 'A new app asks for your Gmail password'
+    kind: story
+    tldr: 'Handing your password to another app hands over all your power. OAuth2 gives limited, expiring, revocable permission instead.'
+    keywords: ['OAuth2', 'delegated access', 'password anti-pattern', 'scope', 'sign in with Google', 'permission']
+    blocks:
+      - type: text
+        body: |
+          A photo-printing app says, "To fetch your pictures from Google Photos, give us your Gmail email and password." If you do, the app can read more than photos: your email, your Drive, everything. And unless you change your password, it can keep that access forever. If the app's database ever leaks, your Google account goes with it. What we want is "photos only, for today only, and I can shut it off any time."
+      - type: visual
+        kind: compare
+        caption: 'Giving a password versus an OAuth2 grant'
+        columns:
+          - title: 'Giving the app your password'
+            tone: bad
+            icon: cross
+            tip: 'The app can then do anything as you. There is no way to block individual actions.'
+            items: ['Full power, no limits', 'No expiry: it lasts forever', 'To cut it off you must change the password', 'If the app leaks, your Google account leaks']
+          - title: 'An OAuth2 grant'
+            tone: good
+            icon: check
+            tip: 'The app never sees your password. It receives a limited token with an expiry.'
+            items: ['Only the actions named in the scope (such as reading photos)', 'Access tokens are short-lived', 'Revoke it in one click from Google''s settings', 'If the app leaks, only that scope is at risk']
+    aside:
+      - type: story
+        title: 'A lesson from the early social web'
+        body: |
+          Years ago, many sites said "enter your email password so we can find your friends." OAuth came along to end exactly that habit: the password stays with the one who owns it, and everyone else gets a separate key.
+    check:
+      q: 'What do you gain by giving an app an OAuth2 token instead of your password?'
+      a: 'The app can do only what the scope allows, the token expires, and you can revoke it from Google at any time. The password never reaches the app.'
+
+  - slug: actors-and-protocols
+    title: 'Who is involved, and what OAuth2, OIDC and SAML are each for'
+    kind: concept
+    tldr: 'OAuth2 grants permission (authorization). OIDC adds "who is this" on top. SAML does the same job in an older XML style, for corporate SSO.'
+    keywords: ['OAuth2', 'OIDC', 'SAML', 'id_token', 'access token', 'SSO', 'identity provider', 'resource owner', 'scope']
+    blocks:
+      - type: metaphor
+        icon: building
+        title: 'The building guard and the visitor slip'
+        body: |
+          Rahim (the **resource owner**) tells the building guard (the **authorization server**), "This courier (the **client**) may open my mailbox, and nothing else." The guard hands over a slip (the **access token**) saying mailbox only (the **scope**) and valid until 5 pm today. The mailbox (the **resource server**) opens when it sees the slip. If the guard also hands over an ID card saying "this is Rahim from flat 302", that is **OIDC's id_token**.
+      - type: visual
+        kind: table
+        caption: 'The three protocols at a glance'
+        headers: ['', 'OAuth2', 'OIDC', 'SAML']
+        rows:
+          - cells: ['What it issues', 'access token', 'id_token + access token', 'XML assertion']
+            tip: 'OAuth2 only says "this is allowed". OIDC adds "this person is so-and-so". SAML says the same thing in XML.'
+          - cells: ['Answers', 'What can you do?', 'Who are you? (login)', 'Who are you? (corporate SSO)']
+            tip: 'Treating OAuth2 alone as proof of login is a mistake: an access token doesn''t say who it was issued for.'
+          - cells: ['Data format', 'JSON / opaque token', 'JWT', 'XML, signed']
+            tip: 'OIDC''s id_token is always a JWT. A SAML assertion is a much bigger XML document.'
+          - cells: ['Where it''s used', 'API permissions', 'Sign in with Google/GitHub', 'Office Okta, AD FS']
+            tip: 'Older enterprise software at big companies still asks for SAML. New projects usually go with OIDC.'
+      - type: quote
+        body: 'OAuth2 is for permission, not for login. To learn who someone is, you need OIDC''s id_token.'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Scope', meaning: 'The list of actions a token may perform, such as photos.read.'}
+          - {term: 'IdP', meaning: 'Identity Provider: the party that verifies identity (Google, Okta).'}
+          - {term: 'SSO', meaning: 'Single sign-on: log in once and get into many apps.'}
+      - type: remember
+        body: 'OAuth2 = what you can do. OIDC = who you are. SAML = OIDC''s older, XML-flavored cousin.'
+    check:
+      q: 'Does holding an OAuth2 access token tell you who the person is? If not, what do you need?'
+      a: 'No. An access token expresses permission, not identity. To learn identity you take OIDC''s id_token and verify its iss, aud, exp and nonce.'
+
+  - slug: code-flow-pkce
+    title: 'Authorization code + PKCE, step by step'
+    kind: howto
+    tldr: 'Only a single-use code travels through the browser. The server swaps it for tokens, and PKCE''s code_verifier proves that the same party started the flow.'
+    keywords: ['authorization code', 'PKCE', 'code_verifier', 'code_challenge', 'state', 'nonce', 'redirect_uri', 'login with google']
+    blocks:
+      - type: text
+        body: |
+          Today the only acceptable approach is the **authorization code flow**. The browser makes the round trip carrying just a short code, and the real tokens arrive over direct server-to-server contact. **PKCE** is an extra lock: at the start the app creates a secret `code_verifier` and sends its hash (the `code_challenge`); at the end it shows the original verifier to prove the code wasn't snatched by someone else.
+      - type: visual
+        kind: sequence
+        caption: 'The steps of the code flow, with state and PKCE'
+        actors:
+          - {id: user, label: 'Browser', icon: browser, tip: 'Rahim''s browser. It only carries redirects; the real tokens never pass through it.'}
+          - {id: app, label: 'Our app', icon: server, tip: 'The Symfony backend, acting as the OAuth client. It keeps state, nonce and verifier in the session.'}
+          - {id: idp, label: 'Google', icon: shield, tip: 'The authorization server. It logs Rahim in, asks for consent, and issues the code and tokens.'}
+        messages:
+          - {from: user, to: app, label: 'Clicks "Sign in with Google"', tip: 'Here the app creates state, nonce and code_verifier and stores them in the session.'}
+          - {from: app, to: idp, label: 'redirect: client_id, state, code_challenge', tip: 'The browser is sent to Google''s authorize URL. The challenge is the SHA-256 hash of the verifier.'}
+          - {at: idp, note: 'Rahim logs in and consents', tone: good, tip: 'Only Google sees the password, never our app.'}
+          - {from: idp, to: app, label: 'back to redirect_uri: code + state', tip: 'The code is single-use and short-lived. The app first checks the state.'}
+          - {from: app, to: idp, label: 'code + code_verifier + client_secret', tip: 'Server to server. Google hashes the verifier and compares.'}
+          - {from: idp, to: app, label: 'id_token + access_token', dashed: true, tone: good, tip: 'The app now verifies the id_token claims, recognizes Rahim and logs him in.'}
+      - type: code
+        lang: php
+        file: 'src/Controller/OidcController.php'
+        variant: good
+        code: |
+          #[Route('/auth/start', name: 'oidc_start')]
+          public function start(Request $request): RedirectResponse
+          {
+              $verifier = rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '=');
+              $challenge = rtrim(strtr(base64_encode(hash('sha256', $verifier, true)), '+/', '-_'), '=');
+              $session = $request->getSession();
+              $session->set('pkce_verifier', $verifier);
+              $session->set('oidc_state', $state = bin2hex(random_bytes(16)));
+              $session->set('oidc_nonce', $nonce = bin2hex(random_bytes(16)));
+
+              return new RedirectResponse('https://accounts.google.com/o/oauth2/v2/auth?'
+                  .http_build_query([
+                      'response_type' => 'code',
+                      'client_id' => $this->clientId,
+                      'redirect_uri' => $this->urls->generate('oidc_callback', [],
+                          UrlGeneratorInterface::ABSOLUTE_URL),
+                      'scope' => 'openid email profile',
+                      'state' => $state, 'nonce' => $nonce,
+                      'code_challenge' => $challenge, 'code_challenge_method' => 'S256',
+                  ]));
+          }
+        marks:
+          - {line: 4, tip: 'The verifier is 32 random secret bytes. The challenge is only its hash, so even if it is stolen the verifier stays hidden.'}
+          - {line: 8, tip: 'state blocks CSRF: if the returned state doesn''t match the session, we never started this request.'}
+          - {line: 9, tip: 'nonce ties the id_token to this particular login attempt, so an old token can''t be replayed.'}
+          - {line: 17, tip: 'With openid in the scope, this is an OIDC login, not just OAuth2.'}
+    aside:
+      - type: tips
+        items:
+          - 'Clients that can''t keep a secret (a Vue SPA, a mobile app), called public clients, must use PKCE. These days even confidential clients should use it too.'
+          - 'Don''t build the authorize URL by hand. Use a well-maintained library such as `league/oauth2-client` or `knpuniversity/oauth2-client-bundle`.'
+      - type: refs
+        items:
+          - {to: 'security/secrets-management', label: 'Rules for storing the client_secret'}
+    check:
+      q: 'Even if an attacker steals the code from the redirect, why can''t they get tokens when PKCE is used?'
+      a: 'Requesting tokens needs the original `code_verifier`, which exists only in the session of the app that started the flow. The thief knows just the code and the hash (challenge), and a verifier can''t be recovered from its hash.'
+
+  - slug: validate-callback
+    title: 'The user is back: trust nothing you haven''t verified'
+    kind: howto
+    tldr: 'In the callback, check state, exchange the code, then check the id_token''s iss, aud, exp and nonce. For API access tokens, use Symfony''s oidc handler.'
+    keywords: ['id_token validation', 'iss', 'aud', 'nonce', 'oidc token handler', 'JWKS', 'callback', 'resource server']
+    blocks:
+      - type: text
+        body: |
+          You can't accept the guard's ID card without looking at it either: who issued it (`iss`), who it's for (`aud` = our client_id), when it expires (`exp`), and whether it belongs to this very login (`nonce`). In the code below the id_token arrived straight from Google's token endpoint over TLS, so under the OIDC spec checking these claims is enough in place of the signature. If it had come through the browser, you would have to verify the signature too.
+      - type: code
+        lang: php
+        file: 'src/Controller/OidcController.php'
+        variant: good
+        code: |
+          #[Route('/auth/callback', name: 'oidc_callback')]
+          public function callback(Request $request, HttpClientInterface $http): Response
+          {
+              $s = $request->getSession();
+              if (!hash_equals((string) $s->remove('oidc_state'), $request->query->getString('state'))) {
+                  throw new AccessDeniedHttpException('state mismatch');
+              }
+              $tokens = $http->request('POST', 'https://oauth2.googleapis.com/token', ['body' => [
+                  'grant_type' => 'authorization_code',
+                  'code' => $request->query->getString('code'),
+                  'redirect_uri' => $this->urls->generate('oidc_callback', [], 0),
+                  'client_id' => $this->clientId, 'client_secret' => $this->clientSecret,
+                  'code_verifier' => $s->remove('pkce_verifier'),
+              ]])->toArray();
+
+              [, $payload] = explode('.', $tokens['id_token']);
+              $c = json_decode(base64_decode(strtr($payload, '-_', '+/')), true, 8, JSON_THROW_ON_ERROR);
+              $nonce = (string) $s->remove('oidc_nonce');
+              if ($c['iss'] !== 'https://accounts.google.com' || $c['aud'] !== $this->clientId
+                  || $c['exp'] < time() || !hash_equals($nonce, $c['nonce'] ?? '')) {
+                  throw new AccessDeniedHttpException('invalid id_token');
+              }
+
+              return $this->loginOrRegister($c['sub'], $c['email']);   // sub is the stable identity
+          }
+        marks:
+          - {line: 5, tip: 'If the state doesn''t match, stop here. remove() means it is deleted from the session after one use.'}
+          - {line: 16, tip: 'The second part (the payload) is base64url-encoded JSON. The signature check is skipped here because the token came straight from Google over HTTPS.'}
+          - {line: 19, tip: 'Four checks: who issued it, who it''s for, whether it has expired, and whether the nonce belongs to this login.'}
+          - {line: 24, tip: 'An email can change; the stable key for recognizing a user is the sub claim.'}
+      - type: code
+        lang: yaml
+        file: 'config/packages/security.yaml'
+        code: |
+          security:
+              firewalls:
+                  api:
+                      pattern: ^/api
+                      stateless: true
+                      access_token:
+                          token_handler:
+                              oidc:
+                                  algorithms: ['ES256']
+                                  issuers: ['https://accounts.example.com']
+                                  audience: 'orders-api'
+                                  keyset: '%env(OIDC_JWKS)%'
+        marks:
+          - {line: 9, tip: 'If our own API accepts JWT access tokens from another IdP, Symfony''s built-in oidc handler verifies the signature.'}
+          - {line: 11, tip: 'Checking the audience means a token issued for another API won''t work here.'}
+    aside:
+      - type: commands
+        title: 'Look at the configuration'
+        items:
+          - {cmd: 'php bin/console debug:config security firewalls.api', desc: 'How the access_token handler is set up on the api firewall'}
+          - {cmd: 'php bin/console config:dump-reference security', desc: 'Every option of the oidc handler'}
+    check:
+      q: 'What is the risk of not checking `aud` in an id_token?'
+      a: 'Someone could bring a valid token from the same IdP that was issued for a different app and log in to ours. The signature would be genuine, but the token was never meant for us.'
+
+  - slug: oauth-mistakes
+    title: 'Familiar mistakes in OAuth'
+    kind: pitfall
+    tldr: 'Skipping state, wildcards in redirect_uri, the implicit flow, treating an access token as login, and a client secret in an SPA: all five break OAuth.'
+    keywords: ['implicit flow', 'redirect_uri wildcard', 'state CSRF', 'open redirect', 'client secret', 'OAuth mistakes']
+    blocks:
+      - type: text
+        body: |
+          OAuth itself is solid, but mistakes in using it open holes. The five below are the ones you see most. Behind each lies the same cause: assuming something that should have been verified.
+      - type: visual
+        kind: table
+        caption: 'Five mistakes, what happens, and the right way'
+        headers: ['Mistake', 'What happens', 'The right way']
+        rows:
+          - cells: ['No state check', 'An attacker''s code lands in your session', 'A random state every time; match it on return']
+            tip: 'An attacker can send the code from their own account to a victim and attach their Google account to the victim''s account.'
+          - cells: ['Wildcard in redirect_uri', 'The code or token goes to an attacker''s URL', 'Register the full URL exactly at the IdP']
+            tip: 'With https://app.com/* allowed, a single open redirect is enough to steal a code.'
+          - cells: ['Implicit flow', 'The token drifts around the browser in the URL', 'Use code + PKCE']
+            tip: 'The implicit flow is nearly deprecated: the token leaks into history, logs and the referrer.'
+          - cells: ['Access token treated as login', 'A token for another app gets you in', 'Take the id_token and check iss/aud/nonce']
+            tip: 'An access token is for APIs; the app can''t tell who it was issued for.'
+          - cells: ['Client secret in an SPA', 'Anyone can find it in DevTools', 'Public client: PKCE without a secret']
+            tip: 'Whatever sits in the browser or inside a mobile app isn''t secret. A secret belongs only on the server.'
+      - type: quote
+        body: 'Match the redirect URI exactly, check state and nonce every time, and use only code + PKCE.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Matching accounts by email: linking an account even though the IdP didn''t say the email was verified (email_verified) is a path to account takeover.'
+          - 'Using the email instead of the id_token''s `sub` as the key; if the email changes, someone else''s account may open up.'
+      - type: refs
+        items:
+          - {to: 'security/threat-modeling', label: 'A way to think about what can go wrong in a feature'}
+    check:
+      q: 'Why is a wildcard like `https://app.com/*` in redirect_uri dangerous?'
+      a: 'Through any open redirect in the app, the code (or token) can be sent to an attacker''s URL. That is why you register the full URL exactly at the IdP.'
+
+flashcards:
+  - q: 'What is OAuth2 for, and what is it not for?'
+    a: 'OAuth2 is for granting permission (authorization): what an app may do. Telling you who the user is is not its job.'
+    more: |
+      OAuth2 issues an access token, which tells an API "this request is valid for such-and-such scope". Using it alone as proof of login is a mistake, because the app can't tell who it was issued for. For identity, use OIDC.
+    ref: actors-and-protocols
+  - q: 'What does OIDC add on top of OAuth2?'
+    a: 'An id_token (a JWT) stating who the user is (sub, email), plus the `openid` scope and rules for a verified login.'
+    more: |
+      OIDC = OAuth2 + identity. It isn't a separate protocol: add `openid` to the scope of the same flow and you also get an id_token. Google, Microsoft and Okta all support it.
+    ref: actors-and-protocols
+  - q: 'What are the four roles in OAuth2?'
+    a: 'Resource owner (the user), client (the app), authorization server (issues tokens), resource server (the API that accepts tokens).'
+    more: |
+      In the building-guard metaphor: Rahim is the owner, the courier is the client, the guard is the authorization server, and the mailbox is the resource server. In a small system the authorization and resource servers may belong to the same company, but the roles stay distinct.
+    ref: actors-and-protocols
+  - q: 'What is SAML, and when do you need it?'
+    a: 'SAML is an older XML-based SSO protocol. You need it when an enterprise customer wants employees to log in through their own IdP (Okta, AD FS).'
+    more: |
+      OIDC and SAML solve the same problem: a central IdP verifies identity and tells the app. SAML sends a signed XML assertion, OIDC sends a JWT. OIDC is simpler for new projects, but if you sell B2B software, expect customers to ask for SAML.
+    ref: actors-and-protocols
+  - q: 'What does PKCE prevent?'
+    a: 'Getting tokens with a stolen authorization code. Only the app that started the flow holds the original code_verifier.'
+    more: |
+      At the start the app creates a random `code_verifier` and sends its SHA-256 hash (`code_challenge`). At the end, when it shows the verifier, the server hashes it and compares. It is mandatory for public clients and now recommended for all clients.
+    ref: code-flow-pkce
+  - q: 'Why does OAuth need a state parameter?'
+    a: 'To prevent CSRF. If the returned state doesn''t match the one stored in the session, we never started that request.'
+    more: |
+      Without state, an attacker can push the code from their own account into a victim's browser. The state is random every time, bound to the session, and deleted after one use.
+    ref: code-flow-pkce
+  - q: 'Which four id_token claims must always be verified?'
+    a: '`iss` (who issued it), `aud` (is it our client_id), `exp` (expiry), `nonce` (is it for this login attempt).'
+    more: |
+      Skip any one and a token meant for another app, or an old one, can log someone in. If the token arrives through the browser, you must also verify its signature against the JWKS. Use `sub`, not the email, as the user's stable key.
+    ref: validate-callback
+  - q: 'Why must redirect_uri be registered exactly?'
+    a: 'With a wildcard, an open redirect can send the code or token to an attacker''s URL.'
+    more: |
+      The IdP only sends the code to a URL registered in advance. If you register `https://app.com/*`, an attacker who finds any redirect hole in the app can steer the code to themselves. Register the full URL, separately for each environment.
+    ref: oauth-mistakes
+
+quiz:
+  - q: 'An SPA developer is adding Google login. Which approach is right?'
+    hint: 'Can an SPA hide a secret?'
+    options:
+      - text: 'Implicit flow: take the token directly from the URL fragment'
+        correct: false
+        why: 'The token leaks into browser history, logs and the referrer; this flow is now abandoned.'
+      - text: 'Code flow + PKCE, without a client secret'
+        correct: true
+        why: 'An SPA is a public client with nowhere to keep a secret. PKCE fills that gap.'
+      - text: 'Code flow with the client_secret kept in JavaScript'
+        correct: false
+        why: 'Anything in the browser is visible to everyone in DevTools; the secret is no longer secret.'
+      - text: 'Taking the user''s Google password and logging in from the server'
+        correct: false
+        why: 'That is precisely the habit OAuth was created to end: handing a password to an app.'
+    ref: code-flow-pkce
+  - q: 'Someone sends an OAuth2 access token to your app and wants to log in with it. What do you do?'
+    hint: 'Does an access token say who it was issued for?'
+    options:
+      - text: 'Log them in if the signature checks out'
+        correct: false
+        why: 'The token might have been issued for another app; a token doesn''t prove who someone is.'
+      - text: 'Just ask for their email'
+        correct: false
+        why: 'An email sent by the client isn''t proof; an attacker can send any email.'
+      - text: 'Ask for an OIDC id_token and verify iss, aud, exp and nonce'
+        correct: true
+        why: 'The id_token is what says who the user is and whether the token was issued for this very login of ours.'
+    ref: actors-and-protocols
+  - q: 'What mistake does the code below make?'
+    lang: php
+    code: |
+      #[Route('/auth/callback')]
+      public function callback(Request $request): Response
+      {
+          $tokens = $this->exchange($request->query->getString('code'));
+          return $this->loginAs($tokens['email']);
+      }
+    hint: 'Where is the proof that this returning request is one we started ourselves?'
+    options:
+      - text: 'It has no state check, no id_token claim check, and it uses the email as the key'
+        correct: true
+        why: 'No state means CSRF, no claim checks means forged tokens, and the stable `sub` should be used instead of the email.'
+      - text: 'The route doesn''t specify a method'
+        correct: false
+        why: 'That is minor; the real hole is the missing verification.'
+      - text: 'No mistake, since a code can only be used once'
+        correct: false
+        why: 'Even if a code is single-use, with CSRF the attacker''s own code can slip in.'
+    ref: validate-callback
+  - q: 'Which of these are correct practice for OAuth2/OIDC?'
+    hint: 'Which ones avoid assuming instead of verifying?'
+    options:
+      - text: 'Create a random state and nonce each time and keep them in the session'
+        correct: true
+        why: 'Matching them on return blocks CSRF and token replay.'
+      - text: 'Register the full redirect_uri exactly at the IdP'
+        correct: true
+        why: 'This closes the path for a code or token to reach an attacker''s URL.'
+      - text: 'Identify users by email, not by `sub`'
+        correct: false
+        why: 'An email can change or be reused; the stable key is `sub`.'
+      - text: 'Keep the client_secret in a script and fetch the token from the browser'
+        correct: false
+        why: 'A secret in the browser is not secret.'
+    ref: oauth-mistakes
+  - q: 'A large customer says, "We want to log in with our Okta, we use SAML." What does that mean?'
+    hint: 'Are SAML''s job and OIDC''s job different problems?'
+    options:
+      - text: 'They want to give the app permission to read their files'
+        correct: false
+        why: 'Permission to files is OAuth2''s job; what is being asked for here is corporate login (SSO).'
+      - text: 'Their employees will log in at the company''s IdP, and the IdP will send our app a signed XML assertion saying who they are'
+        correct: true
+        why: 'SAML is the XML-based form of corporate SSO, the older counterpart of what OIDC does.'
+      - text: 'We have to keep their passwords in our database'
+        correct: false
+        why: 'The whole point of SSO is that passwords stay with the IdP and never reach us.'
+    ref: actors-and-protocols
+  - q: 'Which statements about PKCE are correct?'
+    hint: 'Think about how the verifier and the challenge relate.'
+    options:
+      - text: 'code_challenge is the SHA-256 hash of code_verifier'
+        correct: true
+        why: 'With the S256 method, challenge = BASE64URL(SHA256(verifier)), a one-way function.'
+      - text: 'The original code_verifier is sent when requesting the token'
+        correct: true
+        why: 'The server hashes it and compares it to the challenge from the start.'
+      - text: 'It is only for mobile apps and isn''t needed on the web'
+        correct: false
+        why: 'It is mandatory for public clients and now recommended for server-side apps too.'
+      - text: 'With PKCE you no longer need state'
+        correct: false
+        why: 'state prevents CSRF and PKCE prevents code theft; they do different jobs.'
+    ref: code-flow-pkce

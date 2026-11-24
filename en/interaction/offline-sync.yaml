@@ -1,0 +1,380 @@
+slides:
+  - slug: silent-overwrite
+    title: 'An offline edit vanished without a trace'
+    kind: story
+    tldr: 'When two users edit the same thing offline, whoever syncs last wins and the other''s work is lost without anyone being told.'
+    keywords: ['offline', 'sync', 'conflict', 'last write wins', 'lost update']
+    blocks:
+      - type: metaphor
+        icon: book
+        title: 'The manager''s and the salesman''s two ledgers'
+        body: |
+          Rahim, a salesman, goes off to a village with a photocopy of the shop's ledger. Back at the shop, the manager Karim changes the same customer's address in the master ledger. When Rahim returns and copies his version over the master, Karim's entry is wiped out, and nobody ever knows. That is exactly what happens in an offline app.
+      - type: visual
+        kind: sequence
+        caption: 'Whoever sends last wins: Karim''s change silently disappears'
+        actors:
+          - {id: rahim, label: 'Rahim''s phone', icon: mobile, tip: 'No network in the village, so the change stays stored on the phone.'}
+          - {id: server, label: 'Server', icon: server, tip: 'Keeps the one master copy for everybody.'}
+          - {id: karim, label: 'Karim''s laptop', icon: browser, tip: 'Online in the office; changes go to the server immediately.'}
+        messages:
+          - {at: rahim, note: 'Offline: address = "Mirpur"'}
+          - {from: karim, to: server, label: 'address = "Dhanmondi"', tip: 'Karim''s change landed on the server first.'}
+          - {from: rahim, to: server, label: 'address = "Mirpur" (back online)', tone: bad, tip: 'Rahim has no idea Karim changed it.'}
+          - {at: server, note: 'Last write wins: "Dhanmondi" is gone', tone: bad}
+      - type: quote
+        body: 'Last-write-wins means deleting one person''s work without telling anyone.'
+    aside:
+      - type: story
+        title: 'Field-visit notes'
+        body: |
+          Field workers at an NGO filled in survey forms offline. When two of them edited the same family's record separately, one edit was silently lost at sync, and for weeks nobody noticed.
+      - type: terms
+        items:
+          - {term: 'Local-first', meaning: 'Write to the phone''s own database first, and to the network later.'}
+          - {term: 'Lost update', meaning: 'One change wiping out another without knowing about it.'}
+    check:
+      q: 'Rahim and Karim both made changes, and the server kept whichever arrived last. What went wrong?'
+      a: 'Karim''s change was lost and nobody knew. That is a lost update: the conflict was never detected, so there was no chance to combine the two edits.'
+
+  - slug: detect-with-version
+    title: 'Catch the conflict: which version did you write against?'
+    kind: concept
+    tldr: 'Send a base version with every change. If the server''s version differs, don''t write silently: return a 409 conflict and show both copies.'
+    keywords: ['optimistic locking', 'base version', '409 conflict', 'version number', 'conflict detection']
+    blocks:
+      - type: metaphor
+        icon: ticket
+        title: 'The ledger note "I saw this edition"'
+        body: |
+          The salesman writes "edition 5" on top of his photocopy. When he comes to copy changes into the master ledger, he says "I wrote this after seeing edition 5". If the ledger has meanwhile reached edition 6, the manager says, "Stop, you wrote against an old copy. Look at the new one first." That is **catching** a conflict, not erasing it.
+      - type: visual
+        kind: flow
+        caption: 'If the base version doesn''t match, the server doesn''t write; it answers 409'
+        nodes:
+          - {id: phone, label: 'Rahim''s phone', sub: 'saw v5', icon: mobile, col: 0, row: 0, tip: 'The phone''s copy was edited from v5 and doesn''t know what the server has now.'}
+          - {id: api, label: 'POST /api/sync', sub: 'change + base v5', icon: api, col: 1.5, row: 0, tip: 'Carries not just the change but also which version it was made against.'}
+          - {id: db, label: 'notes.version', sub: 'now v6', icon: db, col: 3, row: 0, tip: 'The server''s true copy. Karim''s edit had already moved it to v6.'}
+          - {id: conflict, label: '409 Conflict', sub: 'with server''s v6', icon: warning, tone: warn, col: 1.5, row: 1.5, tip: 'Nothing was written. The server''s current copy goes back with the reply.'}
+        edges:
+          - {from: phone, to: api, label: 'The phone sends its change and says it wrote against v5'}
+          - {from: api, to: db, label: 'The server reads the database version: it is v6 now'}
+          - {from: db, to: api, label: 'v5 and v6 differ, so the write must not go through', tone: bad, dashed: true}
+          - {from: api, to: conflict, label: 'The server builds a 409 with the v6 copy attached'}
+          - {from: conflict, to: phone, label: 'The phone shows both copies side by side to reconcile', tone: good, dashed: true}
+      - type: quote
+        body: 'Always send, along with the change, the version you wrote against.'
+    aside:
+      - type: tips
+        items:
+          - 'With a `#[ORM\Version]` field, Doctrine''s optimistic locking bumps the number for you.'
+          - 'A version number isn''t clock time, so clock drift can''t confuse it.'
+      - type: refs
+        items:
+          - {to: 'time/ordering-events', label: 'Why timestamps don''t give the right order'}
+          - {to: 'concurrency/locking', label: 'Optimistic and pessimistic locks'}
+    check:
+      q: 'Why is a version number better than a timestamp for catching conflicts?'
+      a: 'The phone''s and the server''s clocks don''t agree, so a timestamp can give the wrong order. The server bumps the version number itself, so clock errors can''t creep in.'
+
+  - slug: resolve-strategies
+    title: 'Five ways to settle a conflict'
+    kind: compare
+    tldr: 'LWW is simple but loses data. Field-level merge, asking the user and CRDTs are progressively safer. Choose by the kind of data.'
+    keywords: ['LWW', 'CRDT', 'version vector', 'three-way merge', 'conflict resolution', 'field merge']
+    blocks:
+      - type: metaphor
+        icon: book
+        title: 'Five rules for reconciling two ledgers'
+        body: |
+          Once a conflict is caught, you need a decision. One rule: whoever signed last wins. Another: address and phone number are separate columns, so keep both people's changes. For hard cases, call both in and ask. And in a stock ledger, write "+2 cartons" instead of "total 10": then any order of merging gives the same result. That is the core idea of a CRDT.
+      - type: visual
+        kind: table
+        caption: 'Which way fits where'
+        headers: ['Way', 'How', 'Weakness', 'Where it fits']
+        rows:
+          - cells: ['Last-write-wins', 'The change that arrives last wins', 'Loses the other''s work', 'Low-importance fields']
+            tip: 'The simplest, but if you go by the clock, clock errors lose data too. Deciding "last" with a version is better.'
+          - cells: ['Field-level merge', 'Keeps both changes when fields differ', 'Same-field conflicts remain', 'Profiles, forms']
+            tip: 'Real conflicts shrink, because most edits touch different fields.'
+          - cells: ['Ask the user', 'Shows both copies and lets them choose', 'Costs the user time', 'Documents, important data']
+            tip: 'Where a wrong decision is expensive, it is safest to let a person decide.'
+          - cells: ['Version vector', 'Detects concurrent edits via who has seen whose changes', 'Detects only, doesn''t resolve', 'Many devices, P2P']
+            tip: 'A separate counter per device. If neither of two counters is greater than the other, the two changes are concurrent.'
+          - cells: ['CRDT', 'A structure that merges to the same result in any order', 'Complex, more memory', 'Counters, text editors']
+            tip: 'The merge rule lives in the structure itself, so conflicts never arise. But you can''t build one for every kind of data.'
+      - type: points
+        title: 'How to choose'
+        style: check
+        items:
+          - 'In an ordinary CRUD app, start here: catch conflicts with a version, merge by field, and show the user what can''t be merged.'
+          - 'CRDTs are mainly for documents edited together (Google Docs style). An ordinary app doesn''t need that complexity.'
+    aside:
+      - type: when
+        use: ['Money amounts or stock going up and down: send "+2"-style deltas, not the total']
+        avoid: ['Last-write-wins on money or stock; it gives plainly wrong numbers']
+      - type: refs
+        items:
+          - {to: 'data/consistency-models', label: 'Consistency models'}
+    check:
+      q: 'Two people separately changed the same customer''s address and phone number. Which way saves both changes?'
+      a: 'Field-level merge. The changes are in two different fields, so both can be kept. With last-write-wins, one change would be lost.'
+
+  - slug: client-outbox
+    title: 'Local-first in Vue: write to the phone first, send later'
+    kind: howto
+    tldr: 'Save every change to an IndexedDB outbox first, send in order once the network is back, and give each change an id so sending it twice does no harm.'
+    keywords: ['IndexedDB', 'outbox', 'Vue 3', 'idb-keyval', 'navigator.onLine', 'local first', 'mutation id']
+    blocks:
+      - type: text
+        body: |
+          A sync protocol has three steps. When the user edits, write to the phone first (the **outbox**). When back online, `push` the changes in order. Then `pull` the server's new changes to refresh the phone's copy. Each change carries its own `id`, so if the connection drops and you send it again, the server can recognize the duplicate.
+      - type: code
+        lang: vue
+        file: 'src/composables/useOutbox.vue'
+        variant: good
+        code: |
+          <script setup lang="ts">
+          import { ref, onMounted, onUnmounted } from 'vue'
+          import { get, set } from 'idb-keyval'
+
+          interface Mutation { id: string; noteId: string; baseVersion: number; title: string }
+          const pending = ref<Mutation[]>([])
+          const conflicts = ref<Mutation[]>([])
+
+          async function save(noteId: string, baseVersion: number, title: string) {
+            pending.value.push({ id: crypto.randomUUID(), noteId, baseVersion, title })
+            await set('outbox', JSON.parse(JSON.stringify(pending.value)))
+            if (navigator.onLine) await flush()
+          }
+
+          async function flush() {
+            while (pending.value.length) {
+              const m = pending.value[0]
+              const res = await fetch('/api/sync', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(m),
+              })
+              if (res.status === 409) conflicts.value.push(m)
+              else if (!res.ok) return
+              pending.value.shift()
+              await set('outbox', JSON.parse(JSON.stringify(pending.value)))
+            }
+          }
+
+          onMounted(async () => {
+            pending.value = (await get('outbox')) ?? []
+            window.addEventListener('online', flush)
+          })
+          onUnmounted(() => window.removeEventListener('online', flush))
+          </script>
+        marks:
+          - {line: 10, tip: 'A change has its own id and a base version. The server uses both, to catch conflicts and to catch duplicates.'}
+          - {line: 11, tip: 'Write to the phone''s IndexedDB first. Even with no network, the change isn''t lost.'}
+          - {line: 23, tip: 'On a 409 the change moves to conflicts and the user is shown both copies. It is not retried.'}
+          - {line: 24, tip: 'On any other failure (server down) the outbox stays as it is and is tried again later.'}
+    aside:
+      - type: tips
+        items:
+          - '`navigator.onLine` is only a guess. The real truth is whether a fetch succeeds.'
+          - 'Add Background Sync or a Service Worker and the outbox drains even when the tab is closed.'
+      - type: pitfalls
+        items:
+          - 'Keep the outbox only in memory and offline changes are lost the moment the tab closes.'
+    check:
+      q: 'Why give every change an id with `crypto.randomUUID()`?'
+      a: 'If the connection drops and the reply is lost, the client sends the same change again. The server recognizes the id, knows it was already applied, and doesn''t write it twice.'
+
+  - slug: server-sync-endpoint
+    title: 'The Symfony server: match the version, send changes back'
+    kind: howto
+    tldr: 'The server spots duplicates by mutation id, matches the base version with a Doctrine optimistic lock, and on a mismatch answers 409 with its own copy.'
+    keywords: ['OptimisticLockException', 'ORM Version', 'LockMode', 'sync endpoint', '409', 'Symfony API', 'sync API']
+    blocks:
+      - type: code
+        lang: php
+        file: 'src/Entity/Note.php'
+        variant: good
+        code: |
+          #[ORM\Entity]
+          class Note
+          {
+              #[ORM\Id, ORM\Column(type: 'uuid')]
+              private Uuid $id;
+
+              #[ORM\Column(length: 200)]
+              private string $title;
+
+              #[ORM\Version, ORM\Column(type: 'integer')]
+              private int $version = 1;
+
+              public function rename(string $title): void
+              {
+                  $this->title = $title;   // the version bumps itself on flush
+              }
+
+              public function getVersion(): int
+              {
+                  return $this->version;
+              }
+          }
+        marks:
+          - {line: 10, tip: 'With `#[ORM\Version]`, Doctrine bumps and checks the version on every UPDATE.'}
+      - type: code
+        lang: php
+        file: 'src/Controller/SyncController.php'
+        variant: good
+        code: |
+          #[Route('/api/sync', methods: ['POST'])]
+          public function sync(#[MapRequestPayload] SyncMutation $m): JsonResponse
+          {
+              if ($this->applied->has($m->id)) {
+                  return $this->json(['status' => 'duplicate']);   // already applied
+              }
+
+              try {
+                  $note = $this->em->find(Note::class, $m->noteId, LockMode::OPTIMISTIC, $m->baseVersion);
+                  $note->rename($m->title);
+                  $this->applied->record($m->id);
+                  $this->em->flush();
+              } catch (OptimisticLockException) {
+                  $server = $this->em->find(Note::class, $m->noteId);
+                  return $this->json(['status' => 'conflict', 'server' => $server], 409);
+              }
+
+              return $this->json(['status' => 'applied', 'version' => $note->getVersion()]);
+          }
+        marks:
+          - {line: 9, tip: 'With LockMode::OPTIMISTIC and the expected version, Doctrine throws right here if the client''s base version doesn''t match.'}
+          - {line: 13, tip: 'We only get here because the version didn''t match. Send the client the server''s copy; nothing was written.'}
+    aside:
+      - type: tips
+        items:
+          - 'For pull, build `GET /api/changes?since=<cursor>`, where the cursor is a server-side counter that keeps growing, not a clock.'
+          - 'Record `applied->record()` in the same transaction as the data change.'
+      - type: refs
+        items:
+          - {to: 'payments/idempotency-keys', label: 'Idempotency keys'}
+    check:
+      q: 'Why does the server send its own copy with the 409, not just "conflict"?'
+      a: 'The client needs the server''s current data to show the two copies side by side and merge them. Told only "conflict", the user can''t do anything.'
+
+flashcards:
+  - q: 'What does writing local-first mean?'
+    a: 'The user''s change is written to the device''s own database first (such as IndexedDB) and goes to the server later, when the network is back.'
+    more: |
+      The app then responds instantly, even offline. The price is conflicts: if the same thing is changed on two devices, they must be reconciled at sync. That is why the outbox, versions and merge rules matter.
+    ref: client-outbox
+  - q: 'What is a lost update?'
+    a: 'When two people change the same thing and one change silently wipes out the other without knowing, as in last-write-wins.'
+    more: |
+      It is the most dangerous kind because nobody notices the mistake. If the conflict isn't detected, there is no chance to reconcile. So the first step of the solution is detecting the conflict.
+    ref: silent-overwrite
+  - q: 'How does a base version catch a conflict?'
+    a: 'The client sends the version it wrote against with its change. If the server''s version differs, the server doesn''t write and returns 409.'
+    more: |
+      In Doctrine, a `#[ORM\Version]` field and `LockMode::OPTIMISTIC` do this together. If they match, the write happens and the version goes up; if not, an `OptimisticLockException` is thrown.
+    ref: detect-with-version
+  - q: 'Why is a timestamp a poor way to catch conflicts?'
+    a: 'The phone''s and the server''s clocks disagree. A wrong clock can make an old change look new and delete correct data. A version number is reliable.'
+    more: |
+      A user can change the phone's clock themselves, and NTP jumps can set time backwards. So decide order using a server-side counter that only grows, not the device's time.
+    ref: detect-with-version
+  - q: 'When is last-write-wins acceptable, and when is it not?'
+    a: 'It is fine for low-importance fields. For money, stock or important text it is not, because one person''s work silently disappears.'
+    more: |
+      LWW is popular because it is simple, but it isn't a decision, it's a rule for throwing data away. In most apps, combining field-level merge with asking the user is the safe way to go.
+    ref: resolve-strategies
+  - q: 'What are version vectors and CRDTs used for?'
+    a: 'A version vector tells you whether two changes were concurrent. A CRDT is a structure that merges to the same result in any order.'
+    more: |
+      A version vector keeps a separate counter per device. A simple CRDT example is sending changes like "+2 cartons", which give the same total whatever the order. An ordinary app rarely needs them.
+    ref: resolve-strategies
+  - q: 'What should each change in an offline outbox contain?'
+    a: 'Its own id (a UUID), what is being changed, the base version, and the change data. The id lets the server spot duplicates.'
+    more: |
+      When the connection drops and the reply is lost, the client sends the same change again. The server recognizes the id and says "already applied", so the change isn't applied twice. The outbox lives in IndexedDB, not in memory.
+    ref: client-outbox
+
+quiz:
+  - q: 'Rahim changed a customer''s address offline, but meanwhile the server''s copy has changed. What should happen?'
+    hint: 'Write it anyway, or tell someone?'
+    options:
+      - text: 'The server keeps whatever arrived last and says nothing'
+        correct: false
+        why: 'That is last-write-wins; Karim''s change is silently lost.'
+      - text: 'The server doesn''t write without matching the base version, returns 409, and both copies are shown'
+        correct: true
+        why: 'The conflict is caught, nobody loses anything, and there is a chance to reconcile.'
+      - text: 'When Rahim''s phone returns, it overwrites its own change with the server''s full copy'
+        correct: false
+        why: 'That loses Rahim''s work. The work of both sides has to be saved.'
+    ref: detect-with-version
+  - q: 'The client sent the same change twice (the first reply was lost). What does the server need so that no harm is done?'
+    hint: 'How would the server know it has seen this change before?'
+    options:
+      - text: 'A mutation id for each change, and a list of applied ones'
+        correct: true
+        why: 'On seeing the same id a second time, the server says "duplicate" and does nothing.'
+      - text: 'The timestamp of the change'
+        correct: false
+        why: 'A device timestamp can''t identify duplicates reliably, and it tells you nothing about whether the change was applied.'
+      - text: 'Forcing the client to send only once'
+        correct: false
+        why: 'When the connection drops, the client can''t know whether the first send succeeded.'
+    ref: server-sync-endpoint
+  - q: 'In which case will field-level merge work correctly?'
+    hint: 'Did the changes land in the same field?'
+    options:
+      - text: 'One person changed the address, the other the phone number'
+        correct: true
+        why: 'Different fields, so both changes can be kept.'
+      - text: 'Both changed the title, each in their own way'
+        correct: false
+        why: 'A same-field conflict; merging doesn''t settle it and the user has to choose.'
+      - text: 'One deleted the record, the other edited it'
+        correct: false
+        why: 'This is also a real conflict, so automatic merging isn''t safe.'
+    ref: resolve-strategies
+  - q: 'What problems does this code have?'
+    lang: ts
+    code: |
+      const pending: Mutation[] = []
+
+      async function save(m: Mutation) {
+        pending.push(m)
+        const res = await fetch('/api/sync', {
+          method: 'POST',
+          body: JSON.stringify(m),
+        })
+        if (res.ok) pending.shift()
+      }
+    hint: 'What happens when the tab closes, and when the server returns 409?'
+    options:
+      - text: 'The outbox lives only in memory, so offline changes are lost when the tab closes'
+        correct: true
+        why: 'Without IndexedDB, it isn''t really local-first.'
+      - text: 'A 409 isn''t told apart from other failures, so a conflict just sits there'
+        correct: true
+        why: 'When `res.ok` is false the change stays in pending and the user is told nothing.'
+      - text: 'Using `JSON.stringify` is wrong'
+        correct: false
+        why: 'It is fine; JSON is the normal way here.'
+      - text: '`fetch` can''t be used offline, so it will never work'
+        correct: false
+        why: 'Offline, fetch fails, and catching that failure and keeping the change in the outbox is the standard approach.'
+    ref: client-outbox
+  - q: 'Two people are changing stock counts offline. Which approach is safest?'
+    hint: 'Is the change a "total" or an "add and subtract"?'
+    options:
+      - text: 'Send a new total each time and keep the last one'
+        correct: false
+        why: 'If the two totals differ, one person''s work is lost and the count is wrong.'
+      - text: 'Send changes like "+2 cartons" and "-1 carton", and the server adds them up'
+        correct: true
+        why: 'Additions and subtractions give the same total in any order. That is the idea behind a CRDT counter.'
+      - text: 'Let only one person edit offline'
+        correct: false
+        why: 'It ruins usability, and the problem returns anyway once that person comes back online.'
+    ref: resolve-strategies

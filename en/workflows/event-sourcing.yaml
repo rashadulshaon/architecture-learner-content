@@ -1,0 +1,442 @@
+slides:
+  - slug: why-is-it-200
+    title: 'Why is the balance 200? The table won''t say'
+    kind: story
+    tldr: 'A CRUD table holds only the current value, so "how did we get here?" has no answer; where that question is the heart of the matter, event sourcing earns its place.'
+    keywords: ['event sourcing', 'audit history', 'current state', 'CRUD limitation', 'history', 'event store']
+    blocks:
+      - type: text
+        body: |
+          Rina complains: "I had 500 in my account, so why is it 200 now?" Rahim opens the `account` table and finds a single number: `balance = 200`. Who reduced it, when and why is nowhere in the table. He digs through the logs and tries to guess, because every update overwrote the earlier value.
+      - type: visual
+        kind: compare
+        caption: 'Only the current value versus a ledger of every event'
+        columns:
+          - title: 'CRUD table'
+            tone: bad
+            icon: cross
+            tip: 'Every UPDATE overwrites the old value with the new one, so no history survives.'
+            items: ['balance = 200', 'What was it before? Unknown', 'Why did it drop, and who did it? Unknown']
+          - title: 'Event ledger'
+            tone: good
+            icon: check
+            tip: 'Every event stays forever as one line. The current value is the sum of all the lines.'
+            items: ['Deposit 500 (day one)', 'Withdrawal 300 (Saturday, ATM)', 'Balance = 200, with reasons']
+      - type: quote
+        body: 'In event sourcing, the events are the truth. The current state is just their sum.'
+    aside:
+      - type: problem
+        body: 'In banking, ledgers and insurance, where "how did we get here?" matters legally or commercially, the current value isn''t enough. The sequence of events is the real data.'
+      - type: terms
+        items:
+          - {term: 'Event', meaning: 'An unchangeable record of something that has already happened, such as MoneyWithdrawn.'}
+          - {term: 'Event sourcing', meaning: 'Storing the events instead of the state itself, and working the state out from them.'}
+    check:
+      q: 'When you run `UPDATE balance = 200` on a CRUD table, what information is lost forever?'
+      a: 'The previous value (500) and the reason for the change. An ordinary table overwrites the old value on every UPDATE, so history is lost unless you build something extra to keep it.'
+
+  - slug: baki-khata-replay
+    title: 'The credit ledger: appending events and replaying them'
+    kind: concept
+    tldr: 'The event store only ever grows and never changes; to know the state you replay all events, and when that gets slow you start from a recent running total (a snapshot).'
+    keywords: ['event store', 'append only', 'replay', 'snapshot', 'aggregate', 'ledger']
+    blocks:
+      - type: metaphor
+        icon: book
+        title: 'The corner shop''s credit ledger'
+        body: |
+          In the ledger where the shopkeeper writes down who owes what, nobody crosses out an old line and writes a new number; new lines are only added at the bottom. To know how much is owed, you add up all the lines. When a page fills up, the shopkeeper carries a total forward, so the next page can start from that figure. A mistake isn't scratched out; an opposite line is added.
+      - type: visual
+        kind: flow
+        caption: 'A command arrives: replay the earlier events to learn the state, then append a new event'
+        nodes:
+          - {id: client, label: 'Command', sub: 'Withdraw 300', icon: send, col: 0, row: 1, tip: 'The request for whatever the user or other code wants to do.'}
+          - {id: agg, label: 'Account', sub: 'aggregate', icon: puzzle, tone: accent, col: 2, row: 0, tip: 'Owns the business rules. Looks at the earlier events to decide whether a new event is valid.'}
+          - {id: store, label: 'Event store', sub: 'append only', icon: archive, col: 4, row: 1, tip: 'Holds every event in order. Nothing is ever UPDATEd or DELETEd.'}
+        edges:
+          - {from: client, to: agg, label: 'The command reaches the Account aggregate'}
+          - {from: store, to: agg, label: 'The Account gets all its earlier events back (replay)', dashed: true}
+          - {from: agg, to: store, label: 'If the balance is enough, a MoneyWithdrawn event is appended', tone: good}
+      - type: text
+        body: |
+          With 10,000 events, replaying everything each time is slow. So now and then you take a **snapshot**: a copy of the state at that moment. Next time you load the latest snapshot and replay only the events after it.
+    aside:
+      - type: terms
+        items:
+          - {term: 'Aggregate', meaning: 'The thing whose rules are protected together, such as one Account.'}
+          - {term: 'Snapshot', meaning: 'A saved copy of an aggregate''s state at some moment, used to shorten replay.'}
+      - type: remember
+        body: 'Events are added, never changed. To fix a mistake, add an opposite event.'
+    check:
+      q: 'Is the state still correct without a snapshot? Then why take snapshots?'
+      a: 'Yes, replaying all events gives the right state. A snapshot is only for speed: with many events you can start from the latest snapshot instead of replaying everything.'
+
+  - slug: store-and-aggregate
+    title: 'The event store and the aggregate in code'
+    kind: howto
+    tldr: 'A (aggregate_id, version) primary key on the event_store table blocks concurrent writes; the aggregate rebuilds its state with fromHistory() and keeps new events pending.'
+    keywords: ['event store table', 'optimistic concurrency', 'aggregate', 'Doctrine DBAL', 'fromHistory', 'version']
+    blocks:
+      - type: visual
+        kind: table
+        caption: 'The columns of the event_store table'
+        headers: ['Column', 'Purpose']
+        rows:
+          - cells: ['aggregate_id', 'Which Account the event belongs to']
+            tip: 'All events of one aggregate are stored under the same id, so they can be read together.'
+          - cells: ['version (1, 2, 3…)', 'The event''s position within that aggregate']
+            tip: '(aggregate_id, version) is the primary key. The same version can''t be inserted twice, which protects against concurrent writes.'
+          - cells: ['type, schema_v', 'The event''s name and structure version']
+            tip: 'Without schema_v, once the structure changes you can''t tell which old event has which structure.'
+          - cells: ['payload (JSON), occurred_at', 'The data and the time']
+            tip: 'The actual content of the event. This row is never UPDATEd or DELETEd.'
+      - type: code
+        lang: php
+        file: 'src/Account/Account.php'
+        variant: good
+        code: |
+          final class Account
+          {
+              private int $balance = 0;
+              private int $version = 0;
+              private array $pending = [];
+
+              public static function fromHistory(iterable $events): self
+              {
+                  $a = new self();
+                  foreach ($events as $e) { $a->apply($e); }     // only builds state
+
+                  return $a;
+              }
+
+              public function withdraw(int $amount): void
+              {
+                  if ($amount > $this->balance) {
+                      throw new InsufficientFunds($this->balance);
+                  }
+                  $this->apply($e = new MoneyWithdrawn($amount));
+                  $this->pending[] = $e;                         // waiting to be saved
+              }
+
+              private function apply(object $e): void
+              {
+                  match ($e::class) {
+                      MoneyDeposited::class => $this->balance += $e->amount,
+                      MoneyWithdrawn::class => $this->balance -= $e->amount,
+                  };
+                  ++$this->version;
+              }
+          }
+        marks:
+          - {line: 10, tip: 'Rebuilds state from past events. No rules are enforced here, because the events have already happened.'}
+          - {line: 17, tip: 'The rules apply to a new command: you can''t withdraw more than the balance.'}
+          - {line: 21, tip: 'The new event isn''t saved yet; it waits in the pending list.'}
+      - type: code
+        lang: php
+        file: 'src/Account/EventStore.php'
+        variant: good
+        code: |
+          public function append(Uuid $id, int $expectedVersion, array $events): void
+          {
+              try {
+                  $this->db->transactional(function () use ($id, $expectedVersion, $events): void {
+                      foreach (array_values($events) as $i => $e) {
+                          $this->db->insert('event_store', [
+                              'aggregate_id' => $id->toRfc4122(),
+                              'version' => $expectedVersion + $i + 1,
+                              'type' => $e::class,
+                              'schema_v' => 1,
+                              'payload' => $this->serializer->serialize($e, 'json'),
+                          ]);
+                      }
+                  });
+              } catch (UniqueConstraintViolationException) {
+                  throw new ConcurrentModification($id);   // someone else wrote first
+              }
+          }
+        marks:
+          - {line: 8, tip: 'expectedVersion is the version you saw when you read. Writing starts right after it.'}
+          - {line: 15, tip: 'If two people try to write the same version at once, the primary key stops one of them. Optimistic concurrency without a lock.'}
+    aside:
+      - type: tips
+        items:
+          - 'Name events in the past tense: `MoneyWithdrawn`, `OrderShipped`. They can''t be changed precisely because they have already happened.'
+          - 'On ConcurrentModification, reload and retry the command, because the balance may have changed in the meantime.'
+      - type: refs
+        items:
+          - {to: 'concurrency/locking', label: 'Optimistic locking'}
+    check:
+      q: 'What happens when two people write version 5 to the same Account at once, and why is that good?'
+      a: 'The primary key (aggregate_id, version) stops one of them, who gets a ConcurrentModification. That''s good, because one of the two was acting on a balance that has already changed.'
+
+  - slug: projections-lag
+    title: 'A separate table for reading: projections and lag'
+    kind: howto
+    tldr: 'In CQRS the write model and the read model are separate; a projector listens to events and updates the read model, so the read model lags slightly (eventual consistency) and the UI must cope.'
+    keywords: ['CQRS', 'projection', 'read model', 'eventual consistency', 'projector', 'read side']
+    blocks:
+      - type: text
+        body: |
+          Replaying the event store every time someone asks "what's the balance?" would be silly. So you listen to the events and maintain a plain `account_balance` table, called a **projection** or read model. You can throw it away and rebuild it from the events. But it updates a moment later, so reading right after a write may show the old value.
+      - type: visual
+        kind: sequence
+        caption: 'Read right after a write and you may briefly see the old value'
+        actors:
+          - {id: user, label: 'Rina', icon: user, tip: 'Withdraws money and wants to see the balance straight away.'}
+          - {id: store, label: 'Event store', icon: archive, tip: 'The source of truth. Writes succeed here immediately.'}
+          - {id: proj, label: 'Projector', icon: worker, tip: 'Listens to events and updates the read model. Runs in the background, so there is a delay.'}
+          - {id: read, label: 'Read model', icon: db, tip: 'The account_balance table. Built for reading, so it is fast.'}
+        messages:
+          - {from: user, to: store, label: 'Withdraw 300'}
+          - {from: store, to: user, label: 'Done, version 7', dashed: true}
+          - {from: user, to: read, label: 'Show my balance'}
+          - {from: read, to: user, label: '500 (still the old one)', dashed: true, tone: warn}
+          - {from: store, to: proj, label: 'Event 7 is sent on'}
+          - {from: proj, to: read, label: 'Balance 200, version 7'}
+          - {from: user, to: read, label: 'Show it again'}
+          - {from: read, to: user, label: '200', dashed: true, tone: good}
+      - type: code
+        lang: php
+        file: 'src/Projection/AccountBalanceProjector.php'
+        variant: good
+        code: |
+          #[AsMessageHandler]
+          final readonly class AccountBalanceProjector
+          {
+              public function __construct(private Connection $db) {}
+
+              public function __invoke(AccountEventRecorded $m): void
+              {
+                  $this->db->executeStatement(
+                      'INSERT INTO account_balance (account_id, balance, version)
+                       VALUES (:id, :delta, :v)
+                       ON CONFLICT (account_id) DO UPDATE
+                       SET balance = account_balance.balance + :delta, version = :v
+                       WHERE account_balance.version = :v - 1',
+                      ['id' => $m->aggregateId, 'delta' => $m->signedAmount, 'v' => $m->version],
+                  );                                  // 0 rows: duplicate, or an earlier event is missing
+              }
+          }
+        marks:
+          - {line: 13, tip: 'Updates only when this is exactly the next version. A duplicate event doesn''t match the version, so nothing changes.'}
+          - {line: 14, tip: 'The projector is idempotent: throw the table away, replay every event, and you get the same result.'}
+    aside:
+      - type: tips
+        items:
+          - 'Return the `version` in the write response. The Vue app can send `?minVersion=7` to the read API and show "Updating…" until that version arrives, or show its own calculated value meanwhile.'
+          - 'To change a read model, build a new projection and replay all events into it from the start; discard the old one afterwards.'
+      - type: refs
+        items:
+          - {to: 'workflows/outbox-inbox', label: 'Getting events to the projector'}
+          - {to: 'thinking/event-driven-cqrs', label: 'The core idea of CQRS'}
+    check:
+      q: 'Rina withdraws money and immediately sees 500 again. Is that a bug? How would you handle it?'
+      a: 'Not a bug: it is eventual consistency, because the read model updates a moment later. Use the version from the write response to wait until the read model reaches it, or show the value you calculated locally.'
+
+  - slug: worth-it-and-upcasting
+    title: 'When it pays off, and the cost of changing old events'
+    kind: compare
+    tldr: 'Event sourcing gives you history and audit but costs complexity: projections, replay, snapshots, and upcasting when old events change shape; choose it only when history is the main requirement.'
+    keywords: ['upcasting', 'schema evolution', 'when to use event sourcing', 'trade-off', 'event versioning', 'upcaster']
+    blocks:
+      - type: visual
+        kind: table
+        caption: 'CRUD versus event sourcing'
+        headers: ['', 'CRUD', 'Event sourcing']
+        rows:
+          - cells: ['History', 'Current value only', 'Every event, forever']
+            tip: 'When audit or "how did we get here?" is the core question, this is the difference that matters.'
+          - cells: ['Reading', 'Straight from the table', 'Needs a projection, with some lag']
+            tip: 'You have to maintain a separate read model and cope with its lag.'
+          - cells: ['Complexity', 'Low', 'High: replay, snapshots, projections']
+            tip: 'The whole team has to learn a new way of thinking, and a wrong choice of tool is hard to debug.'
+          - cells: ['Changing structure', 'With a migration', 'Old events stay; you need an upcaster']
+            tip: 'You can''t change earlier events, so you convert them when reading.'
+      - type: text
+        body: |
+          Old events can never be changed, but their structure does. Say `MoneyDeposited` once had only `amount` and now also needs `currency`. The code that converts an old event to the new shape as it is read is called an **upcaster**. These pile up over the years, and they are event sourcing's biggest hidden cost.
+      - type: code
+        lang: php
+        file: 'src/Account/Upcaster/MoneyDepositedUpcaster.php'
+        variant: good
+        code: |
+          final class MoneyDepositedUpcaster
+          {
+              public function upcast(array $payload, int $schemaV): array
+              {
+                  if (1 === $schemaV) {            // v1 had no currency
+                      $payload['currency'] = 'BDT';
+                      $schemaV = 2;
+                  }
+                  // when v2 → v3 arrives, another if goes here
+
+                  return $payload;                 // always in the latest shape
+              }
+          }
+        marks:
+          - {line: 5, tip: 'It looks at the old schema_v and lifts the event to the new shape step by step. The original event in the database stays untouched.'}
+          - {line: 11, tip: 'The aggregate always receives the latest shape, so old versions never leak into its code.'}
+      - type: quote
+        body: 'If all you need is the current value, event sourcing is dead weight. It pays off only when history is the main product.'
+    aside:
+      - type: when
+        use: ['Audit and history matter legally or commercially (ledgers, insurance)', 'You need several kinds of read model, or must see past states']
+        avoid: ['Ordinary CRUD (profiles, blogs, settings)', 'A small team with no time for this complexity']
+      - type: tips
+        items:
+          - 'Use it only in the part of the system where history is central (a ledger, say), not everywhere. Keep the rest as plain CRUD.'
+          - 'Design the event shape carefully up front: if you put personal data into events, legal erasure duties (such as GDPR) become hard to meet.'
+    check:
+      q: 'Earlier events can''t be changed, so how do old events work with new code after the structure changes?'
+      a: 'At read time an upcaster converts an event with an old schema_v to the latest shape. The original events in the database stay untouched, but the upcaster code piles up year after year.'
+
+flashcards:
+  - q: 'What is event sourcing?'
+    a: 'Instead of storing the current state directly, you store every past event immutably and work the state out from them.'
+    more: |
+      Like a bank ledger: the balance isn't written down separately; you get it by adding up the deposit and withdrawal lines. So the reason for the balance is fully there in the ledger.
+    ref: why-is-it-200
+  - q: 'Why are events in an event store never UPDATEd or DELETEd?'
+    a: 'An event is a record of something that already happened, and that doesn''t change. To fix a mistake, you append a new opposite event.'
+    more: |
+      Changing a row would falsify history, and every projection built on that history would be wrong. So, as in a ledger, new lines are only added at the bottom.
+    ref: baki-khata-replay
+  - q: 'What is replay, and why do you need snapshots?'
+    a: 'Replay means running all events in order to build the state. A snapshot is a saved copy of that state, so you can start from the latest one instead of replaying everything.'
+    more: |
+      With thousands of events, replaying each time is slow. Taking a snapshot every 100 or 1,000 events means a load needs only the latest snapshot plus a few later events. A snapshot is purely for speed; if you lose it, you can rebuild it from the events.
+    ref: baki-khata-replay
+  - q: 'How does optimistic concurrency work in an event store?'
+    a: 'Through a primary key on (aggregate_id, version). If two writers try the same version, one gets a constraint violation and retries the command.'
+    more: |
+      Each writer writes the version after the one it read. If someone writes first, that version is taken and the second writer fails. This guarantees, without locks, that every decision was made on the latest state.
+    ref: store-and-aggregate
+  - q: 'What is a projection or read model?'
+    a: 'A read-friendly table built from events (such as account_balance), for fast queries. You can throw it away and rebuild it from the events.'
+    more: |
+      The event store is the source of truth but awkward to read. A projector listens to events and updates a simple table. When you need a new kind of read model, build a new projection and replay every event from the start.
+    ref: projections-lag
+  - q: 'What is CQRS, and how does it relate to event sourcing?'
+    a: 'CQRS separates the write model from the read model. With event sourcing, you write to the event store and read from projections.'
+    more: |
+      CQRS and event sourcing are separate ideas, and either works without the other. But event sourcing needs projections for reading, so the two often show up together. [[thinking/event-driven-cqrs|The core idea of CQRS]] has its own segment.
+    ref: projections-lag
+  - q: 'What does eventual consistency mean for a read model?'
+    a: 'The read model doesn''t update the instant an event is written; it updates shortly after. So reading right after a write can show the old value.'
+    more: |
+      In the UI you can handle this by taking the version from the write response and waiting until the read model reaches it, or by showing a value the app calculated itself. After a short while the correct value appears.
+    ref: projections-lag
+  - q: 'What is upcasting, and why is it a big cost of event sourcing?'
+    a: 'Converting an old event to the new structure as it is read. Events can''t be changed, so upcasters pile up every time the structure changes.'
+    more: |
+      If an event's shape changes once a year, after five years you have five steps of upcasters, each needing tests and upkeep. So design events carefully up front, and count the cost of change.
+    ref: worth-it-and-upcasting
+  - q: 'When should you not choose event sourcing?'
+    a: 'For ordinary CRUD, where only the current value matters and history is not a main requirement. The complexity isn''t worth it there.'
+    more: |
+      Event sourcing brings the complexity of projections, replay, snapshots and upcasting. Use it for a bank ledger or other audit-driven parts, and keep the rest as plain CRUD. Spreading it across the whole system is usually a mistake.
+    ref: worth-it-and-upcasting
+
+quiz:
+  - q: 'In which situation does event sourcing make the most sense?'
+    hint: 'Where is "how did we get here?" the central question?'
+    options:
+      - text: 'Storing a user''s profile photo and name'
+        correct: false
+        why: 'Only the current value matters here; history isn''t a main requirement. Plain CRUD is enough.'
+      - text: 'A bank ledger, where every transaction needs its history and reasons for audit'
+        correct: true
+        why: 'The sequence of events is the real data here, and the balance is its result.'
+      - text: 'The comment count on a blog'
+        correct: false
+        why: 'Incrementing and decrementing a number is enough; no history is needed.'
+      - text: 'A site''s dark mode setting'
+        correct: false
+        why: 'One current value, and no history needed.'
+    ref: why-is-it-200
+  - q: 'In the event store below, what stops two concurrent writers from getting the same version for two events?'
+    lang: sql
+    code: |
+      CREATE TABLE event_store (
+        aggregate_id uuid        NOT NULL,
+        version      int         NOT NULL,
+        type         varchar(80) NOT NULL,
+        payload      jsonb       NOT NULL,
+        PRIMARY KEY (aggregate_id, version)
+      );
+    hint: 'Can two rows go in with the same primary key?'
+    options:
+      - text: 'The (aggregate_id, version) primary key doesn''t allow a second row with the same pair'
+        correct: true
+        why: 'The database itself stops one writer, who gets a ConcurrentModification.'
+      - text: 'A `jsonb` column doesn''t store the same value twice'
+        correct: false
+        why: 'It has nothing to do with the payload.'
+      - text: 'The `uuid` type increments the version automatically'
+        correct: false
+        why: 'A uuid is just an identity; incrementing the version is our code''s job.'
+      - text: 'Nothing stops it, and both rows will be stored'
+        correct: false
+        why: 'The primary key stops exactly that.'
+    ref: store-and-aggregate
+  - q: 'Which statements about `fromHistory()` and `withdraw()` on the Account aggregate are correct?'
+    hint: 'Are the rules applied to past events?'
+    options:
+      - text: '`fromHistory()` replays past events to build state and enforces no rules'
+        correct: true
+        why: 'The events have already happened, so there is nothing to validate again.'
+      - text: '`withdraw()` checks the balance rule and puts a new event into pending'
+        correct: true
+        why: 'The rules apply to a new command, and the event is born as its result.'
+      - text: '`fromHistory()` writes new events straight to the database'
+        correct: false
+        why: 'It only builds state. Writing is done by EventStore::append().'
+      - text: '`withdraw()` runs an UPDATE on a balance column in the database'
+        correct: false
+        why: 'Event sourcing doesn''t update a balance column; it appends an event.'
+    ref: store-and-aggregate
+  - q: 'Rina withdraws money, looks at her balance straight away and still sees the old value. What is the most accurate explanation?'
+    hint: 'When does the projection update?'
+    options:
+      - text: 'The write to the event store failed'
+        correct: false
+        why: 'The write succeeded; the read model just hasn''t caught up yet.'
+      - text: 'The read model is updated slightly later by the projector, which is eventual consistency'
+        correct: true
+        why: 'Writing and reading use separate models, so there is a small gap in between.'
+      - text: 'The event store gave wrong data'
+        correct: false
+        why: 'The source of truth, the event store, is right; the read copy is behind.'
+      - text: 'It''s a bug; a projection should never lag'
+        correct: false
+        why: 'Lag is the normal price of this design. You handle it in the UI with the version, or by waiting.'
+    ref: projections-lag
+  - q: 'The projector has the condition `WHERE account_balance.version = :v - 1`. What is its benefit?'
+    hint: 'What happens if an event arrives twice or out of order?'
+    options:
+      - text: 'It prevents wrong updates when an event is a duplicate or an earlier one hasn''t arrived yet'
+        correct: true
+        why: 'The balance changes only when this is exactly the next version, so the projector is safe and idempotent.'
+      - text: 'The query runs faster'
+        correct: false
+        why: 'It isn''t about speed; it is a correctness condition.'
+      - text: 'It changes the order of versions in the event store'
+        correct: false
+        why: 'The event store isn''t touched here; the condition applies to the read model.'
+    ref: projections-lag
+  - q: '`MoneyDeposited` used to carry only `amount`, and now `currency` is mandatory. Thousands of old events are in the database. What is the right approach?'
+    hint: 'Can an event be changed?'
+    options:
+      - text: 'UPDATE all the old events to add `currency`'
+        correct: false
+        why: 'Events are immutable; changing them rewrites history and ruins their value for audit.'
+      - text: 'Delete the old events and write them again in the new shape'
+        correct: false
+        why: 'Deleting is even worse: the history is gone.'
+      - text: 'Let an upcaster convert old schema_v events to the new shape when they are read'
+        correct: true
+        why: 'The original events stay intact in the database, and the code always receives the latest shape.'
+      - text: 'Build a separate Account table for the new shape and drop the old one'
+        correct: false
+        why: 'You would lose the old history, and the state would be split up wrongly.'
+    ref: worth-it-and-upcasting

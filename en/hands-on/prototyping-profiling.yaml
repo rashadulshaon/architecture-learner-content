@@ -1,0 +1,355 @@
+slides:
+  - slug: two-weeks-wrong-thing
+    title: 'Two weeks spent speeding up the wrong thing'
+    kind: story
+    tldr: 'Optimise by guesswork and you burn time while the real slowness stays. Measure first, then change.'
+    keywords: ['profiling', 'premature optimization', 'performance', 'bottleneck', 'measure first', 'optimise']
+    blocks:
+      - type: text
+        body: |
+          Rahim's `/api/orders` takes 1.4 seconds. The team decided building the JSON must be the slow part, and spent two weeks writing a lovely custom serializer. The result? 1.4 seconds became 1.36 seconds. Nobody had once measured where the time actually goes. A week later someone opened a profiler and found that a single query was eating 1.18 seconds, because an index was missing.
+      - type: visual
+        kind: compare
+        caption: 'Working from guesses versus working from measurements'
+        columns:
+          - title: 'Optimising by guess'
+            tone: bad
+            icon: cross
+            tip: 'Even experienced developers guess wrong often, because slowness hides in unexpected places.'
+            items: ['"I think the serializer is slow"', '2 weeks of code changes', '1.4 s → 1.36 s', 'The real problem is untouched']
+          - title: 'Optimising by measuring'
+            tone: good
+            icon: check
+            tip: 'Profiler first, then one change, then measure again. The result is clear at once.'
+            items: ['Open the profiler and read the time breakdown', 'Add one index, 5 minutes', '1.4 s → 0.25 s', 'Numbers in hand before and after the change']
+    aside:
+      - type: story
+        title: 'Knuth''s famous line'
+        body: |
+          "Premature optimization is the root of all evil," said Donald Knuth. It doesn't mean slow code is fine. It means don't optimise without measuring, because for 97% of the code it's pointless, and you have to find the other 3% first.
+    check:
+      q: 'The team made the serializer much faster in two weeks. Why did it gain so little?'
+      a: 'The serializer was only a small slice of the total (about 90ms). The real time went into one query that nobody measured. Optimising where the time isn''t barely changes the total.'
+
+  - slug: measure-loop
+    title: 'Measure, pick, change one thing, measure again'
+    kind: concept
+    tldr: 'The optimisation loop: measure a baseline, find the biggest slice, change just one thing, measure again; if it didn''t help, revert.'
+    keywords: ['baseline', 'bottleneck', 'Amdahl', 'profiling loop', 'p95', 'measuring']
+    blocks:
+      - type: metaphor
+        icon: heart
+        title: 'The doctor''s check-up'
+        body: |
+          If you go in with a stomach ache, a good doctor doesn't just write a prescription. First tests, then the cause, then one treatment, then tests again. A slow app is the same. A **profiler** is the X-ray machine, and the **bottleneck** is where it hurts. Treat everything at once and you can't tell what worked.
+      - type: visual
+        kind: bars
+        caption: 'Where the 1400ms of /api/orders goes'
+        items:
+          - {label: 'Database query', value: 1180, display: '1180ms', tone: bad, tip: 'About 84% of the total. A query with no index. This is the bottleneck.'}
+          - {label: 'Serializer', value: 90, display: '90ms', tone: warn, tip: 'Rahim''s team blamed this one, but it is only 6%.'}
+          - {label: 'Rest of the PHP code', value: 80, display: '80ms', tone: default, tip: 'Controller, voters and listeners combined.'}
+          - {label: 'Network and other', value: 50, display: '50ms', tone: muted, tip: 'Database connection, sending the response and so on.'}
+      - type: quote
+        body: 'Never optimise without measuring. Take the biggest slice first, one change at a time.'
+    aside:
+      - type: remember
+        body: 'Measure first, then change, then measure again.'
+    check:
+      q: 'If the database query takes 84% of the time, how much does the total drop if you make all the PHP code twice as fast?'
+      a: 'PHP is a small slice (about 16%), so doubling its speed cuts the total by 8% at best. Leave the biggest slice alone and the gain is small (Amdahl''s law).'
+
+  - slug: profiler-stopwatch-explain
+    title: 'Symfony Profiler, Stopwatch and EXPLAIN'
+    kind: howto
+    tldr: 'The Profiler shows which query took how long in a request; Stopwatch times a piece of your own code; EXPLAIN ANALYZE shows how the database ran a query.'
+    keywords: ['Symfony Profiler', 'Stopwatch', 'EXPLAIN ANALYZE', 'Blackfire', 'Doctrine panel', 'debug toolbar', 'seq scan', 'index']
+    blocks:
+      - type: text
+        body: |
+          Hunt in three steps. First open the **Symfony Profiler** (`/_profiler`): the Doctrine tab shows the time and count of every query, and the Performance tab shows a timeline. Then put a **Stopwatch** around the suspicious part. Finally, ask the database how it ran the slow query with **EXPLAIN ANALYZE**.
+      - type: code
+        lang: php
+        file: 'src/Service/OrderExporter.php'
+        variant: good
+        code: |
+          public function __construct(private readonly ?Stopwatch $stopwatch = null) {}
+
+          public function export(): array
+          {
+              $this->stopwatch?->start('export.load', 'app');
+              $orders = $this->repo->findRecent(500);
+              $this->stopwatch?->stop('export.load');
+
+              $this->stopwatch?->start('export.serialize', 'app');
+              $data = $this->serializer->normalize($orders, 'json');
+              $this->stopwatch?->stop('export.serialize');
+
+              return $data;
+          }
+        marks:
+          - {line: 1, tip: 'Stopwatch only exists in debug. Making it nullable lets the code run in production without breaking.'}
+          - {line: 5, tip: 'Give the event a name and the "app" category, and it shows up as a coloured block in the Profiler timeline.'}
+      - type: code
+        lang: sql
+        file: 'psql'
+        code: |
+          EXPLAIN (ANALYZE, BUFFERS)
+          SELECT * FROM orders WHERE customer_id = 42 ORDER BY created_at DESC LIMIT 50;
+
+          -- before: Seq Scan on orders (actual time=0.02..1180.4 rows=50 loops=1)
+          --         it reads every row, so it is slow
+
+          CREATE INDEX idx_orders_customer_created ON orders (customer_id, created_at DESC);
+
+          -- after: Index Scan using idx_orders_customer_created (actual time=0.03..0.9 ...)
+        marks:
+          - {line: 1, tip: 'ANALYZE really runs the query and shows the actual time. Plain EXPLAIN only shows an estimate.'}
+          - {line: 4, tip: 'Seq Scan means reading the whole table. On a big table it is the most common cause of slowness.'}
+          - {line: 7, tip: 'An index matching the WHERE and ORDER BY columns. The column order has to be kept right.'}
+    aside:
+      - type: commands
+        title: 'More measuring tools'
+        items:
+          - {cmd: 'composer require --dev symfony/profiler-pack', desc: 'The Profiler and the debug toolbar'}
+          - {cmd: 'blackfire curl https://localhost/api/orders', desc: 'The call graph and timing of one request'}
+          - {cmd: 'blackfire run php bin/console app:export', desc: 'Profile a console command'}
+      - type: pitfalls
+        items:
+          - 'EXPLAIN ANALYZE really runs the query. On an UPDATE or DELETE it changes data, so wrap it in a transaction and ROLLBACK.'
+      - type: refs
+        items:
+          - {to: 'data/indexing', label: 'Which index for which column'}
+          - {to: 'data/n-plus-one', label: 'Spotting duplicate queries in the Profiler'}
+    check:
+      q: 'The Profiler''s Doctrine tab shows the same kind of query 200 times. What does that point to, and what do you do?'
+      a: 'It signals an N+1 query problem. Cut the count with eager loading (`JOIN FETCH`) or a batch query, then measure again.'
+
+  - slug: spike-first
+    title: 'Spike: a small experiment before a big decision'
+    kind: howto
+    tldr: 'A spike is time-boxed, throwaway code that answers one specific question (will this library handle 1 million rows?) with numbers.'
+    keywords: ['spike', 'prototype', 'throwaway code', 'proof of concept', 'timebox', 'de-risk', 'prototyping']
+    blocks:
+      - type: metaphor
+        icon: shop
+        title: 'The wedding kitchen'
+        body: |
+          Before cooking biryani for 500 people, the cook makes a small batch in one pot and tastes it for salt and spice. That small pot is the **spike**: one question, a fixed amount of time, and the pot gets washed afterwards. If something is wrong, you lose one pot, not 500 plates. What he learned from tasting is the real result, not the pot.
+      - type: visual
+        kind: steps
+        caption: 'The life of a spike'
+        steps:
+          - {title: '1. One question', body: 'For example: will importing 1 million rows take 5 minutes?', tip: 'When the question can be answered with a number, the result is clear. Not "do we like it?".'}
+          - {title: '2. Box the time', body: 'At most 1-2 days', tip: 'Without a time limit, the spike turns into a project of its own.'}
+          - {title: '3. The cheapest code', body: 'No tests, no nice structure', tip: 'The aim is learning. Since you will throw the code away, rushing is fine here.'}
+          - {title: '4. Write down the numbers', body: 'Time, memory, difficulties', tip: 'The final result is a short note: what we tried, what we measured, what we decided.'}
+          - {title: '5. Throw the code away', body: 'Write the real thing fresh', tip: 'If spike code slips into production, it becomes debt that haunts you for years.'}
+      - type: code
+        lang: php
+        file: 'spikes/bulk-insert.php'
+        code: |
+          // spike: how long to insert 1 million rows with Doctrine? This file will be thrown away
+          $start = hrtime(true);
+
+          foreach ($rows as $i => $row) {
+              $em->persist(new Product($row['sku'], $row['name']));
+
+              if (0 === $i % 500) {          // flush and free memory every 500 rows
+                  $em->flush();
+                  $em->clear();
+              }
+          }
+          $em->flush();
+
+          printf("%d rows, %.0f ms, %.0f MB\n",
+              count($rows), (hrtime(true) - $start) / 1e6, memory_get_peak_usage() / 1048576);
+        marks:
+          - {line: 2, tip: 'hrtime(true) gives monotonic time in nanoseconds, a more reliable measure than microtime.'}
+          - {line: 7, tip: 'Run it with different batch sizes and compare the numbers. That is the real work of a spike.'}
+    aside:
+      - type: tips
+        items:
+          - 'Write the result of a spike in a short note: the question, the method, the numbers, the decision. If someone asks six months later, the answer exists.'
+          - 'Run it at real data size (millions of rows), not 100 rows; everything is fast on small data.'
+      - type: refs
+        items:
+          - {to: 'thinking/reversible-decisions', label: 'Which decisions can be reversed'}
+    check:
+      q: 'Why do you throw the code away after a spike, and what is the real result?'
+      a: 'The code is rushed, with no tests or structure, so it becomes debt if it reaches production. The real result is what you learned: the numbers and the decision, kept in the note.'
+
+  - slug: measuring-mistakes
+    title: 'Six measuring mistakes'
+    kind: pitfall
+    tldr: 'Measuring on small data, looking only at averages, measuring in debug mode, not warming the cache, changing many things at once: in all of these the numbers lie.'
+    keywords: ['benchmark mistakes', 'p95', 'warm cache', 'APP_DEBUG', 'micro benchmark', 'production-like data', 'measuring mistakes']
+    blocks:
+      - type: text
+        body: |
+          Measuring wrongly is worse than not measuring: wrong numbers give you confidence while you walk the wrong way. These are the most common mistakes.
+      - type: visual
+        kind: table
+        caption: 'Measuring traps and the right way'
+        headers: ['Mistake', 'What happens', 'The right way']
+        rows:
+          - cells: ['100 rows in the dev database', 'Fast even without an index', 'Measure on production-sized data']
+            tip: 'Even a Seq Scan is fast on a small table. The problem shows up at millions of rows.'
+          - cells: ['Only the average', 'The slowest 1% hides', 'Look at p50, p95, p99']
+            tip: 'The average can be 100ms while p99 is 5 seconds; users remember that slow share.'
+          - cells: ['Measuring with APP_DEBUG=1 or in dev', 'The profiler itself is a load', 'Measure in prod mode, with a warm cache']
+            tip: 'In dev mode Symfony does extra work. Without a cache warmup, the first request is unusually slow.'
+          - cells: ['Taking the number from one run', 'Treating noise as a result', 'Run several times and take the middle']
+            tip: 'The OS cache, database buffers and other processes all shake a single measurement.'
+          - cells: ['Five changes at once', 'You can''t tell which one worked', 'One change at a time, measure each time']
+            tip: 'Change many things together and gains and losses blur. One change should mean one difference in one number.'
+      - type: quote
+        body: 'Production-like data, production mode, several runs, look at p95: only then can you trust the numbers.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Micro-benchmarks (like `foreach` versus `array_map`) are often meaningless; in a real app I/O eats the time.'
+          - 'Moving spike code into production "just this once". When the question is answered, throw the code away.'
+      - type: refs
+        items:
+          - {to: 'observability/metrics-slos', label: 'Why p95 and SLOs'}
+    check:
+      q: 'The average response time is 120ms, yet users say the app is "slow". What do you look at?'
+      a: 'p95 and p99, because the average hides the slow share. Perhaps 1% of requests take 4 seconds, and that is what users remember.'
+
+flashcards:
+  - q: 'What should you do before optimising?'
+    a: 'Measure. Use a profiler to see where the time goes, then change the biggest slice.'
+    more: |
+      Guesses are often wrong: Rahim's team blamed the serializer while 84% of the time went into one query. Measuring finds it in 5 minutes.
+    ref: two-weeks-wrong-thing
+  - q: 'What is the optimisation loop?'
+    a: 'Measure a baseline, find the bottleneck, change one thing, measure again. If it didn''t help, revert the change.'
+    more: |
+      You change one thing at a time so you know which one worked. If the number doesn't move, the change is useless and doesn't need to stay in the code.
+    ref: measure-loop
+  - q: 'Where do you look for slowness in the Symfony Profiler?'
+    a: 'In the Doctrine tab, for each query''s time and for duplicates (N+1), and in the Performance tab for the timeline. It opens at `/_profiler`.'
+    more: |
+      `composer require --dev symfony/profiler-pack` gives you the debug toolbar. A profile is saved for every request, so you can open it later.
+    ref: profiler-stopwatch-explain
+  - q: 'What is Symfony Stopwatch for?'
+    a: 'Timing a specific piece of your own code. With `start()` and `stop()` it appears as a block in the Profiler timeline.'
+    more: |
+      At a suspicious spot, begin with `$stopwatch->start('export.load', 'app')` and end with `stop()`. Stopwatch exists in debug only, so injecting it as nullable is safe.
+    ref: profiler-stopwatch-explain
+  - q: 'What is the difference between EXPLAIN and EXPLAIN ANALYZE?'
+    a: 'EXPLAIN only shows the plan (an estimate). EXPLAIN ANALYZE really runs the query and shows actual time and rows.'
+    more: |
+      ANALYZE really executes, so wrap an UPDATE or DELETE in a transaction and ROLLBACK. `Seq Scan` in the plan means reading the whole table; on a big table it usually signals a missing index.
+    ref: profiler-stopwatch-explain
+  - q: 'What is a spike?'
+    a: 'Time-boxed, throwaway experimental code that answers one question. The result is what you learn, not the code.'
+    more: |
+      "Will importing 1 million rows take 5 minutes?" is a clear question. Give it 1-2 days, write down the numbers, throw the code away. Then write the real thing cleanly.
+    ref: spike-first
+  - q: 'What harm does it do if spike code reaches production?'
+    a: 'Untested, rushed code becomes debt that haunts you for years. So throwing the code away after a spike is the rule.'
+    more: |
+      It starts with "let me just clean it up a bit", and two years later everyone is afraid to touch the file. Keep the numbers you learned in a note, and implement it properly.
+    ref: spike-first
+  - q: 'Why look at p95/p99 and not only the average?'
+    a: 'The average hides the slowest 1-5% of requests. p95/p99 show what the worst-off users experience.'
+    more: |
+      The average can be 120ms while p99 is 5 seconds, and users remember and complain about that slow experience. SLOs are usually written in terms of p95/p99.
+    ref: measuring-mistakes
+
+quiz:
+  - q: '`/api/orders` takes 1.4 seconds. What do you do first?'
+    hint: 'A guess, or evidence?'
+    options:
+      - text: 'Rewrite the serializer'
+        correct: false
+        why: 'That is a guess; starting big work without measuring can waste two weeks.'
+      - text: 'Measure with the Profiler/Stopwatch where the time goes'
+        correct: true
+        why: 'Once you know the bottleneck, one change in the right place gives a big gain.'
+      - text: 'Add more server RAM'
+        correct: false
+        why: 'Adding hardware without knowing the cause raises the cost and leaves the real problem.'
+      - text: 'Put a cache in front'
+        correct: false
+        why: 'It hides a slow query without fixing it, and cache invalidation brings new problems.'
+    ref: measure-loop
+  - q: 'The Profiler''s Doctrine tab shows the same query 300 times. What is the likely cause?'
+    hint: 'Loading a list and then fetching each item''s relation separately.'
+    options:
+      - text: 'N+1: a separate query for every item in the list'
+        correct: true
+        why: 'This is what lazy loading inside a loop looks like. Use `JOIN FETCH` or a batch query.'
+      - text: 'A slow database connection'
+        correct: false
+        why: 'A slow connection would make one query slow, not run it 300 times.'
+      - text: 'A missing index'
+        correct: false
+        why: 'Without an index one query is slow; the count doesn''t become 300.'
+    ref: profiler-stopwatch-explain
+  - q: 'What does the EXPLAIN ANALYZE output below tell you?'
+    lang: text
+    code: |
+      Seq Scan on orders  (cost=0.00..18334.00 rows=1 width=64)
+                          (actual time=0.02..1180.4 rows=50 loops=1)
+        Filter: (customer_id = 42)
+        Rows Removed by Filter: 999950
+    hint: 'It read nearly 1 million rows to find 50.'
+    options:
+      - text: 'It reads the whole table and filters; `customer_id` needs an index'
+        correct: true
+        why: 'Seq Scan and Rows Removed by Filter at 999950: with an index it would go straight to the rows it needs.'
+      - text: 'The query is fine, nothing needs to change'
+        correct: false
+        why: '1180ms is far too long for a simple lookup.'
+      - text: 'The table has few rows, so it is fast'
+        correct: false
+        why: 'It had over 1 million rows; saying it has few is wrong.'
+    ref: profiler-stopwatch-explain
+  - q: 'Which statements about a spike are correct?'
+    hint: 'What is the real product of a spike?'
+    options:
+      - text: 'Its purpose is to answer one specific question'
+        correct: true
+        why: 'If the question isn''t clear, the spike loses direction.'
+      - text: 'The time is boxed (for example 1-2 days)'
+        correct: true
+        why: 'Otherwise the spike grows into a whole project.'
+      - text: 'You can write the code carefully and move it straight into production'
+        correct: false
+        why: 'Spike code is untested and rushed; in production it becomes debt.'
+      - text: 'It is enough to report the result as "it worked"'
+        correct: false
+        why: 'You need to write down the numbers (time, memory) and the decision.'
+    ref: spike-first
+  - q: 'Rahim measured on his new development laptop with 100 rows and said "the query is fine, 2ms". Production has 10 million rows. What is the problem?'
+    hint: 'How does a Seq Scan feel on small data?'
+    options:
+      - text: 'On small data it is fast even without an index; the problem will appear on big data'
+        correct: true
+        why: 'Slowness grows with data size. You need to measure on production-sized data.'
+      - text: 'The laptop''s CPU is fast, so the measurement is wrong'
+        correct: false
+        why: 'It is the data size that makes the difference, not the CPU.'
+      - text: 'There is no problem'
+        correct: false
+        why: 'A number from 100 rows doesn''t predict how 10 million rows will behave.'
+    ref: measuring-mistakes
+  - q: 'Which practices make measurements reliable?'
+    hint: 'Dev mode, one run, the average, many changes at once: which of these are mistakes?'
+    options:
+      - text: 'Measuring on production-sized data, in prod mode (APP_DEBUG=0)'
+        correct: true
+        why: 'In debug mode Symfony does extra work, and the numbers get distorted.'
+      - text: 'Running several times and looking at p95'
+        correct: true
+        why: 'A single run is full of noise; p95 catches the slow share.'
+      - text: 'Making five optimisation changes at once and then measuring'
+        correct: false
+        why: 'You can''t tell which one worked.'
+      - text: 'Looking only at the average response time'
+        correct: false
+        why: 'The average hides the slowest few percent.'
+    ref: measuring-mistakes

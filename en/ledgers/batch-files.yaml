@@ -1,0 +1,372 @@
+slides:
+  - slug: half-loaded-file
+    title: 'Half the file loaded, then a crash'
+    kind: story
+    tldr: 'Read a file without checking it arrived whole, or stop at one bad row, and you get a half load, and a double load when you run it again.'
+    keywords: ['batch file', 'partial failure', 'CSV import', 'SFTP', 'half-loaded file', 'file import']
+    blocks:
+      - type: text
+        body: |
+          Every night the bank drops a salary CSV on SFTP, and our cron job reads it and credits the wallets. One night the file was still uploading and the cron read half of it. Another night, row 4000 had a strange character in a name and the loop crashed right there: 3999 people got paid and the rest didn't. In the morning someone ran it again, and the first 3999 people were paid a second time.
+      - type: visual
+        kind: sequence
+        caption: 'Three mistakes with the nightly file, and nobody noticed'
+        actors:
+          - {id: bank, label: 'Bank (SFTP)', icon: bank, tip: 'Uploads the file. The upload takes time, and the file is visible while it is half done.'}
+          - {id: job, label: 'Our cron', icon: clock, tip: 'Looks for the file at 2 a.m. on its own schedule. Never checks whether the file is complete.'}
+          - {id: wallet, label: 'Wallet', icon: wallet, tip: 'Credits whatever it is given; if it gets a double, it pays double.'}
+        messages:
+          - {from: bank, to: job, label: 'File upload in progress (half done)'}
+          - {from: job, to: wallet, label: 'Reads half the file and credits it', tone: bad}
+          - {at: wallet, note: 'The other half of the users got no money', tone: warn}
+          - {from: job, to: wallet, label: 'Next night: crash at row 4000', tone: bad, tip: 'One bad row stopped the whole loop.'}
+          - {from: job, to: wallet, label: 'Re-run in the morning, from the start', tone: bad}
+          - {at: wallet, note: 'The first 3999 people were paid twice', tone: bad, tip: 'Re-running wasn''t safe, because nothing recorded which rows had already been loaded.'}
+      - type: quote
+        body: 'Not one row gets loaded until the file is proven complete and intact.'
+    aside:
+      - type: problem
+        body: 'With file-based integrations you must settle three questions in advance: "Did it arrive whole?", "Did this same file come before?" and "What do we do with a bad row?"'
+      - type: terms
+        items:
+          - {term: 'Batch file', meaning: 'A large file that arrives once or a few times a day, holding thousands of transactions at once.'}
+    check:
+      q: 'Why did the first 3999 people get paid twice in the second incident?'
+      a: 'After the crash there was no record of which rows had already been loaded. So when it ran again, the file was read from the start.'
+
+  - slug: file-gates
+    title: 'The packing slip: checksum and control total'
+    kind: concept
+    tldr: 'Four gates before you read a file: did it arrive whole, does the checksum match, does the control total match, has it come before.'
+    keywords: ['checksum', 'control total', 'trailer', 'SHA-256', 'atomic arrival', 'packing slip']
+    blocks:
+      - type: metaphor
+        icon: box
+        title: 'A parcel''s packing slip'
+        body: |
+          A courier box has a slip on it: "3 items, total value 1750 taka, seal number 457". You open the box, count and add up, and compare; if it doesn't match, the box goes back. The **trailer** line at the end of a file is that slip: the **control total** (the number of rows and the total amount), while the **checksum** is the seal, which tells you whether the file changed on the way.
+      - type: code
+        lang: text
+        file: 'bank_payout_20261120.txt'
+        variant: neutral
+        code: |
+          H|ACME|2026-11-20|v1
+          D|0001|rahim|125050|BDT
+          D|0002|karim|50000|BDT
+          T|2|175050
+        marks:
+          - {line: 1, tip: 'The header: who sent it, which date, which version of the format.'}
+          - {line: 4, tip: 'The trailer: 2 rows, 175050 paisa in total. We count and add these two numbers ourselves to compare.'}
+      - type: visual
+        kind: steps
+        caption: 'Four gates before loading a file'
+        steps:
+          - {title: '1. Fully arrived?', body: 'Is there an end-of-upload marker (rename or .done)?', tip: 'The sender uploads the file as .tmp and renames it at the end. We pick up only files with the final name.'}
+          - {title: '2. Checksum matches?', body: 'Is our own SHA-256 the same as the one sent?', tip: 'If even one bit changed on the way, the hash differs, so a damaged file is caught.'}
+          - {title: '3. Control total matches?', body: 'Our own row count and sum = the trailer''s numbers', tip: 'This tells you whether the file was cut short or rows went missing.'}
+          - {title: '4. Seen before?', body: 'Has this hash already been loaded?', tip: 'If the same file arrives twice, the second one is quietly skipped.'}
+      - type: quote
+        body: 'If the file''s own count and sum don''t match the trailer, the whole file goes back.'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Checksum', meaning: 'A short fingerprint (hash) made from the file''s contents; change one character and the fingerprint changes.'}
+          - {term: 'Control total', meaning: 'The row count and sum written in the file itself, which we count separately and compare.'}
+      - type: tips
+        items:
+          - 'On SFTP, ask the sender to upload as `.tmp` and rename at the end. Otherwise you risk grabbing a half-uploaded file.'
+    check:
+      q: 'The control total doesn''t match, but 95% of the rows are fine. Can you load part of it?'
+      a: 'No. A mismatch means the file may be truncated, altered or missing rows. We don''t know which, so we send the whole file back and ask the sender for a new one.'
+
+  - slug: ingest-command
+    title: 'Past the gates, row by row: Symfony code'
+    kind: howto
+    tldr: 'Verify the hash and control total, accept the file only once, then load row by row. Bad rows go to quarantine; parse CSV and fixed-width into integer minor units.'
+    keywords: ['fixed-width', 'CSV parse', 'hash_file', 'quarantine', 'SplFileObject', 'importer']
+    blocks:
+      - type: text
+        body: |
+          The importer doesn't pull the whole file into memory at once; it reads one row at a time (a generator or `SplFileObject`). Each row is loaded in its own small transaction, and a bad row throws `InvalidRow` and goes to quarantine while the rest carry on.
+      - type: code
+        lang: php
+        file: 'src/Batch/PayoutImporter.php'
+        variant: good
+        code: |
+          public function import(string $provider, string $path, string $expectedSha): void
+          {
+              $hash = hash_file('sha256', $path);
+              if (!hash_equals($expectedSha, $hash)) {
+                  throw new CorruptedFile($path);          // damaged on the way
+              }
+              if (null === $fileId = $this->files->registerOnce($provider, basename($path), $hash)) {
+                  return;                                  // this file has come before
+              }
+
+              $file = $this->parser->parse($path);         // header, rows, trailer
+              $sum = array_sum(array_map(fn (Row $r) => $r->amountMinor, $file->rows));
+              if (count($file->rows) !== $file->count || $sum !== $file->totalMinor) {
+                  $this->files->reject($fileId, 'control total mismatch');
+                  return;                                  // not one row was loaded
+              }
+
+              foreach ($file->rows as $line => $row) {
+                  try {
+                      $this->loader->load($fileId, $line, $row);
+                  } catch (InvalidRow $e) {
+                      $this->files->quarantine($fileId, $line, $row->raw, $e->getMessage());
+                  }
+              }
+              $this->files->markLoaded($fileId);
+          }
+        marks:
+          - {line: 4, tip: 'Does the SHA-256 we calculated match the one the sender gave? `hash_equals` is a timing-safe comparison.'}
+          - {line: 7, tip: 'With a UNIQUE on `(provider, sha256)`, the INSERT succeeds only once; the second time it returns null.'}
+          - {line: 13, tip: '`$file->count` and `totalMinor` are the numbers written in the trailer. If they differ from our own count, nothing is loaded.'}
+          - {line: 22, tip: 'A bad row doesn''t stop the run; it goes elsewhere with its reason, and the rest of the file carries on.'}
+      - type: code
+        lang: php
+        file: 'src/Batch/RowParser.php'
+        variant: good
+        code: |
+          // CSV (split on a pipe)
+          [$type, $no, $name, $amount, $cur] = str_getcsv($line, '|');
+
+          // Fixed-width: 1-4 number, 5-20 name, 21-32 amount (in paisa, zero-padded)
+          $no     = substr($line, 0, 4);
+          $name   = rtrim(substr($line, 4, 16));
+          $amount = (int) ltrim(substr($line, 20, 12), '0');
+
+          // decimal "1250.50" to an integer, without a float
+          if (!preg_match('/^(\d+)(?:\.(\d{1,2}))?$/', $text, $m)) {
+              throw new InvalidRow("Bad amount: $text");
+          }
+          $minor = (int) $m[1] * 100 + (int) str_pad($m[2] ?? '', 2, '0');
+        marks:
+          - {line: 4, tip: 'In fixed-width, each field''s start and length are written in the sender''s spec. Cut by the spec, never by guesswork.'}
+          - {line: 10, tip: 'A regex checks the pattern; if it fails, this row goes to quarantine.'}
+          - {line: 13, tip: 'Only integer multiplication and addition; there is no float anywhere.'}
+    aside:
+      - type: tips
+        items:
+          - 'Convert a fixed-width file to UTF-8 before reading it (`mb_convert_encoding`); otherwise the character positions get thrown off.'
+          - 'To fetch files over SFTP, Flysystem''s SFTP adapter works well; copy the file into your own directory first, and read it only from there.'
+      - type: refs
+        items:
+          - {to: 'ledgers/modeling-money', label: 'Integer minor unit'}
+          - {to: 'payments/idempotency-keys', label: 'Writes that are safe to do twice'}
+    check:
+      q: 'What is the risk if the importer reads the whole file at once with `file()`, and what should you do?'
+      a: 'It can run out of memory. Read one row at a time (a generator or `SplFileObject`) and load each row in its own small transaction.'
+
+  - slug: quarantine-bad-rows
+    title: 'Bad rows: not silently dropped, but set aside'
+    kind: pitfall
+    tldr: 'Catching and calling `continue` makes bad rows vanish. Keep them in a quarantine table with the reason, fix them, then re-run only those rows.'
+    keywords: ['quarantine', 'dead letter', 'reprocess', 'partial failure', 'unique constraint', 'bad rows']
+    blocks:
+      - type: text
+        body: |
+          If one mango in a basket is rotten, you don't throw away the whole basket. But if you quietly toss the rotten one, nobody knows how many went. The right way: put the rotten one in a separate basket with a note on it saying why. Later, fix it and put it back with the good ones.
+      - type: code
+        lang: php
+        file: 'Wrong: silently dropped'
+        variant: bad
+        code: |
+          foreach ($rows as $row) {
+              try {
+                  $this->loader->load($row);
+              } catch (\Throwable) {
+                  continue;                  // nobody will ever know
+              }
+          }
+        marks:
+          - {line: 5, tip: 'How many rows, which ones and why they were dropped: none of it is recorded. If somebody''s money goes missing, there is no way to investigate.'}
+      - type: code
+        lang: sql
+        file: 'migrations — batch tables'
+        variant: good
+        code: |
+          CREATE TABLE batch_file (
+            id       bigserial PRIMARY KEY,
+            provider text     NOT NULL,
+            name     text     NOT NULL,
+            sha256   char(64) NOT NULL,
+            status   text     NOT NULL DEFAULT 'received',
+            UNIQUE (provider, sha256)
+          );
+          CREATE TABLE batch_row_error (
+            file_id bigint NOT NULL REFERENCES batch_file (id),
+            line_no int    NOT NULL,
+            raw     text   NOT NULL,
+            reason  text   NOT NULL,
+            status  text   NOT NULL DEFAULT 'open',
+            PRIMARY KEY (file_id, line_no)
+          );
+
+          -- after fixing, just the open rows again
+          SELECT line_no, raw FROM batch_row_error
+           WHERE file_id = :id AND status = 'open';
+        marks:
+          - {line: 7, tip: 'Stops the same file being taken twice. This one constraint is idempotency at the file level.'}
+          - {line: 15, tip: '(file, row number) is unique. Re-running the same row doesn''t create a second error row.'}
+      - type: visual
+        kind: compare
+        caption: 'Two ways to handle a bad row'
+        columns:
+          - title: 'Silently dropped'
+            tone: bad
+            icon: cross
+            tip: 'Quick to write, but it keeps no track of money that went missing.'
+            items:
+              - 'You don''t know how many rows were dropped'
+              - 'The reason is written nowhere'
+              - 'No way to fix them and run again'
+          - title: 'Quarantine'
+            tone: good
+            icon: check
+            tip: 'Every bad row has an address, a reason and a status.'
+            items:
+              - 'Which row, why, all recorded'
+              - 'The rest of the file isn''t held up'
+              - 'Once fixed, only that row runs again'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Count what percentage of rows went to quarantine and alert on it. If it suddenly hits 20%, the problem isn''t the file, it''s our parser.'
+          - 'If the rows depend on each other (for example, parts of one calculation), use all-or-nothing instead.'
+      - type: refs
+        items:
+          - {to: 'recovery/bulk-reprocessing', label: 'Re-running safely'}
+          - {to: 'messaging/dlq-retries', label: 'Dead letter queue'}
+    check:
+      q: 'Why does it matter that quarantine has `(file_id, line_no)` as its PRIMARY KEY?'
+      a: 'If the file is run again, the same row doesn''t get a second error row. Re-running stays safe.'
+
+flashcards:
+  - q: 'In a batch file integration, which four gates should a file pass before you read it?'
+    a: 'Did it arrive whole, does the checksum match, does the control total match, and has this file been loaded before.'
+    more: |
+      If any one of the four has a gap, you risk a half load, a damaged file or a double load. So they are all checked before touching a single row of the file.
+    ref: file-gates
+  - q: 'What is a checksum for?'
+    a: 'To catch a file that changed or got damaged on the way: compare your own SHA-256 with the one the sender gave.'
+    more: |
+      Change even one bit and the hash is completely different. In PHP you compute it with `hash_file('sha256', $path)` and compare with `hash_equals`.
+    ref: file-gates
+  - q: 'What is a control total?'
+    a: 'The row count and total amount written in the file''s trailer. We count and add up ourselves and compare.'
+    more: |
+      If they match, the file wasn't truncated and no rows went missing. If they don't, you don't load part of it; you send the whole file back and ask for a new one.
+    ref: file-gates
+  - q: 'How do you avoid reading a half-uploaded file on SFTP?'
+    a: 'The sender uploads it as `.tmp` and renames it at the end (or leaves a `.done` marker). We pick up only files with the final name.'
+    more: |
+      A rename happens in an instant, so you see either the whole file or nothing. You have to agree this with the sender in advance.
+    ref: file-gates
+  - q: 'How do you prevent a double load when the same file arrives twice?'
+    a: 'Register the file with a UNIQUE on `(provider, sha256)`. The second INSERT fails and the file is skipped.'
+    more: |
+      At the row level, keeping `(file_id, line_no)` unique means no row is loaded twice even if the file crashes halfway and is run again.
+    ref: ingest-command
+  - q: 'What is the difference between a fixed-width file and a CSV?'
+    a: 'A CSV separates fields with a delimiter (`,` or `|`). In fixed-width, every field has fixed character positions.'
+    more: |
+      For fixed-width you `substr` using the start and length in the spec. Without converting to UTF-8 first, the character positions get thrown off. Always convert amounts to an integer minor unit.
+    ref: ingest-command
+  - q: 'What should you do when one row of a file is bad?'
+    a: 'Don''t silently drop it. Put the row, its number and the reason in a quarantine table; let the rest of the file carry on; once fixed, run only that row again.'
+    more: |
+      Count how many rows went to quarantine and alert on it. If there are suddenly lots, the problem isn't the file, it's our parser.
+    ref: quarantine-bad-rows
+
+quiz:
+  - q: 'The cron read the file at 2 a.m., but the bank was still uploading it. Which is the best prevention?'
+    hint: 'Who creates the "this file is complete" signal?'
+    options:
+      - text: 'The sender uploads as `.tmp` and renames at the end; we read only files with the final name'
+        correct: true
+        why: 'A rename is instantaneous; the file shows up complete or not at all.'
+      - text: 'Run the cron earlier (at 1 a.m.)'
+        correct: false
+        why: 'Changing the time may happen to line up with the upload, but it gives no guarantee.'
+      - text: 'Read the file if its size looks big enough'
+        correct: false
+        why: 'Size doesn''t show completeness; a half-uploaded file can be large too.'
+      - text: 'Add `sleep(60)` to the cron and wait'
+        correct: false
+        why: 'It''s a guess; with a slow upload even 60 seconds might not be enough.'
+    ref: file-gates
+  - q: 'The trailer says 2 rows, 175050 paisa in total. Our own count is 2 rows, 175150 in total. What should we do?'
+    hint: 'One of the numbers doesn''t match.'
+    options:
+      - text: 'Send the whole file back and ask for a new one'
+        correct: true
+        why: 'The amounts don''t match, so the file may have been altered or damaged. Loading it without knowing which rows are right is risky.'
+      - text: 'Replace the trailer''s number with ours'
+        correct: false
+        why: 'That defeats the purpose of the check and buries the problem.'
+      - text: 'Load the two rows now and look into it later'
+        correct: false
+        why: 'Once money is credited it is hard to take back. Verify first.'
+      - text: 'Ignore it; a difference of 100 paisa is small'
+        correct: false
+        why: 'Even a small difference points to a wrong row, and if you ignore it the books slowly drift apart.'
+    ref: file-gates
+  - q: 'What is wrong with this code?'
+    lang: php
+    code: |
+      foreach ($file->rows as $row) {
+          try {
+              $this->wallet->credit($row->userId, $row->amountMinor);
+          } catch (\Throwable) {
+              continue;
+          }
+      }
+    hint: 'Who keeps track of the rows that were skipped?'
+    options:
+      - text: 'Failed rows silently vanish, and re-running after a crash doubles the ones that succeeded'
+        correct: true
+        why: 'Two gaps: there is no quarantine, and there is no row-level uniqueness.'
+      - text: 'It should use `while` instead of `foreach`'
+        correct: false
+        why: 'The type of loop isn''t the problem here.'
+      - text: '`$row->amountMinor` can''t be negative'
+        correct: false
+        why: 'The code says nothing about that; the real problem is the error handling and the re-run.'
+      - text: 'It must catch `\Exception`, not `\Throwable`'
+        correct: false
+        why: 'It''s not what is caught that is wrong, it''s that the row is silently dropped.'
+    ref: quarantine-bad-rows
+  - q: 'Which of these help make a file integration safe to run again (idempotent)?'
+    hint: 'Think about both the file level and the row level.'
+    options:
+      - text: 'A UNIQUE constraint on `(provider, sha256)`'
+        correct: true
+        why: 'If the same file comes a second time, it isn''t even registered.'
+      - text: 'A UNIQUE on `(file_id, line_no)` in the results table'
+        correct: true
+        why: 'If it runs again after a crash, the same row isn''t loaded a second time.'
+      - text: 'Loading each row in its own small transaction'
+        correct: true
+        why: 'If one row fails, the others aren''t rolled back, and it is clear which rows are done.'
+      - text: 'Assuming that the same file name means the same file'
+        correct: false
+        why: 'The name can be the same while the contents differ. The hash is what you can rely on.'
+    ref: ingest-command
+  - q: 'In a file of 10,000 rows, 12 have a date in the wrong format. The other rows are independent transactions. What is the best behaviour?'
+    hint: 'The rows don''t depend on each other.'
+    options:
+      - text: 'Load the other 9,988, put the 12 in quarantine with reasons, and raise an alert'
+        correct: true
+        why: 'With independent rows, one rotten mango doesn''t mean throwing out the basket, and the 12 are still tracked.'
+      - text: 'Reject the whole file and send it back to the sender'
+        correct: false
+        why: 'When the rows are independent this is too strict; 9,988 people would go unpaid for no reason.'
+      - text: 'Silently drop the 12 bad rows'
+        correct: false
+        why: 'Nobody will ever know where their money went.'
+      - text: 'Guess the dates, fix them and load the 12 too'
+        correct: false
+        why: 'Posting money transactions with guessed, wrong dates is dangerous.'
+    ref: quarantine-bad-rows

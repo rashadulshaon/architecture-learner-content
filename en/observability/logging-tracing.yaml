@@ -1,0 +1,557 @@
+slides:
+  - slug: needle-in-log-haystack
+    title: '2 a.m., 40,000 lines, one lost order'
+    kind: story
+    tldr: 'In a plain-text log you can''t isolate one customer''s story: every request''s lines are mixed together.'
+    keywords: ['logging', 'debugging', 'production log', 'observability', 'searching logs']
+    blocks:
+      - type: text
+        body: |
+          It's 2 a.m. and support is on the phone: order 5512 was charged but never created. You open the server log and find 40,000 lines, written by three servers and a worker, all mixed together. Nothing tells you which lines belong to this customer.
+      - type: code
+        lang: text
+        file: 'var/log/prod.log'
+        variant: bad
+        code: |
+          [02:01:13] app.INFO: Checkout started
+          [02:01:13] app.INFO: Checkout started
+          [02:01:14] app.INFO: Calling payment gateway
+          [02:01:14] app.ERROR: Payment failed for user rahim@example.com
+          [02:01:14] app.INFO: Order saved
+          [02:01:15] app.ERROR: Something went wrong
+          [02:01:15] app.INFO: Sending confirmation email
+        marks:
+          - {line: 2, tip: 'Two different customers'' requests, but nothing in the line says which is which.'}
+          - {line: 4, tip: 'Which order? Which gateway? How much? None of it is here, and the customer''s email leaks into the log.'}
+          - {line: 6, tip: 'This line answers no question: what broke, and for whom, is a mystery.'}
+      - type: quote
+        body: 'A log that can''t tell you one request''s whole story isn''t information, it''s noise.'
+    aside:
+      - type: problem
+        body: 'In production you can''t attach a debugger or set a breakpoint. Your only eyes are what the system writes down itself, so you have to design what to write, and how, before the incident.'
+      - type: terms
+        items:
+          - {term: 'Log', meaning: 'A written record of one thing that happened in the system: when, where, what.'}
+          - {term: 'Observability', meaning: 'The ability to tell what is going on inside a system by looking from outside. Three pillars: logs, metrics, traces.'}
+    check:
+      q: 'Why is it nearly impossible to find order 5512''s events in the log above?'
+      a: 'No line carries an order or request identity, and every request''s lines are interleaved, so you can''t tell which line belongs to whom.'
+
+  - slug: structured-logging
+    title: 'Structured logs: a form, not a letter'
+    kind: concept
+    tldr: 'Write each log line as JSON: a fixed message, with the changing facts (order_id, gateway) in their own fields, so you can search and count.'
+    keywords: ['structured logging', 'JSON log', 'context', 'Monolog', 'log level']
+    blocks:
+      - type: metaphor
+        icon: truck
+        title: 'The courier''s booking form'
+        body: |
+          Book a parcel at a courier office and nobody accepts a handwritten letter. You fill in a form with boxes: sender, receiver, weight, destination. Because each fact has its own box, "how many parcels went to Khulna today?" takes a minute to answer. A structured log works the same way: each line is a JSON record with a fixed message and the changing facts in separate fields (the context).
+      - type: visual
+        kind: compare
+        caption: 'The same event, written two ways'
+        columns:
+          - title: 'Plain text'
+            tone: bad
+            icon: pencil
+            tip: 'A sentence written for humans. A machine can''t pull the individual facts out of it.'
+            items:
+              - 'Payment failed for order 5512: timeout'
+              - 'You search with grep and regex'
+              - 'Every sentence differs, so you can''t count "how many times?"'
+          - title: 'Structured (JSON)'
+            tone: good
+            icon: list
+            tip: 'Every fact sits in its own field. Log tools (Loki, Elasticsearch, CloudWatch) can filter and aggregate by field.'
+            items:
+              - '{"message":"payment.failed","order_id":5512,"reason":"timeout"}'
+              - 'Search order_id = 5512 and every line of that order appears'
+              - 'How often payment.failed happened per hour: one query'
+      - type: code
+        lang: php
+        file: 'src/Payment/CheckoutService.php'
+        variant: good
+        code: |
+          try {
+              $this->gateway->charge($order);
+          } catch (GatewayException $e) {
+              // fixed message; everything that varies goes in the context
+              $this->logger->error('payment.failed', [
+                  'order_id' => $order->getId(),
+                  'gateway' => 'bkash',
+                  'amount_minor' => $order->getTotalMinor(),
+                  'exception' => $e,
+              ]);
+
+              throw $e;
+          }
+        marks:
+          - {line: 5, tip: 'No variables in the message, so every failure groups under one name. Counting, graphing and alerting become easy.'}
+          - {line: 6, tip: 'A field of its own: you can filter directly on order_id later.'}
+          - {line: 9, tip: 'Pass the whole exception under the exception key and Monolog writes its class, message and stack trace in order.'}
+      - type: code
+        lang: yaml
+        file: 'config/packages/monolog.yaml'
+        code: |
+          when@prod:
+              monolog:
+                  handlers:
+                      main:
+                          type: stream
+                          path: php://stderr
+                          level: info
+                          formatter: monolog.formatter.json
+        marks:
+          - {line: 6, tip: 'In a container, write to stderr, not to a file. The platform collects the logs and stores them.'}
+          - {line: 8, tip: 'This one line turns every log record into a single line of JSON.'}
+      - type: quote
+        body: 'Keep the message fixed; put whatever changes in the context.'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Context', meaning: 'Key-value facts attached to a log line: order_id, user_id, gateway.'}
+          - {term: 'Log level', meaning: 'How serious the line is: debug < info < warning < error < critical.'}
+          - {term: 'Formatter', meaning: 'Decides what shape a log record is written in (plain line or JSON).'}
+      - type: pitfalls
+        items:
+          - 'Never log passwords, tokens, card numbers or whole request bodies. Many people can read logs, and they are kept for a long time.'
+          - 'Use the error level only when someone needs to act. If everything is an error, the real ones get buried.'
+          - 'Don''t write an info line for every step of a loop. Log storage is billed by the GB.'
+      - type: refs
+        items:
+          - {to: 'security/data-protection', label: 'Personal data and logs'}
+    check:
+      q: 'Why log payment.failed with order_id in the context instead of "Payment failed for order 5512" as the message?'
+      a: 'A fixed message lets you count and group the event, and a separate order_id field lets you filter directly without regex.'
+
+  - slug: correlation-id
+    title: 'Correlation ID: a tracking number for every request'
+    kind: howto
+    tldr: 'Give each request a number at the front door, and let a Monolog processor stamp it on every log line automatically.'
+    keywords: ['correlation id', 'request id', 'Monolog processor', 'X-Correlation-Id', 'tracking number']
+    blocks:
+      - type: metaphor
+        icon: tag
+        title: 'The parcel''s tracking number'
+        body: |
+          A courier sticks a tracking number on the parcel the moment you book it. Whether it's scanned at the Dhaka hub, on the truck or at the Khulna hub, the same number goes into the ledger. Search that number later and the whole journey appears as one list.
+      - type: text
+        body: |
+          A **correlation ID** is that tracking number for a request. Create it once at the front door, or reuse the one an upstream service already sent. Then a Monolog **processor** (a small piece of code that runs just before each log record is written) stamps the number on every line. Nobody has to type it by hand.
+      - type: code
+        lang: php
+        file: 'src/Observability/CorrelationId.php'
+        variant: good
+        code: |
+          #[AsMonologProcessor]
+          final class CorrelationId implements ResetInterface
+          {
+              private ?string $id = null;
+
+              public function get(): string
+              {
+                  return $this->id ??= Uuid::v7()->toRfc4122();
+              }
+
+              public function set(string $id): void
+              {
+                  $this->id = $id;
+              }
+
+              // Monolog calls this before writing every log record
+              public function __invoke(LogRecord $record): LogRecord
+              {
+                  $record->extra['correlation_id'] = $this->get();
+
+                  return $record;
+              }
+
+              public function reset(): void
+              {
+                  $this->id = null;
+              }
+          }
+        marks:
+          - {line: 1, tip: 'Monolog\Attribute\AsMonologProcessor: with this attribute, MonologBundle registers the class as a processor for every log channel.'}
+          - {line: 8, tip: 'If nobody supplied a number, the first call creates a new UUID, so console commands and workers get one too.'}
+          - {line: 19, tip: 'Put it in extra and the JSON formatter prints correlation_id on every line. The code that writes logs doesn''t change.'}
+          - {line: 26, tip: 'In a worker or long-running server, one job''s number must not stick to the next job. Symfony calls reset() after each job.'}
+      - type: code
+        lang: php
+        file: 'src/Observability/CorrelationIdListener.php'
+        variant: good
+        code: |
+          final class CorrelationIdListener
+          {
+              public function __construct(private readonly CorrelationId $correlationId)
+              {
+              }
+
+              #[AsEventListener(priority: 1024)]
+              public function onRequest(RequestEvent $event): void
+              {
+                  $incoming = $event->getRequest()->headers->get('X-Correlation-Id');
+
+                  // if an upstream service sent a number, reuse it, but validate it
+                  if ($event->isMainRequest() && null !== $incoming && Uuid::isValid($incoming)) {
+                      $this->correlationId->set($incoming);
+                  }
+              }
+
+              #[AsEventListener]
+              public function onResponse(ResponseEvent $event): void
+              {
+                  $event->getResponse()->headers->set('X-Correlation-Id', $this->correlationId->get());
+              }
+          }
+        marks:
+          - {line: 7, tip: 'A high priority, so the number is set before security or routing write any log lines.'}
+          - {line: 13, tip: 'Putting an unchecked outside value into a log lets someone inject fake log lines (log injection).'}
+          - {line: 21, tip: 'The number also goes back in the response, so support can read it off a customer''s screenshot.'}
+    aside:
+      - type: remember
+        body: 'Create the number at the door, stamp it on every log, send it along when you call out.'
+      - type: terms
+        items:
+          - {term: 'Request ID', meaning: 'The number of one request inside one service.'}
+          - {term: 'Correlation ID', meaning: 'The number of the whole journey. It stays the same across every service, queue and worker.'}
+      - type: tips
+        items:
+          - 'In your Vue app, show the response header''s number when an error appears: "Something went wrong, code: 0191…". Finding the logs then takes a minute.'
+          - 'user_id or tenant_id can be stamped on every line the same way, with another processor.'
+    check:
+      q: 'Why use a processor instead of passing correlation_id by hand in every logger call?'
+      a: 'Someone will forget. A processor stamps every log record automatically, so you write it in one place and it works everywhere.'
+
+  - slug: id-across-boundaries
+    title: 'The number crosses queues and services too'
+    kind: howto
+    tldr: 'Send the correlation ID in the header of outgoing HTTP calls and in a stamp on queued messages, and pick it up again on the other side.'
+    keywords: ['Messenger middleware', 'stamp', 'propagation', 'queue', 'worker log', 'passing the id']
+    blocks:
+      - type: text
+        body: |
+          When the request ends, the work doesn't. The email goes out from a worker, and the payment happens in another service. If the number doesn't cross those borders, the story breaks halfway. So stick it into the header of every outgoing HTTP call, and onto every message you put in a queue (in Messenger's terms, a **stamp**).
+      - type: visual
+        kind: flow
+        caption: 'One number, three places: every log says 0191-ab'
+        nodes:
+          - {id: user, label: 'Customer', sub: 'Vue app', icon: user, col: 0, row: 1, tip: 'Pressed Checkout. They have no number: creating it is the server''s job.'}
+          - {id: api, label: 'Shop API', sub: 'creates the number', icon: api, tone: accent, col: 1.5, row: 1, tip: 'The first door. The correlation ID is created here and stamped on all of its log lines.'}
+          - {id: pay, label: 'Payment service', sub: 'reads the header', icon: card, col: 3, row: 0, tip: 'A separate service. Its own listener reads the X-Correlation-Id header and reuses the same number.'}
+          - {id: queue, label: 'Queue', sub: 'message + stamp', icon: queue, col: 3, row: 2, tip: 'The stamp stays stored with the message, so even if a worker picks it up ten minutes later the number isn''t lost.'}
+          - {id: worker, label: 'Worker', sub: 'reads the stamp', icon: worker, col: 4, row: 2, tip: 'Takes a message, first makes the stamp''s number the current one, then starts the work.'}
+        edges:
+          - {from: user, to: api, label: 'The request arrives; the API creates number 0191-ab'}
+          - {from: api, to: pay, label: 'HTTP header X-Correlation-Id: 0191-ab'}
+          - {from: api, to: queue, label: 'The email message gets the stamp 0191-ab'}
+          - {from: queue, to: worker, label: 'The worker reads the stamp and logs under the same number', tone: good}
+      - type: code
+        lang: php
+        file: 'src/Observability/CorrelationIdMiddleware.php'
+        variant: good
+        code: |
+          final class CorrelationIdStamp implements StampInterface
+          {
+              public function __construct(public readonly string $id)
+              {
+              }
+          }
+
+          final class CorrelationIdMiddleware implements MiddlewareInterface
+          {
+              public function __construct(private readonly CorrelationId $correlationId)
+              {
+              }
+
+              public function handle(Envelope $envelope, StackInterface $stack): Envelope
+              {
+                  $stamp = $envelope->last(CorrelationIdStamp::class);
+
+                  if (null === $stamp) {
+                      // sending: stick the current number onto the message
+                      $envelope = $envelope->with(new CorrelationIdStamp($this->correlationId->get()));
+                  } elseif (null !== $envelope->last(ReceivedStamp::class)) {
+                      // in the worker: the message's number becomes the current one
+                      $this->correlationId->set($stamp->id);
+                  }
+
+                  return $stack->next()->handle($envelope, $stack);
+              }
+          }
+        marks:
+          - {line: 1, tip: 'A stamp is extra information attached to a message''s envelope. It is serialized with the message and travels through the queue.'}
+          - {line: 20, tip: 'Runs at dispatch() time, so the request''s number sets off together with the message.'}
+          - {line: 21, tip: 'A ReceivedStamp means the message came from a transport, so we are now inside a worker.'}
+      - type: code
+        lang: yaml
+        file: 'config/packages/messenger.yaml'
+        code: |
+          framework:
+              messenger:
+                  buses:
+                      messenger.bus.default:
+                          middleware:
+                              - App\Observability\CorrelationIdMiddleware
+    aside:
+      - type: tips
+        items:
+          - 'When you call another service, pass `X-Correlation-Id` in HttpClient''s `headers` option; the listener on the other side picks it up.'
+          - 'A worker resets its services after each message. Thanks to `reset()`, the old number doesn''t stick to the next one.'
+          - 'A retried message keeps its stamp, so the logs of the first attempt and the later ones match under one number.'
+      - type: refs
+        items:
+          - {to: 'messaging/events-vs-commands', label: 'Symfony Messenger basics'}
+          - {to: correlation-id, label: 'Where the number is created'}
+    check:
+      q: 'The API''s logs have the number, but the worker''s logs don''t. Where is the gap?'
+      a: 'Either the number was never attached to the message as a stamp when it was sent, or the worker never read it back and made it current. The middleware does both jobs.'
+
+  - slug: traces-and-spans
+    title: 'Traces and spans: where did the time go?'
+    kind: concept
+    tldr: 'A trace is one request''s whole journey; a span is one step and how long it took, so you see where the delay is at a glance.'
+    keywords: ['distributed tracing', 'span', 'trace', 'OpenTelemetry', 'traceparent', 'sampling']
+    blocks:
+      - type: metaphor
+        icon: map
+        title: 'Time on the tracking page'
+        body: |
+          A courier's tracking page doesn't only list where the parcel went. It also shows how long it sat at each stop: 2 hours at the Dhaka hub, 6 hours on the truck, 19 hours at the Khulna hub. Nobody has to tell you where the delay is.
+      - type: text
+        body: |
+          Distributed tracing gives you exactly this picture. One request's whole journey is a **trace**. Each step of it, a query or an outside call, is a **span**, recorded with its start time, its duration and its parent span. Logs tell you what happened; a trace tells you where the time went.
+      - type: visual
+        kind: bars
+        caption: 'POST /checkout: the spans of one trace and their durations'
+        items:
+          - {label: 'POST /checkout', value: 820, display: '820ms', tone: accent, tip: 'The root span, the whole request. All the spans below are its children and fit inside it; the remaining ~100ms is PHP''s own work.'}
+          - {label: 'SELECT cart', value: 35, display: '35ms', tone: good, tip: 'Reading the cart from the database. Fast, nothing to chase here.'}
+          - {label: 'bKash API call', value: 640, display: '640ms', tone: bad, tip: 'Almost 80% of the total time is here. The log shows no error, yet this is the real cause of the slowness.'}
+          - {label: 'INSERT order', value: 25, display: '25ms', tone: good, tip: 'Writing the order to the database, a normal duration.'}
+          - {label: 'message to queue', value: 12, display: '12ms', tone: good, tip: 'Putting the email job on the queue. The worker''s spans join the same trace.'}
+      - type: code
+        lang: env
+        file: '.env — OpenTelemetry auto-instrumentation'
+        code: |
+          OTEL_PHP_AUTOLOAD_ENABLED=true
+          OTEL_SERVICE_NAME=shop-api
+          OTEL_TRACES_EXPORTER=otlp
+          OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+          OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+          OTEL_PROPAGATORS=tracecontext,baggage
+          OTEL_TRACES_SAMPLER=parentbased_traceidratio
+          OTEL_TRACES_SAMPLER_ARG=0.1
+        marks:
+          - {line: 1, tip: 'With the opentelemetry PHP extension and the auto-symfony package installed, spans for requests, HttpClient calls and so on are created automatically.'}
+          - {line: 6, tip: 'tracecontext is the W3C traceparent header. It carries the trace ID and the parent span ID from one service to the next.'}
+          - {line: 8, tip: 'Keeps the traces of 10% of requests (sampling). Keeping all of them raises both storage cost and overhead.'}
+      - type: code
+        lang: php
+        file: 'src/Payment/BkashGateway.php'
+        variant: good
+        code: |
+          $span = Globals::tracerProvider()->getTracer('shop')
+              ->spanBuilder('bkash.charge')
+              ->startSpan();
+          $scope = $span->activate();
+
+          try {
+              return $this->client->charge($order);
+          } catch (\Throwable $e) {
+              $span->recordException($e);
+              $span->setStatus(StatusCode::STATUS_ERROR);
+
+              throw $e;
+          } finally {
+              $scope->detach();
+              $span->end();
+          }
+        marks:
+          - {line: 2, tip: 'Opening a span by hand for an important step of your own. Keep the name fixed, like a log message.'}
+          - {line: 15, tip: 'If you never call end(), the span is never sent, so it goes in finally.'}
+    aside:
+      - type: remember
+        body: 'Log: exactly what happened. Metric: how often and how fast. Trace: where the time went.'
+      - type: commands
+        title: 'Installing OpenTelemetry'
+        items:
+          - {cmd: 'pecl install opentelemetry', desc: 'The PHP extension that auto-instrumentation needs'}
+          - {cmd: 'composer require open-telemetry/sdk open-telemetry/exporter-otlp', desc: 'The SDK and the OTLP exporter'}
+          - {cmd: 'composer require open-telemetry/opentelemetry-auto-symfony', desc: 'Creates spans for Symfony requests automatically'}
+      - type: when
+        use:
+          - 'One request touches several services, queues or outside APIs.'
+          - 'You need to know which step eats the time in a slow request.'
+        avoid:
+          - 'A small app with one server and one database. Correlation IDs and the Symfony Profiler are enough there.'
+      - type: refs
+        items:
+          - {to: 'observability/metrics-slos', label: 'Metrics, SLIs and SLOs'}
+    check:
+      q: 'Checkout takes 3 seconds, yet the log has no errors. What shows you where the delay is?'
+      a: 'The trace of that request. Putting every span''s duration side by side shows which step, which query or outside call, took the most time.'
+
+flashcards:
+  - q: 'What is structured logging?'
+    a: 'Writing each log line as fields, like JSON, so a machine can filter and count by them.'
+    more: |
+      Plain sentences are easy for people to read, but a machine can't pull an order_id or gateway out of them. In a JSON log every fact has its own field. So in a log tool, searching "order_id = 5512" brings up every line of that order.
+    ref: structured-logging
+  - q: 'Why keep the log message fixed and put the changing facts in the context?'
+    a: 'A fixed message groups the same event under one name, which makes counting, graphs and alerts easy. Facts in separate fields can be filtered.'
+    more: |
+      To a machine, "Payment failed for order 5512" and "Payment failed for order 5513" are two different messages. If the message is always "payment.failed" and order_id sits in the context, "how many payment.failed in the last hour?" is a single query.
+    ref: structured-logging
+  - q: 'What is a correlation ID?'
+    a: 'A tracking number for one request, identical across every service, queue, worker and log line it touches.'
+    more: |
+      Like a parcel's tracking number: wherever it's scanned, the same number is written down. Type the number into your log tool and the lines from the API, the payment service and the worker line up in time order. Now you can read the whole story of one request.
+    ref: correlation-id
+  - q: 'Where is a correlation ID created, and what if the request already has one?'
+    a: 'At the first door into your system. If an upstream service already sent one in a header, validate it and reuse it instead of making a new one.'
+    more: |
+      If every service invents its own number, the chain breaks and one service's logs can't be matched with another's. But don't trust an outside value blindly: check its shape (a UUID, say), or someone can push junk into your logs.
+    ref: correlation-id
+  - q: 'What does a Monolog processor do?'
+    a: 'It runs just before each log record is written and adds extra data to it, such as the correlation ID or user ID.'
+    more: |
+      In Symfony, put `#[AsMonologProcessor]` on a class and it becomes a processor. It receives the `LogRecord` and adds data to its `extra` part. The gain: you change nothing in the hundreds of places that write logs. One place adds the data to every line.
+    ref: correlation-id
+  - q: 'How does a correlation ID get across a queue to the worker?'
+    a: 'It travels with the message as a stamp. On the worker side, a Messenger middleware reads the stamp and makes the number current.'
+    more: |
+      A worker is a separate process, often on another server, so it can't see a number held in the request's memory. At dispatch time the middleware stamps the number onto the message. On the other side the same middleware sees the `ReceivedStamp`, knows it's in a worker, and sets the number again.
+    ref: id-across-boundaries
+  - q: 'What is the difference between a trace and a span?'
+    a: 'A trace is one request''s whole journey. A span is one step of it, with a start time, a duration and a parent span.'
+    more: |
+      A checkout trace might hold five spans: the whole request, the cart query, the payment API call, the order insert and the queue message. Lay them side by side and the longest one is the cause of the slowness. The trace ID travels between services in the `traceparent` header.
+    ref: traces-and-spans
+  - q: 'Which question do logs, metrics and traces each answer?'
+    a: 'Log: exactly what happened. Metric: how often and how fast. Trace: where one request''s time went.'
+    more: |
+      The three don't replace one another. A metric tells you there is a problem ("errors went up"). A trace shows which step it is in. A log says exactly what happened in that step. If all three carry the same correlation or trace ID, you can jump from one to the next. More in [[observability/metrics-slos|metrics and SLOs]].
+    ref: traces-and-spans
+  - q: 'What must never be written to a log?'
+    a: 'Passwords, tokens, API keys, card numbers and any personal data you don''t need.'
+    more: |
+      Logs reach many people and many tools, sit around for months, and are usually guarded less strictly than a database. A secret in a log is as good as a leaked secret. For identity, user_id or order_id is enough, with no need for an email or phone number.
+    ref: structured-logging
+
+quiz:
+  - q: 'What is wrong with this log line?'
+    lang: php
+    code: |
+      $this->logger->info(
+          "User {$user->getEmail()} paid {$amount} for order {$order->getId()}"
+      );
+    hint: 'Can a machine pull the order number out of this sentence? And whose data is going into the log?'
+    options:
+      - text: 'The message differs every time, so the event is hard to group or count'
+        correct: true
+        why: 'With variables inside the message, every line is a different message to a machine. A fixed message (order.paid) would be countable.'
+      - text: 'The order ID isn''t in its own field, so filtering needs regex'
+        correct: true
+        why: 'The fact is baked into the sentence. With order_id in the context you could filter on it directly.'
+      - text: 'The customer''s email (personal data) goes into the log'
+        correct: true
+        why: 'A user_id is enough to identify someone. An email in a log is visible to many people and stored for a long time.'
+      - text: 'The info level is wrong: every payment log should be at error level'
+        correct: false
+        why: 'A successful payment is normal, so info is right. Use error only when something broke and someone needs to look.'
+    ref: structured-logging
+  - q: 'Sumi''s API logs all carry a correlation ID, but the email worker''s logs don''t, so she can''t find out why an email never went out. What is the right fix?'
+    hint: 'The worker is a separate process. How would it learn the number held in the request''s memory?'
+    options:
+      - text: 'Generate a new ID in the worker for each message'
+        correct: false
+        why: 'A new ID separates the worker''s logs, but it never links them to the API''s logs. The story stays broken.'
+      - text: 'Attach the ID to the message as a stamp when dispatching, and read it back in the worker'
+        correct: true
+        why: 'The number crosses the queue with the message. One Messenger middleware handles both directions.'
+      - text: 'Match the API''s and worker''s lines by timestamp'
+        correct: false
+        why: 'Hundreds of messages run in the same second, and a worker may act long afterwards. Time can''t match them reliably.'
+      - text: 'Set the worker''s log level to debug'
+        correct: false
+        why: 'You get more lines, but still no way to tell which line belongs to which request.'
+    ref: id-across-boundaries
+  - q: 'Riyad''s team passes correlation_id by hand in every logger call, and sometimes forgets. What is the best fix?'
+    hint: 'What runs by itself just before every log record is written?'
+    options:
+      - text: 'Prepend the ID to the message as a string'
+        correct: false
+        why: 'Then the message is no longer fixed and the ID isn''t in its own field, so both filtering and grouping get harder.'
+      - text: 'Write a Monolog processor that adds the number to every record'
+        correct: true
+        why: 'Written once, it applies to every line in every channel. Nobody has to remember anything.'
+      - text: 'Add the ID only to error logs'
+        correct: false
+        why: 'The story before an error is in the info lines. Without the number on them you can''t piece it together.'
+      - text: 'Make it a strict code-review rule that nobody may forget'
+        correct: false
+        why: 'People will forget. Anything a machine can guarantee shouldn''t depend on human memory.'
+    ref: correlation-id
+  - q: 'A request coming through the API gateway already has an X-Correlation-Id header. What should your service do?'
+    hint: 'When a parcel moves from one hub to another, does it get a new tracking number?'
+    options:
+      - text: 'Validate the value''s format, then use it'
+        correct: true
+        why: 'With one number, the gateway''s and your service''s logs line up. Validation keeps junk out of your logs.'
+      - text: 'Always create a new ID, so your service owns its own'
+        correct: false
+        why: 'That breaks the chain: the gateway''s logs and yours can no longer be found under one number.'
+      - text: 'Put whatever arrived into the log as it is, without validating'
+        correct: false
+        why: 'Users can send headers too. Without validation, huge or forged text ends up in your logs (log injection).'
+    ref: correlation-id
+  - q: 'Checkout sometimes takes 4 seconds. The path includes the API, a database, a payment service and a queue, and nothing shows an error. What shows most directly where the time goes?'
+    hint: 'What measures the duration of each step separately?'
+    options:
+      - text: 'The error log'
+        correct: false
+        why: 'Slow is not an error. Nothing broke, so the error log has nothing.'
+      - text: 'The server''s CPU graph'
+        correct: false
+        why: 'Waiting on an outside service uses no CPU. The graph stays calm while the request is slow.'
+      - text: 'The trace of the slow request, with the time of each span'
+        correct: true
+        why: 'With every span''s duration side by side, the longest step jumps out immediately.'
+      - text: 'Add more debug logs everywhere and deploy again'
+        correct: false
+        why: 'You might find it eventually, but slowly and by guesswork. A trace gives you this measurement ready-made.'
+    ref: traces-and-spans
+  - q: 'Which of these are safe to put in a log context?'
+    hint: 'Which ones, if leaked, would let someone steal money or take over an account?'
+    options:
+      - text: 'order_id and user_id'
+        correct: true
+        why: 'These are internal identifiers. You can''t search without them, and nobody outside can do anything with them.'
+      - text: 'The payment gateway''s name and the error code'
+        correct: true
+        why: 'This is what you need to understand the problem, and there is nothing secret in it.'
+      - text: 'The token from the Authorization header'
+        correct: false
+        why: 'Anyone holding the token can call the API as that user. Then everyone who can read logs has that power.'
+      - text: 'The full card number'
+        correct: false
+        why: 'Keeping card data in logs is a direct PCI DSS violation, and a leak means financial loss.'
+      - text: 'The password the user entered'
+        correct: false
+        why: 'A password should never sit in plain text anywhere, not even in the database, let alone in a log.'
+    ref: structured-logging
+  - q: 'The system gets 2,000 requests per second. What is the problem with storing every request''s full trace, and what is the usual remedy?'
+    hint: 'Do you really need every trace to find the slow requests?'
+    options:
+      - text: 'No problem, keeping all traces is the rule'
+        correct: false
+        why: 'Sending and storing every span of every request means huge data volumes, cost and extra load on the app.'
+      - text: 'It costs a lot and adds load, so you sample and keep only a share of traces'
+        correct: true
+        why: 'Keeping 10%, say, still gives plenty of samples of slow and broken requests, at a tenth of the cost.'
+      - text: 'Drop traces and keep only logs'
+        correct: false
+        why: 'Logs say what happened but not how long each step took. The two do different jobs.'
+    ref: traces-and-spans

@@ -1,0 +1,395 @@
+slides:
+  - slug: role-explosion
+    title: 'From ROLE_MANAGER to 40 roles'
+    kind: story
+    tldr: 'Starting with roles alone is easy. But once conditions like "own department, expenses under 50,000 taka" arrive, the number of roles explodes.'
+    keywords: ['role explosion', 'RBAC', 'ROLE_MANAGER', 'access control', 'authorization rules', 'too many roles']
+    blocks:
+      - type: text
+        body: |
+          Rahim's expense-approval app starts with two roles: `ROLE_EMPLOYEE` and `ROLE_MANAGER`. Then the rules arrive. A manager may approve only expenses from their own department. Anything above 50,000 taka needs a director. Nobody may approve their own expense. For each new condition Rahim creates another role. Six months later there are 40 roles and nobody can say which one is for whom.
+      - type: visual
+        kind: steps
+        caption: 'What you end up with when every condition becomes its own role'
+        steps:
+          - {title: '1. Two roles', body: 'ROLE_EMPLOYEE, ROLE_MANAGER', tip: 'A simple, clean start. For a small app this is enough.'}
+          - {title: '2. By department', body: 'ROLE_MANAGER_SALES, ROLE_MANAGER_HR...', tip: 'A separate role for every department. Add a department and you add a role.'}
+          - {title: '3. By limit', body: 'ROLE_MANAGER_SALES_UPTO_50K', tip: 'The money limit has crept into the role too. Now it is department × limit, and the count multiplies.'}
+          - {title: '4. 40 roles', body: 'Nobody can remember them all', tip: 'When a new hire joins, working out which roles to assign becomes a small research project.'}
+    aside:
+      - type: problem
+        body: 'A role answers "who are you?". But permission really depends on "which thing, in what state, for how much". Cram that into roles and they explode.'
+      - type: terms
+        items:
+          - {term: 'Role explosion', meaning: 'The number of roles blowing up because conditions multiply.'}
+    check:
+      q: 'Why is "a manager approves only their own department''s expenses" a problem when written as one role per department?'
+      a: 'Departments and limits multiply the number of roles, and every new department means changing code and data. The department isn''t a role; it is a fact about the thing, so check it against the thing.'
+
+  - slug: rbac-abac-rebac
+    title: 'Titles, conditions and relationships: three kinds of rules'
+    kind: concept
+    tldr: 'RBAC looks at titles, ABAC at facts about the user, the thing and the environment, ReBAC at the relationship to the thing. When rules get complex, use a policy engine.'
+    keywords: ['RBAC', 'ABAC', 'ReBAC', 'policy engine', 'OPA', 'OpenFGA', 'Zanzibar', 'Cedar']
+    blocks:
+      - type: metaphor
+        icon: bank
+        title: 'The bank vault room'
+        body: |
+          Picture three rules for entering a vault. **RBAC**: "managers may enter", the title alone. **ABAC**: "a manager, in their own branch's vault, during office hours, for transactions under 5 million", a title plus conditions. **ReBAC**: "whoever is a joint owner of this locker may open it", where the relationship to the locker is the permission. And a **policy engine** is writing every rule in one rulebook and asking an outside judge for the verdict.
+      - type: visual
+        kind: table
+        caption: 'The approaches side by side'
+        headers: ['', 'RBAC', 'ABAC', 'ReBAC']
+        rows:
+          - cells: ['What it looks at', 'The user''s role', 'Facts about user, thing, environment', 'The relationship of user and thing']
+            tip: 'RBAC is the simplest. In ABAC any fact (department, amount, time) can enter a rule. In ReBAC rules look like a graph: who is connected to what.'
+          - cells: ['Example', 'ROLE_MANAGER', 'Own department and ≤ 50,000', 'Editor of the folder, so also of the file']
+            tip: 'Google Drive sharing is exactly ReBAC: be an editor of a folder and you are an editor of the files inside.'
+          - cells: ['When it''s enough', 'A small app with a few titles', 'There are business conditions', 'There is sharing, teams, hierarchy']
+            tip: 'Most apps start with RBAC and move on to ABAC. ReBAC is for sharing-heavy systems.'
+          - cells: ['In Symfony', 'role + role_hierarchy', 'Conditions written in a voter', 'Looking up relationships in a voter']
+            tip: 'All three run on Symfony''s same voter system. You can apply them without any policy engine.'
+      - type: quote
+        body: 'A role says which team you''re on. Permission is decided by facts about the thing and your relationship to it.'
+    aside:
+      - type: when
+        use: ['RBAC: a simple app based on titles', 'A policy engine: the same rules across many services, or when you want to change rules without deploying code']
+        avoid: ['A policy engine: one Symfony monolith with a few rules, where voters are enough']
+      - type: terms
+        items:
+          - {term: 'OPA / Cedar', meaning: 'Policy engines that take rules written outside your code and return the decision.'}
+          - {term: 'Zanzibar / OpenFGA', meaning: 'Google''s ReBAC system and its open-source counterpart.'}
+    check:
+      q: '"If you are an editor of the folder a file is in, you can change the file too." Which model is this?'
+      a: 'ReBAC. The permission comes from the user''s relationship to the folder, and it is inherited by the files inside.'
+
+  - slug: voter-abac
+    title: 'Role + conditions: writing an ABAC voter'
+    kind: howto
+    tldr: 'A role hierarchy gives the coarse permission, a voter checks facts about the thing (department, amount, owner) for the fine rules, and #[IsGranted] guards the action.'
+    keywords: ['voter', 'ABAC', 'IsGranted', 'role_hierarchy', 'separation of duties', 'attribute based', 'Symfony voter']
+    blocks:
+      - type: text
+        body: |
+          Instead of 40 roles, keep two and move the rules into one voter. A manager's powers sit above an employee's, which you get by writing `role_hierarchy: {ROLE_MANAGER: ROLE_EMPLOYEE}` in `security.yaml`. The voter checks department, amount and "not their own expense".
+      - type: code
+        lang: php
+        file: 'src/Security/Voter/ExpenseVoter.php'
+        variant: good
+        code: |
+          final class ExpenseVoter extends Voter
+          {
+              public const APPROVE = 'EXPENSE_APPROVE';
+
+              public function __construct(private readonly Security $security) {}
+
+              protected function supports(string $attribute, mixed $subject): bool
+              {
+                  return self::APPROVE === $attribute && $subject instanceof Expense;
+              }
+
+              protected function voteOnAttribute(
+                  string $attribute, mixed $subject, TokenInterface $token, ?Vote $vote = null,
+              ): bool {
+                  $user = $token->getUser();
+                  if (!$user instanceof User || !$this->security->isGranted('ROLE_MANAGER')) {
+                      return false;
+                  }
+
+                  return $subject->getDepartment() === $user->getDepartment()  // own department
+                      && $subject->getAmountTaka() <= 50_000                     // under the limit
+                      && $subject->getRequester() !== $user                      // not their own
+                      && $subject->isPending();
+              }
+          }
+        marks:
+          - {line: 16, tip: 'No login or no role means "no" right here. When in doubt, always false.'}
+          - {line: 20, tip: 'The department lives in the Expense, not in a role. A new department needs no code change.'}
+          - {line: 22, tip: 'Separation of duties: the person who made the request can''t approve it themselves.'}
+      - type: code
+        lang: php
+        file: 'src/Controller/ExpenseController.php'
+        variant: good
+        code: |
+          #[Route('/api/expenses/{id}/approve', methods: ['POST'])]
+          #[IsGranted(ExpenseVoter::APPROVE, subject: 'expense')]
+          public function approve(Expense $expense, EntityManagerInterface $em): JsonResponse
+          {
+              $expense->approve();
+              $em->flush();
+
+              return $this->json(['status' => $expense->getStatus()]);
+          }
+        marks:
+          - {line: 2, tip: 'The rule lives in one place. Whether approval comes from the web, the API or a console command, the same voter runs.'}
+    aside:
+      - type: commands
+        items:
+          - {cmd: 'php bin/console debug:container --tag=security.voter', desc: 'Every registered voter'}
+          - {cmd: 'php bin/console debug:config security role_hierarchy', desc: 'How the role hierarchy is laid out'}
+      - type: tips
+        items:
+          - 'Unit-test the voter: manager in the right department gives yes; another department gives no; their own expense gives no; over 50,000 gives no.'
+    check:
+      q: 'Why does the manager''s "own department" condition belong in the voter and not in a role?'
+      a: 'Department is a fact about the user and the thing, not a title. In a voter, a new department needs no code change and adds no roles.'
+
+  - slug: voter-rebac
+    title: 'Permission by relationship: from folder to file'
+    kind: howto
+    tldr: 'In ReBAC the voter climbs up from the thing (file → folder → project) looking for any grant to the user. The relation it finds is the permission.'
+    keywords: ['ReBAC', 'relationship', 'inheritance', 'folder permissions', 'grant', 'voter', 'sharing', 'relationship based']
+    blocks:
+      - type: text
+        body: |
+          In a file-sharing app the rule is: whoever is an `editor` of a folder is an `editor` of every file inside. Rather than keeping a grant on each file, the voter climbs from the file up through its folders, and the first grant it finds is the user's relationship. The grants live in an ordinary database table.
+      - type: visual
+        kind: flow
+        caption: 'Climbing up from the file looking for a grant, stopping at the first match'
+        nodes:
+          - {id: file, label: 'Document', sub: 'budget.xlsx', icon: file, col: 0, row: 0, tip: 'The thing whose permission we want to know.'}
+          - {id: sub, label: 'Folder', sub: 'Q3 reports', icon: archive, col: 1.5, row: 0, tip: 'The file''s direct parent. Karim has no grant here.'}
+          - {id: root, label: 'Folder', sub: 'Accounts', icon: archive, col: 3, row: 0, tip: 'The folder above it. Karim is set as an editor here.'}
+          - {id: grant, label: 'grant', sub: 'Karim = editor', icon: key, tone: accent, col: 3, row: 1.5, tip: 'A row in the folder_grant table: which user has which relation on which folder.'}
+        edges:
+          - {from: file, to: sub, label: 'Karim has no grant on the file, so go up to the folder'}
+          - {from: sub, to: root, label: 'None here either, so go higher'}
+          - {from: root, to: grant, label: 'Karim is an editor of the Accounts folder: found it', tone: good}
+      - type: code
+        lang: php
+        file: 'src/Security/Voter/DocumentVoter.php'
+        variant: good
+        code: |
+          protected function voteOnAttribute(
+              string $attribute, mixed $subject, TokenInterface $token, ?Vote $vote = null,
+          ): bool {
+              $user = $token->getUser();
+              if (!$user instanceof User) {
+                  return false;
+              }
+
+              $relation = $this->relationOf($user, $subject->getFolder());
+
+              return match ($attribute) {
+                  self::VIEW => null !== $relation,
+                  self::EDIT => \in_array($relation, ['editor', 'owner'], true),
+                  default => false,
+              };
+          }
+
+          private function relationOf(User $user, ?Folder $folder): ?string
+          {
+              for ($node = $folder; null !== $node; $node = $node->getParent()) {
+                  $grant = $this->grants->findOneBy(['folder' => $node, 'user' => $user]);
+                  if (null !== $grant) {
+                      return $grant->getRelation();   // 'viewer' | 'editor' | 'owner'
+                  }
+              }
+
+              return null;
+          }
+        marks:
+          - {line: 14, tip: 'default => false: "no" for any attribute it doesn''t recognize.'}
+          - {line: 20, tip: 'Climb through the folders; the first grant found is the relation. If none is found, null means no relationship.'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'This loop runs one query per step. In a deep hierarchy or a list you get N+1; use a materialized path or look up several ancestor ids in one query.'
+      - type: refs
+        items:
+          - {to: 'data/n-plus-one', label: 'How to spot N+1 queries'}
+    check:
+      q: 'What do you gain by using folder grants instead of keeping a separate grant on every file?'
+      a: 'Make someone an editor of the folder once and it applies automatically to every file inside, including new ones. Changing permission means changing a single row.'
+
+  - slug: authz-pitfalls
+    title: 'Four slippery spots in authorization'
+    kind: pitfall
+    tldr: 'Scattered ifs, defaulting to "yes", stale roles frozen into a token, and checking only once: all four break the rules.'
+    keywords: ['authorization mistakes', 'scattered checks', 'default deny', 'stale roles', 'voter strategy', 'audit']
+    blocks:
+      - type: code
+        lang: php
+        file: 'src/Controller/ExpenseController.php'
+        variant: bad
+        code: |
+          public function approve(Expense $expense, #[CurrentUser] User $user): JsonResponse
+          {
+              // the same rule scattered across controllers and Twig
+              if ($user->getRoles() === ['ROLE_MANAGER'] || $user->getEmail() === 'boss@co.bd') {
+                  $expense->approve();
+              }
+
+              return $this->json([]);
+          }
+        marks:
+          - {line: 4, tip: 'A strict array comparison and a hardcoded email are both brittle. The rule breaks the moment a new kind of manager appears.'}
+          - {line: 5, tip: 'If the condition matches it approves; otherwise it silently returns an empty JSON. Without permission it should return 403.'}
+      - type: visual
+        kind: table
+        caption: 'Four slippery spots and the right way'
+        headers: ['Mistake', 'The right way']
+        rows:
+          - cells: ['ifs and role names scattered everywhere', 'The rule in one voter, called with #[IsGranted]']
+            tip: 'To change the rule you have to hunt through forty places, and missing one leaves a hole. With one voter, you change one place.'
+          - cells: ['Returning "yes" when in doubt', 'The default is always false (deny by default)']
+            tip: 'For an attribute it doesn''t recognize or a state it doesn''t know, the voter returns `false`, and also when in doubt.'
+          - cells: ['Packing roles into the token at login', 'Current permissions from the database on every request']
+            tip: 'If an employee is promoted or dismissed, the roles in an old token are no longer true. With expiring tokens, keep the lifetime short.'
+          - cells: ['Checking only the view action', 'Every method, and export/download too']
+            tip: 'Putting a voter on the view action and forgetting the delete action is a very familiar mistake.'
+      - type: quote
+        body: 'Write the permission rule in one place, keep the default at "no", and call it on every action.'
+    aside:
+      - type: tips
+        items:
+          - 'Symfony''s `access_decision_manager` strategy defaults to `affirmative`: one voter saying yes is enough. If you want any objecting voter to block access, use `unanimous`.'
+          - 'Keep an audit log of who got which permission and when. You will need to trace permission changes later.'
+      - type: refs
+        items:
+          - {to: 'security/authn-authz', label: 'IDOR and ownership checks'}
+    check:
+      q: 'An employee was promoted, but their old access token still carries the previous role. Which design avoids the problem?'
+      a: 'Load the user''s current roles from the database on every request (for example with an opaque token), or keep the token lifetime very short so a stale role doesn''t last long.'
+
+flashcards:
+  - q: 'What is RBAC, and where does it run out?'
+    a: 'Role-based access control: permission by the user''s title. It is simple, but once department, amount or ownership conditions arrive, roles explode in number.'
+    more: |
+      For a small app, `ROLE_USER` and `ROLE_ADMIN` are enough. But making a separate role for each condition such as "own department" or "under 50,000" makes the count multiply. That is when it is time to move to ABAC.
+    ref: role-explosion
+  - q: 'What does ABAC mean?'
+    a: 'Attribute-based access control: the decision combines facts about the user, the thing and the environment (department, amount, time).'
+    more: |
+      In Symfony, ABAC means a voter with conditions like `$subject->getDepartment() === $user->getDepartment()`. The role is only the coarse door; the fine rules come from the data.
+    ref: rbac-abac-rebac
+  - q: 'What does ReBAC mean?'
+    a: 'Relationship-based: permission comes from the user''s relationship to the thing (editor, owner, member), with inheritance.'
+    more: |
+      In Google Drive, being an editor of a folder makes you an editor of the files inside. Google's Zanzibar is built on this idea, and OpenFGA is its open-source counterpart. In a small app you can do it easily with a Symfony voter and a grants table.
+    ref: voter-rebac
+  - q: 'What is a policy engine, and when do you need one?'
+    a: 'A tool that decides from rules written outside your code, in a separate language (Rego, Cedar). Use it for the same rules across many services, or to change rules without deploying.'
+    more: |
+      OPA, Cedar and OpenFGA are examples. But for one Symfony monolith with a few rules, voters are enough; another service is another place to fail. Don't add an engine before you need one.
+    ref: rbac-abac-rebac
+  - q: 'What does a role hierarchy do in Symfony?'
+    a: 'It puts one role above another so the higher role gets all the lower one''s permissions: `ROLE_MANAGER: ROLE_EMPLOYEE`.'
+    more: |
+      It is written under `role_hierarchy` in `security.yaml`, so you don't have to give a manager the employee role separately. But a role hierarchy only gives coarse permission; decisions about a specific thing belong in a voter.
+    ref: voter-abac
+  - q: 'What do `supports()` and `voteOnAttribute()` do in a voter?'
+    a: '`supports()` decides whether the question is this voter''s business. `voteOnAttribute()` runs the real rule and returns true or false.'
+    more: |
+      An app has many voters; Symfony asks each one `supports()` and counts the votes only of those that say yes. `#[IsGranted('EXPENSE_APPROVE', subject: 'expense')]` calls this machinery directly.
+    ref: voter-abac
+  - q: 'What does deny by default mean in a voter?'
+    a: 'For an unrecognized attribute or when in doubt, a voter always returns false. A permission must be earned by matching a rule on purpose.'
+    more: |
+      End your `match` or `if` chain with `default => false`. If the default is "yes", adding a new attribute later gives everyone permission by mistake.
+    ref: authz-pitfalls
+  - q: 'What is separation of duties?'
+    a: 'The person who requests an action can''t approve it themselves. For example, an employee can''t pass their own expense.'
+    more: |
+      It reduces both mistakes and fraud. In a voter, `$subject->getRequester() !== $user` is a simple condition. Keep this rule at every money-related or approval step.
+    ref: voter-abac
+
+quiz:
+  - q: 'Every time a new department opens, Rahim has to create a new role like `ROLE_MANAGER_<DEPARTMENT>` and change code. What is the right fix?'
+    hint: 'Is a department a user''s title, or a fact about the thing?'
+    options:
+      - text: 'Keep making a separate role for each department'
+        correct: false
+        why: 'The number of roles multiplies, and every new department needs a deploy.'
+      - text: 'Keep a single `ROLE_MANAGER` and compare the department in the voter'
+        correct: true
+        why: 'Department is a fact about the thing and the user. Checking it in the voter means a new department needs no code change.'
+      - text: 'Give every manager `ROLE_ADMIN`'
+        correct: false
+        why: 'Allowing everyone everything means abolishing the rule.'
+      - text: 'Hide buttons by department in Vue'
+        correct: false
+        why: 'Hiding things in the UI leaves the API open; the check has to be on the server.'
+    ref: role-explosion
+  - q: 'What is the problem with the voter below?'
+    lang: php
+    code: |
+      protected function voteOnAttribute(
+          string $attribute, mixed $subject, TokenInterface $token,
+      ): bool
+      {
+          $user = $token->getUser();
+          if ($attribute === 'EXPENSE_APPROVE') {
+              return $subject->getAmountTaka() <= 50_000;
+          }
+
+          return true;
+      }
+    hint: 'What is returned for an unrecognized attribute? And has anyone checked who the user is?'
+    options:
+      - text: 'An unrecognized attribute returns true, and the user and role are never checked at all'
+        correct: true
+        why: 'Anyone can approve an expense under 50,000, and every other attribute is allowed for everybody. The default should be false.'
+      - text: 'Only the `<=` is wrong; it should be `<`'
+        correct: false
+        why: 'Where the limit falls is a business decision; the real problem is security.'
+      - text: 'No problem, since the controller uses `#[IsGranted]`'
+        correct: false
+        why: '`#[IsGranted]` just calls the voter. Whatever the voter says is the decision.'
+    ref: authz-pitfalls
+  - q: 'In a project, a member can see every task, and only the lead can delete tasks. Which model is simplest?'
+    hint: 'What is the permission coming from, a relationship to what?'
+    options:
+      - text: 'ABAC, based on the money amount'
+        correct: false
+        why: 'There is no amount or time here; the permission comes from the user''s relationship to the project.'
+      - text: 'ReBAC: look at the user''s relation (member, lead) to the project'
+        correct: true
+        why: 'Permission follows from whether a relationship exists and of what kind; a voter that looks up a grants table is enough.'
+      - text: 'A separate role for every project'
+        correct: false
+        why: 'More projects means more roles; relationship data belongs in the data.'
+    ref: rbac-abac-rebac
+  - q: 'In which situations is a separate policy engine (OPA, Cedar, OpenFGA) justified?'
+    hint: 'Is a handful of rules in a single monolith a good enough reason?'
+    options:
+      - text: 'We want to change the same rules across many services at once'
+        correct: true
+        why: 'With the rules in one place, you don''t have to change code in every service.'
+      - text: 'The rules need to change regularly without a deploy'
+        correct: true
+        why: 'Rules kept outside the code can be changed and audited separately.'
+      - text: 'One Symfony app has three rules'
+        correct: false
+        why: 'Voters handle that; an extra service only adds complexity.'
+      - text: 'We don''t enjoy writing `if` on the server'
+        correct: false
+        why: 'That is not a reason; voters are exactly what keeps those `if`s organized.'
+    ref: rbac-abac-rebac
+  - q: 'Sumi is a manager, and she tries to approve a 30,000 taka expense that she submitted herself. What does ExpenseVoter return?'
+    hint: 'Reread the rules: which one is broken here?'
+    options:
+      - text: 'true, because she is a manager and the amount is under the limit'
+        correct: false
+        why: 'The last condition (not their own expense) is broken; all the conditions must match together.'
+      - text: 'false, because the requester and the approver are the same person'
+        correct: true
+        why: 'Separation of duties: the `getRequester() !== $user` condition blocks it, so the response is 403.'
+      - text: 'false, because managers can never approve'
+        correct: false
+        why: 'Managers can; one specific condition is stopping this.'
+    ref: voter-abac
+  - q: 'What caution is needed about the loop that looks up ReBAC grants through folders (file → folder → upward)?'
+    hint: 'What happens at every step?'
+    options:
+      - text: 'In a deep hierarchy or a list, every step runs a query, which can lead to N+1'
+        correct: true
+        why: 'Cut the queries by fetching the ancestor ids in one go or by using a materialized path.'
+      - text: 'None; a loop is always fast'
+        correct: false
+        why: 'A database call at every step makes big lists slow.'
+      - text: 'Dropping the loop and keeping a separate grant on every file is the only way'
+        correct: false
+        why: 'That makes new files and permission changes expensive to maintain. Inheritance is the advantage.'
+    ref: voter-rebac

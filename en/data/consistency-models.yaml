@@ -1,0 +1,371 @@
+slides:
+  - slug: time-travelling-page
+    title: 'Refresh the page, travel back in time'
+    kind: story
+    tldr: 'With several copies of the data, not everyone sees the same thing at the same moment. The rules for who sees what, and when, are called a consistency model.'
+    keywords: ['consistency', 'consistency model', 'stale read', 'eventual consistency', 'stale data']
+    blocks:
+      - type: metaphor
+        icon: school
+        title: 'The school notice boards'
+        body: |
+          A school has three buildings and a notice board in each. When the headmaster writes a new notice, the peon pins it up board by board. A student who sees the new notice on the first board may walk to the second building and not find it there, because the peon hasn't arrived yet. The more copies you have, the more chances for a mismatch like this.
+      - type: visual
+        kind: sequence
+        caption: 'Rahim refreshes twice, and the count goes down'
+        actors:
+          - {id: rahim, label: 'Rahim', icon: user, tip: 'Opens the same page twice in a row.'}
+          - {id: ra, label: 'replica A', icon: db, tip: 'Has already received the new comment.'}
+          - {id: rb, label: 'replica B', icon: db, tip: 'Still behind; it hasn''t got the new comment yet.'}
+        messages:
+          - {from: rahim, to: ra, label: 'Show me the comments'}
+          - {from: ra, to: rahim, label: '3 comments', dashed: true}
+          - {from: rahim, to: rb, label: 'Refresh: show them again', tip: 'This time the load balancer sent him to the other replica.'}
+          - {from: rb, to: rahim, label: '2 comments', dashed: true, tone: bad, tip: 'Rahim just saw 3 and now sees 2. Time went backwards.'}
+          - {at: rahim, note: 'Did the data vanish?', tone: bad}
+      - type: quote
+        body: 'The more copies you have, the more it matters to decide who sees what, and when.'
+    aside:
+      - type: story
+        title: 'The like count that came back'
+        body: 'In one app a post''s like count went from 12 to 10 and back to 12 as you refreshed. Users thought the app was broken. In fact each request was landing on a different replica.'
+      - type: refs
+        items:
+          - {to: 'data/replication', label: 'Why replication lag happens'}
+    check:
+      q: 'Two refreshes show the comment count drop from 3 to 2. Was data deleted?'
+      a: 'No. The two requests hit different replicas: one had the new data and the other didn''t yet. That is a consistency problem, not data loss.'
+
+  - slug: consistency-ladder
+    title: 'From strong to eventual: a ladder of rules'
+    kind: concept
+    tldr: 'Strong consistency always shows the latest data but is slower and less available. Eventual is the fastest but may show stale data for a while. A few handy rules sit in between.'
+    keywords: ['strong consistency', 'eventual consistency', 'linearizable', 'causal consistency', 'session guarantees', 'consistency ladder']
+    blocks:
+      - type: metaphor
+        icon: school
+        title: 'Three rules for pinning notices'
+        body: |
+          The strict rule: nobody reads anything until the notice is on every board. Everyone sees the same notice, but the wait is long, and if one building's peon doesn't show up, everything stalls. The loose rule: read what is on your board and let the others catch up. That is fast, but the boards disagree for a while. The rules in between rule out specific kinds of disagreement.
+      - type: visual
+        kind: layers
+        caption: 'From strict to loose: safe but heavy at the top, fast but mismatch-prone at the bottom'
+        layers:
+          - {label: 'Strong (linearizable)', sub: 'Everyone sees the latest, always', tone: accent, tip: 'It behaves as if there were only one copy. Once a write finishes, every reader gets the new value. More delay, less availability.'}
+          - {label: 'Causal', sub: 'Cause before effect', tip: 'Nobody sees an answer before the question. Events that depend on each other keep their order.'}
+          - {label: 'Read-your-writes', sub: 'I see what I wrote', tip: 'The person who wrote something sees it on their next read, even if others see it a bit later.'}
+          - {label: 'Monotonic reads', sub: 'Time never goes backwards', tip: 'Once you have seen newer data, a later read never shows older data.'}
+          - {label: 'Eventual', sub: 'Everyone converges in the end', tone: muted, tip: 'For a while readers may see different things, but if no new writes arrive, all copies end up equal. The fastest option.'}
+      - type: quote
+        body: 'Strong buys you convenience and costs you latency and failure risk. Ask for it only where you really need it.'
+    aside:
+      - type: remember
+        body: 'Stricter means slower. For each piece of data, pick the loosest rule that doesn''t confuse the user.'
+      - type: refs
+        items:
+          - {to: 'scaling/cap-pacelc', label: 'Why strict rules cost something'}
+    check:
+      q: 'What does "eventual" mean in eventual consistency?'
+      a: 'If writes stop, all copies will reach the same value after a while. In the meantime, copies may show different values.'
+
+  - slug: session-guarantees
+    title: 'Seeing your own writes, and time moving forward'
+    kind: howto
+    tldr: 'Read-your-writes and monotonic reads are cheap to get: after a write, read from the primary when needed, and always send each user to the same replica.'
+    keywords: ['read your writes', 'monotonic reads', 'sticky session', 'LSN', 'session guarantee', 'replica pinning']
+    blocks:
+      - type: visual
+        kind: table
+        caption: 'Two session guarantees: the problem and the fix'
+        headers: ['Guarantee', 'What you see when it breaks', 'How to provide it']
+        rows:
+          - cells: ['Read-your-writes', 'Your new write is missing from the page', 'After a write, check the replica has caught up, else use the primary']
+            tip: 'Only the writer needs it. Others can see the change a little later, so it is cheap.'
+          - cells: ['Monotonic reads', 'Data goes backwards on refresh', 'Always send the user to the same replica']
+            tip: 'A single replica never goes backwards, so while you stay on one replica, time only moves forward.'
+      - type: code
+        lang: php
+        file: 'src/Data/FreshReadGuard.php'
+        variant: good
+        code: |
+          final readonly class FreshReadGuard
+          {
+              public function __construct(
+                  #[Autowire(service: 'doctrine.dbal.default_connection')]
+                  private PrimaryReadReplicaConnection $db,
+              ) {}
+
+              public function rememberWrite(SessionInterface $session): void
+              {
+                  $this->db->ensureConnectedToPrimary();
+                  $session->set('min_lsn', $this->db->fetchOne('SELECT pg_current_wal_lsn()'));
+              }
+
+              public function usePrimaryIfReplicaBehind(SessionInterface $session): void
+              {
+                  $min = $session->get('min_lsn');
+                  if ($min === null) {
+                      return;
+                  }
+
+                  $this->db->ensureConnectedToReplica();
+                  $fresh = $this->db->fetchOne(
+                      'SELECT pg_last_wal_replay_lsn() >= CAST(? AS pg_lsn)', [$min],
+                  );
+                  if (!$fresh) {
+                      $this->db->ensureConnectedToPrimary();
+                  }
+              }
+          }
+        marks:
+          - {line: 11, tip: 'After a write, note the leader''s WAL position (LSN): "my write is at or before this point".'}
+          - {line: 25, tip: 'If the replica hasn''t reached that LSN yet, this read goes to the primary, so you can''t miss your own write.'}
+      - type: points
+        title: 'The easy way to get monotonic reads'
+        style: dot
+        items:
+          - 'Hash on user_id in the load balancer so the same user always gets the same replica.'
+          - 'If that replica dies and the user moves to another, time may jump back once. That is rare enough to accept.'
+    aside:
+      - type: tips
+        items:
+          - 'Checking the LSN is a small query, but don''t run it on every read. Do it only when the user has written recently.'
+          - 'The simplest alternative: read from the primary for 5 seconds after a write. See [[data/replication|replication]].'
+      - type: commands
+        title: 'PostgreSQL LSN'
+        items:
+          - {cmd: 'SELECT pg_current_wal_lsn();', desc: 'Current WAL position on the primary'}
+          - {cmd: 'SELECT pg_last_wal_replay_lsn();', desc: 'How far this replica has applied the log'}
+    check:
+      q: 'Which problem does always sending a user to the same replica solve?'
+      a: 'Monotonic reads: data doesn''t go backwards on refresh, because a single replica never moves back in time. It does not guarantee that you see your own writes (read-your-writes).'
+
+  - slug: causal-order
+    title: 'Causal: the question before the answer'
+    kind: pitfall
+    tldr: 'When events depend on each other (a question and its answer), breaking their order makes users see nonsense. Causal consistency preserves that order.'
+    keywords: ['causal consistency', 'causality', 'happens before', 'ordering', 'orphan reply', 'cause and effect']
+    blocks:
+      - type: text
+        body: |
+          Karim asks "What time is the train?" and Rahim answers "At 9". The two live on different shards, so the question reaches the reader late. The reader sees only "At 9", with no question in sight. A single-leader replica usually keeps writes in order; this situation comes from shards, multi-leader setups or separate services that take different paths.
+      - type: visual
+        kind: sequence
+        caption: 'The answer arrives first, the question later'
+        actors:
+          - {id: pathok, label: 'Reader', icon: user, tip: 'Is looking at the comments page.'}
+          - {id: ans, label: 'Answer shard', icon: db, tip: 'Rahim''s answer has already reached it.'}
+          - {id: q, label: 'Question shard', icon: db, tip: 'Karim''s question is there, but hasn''t reached this reader yet.'}
+        messages:
+          - {from: pathok, to: ans, label: 'Give me the answers'}
+          - {from: ans, to: pathok, label: '"At 9" (Rahim''s answer)', dashed: true}
+          - {from: pathok, to: q, label: 'Where is the question?'}
+          - {from: q, to: pathok, label: 'No such question (it''s still arriving)', dashed: true, tone: bad}
+          - {at: pathok, note: 'An answer with no question: nonsense', tone: bad}
+      - type: code
+        lang: vue
+        file: 'CommentList.vue'
+        variant: good
+        code: |
+          <script setup lang="ts">
+          import { computed } from 'vue'
+
+          interface Comment { id: string; parentId: string | null; text: string }
+          const props = defineProps<{ comments: Comment[] }>()
+
+          const known = computed(() => new Set(props.comments.map((c) => c.id)))
+
+          // hide a reply whose parent hasn't arrived yet
+          const visible = computed(() =>
+            props.comments.filter((c) => c.parentId === null || known.value.has(c.parentId)),
+          )
+          </script>
+
+          <template>
+            <ul>
+              <li v-for="c in visible" :key="c.id">{{ c.text }}</li>
+            </ul>
+          </template>
+        marks:
+          - {line: 10, tip: 'The cause-and-effect link is stored in the data via parentId, so the client can tell which reply''s cause hasn''t arrived yet.'}
+    aside:
+      - type: tips
+        items:
+          - 'Put a parent_id on every reply. Once the relationship is in the data, you can enforce the ordering rule.'
+          - 'Best of all is a database that gives you causal ordering itself (some distributed databases offer it). If yours doesn''t, the app can hide or wait.'
+      - type: refs
+        items:
+          - {to: 'time/ordering-events', label: 'How event order is decided'}
+    check:
+      q: 'What kind of nonsense does causal consistency prevent?'
+      a: 'Seeing an effect without its cause, such as an answer without the question. An event that depends on another is shown after it.'
+
+  - slug: choose-per-feature
+    title: 'A different rule for each feature'
+    kind: compare
+    tldr: 'Demanding strong everywhere is slow and fragile; eventual everywhere is dangerous for money. For each feature, pick the loosest rule that doesn''t confuse the user.'
+    keywords: ['choose consistency', 'design', 'trade-off', 'strong vs eventual', 'per feature', 'consistency decision']
+    blocks:
+      - type: visual
+        kind: table
+        caption: 'Which rule fits which feature, and how'
+        headers: ['Feature', 'Minimum rule', 'How']
+        rows:
+          - cells: ['Balance, payment, stock', 'Strong', 'Read from the primary, inside a transaction']
+            tip: 'Stale means wrong decisions: spending twice or selling the same stock twice. A bit of delay is fine here.'
+          - cells: ['Your own profile, settings', 'Read-your-writes', 'Primary after a write, or an LSN check']
+            tip: 'If you save and still see the old value, it looks like it didn''t save. Others seeing it a bit later does no harm.'
+          - cells: ['Comment threads', 'Causal', 'parent_id plus waiting or hiding']
+            tip: 'A discussion makes sense only if questions come before answers.'
+          - cells: ['Feeds, catalogue', 'Monotonic reads', 'Sticky to one replica']
+            tip: 'Slightly old is fine, but time going backwards is confusing.'
+          - cells: ['Likes, view counts', 'Eventual', 'Any replica or cache']
+            tip: 'Nobody notices 12 vs 13 likes. Speed matters more.'
+      - type: points
+        title: 'Three decision questions'
+        style: number
+        items:
+          - 'Could stale data make the user or the system decide wrongly about money, stock or security?'
+          - 'Would the user be confused by not seeing their own write, or by time moving backwards?'
+          - 'If neither, eventual is fine; if so, pick the minimum rule that prevents that problem.'
+      - type: quote
+        body: 'Strong for money and stock; for everything else, as loose as the user can tolerate without confusion.'
+    aside:
+      - type: when
+        use:
+          - 'Strong: balance, stock, unique emails, anywhere stale data causes a wrong decision'
+          - 'Eventual: likes, view counts, "recently viewed" lists'
+        avoid:
+          - 'One rule for every feature: it is either needlessly slow or dangerous'
+      - type: refs
+        items:
+          - {to: 'concurrency/isolation-levels', label: 'Isolation inside one database'}
+          - {to: 'data/replication', label: 'Replicas and lag'}
+    check:
+      q: 'Showing a balance versus counting likes: which needs strong and which can be eventual, and why?'
+      a: 'The balance needs strong, because a stale value can lead to a wrong spend. Likes can be eventual: showing one or two too few harms nobody, and speed matters more.'
+
+flashcards:
+  - q: 'What is a consistency model?'
+    a: 'The rules or guarantees about who sees what, and when, when there are several copies of the data.'
+    more: |
+      With only one copy there is nothing to ask. Once replication, caches or shards add copies, the copies are not always identical. A model decides exactly how much mismatch you tolerate.
+    ref: time-travelling-page
+  - q: 'What does strong consistency give you, and what does it cost?'
+    a: 'After a write finishes, everyone sees the latest value, as if there were one copy. It costs more delay and more risk of failure.'
+    more: |
+      Writes must wait for all copies to agree, so they are slower. If a copy can't be reached, reads or writes may stall. Use it only for things like money and stock.
+    ref: consistency-ladder
+  - q: 'What is eventual consistency?'
+    a: 'If no new writes arrive, all copies converge on the same value after a while. In between, copies may show different values.'
+    more: |
+      It is the fastest and most available rule, because nobody waits. It works well for likes, view counts and feeds. It does not work for money.
+    ref: consistency-ladder
+  - q: 'What is read-your-writes, and how do you provide it?'
+    a: 'A user sees their own write on their next read. Read from the primary after a write, or check that the replica has caught up.'
+    more: |
+      Others seeing the change a little late is harmless, so this is a cheap rule. In PostgreSQL, note pg_current_wal_lsn() after the write, then check that the replica's pg_last_wal_replay_lsn() is at or past it.
+    ref: session-guarantees
+  - q: 'What are monotonic reads?'
+    a: 'Once you have seen newer data, later reads never show older data: time doesn''t go backwards.'
+    more: |
+      It breaks when likes or comments drop on a refresh. The easy fix is to always send the user to the same replica, since a single replica never goes back in time.
+    ref: session-guarantees
+  - q: 'What is causal consistency?'
+    a: 'An event that depends on another is seen after it: the question comes before the answer.'
+    more: |
+      A single-leader replica keeps write order, but with separate shards or multi-leader the answer can arrive first. With a parent_id on each reply, the app can wait or hide the reply until its parent is there.
+    ref: causal-order
+  - q: 'Which consistency rules fit a balance and a like count?'
+    a: 'Balance: strong (read from the primary). Like count: eventual is enough.'
+    more: |
+      The deciding question: could stale data lead to a wrong decision about money, stock or security? If yes, strong. If not, use the loosest rule that doesn't confuse the user.
+    ref: choose-per-feature
+
+quiz:
+  - q: 'Rahim writes a comment and refreshes the page, but his comment is missing. Which guarantee broke?'
+    hint: 'The problem is about his own write.'
+    options:
+      - text: 'Read-your-writes'
+        correct: true
+        why: 'The user did not see their own write on the next read. That is exactly what this guarantee promises.'
+      - text: 'Causal consistency'
+        correct: false
+        why: 'This isn''t about the order of two dependent events; it is about his own write.'
+      - text: 'Monotonic reads'
+        correct: false
+        why: 'That breaks when older data returns after newer data. Here the newer data was never seen at all.'
+      - text: 'None of them; the data was lost'
+        correct: false
+        why: 'The data is there; it just hasn''t reached the replica that was read.'
+    ref: session-guarantees
+  - q: 'Which of these features needs strong consistency most?'
+    hint: 'Where could stale data cause a wrong decision?'
+    options:
+      - text: 'A post''s like count'
+        correct: false
+        why: 'Showing one or two too many or too few hurts nobody.'
+      - text: 'A wallet balance, like bKash, checked before a spend'
+        correct: true
+        why: 'A stale balance could let someone spend twice, and the money would be wrong.'
+      - text: 'A blog''s read count'
+        correct: false
+        why: 'An approximate number is enough; it needn''t be exact.'
+      - text: 'A "recently viewed products" list'
+        correct: false
+        why: 'A list a few seconds old does no harm.'
+    ref: choose-per-feature
+  - q: 'What is the problem in this code, assuming reads go to a replica?'
+    lang: php
+    code: |
+      $em->persist($address);
+      $em->flush();
+
+      return $this->redirectToRoute('profile');   // the next request reads from a replica
+    hint: 'Which connection will the request after the redirect use?'
+    options:
+      - text: 'The user may open their profile and see the old address, so it looks like the save failed'
+        correct: true
+        why: 'If the new request hits a replica that is behind, read-your-writes breaks. You need the primary for a while after a write, or an LSN check.'
+      - text: 'Nothing, because flush() has finished'
+        correct: false
+        why: 'flush() writes only to the primary; the replica gets it later.'
+      - text: 'Using a redirect is wrong'
+        correct: false
+        why: 'The redirect is fine; the issue is where the next read comes from.'
+      - text: 'It should use merge() instead of persist()'
+        correct: false
+        why: 'This is not an ORM question; it is about which copy the data is read from.'
+    ref: session-guarantees
+  - q: 'Which guarantee do you get easily by always sending a user to the same replica?'
+    hint: 'One replica never goes back in time, but you don''t know how far ahead it is.'
+    options:
+      - text: 'Monotonic reads'
+        correct: true
+        why: 'A single replica only moves forward in time, so you never return to older data.'
+      - text: 'Read-your-writes'
+        correct: false
+        why: 'That replica may not have heard about your write yet, so you need a separate check or the primary.'
+      - text: 'Strong consistency'
+        correct: false
+        why: 'Even the same replica can lag behind the leader, so there is no guarantee of the latest value.'
+      - text: 'None needed: in eventual consistency, time never goes backwards'
+        correct: false
+        why: 'In eventual consistency, time can go backwards; a sticky replica reduces that problem.'
+    ref: session-guarantees
+  - q: 'When is causal ordering most likely to break, and how do you handle it?'
+    hint: 'Where does related data travel by different paths?'
+    options:
+      - text: 'When the question and the answer live on different shards'
+        correct: true
+        why: 'The two shards propagate at different speeds, so the answer can arrive first.'
+      - text: 'When you read in order from one replica of a single leader'
+        correct: false
+        why: 'A single-leader replica preserves write order, so causal ordering is unlikely to break.'
+      - text: 'By keeping a parent_id and not showing a reply until its parent has arrived'
+        correct: true
+        why: 'When the cause-and-effect link is in the data, the app can enforce the order itself.'
+      - text: 'By keeping every comment in its own small file'
+        correct: false
+        why: 'Splitting into files scrambles the order even more; keeping the relationship is the fix.'
+    ref: causal-order

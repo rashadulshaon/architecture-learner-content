@@ -1,0 +1,452 @@
+slides:
+  - slug: whole-page-dies
+    title: 'Recommendations broke, so the whole product page returned 500'
+    kind: story
+    tldr: 'When a minor part fails, killing the whole page is a mistake. Keep the core working, drop the optional part, and the user will barely notice.'
+    keywords: ['graceful degradation', 'fallback', 'core vs optional', 'recommendation', 'partial service', 'optional feature']
+    blocks:
+      - type: metaphor
+        icon: bolt
+        title: 'The home IPS during a power cut'
+        body: |
+          When the power goes out, a home IPS (a battery backup) doesn't run the whole house. It runs what was chosen in advance: a few lights, a fan, the fridge. The AC, water heater and oven stay off. The house limps along, but it keeps going. In software this is called **graceful degradation**: when you can't do everything, keep the most important things working.
+      - type: visual
+        kind: compare
+        caption: 'The recommendation service is down: the same failure, two different responses'
+        columns:
+          - title: 'Before: all or nothing'
+            tone: bad
+            icon: cross
+            tip: 'The code assumes every part will succeed. One exception kills the whole request.'
+            items:
+              - 'The recommendation service times out'
+              - 'The exception travels up to the controller'
+              - 'The whole page returns 500: price, images, "Add to cart" all gone'
+              - 'Sales stop, though only decoration was broken'
+          - title: 'After: the core survives'
+            tone: good
+            icon: check
+            tip: 'The code knows which parts are essential and which are not. When an optional part fails, it is quietly dropped.'
+            items:
+              - 'The recommendation service times out'
+              - 'The code catches it and returns an old list or an empty one'
+              - 'The page opens: price, images and "Add to cart" are there'
+              - 'The user carries on shopping'
+      - type: quote
+        body: 'When an optional part fails, only that part goes, not the whole page.'
+    aside:
+      - type: story
+        title: 'The site that kept only "Add to cart" alive'
+        body: |
+          At one e-commerce site, the reviews and recommendations services were down for about an hour. The code had already treated those parts as optional, so product pages opened without reviews. Customers could still buy. The sales graph showed only a slight dip that day.
+      - type: terms
+        items:
+          - {term: 'Graceful degradation', meaning: 'When some parts break, the system stays up with fewer features instead of collapsing entirely.'}
+          - {term: 'Fallback', meaning: 'A substitute answer when the main way fails: old data, a default value or an empty result.'}
+    check:
+      q: 'Which parts of a product page would you treat as core, and which as optional? Why?'
+      a: 'Core: price, images, "Add to cart", since you can''t buy without them. Optional: recommendations, reviews, "how many are viewing", since you can still buy without them.'
+
+  - slug: fallback-ladder
+    title: 'The fallback ladder: if one fails, take the next'
+    kind: concept
+    tldr: 'Decide the ladder for each call in advance: live data, then a stale copy, then a default, and finally switch the feature off. But never invent anything to do with money.'
+    keywords: ['fallback', 'stale data', 'cached data', 'default value', 'feature shut-off', 'kill switch']
+    blocks:
+      - type: text
+        body: |
+          Like the IPS, decide a ladder for every dependency in advance. Step one is live data. If you can't get that, use **stale data**: the last good copy you received. If there is none, use a safe **default**, such as an empty list. Finally, switch the whole feature off and tell the user. The lower you go, the less precise the answer, but the less the site collapses.
+      - type: visual
+        kind: layers
+        caption: 'The fallback ladder: step down from the top, best option first'
+        layers:
+          - {label: '1. Live data', sub: 'the dependency is healthy', tone: good, tip: 'The best and freshest answer. Staying here is the goal.'}
+          - {label: '2. Stale copy', sub: 'the last good answer, a few hours old', tone: default, tip: 'The last successful answer kept in the cache. For recommendations or a catalogue, it is almost as good.'}
+          - {label: '3. A default value', sub: 'empty, a popular list, a rate fixed in advance', tone: warn, tip: 'A safe answer the business has approved in advance. Not something made up on the spot.'}
+          - {label: '4. Feature off', sub: 'hide the part or write "not available now"', tone: bad, tip: 'The kill switch. The more dangerous the feature, the earlier this step comes.'}
+      - type: points
+        title: 'Where you must not step down the ladder'
+        style: cross
+        items:
+          - 'Guessing money data such as a balance, stock or price'
+          - 'Saying "success" without knowing whether a payment went through'
+          - 'Saying "fine, come in" when a permission check fails'
+      - type: quote
+        body: 'On failure you may give an old or empty answer, but never a wrong one when money or permissions are involved.'
+    aside:
+      - type: remember
+        body: 'Live, stale, default, off: write these four steps down in advance for every dependency.'
+      - type: when
+        use: ['Recommendations, reviews, counters, image thumbnails', 'Slow-changing data such as a catalogue or config']
+        avoid: ['Balance, stock, price, payment status', 'Login or permission checks']
+      - type: refs
+        items:
+          - {to: 'config/feature-flags', label: 'Feature flags and kill switches'}
+          - {to: 'resilience/circuit-breakers', label: 'The breaker decides when to step down'}
+    check:
+      q: 'The balance service fails when showing a customer''s balance. Is it right to show a stale copy, or to switch the feature off?'
+      a: 'Switch it off, or show a clear "can''t show this right now". If money data is out of date, the customer may make a wrong decision. Stale copies are only for slow-changing data.'
+
+  - slug: fallback-in-symfony
+    title: 'A stale copy and a kill switch in Symfony'
+    kind: howto
+    tldr: 'Keep every successful answer in the cache as the last good copy. On failure serve it, or an empty list, and flag degraded: true in the response. Keep core data and optional parts separate.'
+    keywords: ['stale-if-error', 'CacheItemPoolInterface', 'kill switch', 'degraded', 'Symfony Cache', 'fallback']
+    blocks:
+      - type: text
+        body: |
+          The rule: every time a successful answer arrives, store it in the cache for a day as the "last good copy". On failure, serve that copy, or an empty list if there is none. And send a `degraded` flag with the response, so the frontend knows what to show.
+      - type: code
+        lang: php
+        file: 'src/Recommendation/RecommendationProvider.php'
+        variant: good
+        code: |
+          public function forProduct(int $id): array
+          {
+              $key = 'recs.last_good.'.$id;
+
+              try {
+                  $items = $this->api->recommend($id);   // with its own timeout and breaker
+                  $this->cache->save(
+                      $this->cache->getItem($key)->set($items)->expiresAfter(86400),
+                  );
+
+                  return ['items' => $items, 'degraded' => false];
+              } catch (ExceptionInterface $e) {
+                  $this->logger->warning('Recommendations down', ['exception' => $e]);
+                  $stale = $this->cache->getItem($key);
+
+                  return [
+                      'items' => $stale->isHit() ? $stale->get() : [],   // empty if there is none
+                      'degraded' => true,
+                  ];
+              }
+          }
+        marks:
+          - {line: 5, tip: 'Only the unreliable call goes in the try. On success the copy is rewritten fresh.'}
+          - {line: 8, tip: 'expiresAfter(86400): one day. Recommendations older than that have no value, so the cache will drop them itself.'}
+          - {line: 13, tip: 'Logging the failure matters: otherwise recommendations could be a month old and nobody would know.'}
+          - {line: 18, tip: 'degraded: true doesn''t lie to the user. The frontend can show a small note.'}
+      - type: code
+        lang: php
+        file: 'src/Controller/ProductController.php'
+        variant: good
+        code: |
+          #[Route('/api/products/{id}', methods: ['GET'])]
+          public function show(Product $product, RecommendationProvider $recs): JsonResponse
+          {
+              // core part: if this fails, the whole request fails, and that is correct
+              $payload = ['product' => $this->normalizer->normalize($product)];
+
+              // kill switch: when the ops team sets this key in the cache, the feature is off at once
+              $off = $this->cache->getItem('kill.recommendations')->isHit();
+
+              $payload['recommendations'] = $off
+                  ? ['items' => [], 'degraded' => true]
+                  : $recs->forProduct($product->getId());
+
+              return $this->json($payload);
+          }
+        marks:
+          - {line: 4, tip: 'The core data is not in a try/catch here. If the price can''t be loaded, a 500 is right; showing a wrong price is not.'}
+          - {line: 7, tip: 'The kill switch is just a cache key here. If the service gets terribly slow, you can switch it off without even calling it. No deploy needed.'}
+      - type: quote
+        body: 'Calls for optional parts always go in try/catch, calls for core parts never do.'
+    aside:
+      - type: tips
+        items:
+          - 'Have a command or an admin button ready in advance that can set the kill switch. In a crisis there is no time to write new code.'
+          - 'Use a separate cache key for the stale copy. If it sits under a key with a short TTL, expiry will delete the last good copy too.'
+      - type: pitfalls
+        items:
+          - 'Catching everything with catch (\Throwable) quietly buries bugs in your own code too. Catch the specific ExceptionInterface.'
+      - type: refs
+        items:
+          - {to: 'caching/cache-strategies', label: 'Cache strategies'}
+    check:
+      q: 'In the controller, the product call is not in a try/catch but the recommendations call is. Why the asymmetry?'
+      a: 'Product data is core: without it you can''t buy, so an honest failure is the right answer. Recommendations are optional: the page works without them, so they can be dropped.'
+
+  - slug: degraded-ui-vue
+    title: 'A degraded UI in Vue: tell the user honestly'
+    kind: howto
+    tldr: 'Make core and optional calls separately (Promise.allSettled). If the optional one fails the page carries on, with a short honest note or an alternative link. If the core one fails, show an error with a retry button.'
+    keywords: ['Vue 3', 'Promise.allSettled', 'degraded UI', 'composable', 'error state', 'frontend']
+    blocks:
+      - type: text
+        body: |
+          The most common frontend mistake is to run two calls together with `await Promise.all`: if one fails, both fail. `Promise.allSettled` reports each result separately, so you decide which failure kills the page and which only costs one part.
+      - type: code
+        lang: ts
+        file: 'src/composables/useProductPage.ts'
+        variant: good
+        code: |
+          export function useProductPage(id: number) {
+            const product = ref<Product | null>(null)
+            const recs = ref<Recs>({ items: [], degraded: false })
+            const failed = ref(false)
+
+            async function load() {
+              const [p, r] = await Promise.allSettled([
+                api.product(id),
+                api.recommendations(id),
+              ])
+
+              if (p.status === 'rejected') {
+                failed.value = true          // the core part is gone: a real error
+                return
+              }
+              product.value = p.value
+              recs.value = r.status === 'fulfilled' ? r.value : { items: [], degraded: true }
+            }
+
+            return { product, recs, failed, load }
+          }
+        marks:
+          - {line: 7, tip: 'allSettled never rejects. Each result comes back as { status, value | reason }.'}
+          - {line: 13, tip: 'Only when the core call fails does the whole page show an error. This decision is made in advance.'}
+          - {line: 17, tip: 'If recommendations fail: an empty list and degraded: true. The page keeps working.'}
+      - type: code
+        lang: vue
+        file: 'src/components/RecommendationList.vue'
+        variant: good
+        code: |
+          <script setup lang="ts">
+          defineProps<{ items: Product[]; degraded: boolean }>()
+          </script>
+
+          <template>
+            <section v-if="items.length || degraded" aria-labelledby="recs-title">
+              <h2 id="recs-title">Recommended for you</h2>
+
+              <template v-if="items.length">
+                <p v-if="degraded" class="note">This may be slightly out of date</p>
+                <ProductCard v-for="p in items" :key="p.id" :product="p" />
+              </template>
+
+              <p v-else>
+                Recommendations are unavailable right now.
+                <RouterLink to="/popular">Browse popular products</RouterLink>
+              </p>
+            </section>
+          </template>
+        marks:
+          - {line: 10, tip: 'When showing a stale copy, add an honest note: the user knows the information may be a bit old.'}
+          - {line: 14, tip: 'If there is nothing at all, don''t leave an empty gap. Offer another route: a link to popular products.'}
+      - type: visual
+        kind: table
+        caption: 'Four states, and what the user sees in each'
+        headers: ['State', 'What the user sees']
+        rows:
+          - cells: ['All healthy', 'Recommendations, no note']
+            tip: 'The normal state. degraded: false.'
+          - cells: ['Stale copy', 'Recommendations + "may be slightly out of date"']
+            tip: 'Things keep working, and the user is told the truth too.'
+          - cells: ['Nothing at all', '"Not available now" + a popular products link']
+            tip: 'The part is gone, but the user isn''t stuck: there is a way forward.'
+          - cells: ['Core product fails', 'Error page + a "Try again" button']
+            tip: 'This is the only state where the whole page fails. The retry button lets the user try again on their own.'
+    aside:
+      - type: tips
+        items:
+          - 'Test the degraded UI yourself: block the network in devtools or use a mock, and run through each state once.'
+          - 'Write failure messages in the user''s language: not "Error 503" but "Recommendations are unavailable right now".'
+      - type: remember
+        body: 'Don''t leave the user in the dark: say what they are missing, and what they can do now.'
+    check:
+      q: 'Why Promise.allSettled instead of Promise.all, and the failure of which call should make the whole page show an error?'
+      a: 'Promise.all discards everything when one call fails. allSettled gives each result separately, so only a failure of the core (product) call shows an error, and a recommendations failure leaves the page working.'
+
+  - slug: lying-fallback
+    title: 'Pitfall: the fallback that quietly lies'
+    kind: pitfall
+    tldr: 'In money-related calls, `catch → return 0` is the most dangerous fallback. A good one is a value approved in advance, logged, and not dependent on the very thing that failed.'
+    keywords: ['silent failure', 'swallow exception', 'fallback pitfall', 'shipping charge', 'catch Throwable', 'hidden failure']
+    blocks:
+      - type: text
+        body: |
+          Hiding every failure is not degradation. When the courier fails to return a delivery charge, the code below quietly returns 0. For a whole day every order shipped with no delivery charge, and nobody noticed. A proper fallback is decided in advance by someone, logged, and honest with the user.
+      - type: code
+        lang: php
+        file: 'src/Shipping/ShippingCalculator.php'
+        variant: bad
+        code: |
+          public function chargeFor(Order $order): int
+          {
+              try {
+                  return $this->courier->chargeFor($order->district(), $order->weight());
+              } catch (\Throwable) {
+                  return 0;   // quietly free delivery!
+              }
+          }
+        marks:
+          - {line: 5, tip: '\Throwable catches everything, bugs in your own code included. Nothing is logged and no metric moves.'}
+          - {line: 6, tip: 'Here 0 is a lie standing in for "I don''t know". The money comes straight out of the company''s pocket.'}
+      - type: code
+        lang: php
+        file: 'src/Shipping/ShippingCalculator.php'
+        variant: good
+        code: |
+          public function chargeFor(Order $order): int
+          {
+              try {
+                  return $this->courier->chargeFor($order->district(), $order->weight());
+              } catch (ExceptionInterface $e) {
+                  $this->logger->warning('Courier down, using zone rate', [
+                      'order' => $order->id(),
+                      'exception' => $e,
+                  ]);
+
+                  // approved by the business in advance: the maximum rate for the district
+                  return $this->zoneRates->maxFor($order->district());
+              }
+          }
+        marks:
+          - {line: 5, tip: 'Only HttpClient errors are caught. Bugs such as a TypeError rise up as before and show in the logs.'}
+          - {line: 6, tip: 'With a log you can tell how often the fallback ran. Add an alert, and the problem is caught in minutes, not hours.'}
+          - {line: 12, tip: 'A number chosen in advance: someone thought it through and approved it. You can show the customer an "estimated charge".'}
+      - type: points
+        title: 'Three conditions for a good fallback'
+        style: check
+        items:
+          - 'Decided in advance: the business knows and agreed, and the code did not guess'
+          - 'Visible: there is a log, a metric and an alert, never silent'
+          - 'Independent: the fallback does not depend on the dependency that failed'
+    aside:
+      - type: pitfalls
+        items:
+          - 'A fallback you never test will run for the first time on the day of the crisis, and that is when it will break. Switch off a dependency on purpose at regular intervals to check.'
+          - 'If a fallback goes to the same database or cache that has failed, it is not a fallback, it is the same trap.'
+      - type: refs
+        items:
+          - {to: 'resilience/disaster-recovery', label: 'Failing on purpose to test (game day)'}
+    check:
+      q: 'Why is the maximum zone rate a better courier fallback than `return 0`?'
+      a: 'The business approved that rate in advance, so the company doesn''t lose money. 0 passes off "I don''t know" as "free", and quietly loses money.'
+
+flashcards:
+  - q: 'What is graceful degradation?'
+    a: 'When a part breaks, keeping the system up with fewer features rather than shutting it all down, so the most important work carries on.'
+    more: |
+      Like a home IPS that runs the fan and lights in a power cut and leaves the AC off. First decide which parts are core (price, cart, payment) and which optional (recommendations, reviews). When an optional part fails, only that part is dropped.
+    ref: whole-page-dies
+  - q: 'What is the rule for separating core from optional parts?'
+    a: 'If the task is impossible without it, it is core (price, add to cart). If the task works without it, it is optional (recommendations, reviews).'
+    more: |
+      Calls for optional parts always go in try/catch, and calls for core parts don't: if a core part is missing, an honest failure is the right answer. Make this split when you write the code, not in the middle of a crisis.
+    ref: whole-page-dies
+  - q: 'What are the four steps of the fallback ladder?'
+    a: 'Live data, a stale copy, a default value, and finally the feature off (kill switch). If the upper step isn''t available, take the next one down.'
+    more: |
+      A stale copy is the last good answer, kept in the cache. A default is a safe answer the business approved in advance, such as an empty list. When you switch a feature off, tell the user and give them a way forward.
+    ref: fallback-ladder
+  - q: 'For what kind of data must you never serve a stale or invented fallback?'
+    a: 'Balances, stock, prices, payment status and permission checks. A wrong answer there costs money or security.'
+    more: |
+      An old recommendation list does no harm. But someone who sees an old balance may spend wrongly, and saying "permission check failed, come in" breaks security. In these cases a clear "not possible right now" is correct.
+    ref: fallback-ladder
+  - q: 'How do you keep a "last good copy" with Symfony Cache?'
+    a: 'Save every successful answer under its own key with a 24-hour TTL. On failure read that key, and return an empty list if it is missing.'
+    more: |
+      Give it a separate key so the last good copy isn't lost when a fresh cache entry with a short TTL expires. Sending `degraded: true` with the answer tells the frontend to show an honest note. Log the failures, or stale data could be served for months.
+    ref: fallback-in-symfony
+  - q: 'What is a kill switch, and why should it be changeable without a deploy?'
+    a: 'A switch that turns a running feature off at once. In a crisis there is no time to write new code or deploy.'
+    more: |
+      It is usually a value in the cache, the database or a feature flag system. If a service gets terribly slow, you can turn the feature off without even calling it. Decide in advance who can change it, and how.
+    ref: fallback-in-symfony
+  - q: 'When do you use Promise.allSettled instead of Promise.all in Vue?'
+    a: 'When several calls are independent and you still need the results of the others even if one fails. allSettled returns each result separately.'
+    more: |
+      Promise.all throws everything away on the first failure. With allSettled you check which ones were fulfilled and which rejected. Show a full-page error only if the core call was rejected; if an optional one was, drop that part and show a short message.
+    ref: degraded-ui-vue
+
+quiz:
+  - q: 'On Nahid''s site, the product page fetches the price (from the database) and reviews (from an external service) together. The review service fails. Which behaviour is right?'
+    hint: 'Which one can''t you buy without, and which one can you?'
+    options:
+      - text: 'Open the page with the reviews part hidden or marked "not available now", price intact'
+        correct: true
+        why: 'Reviews are optional and the price is core. With an optional part gone, the customer can still buy.'
+      - text: 'Return 500 for the whole page, because the data is incomplete'
+        correct: false
+        why: 'That stops sales, though only one piece of decoration was broken.'
+      - text: 'Hold the page until the reviews arrive'
+        correct: false
+        why: 'The waiting ties up workers, and without a timeout the whole site can slow down.'
+      - text: 'Drop the price too: if everything isn''t right, show nothing'
+        correct: false
+        why: 'That is the opposite of degradation: losing the core part as well.'
+    ref: whole-page-dies
+  - q: 'In which of these cases is it safe to serve a stale or default fallback?'
+    hint: 'Who is harmed by an old or empty answer?'
+    options:
+      - text: 'The "recommended for you" list on a product'
+        correct: true
+        why: 'Recommendations a few hours old do no harm, and the page still looks complete.'
+      - text: 'Catalogue product descriptions, which change once a month'
+        correct: true
+        why: 'It is slow-changing data, so an old copy from the cache is almost always right.'
+      - text: 'The customer''s wallet balance'
+        correct: false
+        why: 'A customer who sees a wrong balance may make a wrong decision. "Can''t show this right now" is the right answer here.'
+      - text: 'Whether a payment succeeded'
+        correct: false
+        why: 'Calling an unknown state "success" or "failed" can lose money or charge twice.'
+    ref: fallback-ladder
+  - q: 'What is wrong with the code below, for recommendations?'
+    lang: php
+    code: |
+      try {
+          $items = $this->api->recommend($id);
+      } catch (\Throwable) {
+          $items = [];
+      }
+      return ['items' => $items];
+    hint: 'If it fails, who will know? And what kinds of error does it catch?'
+    options:
+      - text: 'Nothing is logged, there is no degraded flag, and \Throwable also hides bugs in your own code'
+        correct: true
+        why: 'If recommendations were empty for a month, nobody would know. It needs a log, a degraded flag and a catch for the specific ExceptionInterface.'
+      - text: 'Returning an empty list is never right'
+        correct: false
+        why: 'For an optional part like recommendations, an empty or stale answer is perfectly right. The problem is the silence.'
+      - text: 'Putting the call in a try/catch is wrong, the exception should propagate'
+        correct: false
+        why: 'It isn''t right to ruin the whole page because an optional part failed.'
+      - text: 'There is nothing wrong'
+        correct: false
+        why: 'Invisibility is the biggest risk: a failure can go unnoticed for months.'
+    ref: fallback-in-symfony
+  - q: 'A Vue page calls two APIs: product (core) and recommendations (optional). It currently uses `await Promise.all([...])`. What happens when the recommendations API fails, and how do you fix it?'
+    hint: 'What does Promise.all do on the first failure?'
+    options:
+      - text: 'The whole promise rejects, and the product data is lost too; handle them separately with allSettled'
+        correct: true
+        why: 'Promise.all rejects as soon as any one fails. allSettled returns both results separately, so only a failure of the core call is an error.'
+      - text: 'Only the recommendations go empty, and the product is fine'
+        correct: false
+        why: 'That doesn''t happen with Promise.all: on a failure the whole result is discarded.'
+      - text: 'Both product and recommendations are retried'
+        correct: false
+        why: 'Promise.all does not retry on its own.'
+      - text: 'Nothing happens, the browser handles it'
+        correct: false
+        why: 'The browser doesn''t know which call is core and which is optional. That decision belongs to your code.'
+    ref: degraded-ui-vue
+  - q: 'What should the delivery charge be when the courier fails? Which decisions are right?'
+    hint: 'Who pays for a mistake, and who gets to find out?'
+    options:
+      - text: 'Use the maximum rate per district, approved in advance'
+        correct: true
+        why: 'The business knows and agreed to it, so the company doesn''t lose money and the customer can be told it is an "estimate".'
+      - text: 'Keep a log and an alert whenever the fallback runs'
+        correct: true
+        why: 'Otherwise nobody will know how long the fallback has been running. An alert catches the problem in minutes.'
+      - text: 'Quietly return 0 so orders don''t get stuck'
+        correct: false
+        why: 'Every order then ships with no delivery charge and nobody notices. That is quietly losing money.'
+      - text: 'Fall back to the same database that stores the courier rates, which is itself slow right now'
+        correct: false
+        why: 'A fallback that leans on the failed dependency will fail too. A fallback has to be independent.'
+    ref: lying-fallback

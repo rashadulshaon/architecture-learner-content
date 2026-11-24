@@ -1,0 +1,355 @@
+slides:
+  - slug: same-sql-different-engine
+    title: 'Same SQL, a different engine inside'
+    kind: story
+    tldr: 'The storage engine inside a database decides which jobs are fast and which are slow, so one engine is not equally good for write-heavy and read-heavy work.'
+    keywords: ['storage engine', 'B-tree', 'LSM-tree', 'write heavy', 'read heavy', 'database internals']
+    blocks:
+      - type: metaphor
+        icon: shop
+        title: 'Two kinds of shop ledger'
+        body: |
+          In one shop, every sale is written straight into the right page of the main ledger, which is kept in alphabetical order. It is easy to look things up, but each write means opening the book and finding the spot. In another shop, every sale is first jotted down one after another on a pad at the counter, then sorted and copied into the main ledger in the evening. These two shops are a picture of the two kinds of engine.
+      - type: visual
+        kind: compare
+        caption: 'When the workload changes, so does the engine''s advantage'
+        columns:
+          - title: 'Read-heavy app'
+            tone: good
+            icon: eye
+            tip: 'Data is read a lot and written little. Here the sorted ledger (B-tree) is the most comfortable fit.'
+            items:
+              - 'An online shop''s products and order views'
+              - '100 reads for every write'
+              - 'Finding any row quickly is what matters'
+          - title: 'Write-heavy app'
+            tone: warn
+            icon: send
+            tip: 'Thousands of new rows arrive every second and reads are comparatively rare. An accumulate-then-sort engine (LSM) suits this better.'
+            items:
+              - 'Sensors, logs, chat messages, events'
+              - 'New data is only appended'
+              - 'Write speed is the real bottleneck'
+      - type: quote
+        body: 'The SQL is the same, but the engine inside decides which jobs are cheap and which are expensive.'
+    aside:
+      - type: problem
+        body: 'When choosing a database, "does it have SQL?" is not enough. You need to know how data lands on disk inside, because that sets the cost of reads and writes.'
+      - type: refs
+        items:
+          - {to: 'data/choosing-database', label: 'Choosing a database by the workload'}
+          - {to: 'data/indexing', label: 'B-tree indexes'}
+    check:
+      q: 'Two databases both understand SQL, yet one is faster at writes and the other at reads. Why?'
+      a: 'Their storage engines differ. One places data in its sorted spot as it arrives (fast reads); the other collects first and sorts later (fast writes).'
+
+  - slug: btree-vs-lsm
+    title: 'B-tree versus LSM-tree'
+    kind: concept
+    tldr: 'A B-tree finds the right spot at write time, so reads are good; an LSM-tree collects writes first and sorts later, so writes are good.'
+    keywords: ['B-tree', 'LSM-tree', 'write amplification', 'read amplification', 'trade-off', 'engine comparison']
+    blocks:
+      - type: metaphor
+        icon: book
+        title: 'The main ledger versus the counter pad'
+        body: |
+          A B-tree is the sorted main ledger: every new entry means finding the page and fitting it into the right line, so writes are slower, but any customer's account is found on one page. An LSM is the counter pad: write whatever comes, one after another, fast. The sorting has to happen later in the evening, and to look something up you may have to check both the pad and the older pages.
+      - type: visual
+        kind: compare
+        caption: 'The same job on two engines'
+        columns:
+          - title: 'B-tree'
+            tone: accent
+            icon: layers
+            tip: 'The engine of PostgreSQL and MySQL (InnoDB). Data lives in sorted pages, and a write modifies a page in place.'
+            items:
+              - 'Write: find the right page and put it there'
+              - 'Read: walk down the tree and land directly on it'
+              - 'Writes land in scattered places, so random writes on disk'
+              - 'A full page is split in two'
+          - title: 'LSM-tree'
+            tone: good
+            icon: archive
+            tip: 'The engine of Cassandra and RocksDB. New writes are always appended at the end, then sorted in the background.'
+            items:
+              - 'Write: collect in memory, only append on disk'
+              - 'Read: may have to check several files'
+              - 'Sequential writes on disk, which are fast'
+              - 'Compaction runs in the background'
+      - type: points
+        title: 'Three names for this trade-off'
+        style: dot
+        items:
+          - 'Write amplification: how many times the disk is really written for one write.'
+          - 'Read amplification: how many places must be checked to find one value.'
+          - 'Space amplification: how much more space is used than the real data needs.'
+    aside:
+      - type: remember
+        body: 'B-tree is a friend to reads, LSM is a friend to writes. But both have a price.'
+      - type: tips
+        items:
+          - 'LSM reads can be made fast too (a Bloom filter tells you early "it''s not in this file"), but it is not as simple as a B-tree.'
+          - 'The numbers matter less than the kind of work: choose by your own access pattern.'
+    check:
+      q: 'Why does an LSM-tree usually write fast in write-heavy workloads?'
+      a: 'New writes gather in memory and are appended to the end of the disk, which is sequential. There is no need to hunt for scattered pages and modify them as a B-tree does.'
+
+  - slug: wal-memtable-compaction
+    title: 'WAL, memtable, SSTable and compaction'
+    kind: concept
+    tldr: 'A write goes first to the WAL (safety), then to memory (speed), and to a disk file when memory fills; later compaction merges files and clears old and duplicate data.'
+    keywords: ['WAL', 'write ahead log', 'memtable', 'SSTable', 'compaction', 'durability', 'crash recovery']
+    blocks:
+      - type: metaphor
+        icon: book
+        title: 'The daybook and the counter pad'
+        body: |
+          Before doing anything, the shopkeeper writes "sold this much today" in his daybook. Even if the power goes out, he can rebuild everything from the daybook. That is the WAL. When the pad fills up, its contents are put away in a file, and every so often all the files are merged into one new sorted file that has no struck-out or outdated lines. That is compaction.
+      - type: visual
+        kind: flow
+        caption: 'The path a write takes in an LSM-tree'
+        nodes:
+          - {id: app, label: 'App', sub: 'INSERT / PUT', icon: api, col: 0, row: 1, tip: 'Sends a new write.'}
+          - {id: wal, label: 'WAL', sub: 'appended on disk', icon: history, tone: accent, col: 1.5, row: 0, tip: 'Write-ahead log: the write goes here first. If the server crashes, everything is rebuilt by reading this.'}
+          - {id: mem, label: 'memtable', sub: 'sorted in memory', icon: cache, col: 1.5, row: 2, tip: 'A sorted list in memory. Both reads and writes are fast here.'}
+          - {id: sst, label: 'SSTable file', sub: 'immutable on disk', icon: file, col: 3, row: 1, tip: 'When the memtable fills, it goes to disk in sorted form. Once written, it never changes.'}
+          - {id: comp, label: 'compaction', sub: 'in the background', icon: gear, col: 4, row: 1, tip: 'Merges many small files into a big sorted one, clearing old values and deleted rows.'}
+        edges:
+          - {from: app, to: wal, label: 'It is written to the WAL first, so nothing is lost in a crash'}
+          - {from: app, to: mem, label: 'The same write is placed in the in-memory memtable too'}
+          - {from: mem, to: sst, label: 'When the memtable fills, it goes to disk as a sorted SSTable file'}
+          - {from: sst, to: comp, label: 'Later, compaction merges many files into one clean file', tone: good}
+      - type: quote
+        body: 'Write to the WAL first, then do the rest. After a crash, the database comes back by reading the WAL.'
+    aside:
+      - type: terms
+        items:
+          - {term: 'WAL', meaning: 'Writing any change to a sequential log before applying it in its real place.'}
+          - {term: 'SSTable', meaning: 'Sorted String Table: a sorted disk file that is never changed once written.'}
+          - {term: 'Compaction', meaning: 'Merging many files into a new one, leaving out old and deleted data.'}
+      - type: story
+        title: 'B-trees have a WAL too'
+        body: 'The WAL is not only for LSM. PostgreSQL and MySQL (where it is called the redo log) write every change to the WAL before the page. Replication also works by following this WAL.'
+    check:
+      q: 'In an LSM-tree, writes sit in memory; why is no data lost when the server crashes?'
+      a: 'Every write is first appended to the WAL on disk. After a crash, the database reads the WAL and rebuilds the memtable''s data.'
+
+  - slug: which-database-which-engine
+    title: 'Which database uses which engine, and when'
+    kind: compare
+    tldr: 'PostgreSQL and MySQL (InnoDB) are B-tree based; Cassandra, ScyllaDB and RocksDB are LSM based. For ordinary business apps, B-tree is the default.'
+    keywords: ['PostgreSQL', 'InnoDB', 'Cassandra', 'RocksDB', 'LSM', 'database engines', 'which database']
+    blocks:
+      - type: visual
+        kind: table
+        caption: 'The two families compared'
+        headers: ['', 'B-tree', 'LSM-tree']
+        rows:
+          - cells: ['Writes', 'Medium, into scattered pages', 'Fast, appended at the end']
+            tip: 'LSM has more write capacity, because sequential writes to disk are cheap.'
+          - cells: ['Reads', 'Fast, predictable', 'Good, but may check several files']
+            tip: 'In a B-tree you just walk down the tree to find a value. In an LSM you may need to check the memtable and several levels of files.'
+          - cells: ['Background work', 'Little (vacuum, checkpoint)', 'More (compaction runs)']
+            tip: 'In an LSM, compaction eats disk and CPU; under extreme load, write speed can suddenly drop.'
+          - cells: ['Disk space', 'Gaps left in pages', 'Old copies pile up, cleared by compaction']
+            tip: 'Both use more space than the data itself, for different reasons.'
+          - cells: ['Examples', 'PostgreSQL, MySQL InnoDB, SQLite', 'Cassandra, ScyllaDB, RocksDB, HBase']
+            tip: 'MongoDB''s WiredTiger is B-tree by default, though it has an LSM option. Redis mostly lives in memory, a different kind.'
+      - type: points
+        title: 'Rules for deciding'
+        style: check
+        items:
+          - 'Ordinary business apps (orders, users, payments): B-tree, meaning PostgreSQL or MySQL.'
+          - 'Huge continuous writes with known queries (logs, sensors, chat): consider an LSM-based database.'
+          - 'If you are unsure, B-tree. Measure first, then change.'
+    aside:
+      - type: when
+        use:
+          - 'LSM: writes far outnumber reads, and data is mostly appended'
+          - 'B-tree: linked data, joins, transactions, any question'
+        avoid:
+          - 'An LSM database in a small app just because it sounded "new and fast"'
+      - type: refs
+        items:
+          - {to: 'data/choosing-database', label: 'Choosing a database by the workload'}
+          - {to: 'data/sharding', label: 'Sharding, when one server cannot cope'}
+    check:
+      q: 'What kind of engine is the usual choice for the main database of orders and payments?'
+      a: 'A B-tree-based relational database (PostgreSQL or MySQL). Linked data, transactions and any query are easy there, and the write load usually fits on one server.'
+
+  - slug: durability-switch-pitfall
+    title: 'Turning off durability because it feels slow'
+    kind: pitfall
+    tldr: 'Turning off fsync makes writes fast but a crash can corrupt the whole database; for data you can afford to lose, switch off synchronous_commit inside a single transaction instead.'
+    keywords: ['fsync', 'synchronous_commit', 'durability', 'WAL flush', 'PostgreSQL config', 'faster writes']
+    blocks:
+      - type: text
+        body: |
+          When INSERTs feel slow, many people set `fsync = off`, because without forcing data to disk the numbers look great. But then a power cut can leave the database files themselves damaged, with half-written data. `synchronous_commit` is different: turning it off can lose only the last few milliseconds of commits, and the files are not corrupted.
+      - type: code
+        lang: ini
+        file: 'postgresql.conf'
+        variant: bad
+        code: |
+          fsync = off                # dangerous: a crash can destroy the database
+          full_page_writes = off     # dangerous
+        marks:
+          - {line: 1, tip: 'It says "done" without making sure the data reached the disk. Never in production.'}
+      - type: code
+        lang: php
+        file: 'src/Service/ClickLogger.php'
+        variant: good
+        code: |
+          public function log(array $events): void
+          {
+              $this->connection->transactional(function (Connection $c) use ($events): void {
+                  // only for this transaction; for data that is not critical
+                  $c->executeStatement('SET LOCAL synchronous_commit = off');
+
+                  foreach ($events as $e) {
+                      $c->insert('click_event', ['page' => $e['page'], 'at' => $e['at']]);
+                  }
+              });
+          }
+        marks:
+          - {line: 5, tip: 'SET LOCAL applies only to the current transaction. The rest of the app keeps the safe default. Use it only for data like click logs, where losing some is harmless.'}
+          - {line: 7, tip: 'Writing many rows in one transaction is far cheaper than a separate commit for each row.'}
+      - type: quote
+        body: 'Never turn durability off for money data. If writes are slow, batch them first, then tune.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Never use synchronous_commit = off for payments, orders or balances: data can be lost even after you reported "success".'
+          - 'A separate commit per row is the biggest cause. Writing many rows in one transaction is the first remedy.'
+      - type: refs
+        items:
+          - {to: 'concurrency/acid', label: 'Durability is the D in ACID'}
+    check:
+      q: 'What is the big difference between fsync = off and synchronous_commit = off?'
+      a: 'Turning off fsync can corrupt the whole database in a crash. Turning off synchronous_commit leaves the files intact and can lose only the last few milliseconds of commits.'
+
+flashcards:
+  - q: 'What is a storage engine?'
+    a: 'The part of a database that decides how data is written to and read from disk.'
+    more: |
+      The SQL can be the same while the engine inside differs. The engine decides which jobs are fast and which are slow: writes, reads, range queries or big data. So when choosing a database you look at the engine, not only the features.
+    ref: same-sql-different-engine
+  - q: 'What does a B-tree engine do on a write, and what follows from it?'
+    a: 'It finds the right sorted page and puts the data there. Reads are fast, but writing into scattered pages means random writes.'
+    more: |
+      A full page splits in two. This is the price of fast reads: the data is always sorted, so you walk down the tree and land right on it. It is the engine of PostgreSQL, MySQL InnoDB and SQLite.
+    ref: btree-vs-lsm
+  - q: 'Why is an LSM-tree fast at writes?'
+    a: 'Writes gather in memory and are appended to the end of the disk, which is sequential; no scattered pages need changing.'
+    more: |
+      In a Log-Structured Merge-tree, a disk file never changes once written. Compaction later merges and sorts them in the background. In return, a read may have to check several files.
+    ref: btree-vs-lsm
+  - q: 'What is the WAL, and why is it needed?'
+    a: 'Writing a change to a sequential log before applying it in its real place; after a crash you read it to restore the data.'
+    more: |
+      Appending to a WAL is cheap, and once it has reached the disk it is safe to say "done". When a server crashes, the data in memory is lost, but it is rebuilt from the WAL. PostgreSQL, MySQL and Cassandra all use a WAL or an equivalent log.
+    ref: wal-memtable-compaction
+  - q: 'What does compaction do?'
+    a: 'It merges an LSM''s many sorted files into one new file, leaving out old values and deleted rows.'
+    more: |
+      Without compaction, files would keep piling up and a read would have to check many of them. In the background it eats disk and CPU, so under extreme write load the database can suddenly slow down. That is the main price of an LSM.
+    ref: wal-memtable-compaction
+  - q: 'What is write amplification?'
+    a: 'The ratio of how many times the disk is really written for one write: WAL, files and compaction together.'
+    more: |
+      The higher the amplification, the more disk wear and the lower the speed. In a B-tree, even a small change rewrites a whole page. In an LSM, the same data is written to new files several times during compaction. Both engines have it, in different forms.
+    ref: btree-vs-lsm
+  - q: 'Which databases are B-tree, and which are LSM?'
+    a: 'B-tree: PostgreSQL, MySQL InnoDB, SQLite. LSM: Cassandra, ScyllaDB, RocksDB, HBase.'
+    more: |
+      For an ordinary business app, a B-tree-based relational database is the default. When you have huge continuous writes and known queries (logs, sensors, chat), you can consider an LSM-based database.
+    ref: which-database-which-engine
+
+quiz:
+  - q: 'An IoT company''s 1 million sensors send readings every second. Reads are rare, and only by time window. Which engine family fits best?'
+    hint: 'The write load is huge and the data is only appended.'
+    options:
+      - text: 'LSM-based, because writes are collected and appended at the end'
+        correct: true
+        why: 'Sequential writes are cheap, and the read pattern is known in advance. This is where an LSM is strong.'
+      - text: 'B-tree-based, because a B-tree is always fast'
+        correct: false
+        why: 'Under a huge write load, changing scattered pages becomes a burden. There is no such thing as "always fast".'
+      - text: 'No engine will work'
+        correct: false
+        why: 'LSM-based and time-series databases were built for exactly this kind of job.'
+      - text: 'The engine makes no difference, the SQL is the same'
+        correct: false
+        why: 'Even if the SQL is the same, the cost of reads and writes depends on the engine.'
+    ref: btree-vs-lsm
+  - q: 'An LSM-based database''s writes sometimes suddenly slow down even though traffic is the same. What is the most likely cause?'
+    hint: 'Which background job eats disk and CPU?'
+    options:
+      - text: 'The WAL was deleted'
+        correct: false
+        why: 'If the WAL were deleted you would lose data in a crash; writes would not slow down.'
+      - text: 'Compaction is running and taking a big share of the disk'
+        correct: true
+        why: 'Merging many files takes disk and CPU, so under extreme load write speed can drop suddenly.'
+      - text: 'B-tree pages are splitting'
+        correct: false
+        why: 'Page splits belong to B-trees, not to LSM.'
+      - text: 'The memtable never goes to disk'
+        correct: false
+        why: 'When the memtable fills up, it does go to disk.'
+    ref: wal-memtable-compaction
+  - q: 'What is the problem in the code below?'
+    lang: php
+    code: |
+      $c->executeStatement('SET LOCAL synchronous_commit = off');
+      $c->insert('payment', [
+          'order_id' => $orderId,
+          'amount'   => $amount,
+      ]);
+    hint: 'What if the server stops right after you tell the user the payment succeeded?'
+    options:
+      - text: 'No problem, the files don''t get corrupted anyway'
+        correct: false
+        why: 'Even if the files stay intact, the payment record can be lost after you have told the user "success".'
+      - text: 'It is dangerous for money data like payments: the last commit can be lost'
+        correct: true
+        why: 'With synchronous_commit off, the WAL can reach the disk a little after the commit. That is not acceptable for money data.'
+      - text: 'SET LOCAL is wrong, it should be SET'
+        correct: false
+        why: 'SET LOCAL applies to just one transaction, which is the better choice. The problem is elsewhere.'
+      - text: 'insert() is slow, executeStatement() should be used'
+        correct: false
+        why: 'This is not about slow versus fast; it is about the risk of losing data.'
+    ref: durability-switch-pitfall
+  - q: 'Which of these statements about the WAL and engines are true?'
+    hint: 'What does the WAL write first, and why?'
+    options:
+      - text: 'It is written to the WAL first, then to its real place'
+        correct: true
+        why: 'This order is what makes recovery after a crash possible.'
+      - text: 'Only LSM databases have a WAL'
+        correct: false
+        why: 'PostgreSQL and MySQL use a WAL (or redo log) too.'
+      - text: 'PostgreSQL and MySQL InnoDB are B-tree based'
+        correct: true
+        why: 'Their data and indexes live in sorted B-tree pages.'
+      - text: 'Without compaction, an LSM reads at the same speed'
+        correct: false
+        why: 'Without compaction, files pile up and a read has to check many of them.'
+    ref: wal-memtable-compaction
+  - q: 'A small e-commerce startup says, "Cassandra is fast at writes, so let''s build the order database on it." What do you tell them?'
+    hint: 'What kinds of queries and transactions do orders need?'
+    options:
+      - text: 'Right, fast writes is all that matters'
+        correct: false
+        why: 'Giving up joins, transactions and arbitrary queries for speed is a bad trade.'
+      - text: 'Start with PostgreSQL; a small app''s write load fits on one server, and a B-tree suits linked data'
+        correct: true
+        why: 'Orders need joins and transactions. If a measured problem shows up, you can change then.'
+      - text: 'Take MongoDB, because it is more popular'
+        correct: false
+        why: 'Popularity is not a yardstick for the decision, and the problem here is linked data.'
+      - text: 'Take SQLite, because it is a small app'
+        correct: false
+        why: 'SQLite is a single-file database and does not suit being the main database of a web app running on several servers.'
+    ref: which-database-which-engine

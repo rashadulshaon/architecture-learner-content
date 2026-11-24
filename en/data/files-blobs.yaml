@@ -1,0 +1,417 @@
+slides:
+  - slug: photos-in-the-wrong-place
+    title: 'Photos in the database, photos on the server disk'
+    kind: story
+    tldr: 'Photos in the database bloat it. Photos on the server''s disk go missing on a second server and vanish on deploy.'
+    keywords: ['blob', 'file upload', 'local disk', 'BLOB column', 'object storage', 'file storage']
+    blocks:
+      - type: metaphor
+        icon: box
+        title: 'The warehouse behind the shop'
+        body: |
+          If a shopkeeper stuffs every sack of rice between the pages of his ledger, the ledger swells until it bursts. If he piles them all in one corner of the shop, the new branch doesn't have the stock, and moving shops means losing it. What he needs is a separate warehouse; the ledger just notes "sack 12, warehouse shelf 3".
+      - type: text
+        body: |
+          In Rahim's app, a user's profile photo could be stored in two ways, and both hurt later. The code below saves the photo into the server's own `public/uploads` folder.
+      - type: code
+        lang: php
+        file: 'src/Controller/AvatarController.php'
+        variant: bad
+        code: |
+          #[Route('/avatar', methods: ['POST'])]
+          public function upload(Request $request): JsonResponse
+          {
+              $file = $request->files->get('avatar');
+              $name = $file->getClientOriginalName();   // the name the user supplied
+
+              // onto this server's own disk
+              $file->move($this->getParameter('kernel.project_dir').'/public/uploads', $name);
+
+              return $this->json(['url' => '/uploads/'.$name]);
+          }
+        marks:
+          - {line: 8, tip: 'A second server or a new container can''t see this file. If a deploy wipes the folder, the photos go with it.'}
+          - {line: 5, tip: 'If two people upload the same name, one person''s photo overwrites the other''s.'}
+      - type: visual
+        kind: compare
+        caption: 'Three places to keep files: two cause trouble, one is right'
+        columns:
+          - title: 'A database BLOB'
+            tone: bad
+            icon: db
+            tip: 'A database is for small, fast, complex queries, not for holding large binaries.'
+            items:
+              - 'The database bloats and backups become huge'
+              - 'Every photo read adds load on the database'
+          - title: 'The server''s local disk'
+            tone: bad
+            icon: server
+            tip: 'Fine while there is only one server; it breaks as soon as you add another.'
+            items:
+              - 'Other servers don''t have the file'
+              - 'Lost on deploy or when the container changes'
+          - title: 'Object storage'
+            tone: good
+            icon: storage
+            tip: 'A service like S3, built for keeping files, and it doesn''t mind how many you store.'
+            items:
+              - 'Every server reaches the same place'
+              - 'Much cheaper, durable, properly backed up'
+    aside:
+      - type: story
+        title: 'The mystery of the two-server photos'
+        body: |
+          After a second server was added to the app, some users said their photo showed up sometimes and not other times. The load balancer was sending half the requests to the server that never had the photo.
+      - type: terms
+        items:
+          - {term: 'BLOB', meaning: 'Binary Large Object: large binary data such as photos, PDFs and videos.'}
+          - {term: 'Object storage', meaning: 'A service that keeps files under a key (S3, Cloudflare R2, MinIO).'}
+    check:
+      q: 'The app runs on two servers. What goes wrong if a photo is saved on one server''s disk?'
+      a: 'The other server doesn''t have the file, so when the load balancer sends a request there, the photo isn''t found. Files must live somewhere every server can reach.'
+
+  - slug: object-storage-flysystem
+    title: 'Object storage: the database keeps only the key'
+    kind: concept
+    tldr: 'Files go to object storage; the database keeps the file''s key and metadata. Write through Flysystem and the code survives a change of storage.'
+    keywords: ['Flysystem', 'S3', 'storage key', 'metadata', 'filesystem abstraction', 'object storage']
+    blocks:
+      - type: text
+        body: |
+          The sack number in the warehouse is the **key**, for example `avatars/0192.../original.jpg`. The app's database holds just this key, plus the size, type and owner id. Whatever file name the user supplies, the server generates the key itself (a UUID), so nobody can overwrite anyone else's file. If you write through Symfony's **Flysystem**, it can be a local folder today and S3 tomorrow: only the config changes.
+      - type: code
+        lang: yaml
+        file: 'config/packages/flysystem.yaml'
+        variant: good
+        code: |
+          flysystem:
+              storages:
+                  uploads.storage:
+                      adapter: 'aws'
+                      options:
+                          client: 'aws_s3_client'   # the Aws\S3\S3Client defined in services.yaml
+                          bucket: '%env(S3_BUCKET)%'
+                          prefix: 'uploads'
+        marks:
+          - {line: 3, tip: 'The storage name. Autowiring''s `$uploadsStorage` comes from this name.'}
+          - {line: 4, tip: 'Swap the adapter (local, aws, gcs) and the rest of the code stays the same.'}
+      - type: code
+        lang: php
+        file: 'src/Service/AvatarStorage.php'
+        variant: good
+        code: |
+          final readonly class AvatarStorage
+          {
+              public function __construct(private FilesystemOperator $uploadsStorage) {}
+
+              public function store(UploadedFile $file): string
+              {
+                  $key = sprintf('avatars/%s.%s', Uuid::v7(), $file->guessExtension());
+
+                  $stream = fopen($file->getPathname(), 'rb');
+                  $this->uploadsStorage->writeStream($key, $stream);   // stream, not all in RAM
+                  is_resource($stream) && fclose($stream);
+
+                  return $key;   // this is what goes into the database column
+              }
+          }
+        marks:
+          - {line: 7, tip: 'The server builds the key, so a user-supplied name can''t cause trouble.'}
+          - {line: 10, tip: '`writeStream` sends the file piece by piece, so even large files don''t eat much memory.'}
+      - type: quote
+        body: 'Keep the key in the database; keep the file in object storage.'
+    aside:
+      - type: tips
+        items:
+          - 'Keep the bucket private by default. To show a file, use a signed URL or a CDN.'
+          - 'Store `avatar_key VARCHAR(255)` in the column, not the full URL; if the domain changes later, the data stays valid.'
+      - type: commands
+        title: 'Packages'
+        items:
+          - {cmd: 'composer require league/flysystem-bundle', desc: 'The Flysystem bundle'}
+          - {cmd: 'composer require league/flysystem-aws-s3-v3', desc: 'The S3 adapter'}
+    check:
+      q: 'What is the benefit of storing only the key, not the full file URL, in the database?'
+      a: 'If the bucket, CDN or domain changes, the database data doesn''t need to change. You build the URL from the key when you need it.'
+
+  - slug: presigned-direct-upload
+    title: 'Presigned URLs: send the file straight to storage'
+    kind: howto
+    tldr: 'The server mints a time-limited signed URL; the Vue app PUTs the file straight to it, so the file never passes through your server.'
+    keywords: ['presigned URL', 'signed URL', 'direct upload', 'S3 PutObject', 'XMLHttpRequest progress']
+    blocks:
+      - type: text
+        body: |
+          The warehouse gate has to keep strangers out, but making every truck detour through the owner's office wastes time. So the owner hands over a signed slip good for 10 minutes (a **presigned URL**), and the truck unloads straight at the warehouse. Your PHP server never carries the weight of the file. It only grants permission, and afterwards confirms the file really arrived.
+      - type: visual
+        kind: sequence
+        caption: 'Three steps to upload: permission, direct upload, confirmation'
+        actors:
+          - {id: vue, label: 'Vue app', icon: browser, tip: 'The user picks the file in the browser.'}
+          - {id: api, label: 'Symfony API', icon: server, tip: 'Grants permission and verifies at the end; it never touches the file.'}
+          - {id: s3, label: 'Object storage', icon: storage, tip: 'The file arrives here directly.'}
+        messages:
+          - {from: vue, to: api, label: 'I want to upload avatar.jpg'}
+          - {from: api, to: vue, label: 'PUT to this URL within 10 minutes', dashed: true, tip: 'The URL carries a signature over the key, type and expiry; change any of them and it no longer matches.'}
+          - {from: vue, to: s3, label: 'PUT the file (directly)', tone: good, tip: 'It costs your server no CPU, memory or network.'}
+          - {from: vue, to: api, label: 'Upload finished'}
+          - {from: api, to: s3, label: 'Is the file there? How big?', tip: 'Verify it yourself instead of trusting the client blindly.'}
+          - {at: api, note: 'All good: save the key in the database', tone: good}
+      - type: code
+        lang: php
+        file: 'src/Controller/UploadController.php'
+        variant: good
+        code: |
+          #[Route('/uploads/presign', methods: ['POST'])]
+          #[IsGranted('ROLE_USER')]
+          public function presign(S3Client $s3, #[MapRequestPayload] PresignRequest $in): JsonResponse
+          {
+              $key = sprintf('avatars/%s.jpg', Uuid::v7());
+
+              $cmd = $s3->getCommand('PutObject', [
+                  'Bucket'      => $this->bucket,
+                  'Key'         => $key,
+                  'ContentType' => 'image/jpeg',   // signed: change it and the upload fails
+              ]);
+              $url = (string) $s3->createPresignedRequest($cmd, '+10 minutes')->getUri();
+
+              return $this->json(['key' => $key, 'url' => $url]);
+          }
+        marks:
+          - {line: 5, tip: 'The server decides the key. The client can''t choose where it writes.'}
+          - {line: 12, tip: 'After 10 minutes the URL dies. The shorter the lifetime, the less harm if it leaks.'}
+      - type: code
+        lang: vue
+        file: 'src/components/AvatarUpload.vue'
+        variant: good
+        code: |
+          <script setup lang="ts">
+          import { ref } from 'vue'
+          const progress = ref(0)
+
+          async function upload(file: File) {
+            const res = await fetch('/uploads/presign', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ size: file.size, type: file.type }),
+            })
+            const { key, url } = await res.json()
+
+            await new Promise<void>((resolve, reject) => {
+              const xhr = new XMLHttpRequest()
+              xhr.open('PUT', url)
+              xhr.setRequestHeader('Content-Type', 'image/jpeg')
+              xhr.upload.onprogress = (e) => (progress.value = Math.round((e.loaded / e.total) * 100))
+              xhr.onload = () => (xhr.status < 300 ? resolve() : reject(new Error('upload failed')))
+              xhr.onerror = () => reject(new Error('network'))
+              xhr.send(file)
+            })
+            await fetch('/uploads/confirm', { method: 'POST', body: JSON.stringify({ key }) })
+          }
+          </script>
+        marks:
+          - {line: 17, tip: '`fetch` can''t report upload progress, but `XMLHttpRequest` can, so it is used here.'}
+          - {line: 22, tip: 'After the upload, tell the server. It verifies, and only then stores the key in the database.'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'If the bucket''s CORS doesn''t allow your domain and the `PUT` method, the browser blocks the upload.'
+          - 'On confirm, the server must check size and type with `headObject`; it can''t take the client''s word for it.'
+      - type: refs
+        items:
+          - {to: 'security/input-validation', label: 'Validating uploaded files'}
+    check:
+      q: 'With a presigned URL the file goes straight to storage. What is left for the server to do?'
+      a: 'Grant permission (mint the URL) and verify after the upload: is the file really there, and are its size and type right? Only then is the key stored in the database.'
+
+  - slug: large-uploads-multipart
+    title: 'Large files: in pieces, and resumable'
+    kind: howto
+    tldr: 'Send a big file in one go and a dropped connection means starting over. Multipart upload splits it into parts, and only the failed part is resent.'
+    keywords: ['multipart upload', 'resumable upload', 'chunk', 'CompleteMultipartUpload', 'large files']
+    blocks:
+      - type: text
+        body: |
+          Send a 2 GB video in a single request, lose the connection at 90%, and everything is wasted. Just as a big shipment reaches the warehouse split into small sacks, **multipart upload** cuts the file into parts of 5 to 100 MB. Each part goes to its own URL, and at the end you say "all parts have arrived" and they are stitched together. A failed part can simply be sent again.
+      - type: visual
+        kind: steps
+        caption: 'The four steps of an S3 multipart upload'
+        steps:
+          - {title: '1. Create', body: 'The server gets an uploadId', tip: '`CreateMultipartUpload` returns an uploadId, which identifies this upload.'}
+          - {title: '2. Sign parts', body: 'A presigned URL for each part', tip: 'A separate `UploadPart` URL is created for each part number.'}
+          - {title: '3. Upload', body: 'The client PUTs the parts', tip: 'Each response returns an ETag; a failed part can be resent on its own.'}
+          - {title: '4. Complete', body: 'Stitch them together with all the ETags', tip: '`CompleteMultipartUpload` takes the list of part numbers and ETags and assembles the file.'}
+      - type: code
+        lang: php
+        file: 'src/Service/MultipartUploader.php'
+        variant: good
+        code: |
+          public function start(string $key): string
+          {
+              return $this->s3->createMultipartUpload([
+                  'Bucket' => $this->bucket, 'Key' => $key,
+              ])['UploadId'];
+          }
+
+          public function partUrl(string $key, string $uploadId, int $part): string
+          {
+              $cmd = $this->s3->getCommand('UploadPart', [
+                  'Bucket' => $this->bucket, 'Key' => $key,
+                  'UploadId' => $uploadId, 'PartNumber' => $part,
+              ]);
+              return (string) $this->s3->createPresignedRequest($cmd, '+1 hour')->getUri();
+          }
+
+          /** @param list<array{PartNumber:int, ETag:string}> $parts */
+          public function finish(string $key, string $uploadId, array $parts): void
+          {
+              $this->s3->completeMultipartUpload([
+                  'Bucket' => $this->bucket, 'Key' => $key, 'UploadId' => $uploadId,
+                  'MultipartUpload' => ['Parts' => $parts],
+              ]);
+          }
+        marks:
+          - {line: 14, tip: 'The URL lifetime is longer here, because a large file takes a long time.'}
+          - {line: 20, tip: 'The object appears only after this call. Until then the parts sit half-stored and nobody can read the file.'}
+      - type: quote
+        body: 'Split the big file, count the parts, and resend only the one that failed.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Incomplete multipart uploads cost money. Add a lifecycle rule to the bucket so they are aborted after 7 days.'
+          - 'Every part except the last must be at least 5 MB, or S3 fails on complete.'
+      - type: when
+        use:
+          - 'Videos, backups, large PDFs, or any file over 100 MB'
+        avoid:
+          - 'Small files such as profile photos: a plain presigned PUT is enough'
+      - type: refs
+        items:
+          - {to: 'infra/cloud-primitives', label: 'Object storage and cloud building blocks'}
+    check:
+      q: 'A 2 GB file goes up in 400 parts and the connection drops at part 399. What must be resent?'
+      a: 'Only that failed part (and any that never went). The earlier parts are already stored, so you don''t start from scratch.'
+
+flashcards:
+  - q: 'What is wrong with storing photos in a database BLOB column?'
+    a: 'The database bloats, backups become huge, and every photo read adds load on the database.'
+    more: |
+      A database is good at complex queries and small rows, not large binaries. BLOBs also raise cache and replication costs. Keep the photo in object storage and only the key in the database.
+    ref: photos-in-the-wrong-place
+  - q: 'When does saving uploads on the server''s local disk break?'
+    a: 'When you have more than one server or container, and when a deploy wipes the files.'
+    more: |
+      Every server has its own disk. If the load balancer sends a request to a different server, the file isn't there. Rebuilding a container also erases the files on its disk. To keep servers stateless, keep files outside them.
+    ref: photos-in-the-wrong-place
+  - q: 'What is a "key" in object storage?'
+    a: 'The unique path-like name of a file (such as `avatars/uuid.jpg`) that you use to find it in storage.'
+    more: |
+      The server builds the key itself, usually with a UUID, so two people's files never collide on a name. Storing the key rather than the URL in the database means the data stays valid when the domain or CDN changes.
+    ref: object-storage-flysystem
+  - q: 'What is Flysystem used for in Symfony?'
+    a: 'It gives one API for local disk, S3, GCS and more; changing storage means changing only config.'
+    more: |
+      `FilesystemOperator`'s `write`, `writeStream`, `read` and `delete` stay the same in your code. The usual pattern is the local adapter in development and the aws adapter in production. For large files use `writeStream` so you don't run out of RAM.
+    ref: object-storage-flysystem
+  - q: 'What is a presigned URL?'
+    a: 'A time-limited URL signed by the server, with which a client can put or read a file in storage directly.'
+    more: |
+      The signature covers the key, the HTTP method, the expiry and sometimes the content type; if any of those change, storage rejects it. When it expires, the URL stops working. That way you grant access without handing the client the storage credentials.
+    ref: presigned-direct-upload
+  - q: 'Why must the server run a confirm step after an upload?'
+    a: 'It doesn''t trust the client: it checks that the file exists and that its size and type are right, and only then saves the key.'
+    more: |
+      A client can claim "done" without uploading anything, or upload a file of a different size. The server uses `headObject` to check the size and content type. If everything matches, it moves the database record from `pending` to `uploaded`.
+    ref: presigned-direct-upload
+  - q: 'When do you need multipart upload, and how does it work?'
+    a: 'For big files (100 MB+): the file is cut into parts, each sent to its own URL, and finally all the parts are stitched together.'
+    more: |
+      The steps: `CreateMultipartUpload` (uploadId), a presigned `UploadPart` per part, collect the ETags, and finally `CompleteMultipartUpload`. If a part fails, you resend only that one. Add a lifecycle rule so abandoned parts don't keep costing you.
+    ref: large-uploads-multipart
+
+quiz:
+  - q: 'The app runs on 2 servers. A user uploaded a photo, but it shows up sometimes and returns 404 other times. What is the likely cause?'
+    hint: 'Where exactly was the photo saved?'
+    options:
+      - text: 'The photo is on one server''s local disk and not on the other'
+        correct: true
+        why: 'When the load balancer sends the request to the server without the file, you get a 404.'
+      - text: 'The photo is too large'
+        correct: false
+        why: 'If size were the problem it would fail every time; this one is intermittent.'
+      - text: 'The CDN cache is wrong'
+        correct: false
+        why: 'The problem changes with the server, which points to where the file lives.'
+      - text: 'The database is slow'
+        correct: false
+        why: 'Slowness would cause delays; a 404 means the file wasn''t found.'
+    ref: photos-in-the-wrong-place
+  - q: 'What are the risks in this code?'
+    lang: php
+    code: |
+      $name = $request->files->get('doc')->getClientOriginalName();
+      $request->files->get('doc')->move($uploadDir, $name);
+      $doc->setPath('/uploads/'.$name);
+    hint: 'The user-supplied name is used directly.'
+    options:
+      - text: 'If two people upload the same name, one overwrites the other''s file'
+        correct: true
+        why: 'A client''s file name isn''t unique. The key should be a server-generated UUID.'
+      - text: 'The file lives on only one server''s disk'
+        correct: true
+        why: 'Another server, or a new deploy, won''t find it.'
+      - text: '`move()` is an old PHP method and won''t work'
+        correct: false
+        why: '`move()` works fine; the problem is where the file goes and what it is called.'
+      - text: 'A name containing ../ could write outside the folder'
+        correct: true
+        why: 'Trusting a name sent by the client is dangerous; a key the server builds itself is safe.'
+    ref: object-storage-flysystem
+  - q: 'What is the benefit of uploading with a presigned URL?'
+    hint: 'Which route does the file take?'
+    options:
+      - text: 'The file goes straight to storage, saving your server''s CPU, memory and network'
+        correct: true
+        why: 'The server only grants permission and does none of the heavy carrying.'
+      - text: 'The upload needs no verification'
+        correct: false
+        why: 'Verification is still needed; in the confirm step the server checks size and type.'
+      - text: 'The URL works forever'
+        correct: false
+        why: 'The URL has an expiry, and that is part of its security.'
+      - text: 'You can leave the bucket public to everyone'
+        correct: false
+        why: 'A public bucket is dangerous; presigned URLs exist precisely to avoid that.'
+    ref: presigned-direct-upload
+  - q: 'After the upload, the client calls `/uploads/confirm`. What is the right server behaviour?'
+    hint: 'The client may lie.'
+    options:
+      - text: 'Go to storage, check with `headObject` that the file exists and its size and type are right, then save the key'
+        correct: true
+        why: 'A client can be wrong by accident or on purpose, so checking for yourself is the safe route.'
+      - text: 'Save whatever the client said in the database'
+        correct: false
+        why: 'If the file isn''t there, you collect broken references in the database.'
+      - text: 'Download every file and scan it on the server each time'
+        correct: false
+        why: 'That throws away the point of presigned URLs; `headObject` is enough for checking size and type.'
+      - text: 'Do nothing, because there is a URL'
+        correct: false
+        why: 'A URL existing is not proof that a file was uploaded.'
+    ref: presigned-direct-upload
+  - q: 'A 500 MB video is going up in 50 parts, and part 23 fails when the connection drops. What is the right move?'
+    hint: 'What happened to the other parts?'
+    options:
+      - text: 'Resend only part 23 (and any that never went), then complete'
+        correct: true
+        why: 'The other parts are stored under the uploadId; they needn''t be sent again.'
+      - text: 'Start the whole file over'
+        correct: false
+        why: 'That is exactly the problem multipart upload is meant to avoid.'
+      - text: 'Treat whatever arrived as the file'
+        correct: false
+        why: 'Without calling complete the file is never created, and with missing parts it would be corrupt.'
+      - text: 'Call complete without the ETags'
+        correct: false
+        why: 'Complete needs every part''s number and ETag.'
+    ref: large-uploads-multipart

@@ -1,0 +1,319 @@
+slides:
+  - slug: save-then-crash
+    title: 'Order saved, but the news got lost'
+    kind: story
+    tldr: 'Writing to the database and sending a message are two separate systems, so one transaction can''t cover both; a crash in between does one and not the other (a dual write).'
+    keywords: ['dual write', 'lost event', 'crash between', 'publish after commit', 'message broker', 'atomicity']
+    blocks:
+      - type: text
+        body: |
+          Rahim's order service saves order 101 to the database, then is supposed to send an `OrderPlaced` message to the message broker so the stock service can set the goods aside. Right between the commit and the publish, the server crashes. The order exists, but nobody heard about it: stock is never reserved, and the customer never gets the product. This is called a **dual write**: one fact written to two places, with no way to tie the two writes together.
+      - type: visual
+        kind: sequence
+        caption: 'The commit succeeded, but the server crashed before publishing'
+        actors:
+          - {id: app, label: 'Order service', icon: server, tip: 'Responsible for both saving the order and sending the event, but these happen in two different systems.'}
+          - {id: db, label: 'Database', icon: db, tip: 'Has its own transaction, but knows nothing about the broker.'}
+          - {id: broker, label: 'Message broker', icon: queue, tip: 'Tells the stock service when it receives an event. If nothing arrives, it tells nobody anything.'}
+        messages:
+          - {from: app, to: db, label: 'Save order 101, COMMIT'}
+          - {from: db, to: app, label: 'OK', dashed: true}
+          - {at: app, note: 'Crash! Never reached publish', tone: bad, tip: 'The database part is done but the broker part is not. This gap is always there.'}
+          - {at: broker, note: 'OrderPlaced never arrives', tone: bad, tip: 'Stock will never be reserved, because nobody even knows about the order.'}
+      - type: quote
+        body: 'Writing to the database and sending a message never happen in one transaction: there is always a gap in between.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Reversing the order (publish first, commit after) is no better: if the commit fails, an event goes out for an order that doesn''t exist.'
+          - 'A `try/catch` doesn''t close this gap, because when the process crashes, the catch block doesn''t run either.'
+      - type: terms
+        items:
+          - {term: 'Dual write', meaning: 'Writing the same fact to two separate systems that have no atomic transaction between them.'}
+    check:
+      q: 'What problem do you get if you publish first and commit afterwards?'
+      a: 'If the commit fails, the event has already gone out but the order doesn''t exist. The stock service will reserve goods for an order that never existed.'
+
+  - slug: outbox-register
+    title: 'The "to be sent" ledger: transactional outbox'
+    kind: concept
+    tldr: 'Write the event to an outbox table in your own database, in the same transaction as the data; a separate relay sends it to the broker later, so the fact and the news can never drift apart.'
+    keywords: ['transactional outbox', 'relay', 'publisher', 'outbox table', 'at-least-once', 'outbox pattern']
+    blocks:
+      - type: metaphor
+        icon: book
+        title: 'The shop''s "to be sent" ledger'
+        body: |
+          A shopkeeper writes "10 kg of rice for Rina" in the sales ledger, and **on the same page, with the same pen**, writes "tell the warehouse". Both are written together, so you never get one without the other. Later the delivery boy goes round and carries those "tell the warehouse" lines to the warehouse, ticking each one off when it's delivered. If he dies halfway, the line is still there and someone else will send it.
+      - type: visual
+        kind: flow
+        caption: 'The order and the event share one transaction; sending is the relay''s job'
+        nodes:
+          - {id: app, label: 'Order service', sub: 'Symfony', icon: server, col: 0, row: 1, tip: 'Writes the order and the event in the same transaction. Never calls the broker directly.'}
+          - {id: db, label: 'Database', sub: 'orders + outbox', icon: db, tone: accent, col: 2, row: 0, tip: 'Both tables are written in one transaction, so either both rows exist or neither does.'}
+          - {id: relay, label: 'Relay', sub: 'the delivery boy', icon: truck, col: 2, row: 2, tip: 'A separate process that finds unsent rows in the outbox and delivers them to the broker.'}
+          - {id: broker, label: 'Message broker', sub: 'RabbitMQ', icon: queue, col: 4, row: 1, tip: 'Accepts the event and hands it to the consumers.'}
+        edges:
+          - {from: app, to: db, label: 'The order and the outbox row are written in one transaction', tone: good}
+          - {from: relay, to: db, label: 'The relay looks for unsent rows in the outbox'}
+          - {from: db, to: relay, label: 'The database returns those rows', dashed: true}
+          - {from: relay, to: broker, label: 'The relay publishes the rows to the broker'}
+          - {from: relay, to: db, label: 'It stamps sent_at on the delivered rows', tone: good}
+      - type: text
+        body: |
+          If the relay crashes after publishing but before it sets `sent_at`, that event goes out again. So an outbox gives you **at-least-once** delivery: an event is never lost, but it may arrive twice. That double delivery is why the consumer needs an **inbox**.
+    aside:
+      - type: terms
+        items:
+          - {term: 'Outbox', meaning: 'A table in your own database where events meant for the outside world are written first.'}
+          - {term: 'Relay', meaning: 'The process that reads the outbox and sends the events out.'}
+      - type: remember
+        body: 'Write in the ledger first, the delivery boy sends later. The fact and the news share one pen.'
+    check:
+      q: 'Which problem goes away when the event and the order are written in the same transaction?'
+      a: 'The mismatch where the order exists but the event doesn''t (or the reverse). The two either commit together or roll back together.'
+
+  - slug: outbox-and-relay
+    title: 'Writing the outbox and running the relay: Doctrine and Messenger'
+    kind: howto
+    tldr: 'Persist the Order and an OutboxMessage in one flush; the relay picks a batch with FOR UPDATE SKIP LOCKED, dispatches it on the Messenger bus and sets sent_at.'
+    keywords: ['Doctrine', 'Messenger', 'SKIP LOCKED', 'relay command', 'outbox entity', 'wrapInTransaction']
+    blocks:
+      - type: code
+        lang: php
+        file: 'src/Order/PlaceOrderHandler.php'
+        variant: good
+        code: |
+          public function __invoke(PlaceOrder $cmd): void
+          {
+              $this->em->wrapInTransaction(function () use ($cmd): void {
+                  $order = Order::place($cmd->customerId, $cmd->lines);
+                  $this->em->persist($order);
+
+                  $event = new OrderPlaced((string) Uuid::v7(), $order->getId(), $cmd->lines);
+                  $this->em->persist(new OutboxMessage(
+                      id: $event->messageId,
+                      type: OrderPlaced::class,
+                      payload: $this->serializer->serialize($event, 'json'),
+                  ));
+              });                                  // both commit together
+          }
+        marks:
+          - {line: 3, tip: 'The whole block is one transaction. If an exception is thrown, the order and the outbox row both roll back.'}
+          - {line: 7, tip: 'The message id is created right here. The consumer will later use this id to spot duplicates.'}
+          - {line: 8, tip: 'The event does not go to the broker directly: it just becomes a row in the outbox table.'}
+      - type: code
+        lang: php
+        file: 'src/Outbox/OutboxRelay.php'
+        variant: good
+        code: |
+          public function publishBatch(int $limit = 50): int
+          {
+              return $this->db->transactional(function () use ($limit): int {
+                  $rows = $this->db->fetchAllAssociative(
+                      "SELECT id, type, payload FROM outbox WHERE sent_at IS NULL
+                       ORDER BY created_at LIMIT $limit FOR UPDATE SKIP LOCKED"
+                  );
+                  foreach ($rows as $r) {
+                      $message = $this->serializer->deserialize($r['payload'], $r['type'], 'json');
+                      $this->bus->dispatch($message);          // a real broker transport
+                      $this->db->update('outbox', ['sent_at' => date('c')], ['id' => $r['id']]);
+                  }
+
+                  return count($rows);
+              });
+          }
+        marks:
+          - {line: 6, tip: 'SKIP LOCKED: when several relays run at once, each skips the rows another has taken, so the work is shared without blocking.'}
+          - {line: 10, tip: 'The actual publish. If it fails, an exception is thrown, the transaction rolls back and the row stays unsent.'}
+          - {line: 11, tip: 'The dispatch succeeded, but if we crash before this write, the event goes out again. That is the price of at-least-once.'}
+    aside:
+      - type: tips
+        items:
+          - 'Run the relay from a console command or a Scheduler task, every second or every few seconds. Delete old sent rows after about a week.'
+          - 'A lighter option: if Messenger''s Doctrine transport uses the same connection, `dispatch()` itself behaves like an outbox. You need the relay above only when publishing to a separate broker.'
+      - type: commands
+        items:
+          - {cmd: 'php bin/console messenger:consume async -vv', desc: 'start a consumer worker'}
+      - type: refs
+        items:
+          - {to: 'messaging/delivery-guarantees', label: 'At-least-once and exactly-once'}
+    check:
+      q: 'Why does the relay use `FOR UPDATE SKIP LOCKED`?'
+      a: 'When two relays run at once, they split the rows instead of both taking the same one. A row locked by one relay is skipped by the other, which moves on to the next.'
+
+  - slug: inbox-dedup
+    title: 'Arrives twice, runs once: dedup with an inbox'
+    kind: pitfall
+    tldr: 'An outbox is at-least-once, so the consumer will see the same message twice; the handler inserts the message id into an inbox table in the same transaction to skip duplicates.'
+    keywords: ['inbox pattern', 'idempotent consumer', 'dedup', 'message id', 'ON CONFLICT', 'duplicate message']
+    blocks:
+      - type: text
+        body: |
+          If the relay crashes and sends the same `OrderPlaced` twice, a naive handler reduces stock twice. The fix: the receiver keeps a **delivery register** (the inbox). The first time a message id arrives, it writes the id in the register and does the work. The second time, it sees "this delivery was already taken in" and walks away.
+      - type: code
+        lang: php
+        file: 'src/Stock/ReserveStockHandler.php (wrong)'
+        variant: bad
+        code: |
+          #[AsMessageHandler]
+          public function __invoke(OrderPlaced $m): void
+          {
+              $this->stock->reserve($m->orderId, $m->lines);   // arrives twice, reserves twice
+          }
+        marks:
+          - {line: 4, tip: 'The handler has no idea whether it has seen this message before. With at-least-once delivery, that is a bug.'}
+      - type: code
+        lang: php
+        file: 'src/Stock/ReserveStockHandler.php'
+        variant: good
+        code: |
+          #[AsMessageHandler]
+          public function __invoke(OrderPlaced $m): void
+          {
+              $this->db->transactional(function () use ($m): void {
+                  $isNew = $this->db->executeStatement(
+                      'INSERT INTO inbox (message_id, handler, received_at)
+                       VALUES (?, ?, now()) ON CONFLICT (message_id, handler) DO NOTHING',
+                      [$m->messageId, self::class],
+                  );
+                  if (0 === $isNew) {
+                      return;                       // already done
+                  }
+                  $this->stock->reserve($m->orderId, $m->lines);
+              });
+          }
+        marks:
+          - {line: 6, tip: 'A unique constraint on (message_id, handler). The same message cannot get a second row for this handler.'}
+          - {line: 10, tip: '0 rows means it was already handled. Just return; throwing an exception would make Messenger retry for nothing.'}
+          - {line: 13, tip: 'The inbox write and the stock change share one transaction, so if the work fails, the inbox row rolls back too.'}
+      - type: quote
+        body: 'The outbox guarantees the sending side, the inbox guarantees the receiving side. Together they give you "effectively once".'
+    aside:
+      - type: remember
+        body: 'Outbox = never lost. Inbox = never run twice.'
+      - type: when
+        use: ['Saving to the database and publishing an event are both essential, together', 'Running the consumer''s work twice would do harm (stock, money, email)']
+        avoid: ['The work is naturally idempotent (like "set the status"), where a separate inbox may not be needed']
+    check:
+      q: 'What goes wrong if the inbox insert and the real work are in separate transactions?'
+      a: 'If you crash after the insert but before the work, the message counts as "done" although nothing happened. The retry sees the earlier row and returns, so the work never gets done.'
+
+flashcards:
+  - q: 'What is the dual write problem?'
+    a: 'Writing the same fact to two separate systems (say a database and a message broker) that have no atomic transaction between them. One write can succeed while the other fails.'
+    more: |
+      The order is committed, but the server crashes before the event goes out: the order exists, the news doesn't. Reversing the order doesn't help either: the event goes out, but the commit fails. Two systems can't be tied into one transaction, so you need a different technique.
+    ref: save-then-crash
+  - q: 'How does the transactional outbox work?'
+    a: 'Instead of sending the event out, you first write it to an outbox table in your own database, in the same transaction as the data. A separate relay sends it later.'
+    more: |
+      The order and the outbox row commit or roll back together, so the fact and the news never drift apart. Sending becomes a separate job that can be retried, and a crash never loses an event.
+    ref: outbox-register
+  - q: 'What does an outbox relay do?'
+    a: 'It is a separate process that takes unsent rows from the outbox table, publishes them to the broker, and then marks the rows as sent.'
+    more: |
+      A relay can be a console command, a Scheduler task or a loop. When you run several, `FOR UPDATE SKIP LOCKED` lets them skip each other's rows and share the work.
+    ref: outbox-and-relay
+  - q: 'Which delivery guarantee does an outbox give, and what follows from it?'
+    a: 'At-least-once: an event is never lost, but the same event may be sent twice. So the consumer must handle duplicates.'
+    more: |
+      If the relay crashes after publishing but before marking the row as sent, the event goes out again. You can't eliminate that risk, so the receiving side needs an inbox or some other idempotency mechanism.
+    ref: outbox-register
+  - q: 'What is the inbox pattern?'
+    a: 'The consumer inserts each message id into a table with a unique constraint before doing the work. If the same id arrives again, the insert affects 0 rows and the work is skipped.'
+    more: |
+      The inbox insert and the real work must be in the same transaction. Then if the work fails, the inbox row rolls back as well, and a retry gets another chance to do it.
+    ref: inbox-dedup
+  - q: 'Why do you need both an outbox and an inbox?'
+    a: 'The outbox ensures an event is never lost on the sending side. The inbox ensures a duplicate event doesn''t do its work twice on the receiving side.'
+    more: |
+      Either one alone is half a solution. Without an outbox, events get lost; without an inbox, events run twice. Together the result is "effectively once".
+    ref: inbox-dedup
+  - q: 'Why does the relay use `SKIP LOCKED`?'
+    a: 'When several relays run at once, one skips the rows another has locked and takes the next ones. The work is shared and nobody waits.'
+    more: |
+      Without `SKIP LOCKED`, the second relay would either wait for the lock or send the same row twice. Both PostgreSQL and MySQL 8 support it.
+    ref: outbox-and-relay
+
+quiz:
+  - q: 'An order service saves the order and then calls `$bus->dispatch(new OrderPlaced(...))` (RabbitMQ transport). When does this cause trouble?'
+    hint: 'What if something happens between the commit and the dispatch?'
+    options:
+      - text: 'If the server crashes after the commit but before the dispatch, the event is lost'
+        correct: true
+        why: 'The database and the broker are not in one transaction. In the gap between them, the fact and the news come apart.'
+      - text: 'RabbitMQ is slow, so saving the order fails'
+        correct: false
+        why: 'The dispatch happens after the commit, so a slow broker doesn''t block saving. The problem is losing events, not speed.'
+      - text: 'Messenger serializes the same message twice'
+        correct: false
+        why: 'That doesn''t happen; the real problem is that the two systems are not in one transaction.'
+      - text: 'There is no problem, because Messenger is itself atomic'
+        correct: false
+        why: 'The broker outside Messenger and the database are separate systems, so the pair is not atomic.'
+    ref: save-then-crash
+  - q: 'Which is the correct order of work for an outbox?'
+    hint: 'What is written first, and who sends to the broker?'
+    options:
+      - text: 'Commit the order, then the service publishes to the broker directly, then logs to the outbox'
+        correct: false
+        why: 'This has the same gap as before; the outbox saves nothing here.'
+      - text: 'Order and outbox row in one transaction, then the relay takes the row and publishes, then marks it sent'
+        correct: true
+        why: 'The write is atomic and sending is a separate job. After a crash the row is still unsent, so the relay sends it again.'
+      - text: 'The relay publishes first, then the order is saved'
+        correct: false
+        why: 'If saving the order fails, an event goes out for an order that doesn''t exist.'
+      - text: 'The outbox and the order in two separate transactions, then publish'
+        correct: false
+        why: 'Separate transactions leave a gap in between, which is exactly what the outbox is meant to avoid.'
+    ref: outbox-register
+  - q: 'In the code below, the relay crashes after the dispatch but before setting `sent_at`. What happens next?'
+    lang: php
+    code: |
+      foreach ($rows as $r) {
+          $this->bus->dispatch($this->decode($r));
+          $this->db->update('outbox', ['sent_at' => date('c')], ['id' => $r['id']]);
+      }
+    hint: 'If sent_at isn''t set, what will the relay think of the row next time?'
+    options:
+      - text: 'The row stays unsent, the relay sends it again, and the consumer sees a duplicate'
+        correct: true
+        why: 'This is the price of at-least-once, and the reason the consumer needs an inbox.'
+      - text: 'The event is lost for good'
+        correct: false
+        why: 'It would be lost without an outbox. Here the row is still in the table.'
+      - text: 'The order rolls back'
+        correct: false
+        why: 'The order was committed long ago; a relay failure doesn''t touch it.'
+    ref: outbox-and-relay
+  - q: 'You add an inbox to the stock handler. Which of these behaviours are correct?'
+    hint: 'Which transaction holds the inbox write and the stock change?'
+    options:
+      - text: 'The inbox insert and the stock reservation are in the same transaction'
+        correct: true
+        why: 'If the work fails, the inbox row rolls back too, so a retry can do the work again.'
+      - text: 'A unique constraint on `(message_id, handler)`'
+        correct: true
+        why: 'The same message can''t be inserted a second time for this handler, and 0 affected rows tells you it''s a duplicate.'
+      - text: 'Commit the insert first, then reserve stock'
+        correct: false
+        why: 'If you crash in between, the message counts as "done" but the stock was never reduced.'
+      - text: 'On a duplicate, throw an exception so Messenger retries'
+        correct: false
+        why: 'That only causes pointless retries, and the message ends up in the failure queue. Returning quietly is correct.'
+    ref: inbox-dedup
+  - q: 'Rahim says: "We have an outbox, so the consumer doesn''t need idempotency any more." Is he right?'
+    hint: 'Which delivery guarantee does an outbox give?'
+    options:
+      - text: 'Yes, an outbox gives exactly-once'
+        correct: false
+        why: 'An outbox is at-least-once, not exactly-once.'
+      - text: 'No, if the relay crashes an event can go out twice, so the consumer must handle duplicates'
+        correct: true
+        why: 'An outbox prevents loss, not duplicates. You need both an outbox and an inbox.'
+      - text: 'No, because an outbox never sends the event at all'
+        correct: false
+        why: 'An outbox does send the event; the question is how many times.'
+    ref: inbox-dedup

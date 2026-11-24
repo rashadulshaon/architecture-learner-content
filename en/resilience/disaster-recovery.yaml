@@ -1,0 +1,370 @@
+slides:
+  - slug: whole-region-down
+    title: 'The whole region is down, and the backup is in it'
+    kind: story
+    tldr: 'If the app, database and backup are all in one region, a single disaster takes everything. A disaster plan means preparing a way back somewhere else in advance.'
+    keywords: ['disaster recovery', 'region outage', 'single region', 'backup location', 'disaster', 'DR']
+    blocks:
+      - type: metaphor
+        icon: shop
+        title: 'The corner shop''s credit ledger'
+        body: |
+          Every night the shopkeeper photocopies the credit ledger (the book where he writes down who owes what) and keeps the copy in the shop's own drawer. One day the shop catches fire. The original ledger burns, and so does the photocopy, because both were in the same place. And he has no idea where he will trade tomorrow. If your database and backup sit in one region, you are in exactly the same position.
+      - type: visual
+        kind: flow
+        caption: 'Everything in one region: no way back after a disaster'
+        nodes:
+          - {id: users, label: 'Users', icon: users, col: 0, row: 1, tip: 'All they know is that the site won''t open. They have no need to know why.'}
+          - {id: appa, label: 'Region A', sub: 'app + database', icon: server, tone: bad, col: 2, row: 0, tip: 'A data centre in Dhaka, or one cloud region. Everything runs here.'}
+          - {id: backup, label: 'Backup', sub: 'also in Region A', icon: archive, tone: bad, col: 4, row: 0, tip: 'Taken every night, but kept in storage in the same region. If the region goes, so does this.'}
+          - {id: regionb, label: 'Region B', sub: 'nothing there', icon: cloud, tone: muted, col: 2, row: 2, tip: 'There is another place, but it has no code, no database and no plan.'}
+        edges:
+          - {from: users, to: appa, label: 'All traffic goes to a single region'}
+          - {from: appa, to: backup, label: 'Every night the backup goes to storage in the same region', tone: warn}
+          - {from: users, to: appa, label: 'Region A is down: the app and the backup are both unreachable, and there is no response for 6 hours', tone: bad, dashed: true}
+          - {from: users, to: regionb, label: 'No way back: nothing is set up in Region B', tone: muted, dashed: true}
+      - type: quote
+        body: 'If the place a backup depends on goes, the backup goes with it.'
+    aside:
+      - type: story
+        title: 'A fire in the data centre'
+        body: |
+          A fire broke out in one data centre of a large cloud provider and took many customers' servers offline. Customers whose backups were in another data centre or region were back within the day. Some of the rest never got their data back.
+      - type: terms
+        items:
+          - {term: 'Region', meaning: 'A cluster of data centres in a geographically separate area, such as Singapore or Mumbai. When one region fails, another usually survives.'}
+          - {term: 'Disaster recovery (DR)', meaning: 'The plan and setup for bringing a system back after a major disaster (a region down, data deleted).'}
+    check:
+      q: 'The nightly backup is taken every day, yet it was no use in a regional disaster. What is the likely reason?'
+      a: 'The backup was kept in the same region, so it went down with the region. Backups must be kept in a different region.'
+
+  - slug: rpo-rto
+    title: 'RPO and RTO: how much we lose, how long we are down'
+    kind: concept
+    tldr: 'RPO is the most data (measured in time) you can afford to lose, and RTO is the longest you can afford to be down. The business sets both, and the lower you want them, the more they cost.'
+    keywords: ['RPO', 'RTO', 'recovery point objective', 'recovery time objective', 'data loss', 'downtime']
+    blocks:
+      - type: text
+        body: |
+          The shop fire makes it easy to see. Whatever was written in the ledger after the last photocopy is lost: that span of time is the **RPO** (Recovery Point Objective). And the time it takes for the shop to open again is the **RTO** (Recovery Time Objective). An objective is a limit you set in advance, not a number you read off after the event.
+      - type: visual
+        kind: steps
+        caption: 'The timeline of one disaster: 7 minutes of data lost, 83 minutes down'
+        steps:
+          - {title: '10:00 last backup', body: 'Anything written from now on exists only in the main database.', tip: 'The more frequent the backup or replication, the closer this point sits to the disaster.'}
+          - {title: '10:07 disaster', body: 'The region goes down. Seven minutes of data, from 10:00 to 10:07, is lost.', tone: bad, tip: 'Those 7 minutes are the data actually lost. If the limit (RPO) was lower than this, the target was missed.'}
+          - {title: '10:07-11:30', body: 'Recovery work: restore the backup, start the app, move the traffic.', tone: warn, tip: 'During this time users can do nothing.'}
+          - {title: '11:30 back up', body: 'Down for 83 minutes in total. This is the actual recovery time this time.', tone: good, tip: 'If the limit (RTO) was 60 minutes, the target was missed this time, and the gap has to be fixed before the next drill.'}
+      - type: visual
+        kind: table
+        caption: 'Different RPO and RTO for different work, by importance'
+        headers: ['Work', 'RPO', 'RTO']
+        rows:
+          - cells: ['Payments and balances', 'Nearly 0 (seconds)', '15 minutes']
+            tip: 'Losing money data does direct harm. This needs continuous replication and fast failover, and that is the most expensive option.'
+          - cells: ['Orders and carts', '5 minutes', '1 hour']
+            tip: 'If a few minutes of orders are lost, customers can order again. That is tolerable.'
+          - cells: ['Reports and analytics', '24 hours', '1 day']
+            tip: 'The nightly backup is enough. These can be rebuilt.'
+      - type: quote
+        body: 'The business sets RPO and RTO, not the engineer. The lower you want them, the more they cost.'
+    aside:
+      - type: remember
+        body: 'RPO = how much data is gone (look backwards). RTO = how long we are down (look forwards).'
+      - type: terms
+        items:
+          - {term: 'RPO', meaning: 'The most data, measured in time, that the business will accept losing.'}
+          - {term: 'RTO', meaning: 'The longest the business will tolerate between a disaster and being back up.'}
+      - type: refs
+        items:
+          - {to: 'recovery/backups-restore', label: 'Backups and restore'}
+    check:
+      q: 'Backups are taken once every 24 hours. What can your RPO be at most, and why is that not enough for payments?'
+      a: 'Up to 24 hours: if the disaster hits just before the backup, a whole day of data is gone. That is unacceptable for payments, so you need continuous replication.'
+
+  - slug: multi-region-patterns
+    title: 'Two branches: active-passive vs active-active'
+    kind: compare
+    tldr: 'Active-passive: the second region stands ready, and traffic moves there in a disaster. Active-active: both regions serve traffic, but reconciling data written in two places is the truly hard part.'
+    keywords: ['active-passive', 'active-active', 'multi-region', 'replication lag', 'failover', 'conflict']
+    blocks:
+      - type: text
+        body: |
+          Say the shop has two branches, in Dhaka and Chattogram. **Active-passive**: the Chattogram branch only waits, receives copies of Dhaka's ledger, and takes over if Dhaka closes. **Active-active**: both branches serve customers. But if the same customer's credit is written differently in the two branches, it can't be reconciled later. That is a conflict.
+      - type: visual
+        kind: compare
+        caption: 'The two patterns side by side'
+        columns:
+          - title: 'Active-passive'
+            tone: good
+            icon: check
+            tip: 'The right start for most systems. It is simple, because writes happen in one place only.'
+            items:
+              - 'One region serves traffic, the other stands ready'
+              - 'Data is replicated from the main region to the other (async)'
+              - 'In a disaster the other becomes primary and DNS is moved'
+              - 'RTO: minutes to hours, RPO: the replication lag'
+              - 'Lower cost: the standby region can be smaller'
+          - title: 'Active-active'
+            tone: warn
+            icon: warning
+            tip: 'It gives fast failover and low latency, but handling data conflicts is one of the hardest problems in engineering.'
+            items:
+              - 'Both regions handle reads and writes'
+              - 'Data replicates both ways, and conflicts must be reconciled'
+              - 'If one goes down the other is already running, so RTO is nearly zero'
+              - 'Answers come from the region closest to the user: lower latency'
+              - 'The highest cost and complexity'
+      - type: points
+        title: 'What you must settle in multi-region'
+        style: number
+        items:
+          - 'Who moves the traffic: DNS or a global load balancer, with a short DNS TTL'
+          - 'How big the replication lag is: this is your real RPO, so measure it'
+          - 'Where writes go: one region or two'
+          - 'Whether sessions, cache, file storage and secrets exist in the other region'
+      - type: quote
+        body: 'Before choosing active-active, ask yourself: do I really need to write in two places?'
+    aside:
+      - type: when
+        use: ['Active-passive: most businesses, where an RTO of minutes to hours is tolerable', 'Active-active: a global user base, or when you want an RTO near zero']
+        avoid: ['Active-active: a small team on a limited budget, when active-passive is enough']
+      - type: refs
+        items:
+          - {to: 'data/replication', label: 'Replication and lag'}
+          - {to: 'scaling/cap-pacelc', label: 'The clash between consistency and availability'}
+    check:
+      q: 'In active-active, what happens when the same user''s address is changed two different ways in two regions at once, and why is that not a problem in active-passive?'
+      a: 'The two regions write two different values and create a conflict, which needs a rule to reconcile. In active-passive, writes happen in only one region, so there is no conflict at all.'
+
+  - slug: game-day-drill
+    title: 'Game day: break things on purpose to test'
+    kind: howto
+    tldr: 'A DR plan you haven''t tested is only a hope. On a chosen day, run a failover on purpose, measure the real RPO and RTO, and fix whatever turns out wrong.'
+    keywords: ['game day', 'failover drill', 'runbook', 'pg_promote', 'replication lag', 'testing']
+    blocks:
+      - type: text
+        body: |
+          It is like a fire drill: everyone knows the way out before the fire starts. In a **game day**, the team picks a day and, with everyone aware, causes a failure on purpose and runs the whole recovery path. The aim is not to find someone to blame but to find the gaps.
+      - type: visual
+        kind: steps
+        caption: 'The six steps of a game day'
+        steps:
+          - {title: '1. Set the goal', body: 'RPO 1 minute, RTO 30 minutes. This is the pass/fail mark.', tip: 'Write the limits down before the drill starts, or afterwards you can call it "good enough".'}
+          - {title: '2. Write the runbook', body: 'Step by step who does what, with commands.', tip: 'A good runbook is one that even a newcomer can follow when the usual person is on leave.'}
+          - {title: '3. Cause the failure', body: 'In staging first. Later, in a controlled way in production at low traffic.', tone: warn, tip: 'Build confidence in staging, then production. In production, keep someone watching and the stop switch in hand.'}
+          - {title: '4. Run the recovery', body: 'Following the runbook, with timing.', tip: 'Any step where someone gets stuck or has to guess is a gap in the runbook.'}
+          - {title: '5. Measure', body: 'The real RPO and RTO, compared with the goal.', tip: 'The most useful numbers: how long it really took this time, and how much data was lost.'}
+          - {title: '6. Fix', body: 'A list of gaps, with owners and dates.', tone: good, tip: 'A drill pays off only when its gaps are fixed before the next drill.'}
+      - type: code
+        lang: bash
+        file: 'runbooks/failover-db.sh'
+        variant: good
+        code: |
+          # 1. How far behind is the replica? This is the actual RPO right now
+          psql -h replica.region-b -c \
+            "SELECT now() - pg_last_xact_replay_timestamp() AS lag;"
+
+          # 2. Promote the replica to be the new primary
+          psql -h replica.region-b -c "SELECT pg_promote();"
+
+          # 3. Confirm: if false, it is no longer a replica and can take writes
+          psql -h replica.region-b -c "SELECT pg_is_in_recovery();"
+
+          # 4. Point the app at the new primary, then warm up workers and cache
+          symfony console secrets:set DATABASE_URL --env=prod
+          php bin/console messenger:stop-workers
+        marks:
+          - {line: 2, tip: 'In a real failure, when the primary dies this lag is the limit on lost data. Measure it first during the drill and check it is within the RPO target.'}
+          - {line: 6, tip: 'pg_promote() is available from PostgreSQL 12. The replica opens up for writes. Never bring the old primary back up, or you get a split brain.'}
+          - {line: 12, tip: 'The app''s DATABASE_URL has to be moved to the new host. Measure how long this step takes in the drill and write it into the runbook.'}
+      - type: quote
+        body: 'A recovery that has never been run is a recovery you can''t assume will work.'
+    aside:
+      - type: tips
+        items:
+          - 'Something will break in your first game day: the password isn''t in the other region, the DNS TTL is 24 hours, the runbook is out of date. That is the whole point.'
+          - 'Hands-on drills are a good start before chaos tooling (such as cutting the network).'
+      - type: pitfalls
+        items:
+          - 'If the old primary suddenly returns, you end up with two primaries (split brain). Stop it or isolate it first.'
+      - type: refs
+        items:
+          - {to: 'resilience/graceful-degradation', label: 'What you can show less of during a disaster'}
+          - {to: 'testing/test-types', label: 'Chaos and failure-injection tests'}
+    check:
+      q: 'The game day took 83 minutes and the RTO was 60. What should you call it instead of a failure, and what comes next?'
+      a: 'A successful drill: the gap was found before a real incident. Now find which step took the longest, fix it, and run the drill again.'
+
+  - slug: paper-dr-plan
+    title: 'Pitfall: it''s on paper, but it doesn''t work in real life'
+    kind: pitfall
+    tldr: 'A paper DR plan almost always fails: the backup is in the same place, the restore was never tested, the secrets aren''t in the other region, the DNS TTL is huge. Catch these in advance.'
+    keywords: ['DR plan', 'untested backup', 'DNS TTL', 'secrets', 'runbook', 'paper plan']
+    blocks:
+      - type: text
+        body: |
+          "We have a DR plan" sounds reassuring. But a plan that has never been run is a paper boat. The four most common problems on disaster day are on the left below, and their fixes on the right.
+      - type: visual
+        kind: compare
+        caption: 'A paper plan vs a tested plan'
+        columns:
+          - title: 'Paper DR'
+            tone: bad
+            icon: cross
+            tip: 'Every assumption is taken as true, and nobody has checked.'
+            items:
+              - 'A backup exists, but nobody has seen a restore'
+              - 'The backup is in the same region and the same account'
+              - 'Secrets and API keys exist only in the main region'
+              - 'DNS TTL is 24 hours: moving takes a day'
+              - 'The runbook is two years old and its author has left'
+          - title: 'Tested DR'
+            tone: good
+            icon: check
+            tip: 'Every assumption has been verified in a drill, and the results are written down as numbers.'
+            items:
+              - 'Restores are run regularly and the data checked'
+              - 'The backup is in a different region and a different account'
+              - 'Secrets are stored in both regions and tested'
+              - 'DNS TTL is 60 seconds, and traffic was moved in a drill'
+              - 'The runbook is updated after every drill'
+      - type: quote
+        body: 'A backup you have never restored is not a backup, it is a hope.'
+    aside:
+      - type: pitfalls
+        items:
+          - 'If the backup sits in one account and is deleted by mistake or by a hack, everything is lost. Keep backups in a separate account and make them immutable (undeletable).'
+          - 'If the DR knowledge lives in one person''s head, everything stops when they go on leave. Write it in the runbook.'
+      - type: remember
+        body: 'Backup somewhere else, restore tested, secrets alongside, DNS fast, runbook fresh.'
+      - type: refs
+        items:
+          - {to: 'recovery/backups-restore', label: 'Backups and testing a restore'}
+    check:
+      q: 'A backup exists, yet getting back up in the new region got stuck during a disaster. What "paper DR" causes might there be?'
+      a: 'The restore was never tested, the secrets aren''t in the other region, a big DNS TTL delayed the traffic move, the runbook was out of date. Each of these would have shown up in a drill.'
+
+flashcards:
+  - q: 'What is RPO (Recovery Point Objective)?'
+    a: 'The most data, measured in time, that the business will accept losing in a disaster.'
+    more: |
+      Everything written since the last backup or replication point is lost in a disaster. With a nightly backup the RPO is 24 hours. For payments you want nearly zero, which takes continuous replication.
+    ref: rpo-rto
+  - q: 'What is RTO (Recovery Time Objective)?'
+    a: 'The longest the business will tolerate between a disaster and the system being back up.'
+    more: |
+      The clock runs from the disaster until users can work again. Restoring, starting the app and moving DNS are all part of it. If you want a 15-minute RTO, you need a ready region and automatic failover, which raises the cost.
+    ref: rpo-rto
+  - q: 'Who sets RPO and RTO, and why?'
+    a: 'The business, because only it knows what an amount of data or time is worth. The engineer just reports the cost.'
+    more: |
+      Lower RPO and RTO cost more: an extra region, continuous replication, automatic failover. So don't use one value for everything. Divide by importance: strict for payments, relaxed for reports.
+    ref: rpo-rto
+  - q: 'What is the difference between active-passive and active-active?'
+    a: 'Active-passive: one region works, the other stands ready. Active-active: both regions work, so you have to handle conflicts from writing in two places.'
+    more: |
+      Active-passive is simple and cheap, but failover takes minutes or hours. Active-active gives a near-zero RTO, but brings data conflicts and much more complexity and cost. For most businesses active-passive is enough.
+    ref: multi-region-patterns
+  - q: 'How do you measure the real RPO in active-passive?'
+    a: 'By the replication lag: how far the replica trails the main database. That much data is lost in a disaster.'
+    more: |
+      In PostgreSQL, run `SELECT now() - pg_last_xact_replay_timestamp()` on the replica to see the lag. Measure it regularly and set an alert. When the lag is above your RPO target, you are outside the target at that very moment.
+    ref: game-day-drill
+  - q: 'What is a game day?'
+    a: 'On a chosen day, with everyone aware, you cause a failure on purpose and run the entire recovery path, to measure the real RPO and RTO.'
+    more: |
+      Start in staging, then in production in a controlled way. Write the goal down first, follow the runbook, time everything, list the gaps, and fix them before the next drill. Something will break in the first drill, and that is the gain.
+    ref: game-day-drill
+  - q: 'Why do paper DR plans so often fail?'
+    a: 'Their assumptions were never verified: the backup is in the same place, the restore was never tested, the secrets aren''t in the other region, the DNS TTL is huge, the runbook is old.'
+    more: |
+      On disaster day, these small gaps add hours to the RTO. All of them show up in a game day. So keep backups in a separate region and account, secrets in both places, TTLs short, and the runbook regularly updated.
+    ref: paper-dr-plan
+
+quiz:
+  - q: 'Shiuli''s app is backed up every night at 2 a.m. If the database is destroyed at 1 p.m. on Monday, roughly how much data is lost, and which number is that?'
+    hint: 'How much time lies between the last backup and the disaster?'
+    options:
+      - text: 'About 11 hours of data: this is the actual data lost in this disaster, to be compared with the RPO'
+        correct: true
+        why: 'From 2 a.m. to 1 p.m. is 11 hours. If the RPO target is lower than that, this setup is inadequate.'
+      - text: 'Nothing, because a backup exists'
+        correct: false
+        why: 'A backup preserves only the state at that moment. Everything written after it is lost.'
+      - text: 'Only 1 minute, because everything restores quickly'
+        correct: false
+        why: 'Restore speed is about RTO. Lost data depends on how old the backup is.'
+      - text: 'The whole day''s database'
+        correct: false
+        why: 'The backup holds everything up to 2 a.m. Only the 11 hours after that are lost.'
+    ref: rpo-rto
+  - q: 'Which of these help to reduce RTO?'
+    hint: 'RTO is how long it takes to get running again.'
+    options:
+      - text: 'Keeping a ready app and replica in another region in advance'
+        correct: true
+        why: 'After a disaster you then only need to move traffic, not build everything from scratch.'
+      - text: 'A written and tested runbook'
+        correct: true
+        why: 'People don''t guess or hunt around, so time is saved.'
+      - text: 'Backing up more often (every hour)'
+        correct: false
+        why: 'This lowers RPO (less data lost). It does not make recovery faster.'
+      - text: 'Keeping the DNS TTL at 24 hours'
+        correct: false
+        why: 'A large TTL can mean traffic takes up to 24 hours to move to the new region, which makes the RTO huge.'
+    ref: rpo-rto
+  - q: 'A small e-commerce startup: users only in Bangladesh, a team of 5, and an RTO of 1 hour is acceptable. Which multi-region pattern would you pick?'
+    hint: 'Match cost and complexity to what is really needed.'
+    options:
+      - text: 'Active-passive: a replica and a ready app in another region'
+        correct: true
+        why: 'An RTO of 1 hour is met by active-passive. There are no conflicts, and complexity and cost stay low.'
+      - text: 'Active-active, because it is the safest'
+        correct: false
+        why: 'It is the most complex and the most expensive. Handling conflicts is an unnecessary burden for a team of 5.'
+      - text: 'Nothing, because the cloud provider handles it'
+        correct: false
+        why: 'The provider supplies the infrastructure, but the DR plan for your data and app is your responsibility.'
+      - text: 'Keep the backup on another server in the same region'
+        correct: false
+        why: 'If the whole region goes down, that goes too. Only a separate region protects against a disaster.'
+    ref: multi-region-patterns
+  - q: 'The runbook below has a problem. Which one?'
+    lang: bash
+    code: |
+      psql -h replica.region-b -c "SELECT pg_promote();"
+      # the replica is now primary, point the app at the new host
+      # bring the old primary back up, it's fine if it recovers
+    hint: 'What happens if two primaries can both take writes?'
+    options:
+      - text: 'If the old primary comes back there are two primaries (split brain), so it should be isolated first'
+        correct: true
+        why: 'If different writes land in two places, the data can''t be reconciled. Keep the old primary stopped or isolated, and bring it back later as a replica.'
+      - text: 'pg_promote() should never be used'
+        correct: false
+        why: 'It is the right way to turn a replica into a primary.'
+      - text: 'Pointing the app at the new host is wrong'
+        correct: false
+        why: 'Pointing the app at the new primary is exactly what you should do.'
+      - text: 'No problem, the steps are fine'
+        correct: false
+        why: 'The last step is dangerous: if the old primary starts on its own, you end up with two versions of the data.'
+    ref: game-day-drill
+  - q: 'A team ran a game day. The target RTO was 30 minutes but it took 90; 40 minutes went on hunting for one secret. Which decisions are right?'
+    hint: 'What was the purpose of the drill?'
+    options:
+      - text: 'Store the secret in both regions, write it in the runbook, and run the drill again'
+        correct: true
+        why: 'The gap has been found, so now fix it and measure again.'
+      - text: 'Count the drill a success: we found the problem before a real disaster'
+        correct: true
+        why: 'That is exactly what a game day is for. Finding the gap now is far better than finding it on disaster day.'
+      - text: 'Change the RTO target to 90 minutes so the drill passes'
+        correct: false
+        why: 'The target is set by business need, not by the drill result. Moving the limit just hides the problem.'
+      - text: 'Punish the employee responsible for the delay over the secret'
+        correct: false
+        why: 'The gap is in the system, not in a person. Punishment makes people hide problems in the next drill.'
+    ref: game-day-drill
