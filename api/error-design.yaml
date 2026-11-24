@@ -1,0 +1,443 @@
+slides:
+  - slug: something-went-wrong
+    title: '"কিছু একটা ভুল হয়েছে"'
+    kind: story
+    tldr: 'সব error যদি একই অর্থহীন বার্তা বা 200 OK-র ভেতরে লুকানো হয়, client কিছুই করতে পারে না: ঠিক করা, আবার চেষ্টা করা বা থামা কোনোটাই নয়।'
+    keywords: ['error response', 'status code', '200 with error', 'error message', 'ভুল বার্তা', 'API error']
+    blocks:
+      - type: text
+        body: |
+          রহিমের API ভুল ইমেইল পেলে `200 OK` দিয়ে `{"success": false, "msg": "error"}` ফেরত দেয়, আর সার্ভার ভাঙলে `500` দিয়ে একটা লম্বা stack trace। Vue অ্যাপ সব ক্ষেত্রেই লিখে "কিছু একটা ভুল হয়েছে"। ব্যবহারকারী জানে না ইমেইল ঠিক করবে নাকি অপেক্ষা করবে। আরও খারাপ, অ্যাপ কখনো ভুল ইমেইলেই তিনবার আবার পাঠায়, যেন আবার পাঠালে ইমেইল ঠিক হয়ে যাবে।
+      - type: visual
+        kind: compare
+        caption: 'একই ভুল ইমেইলে দুই রকম উত্তর'
+        columns:
+          - title: 'রহিমের আজেবাজে error'
+            tone: bad
+            icon: cross
+            tip: 'machine বা মানুষ কেউই এই উত্তর থেকে কিছু করতে পারে না।'
+            items:
+              - 'status 200, অথচ কাজ হয়নি'
+              - 'বার্তা: "error" (কী ভুল, কোন field?)'
+              - 'সার্ভার ভাঙলে stack trace ফাঁস'
+              - 'client জানে না আবার চেষ্টা করবে কি না'
+          - title: 'কাজের error'
+            tone: good
+            icon: check
+            tip: 'status, কারণ আর কোড মিলে client-কে বলে দেয় এরপর কী করতে হবে।'
+            items:
+              - 'status 422: ইনপুট ভুল'
+              - 'কোন field, কেন: email_invalid'
+              - 'সার্ভারের ভেতরের কথা বাইরে যায় না'
+              - 'client জানে: আবার পাঠালে লাভ নেই'
+      - type: quote
+        body: 'Error হলো API-র ভাষায় ব্যবহারকারী আর client-কে বলা: কী ভুল, কার ভুল, এখন কী করবে।'
+    aside:
+      - type: story
+        title: '200 OK-র ভেতরে ব্যর্থতা'
+        body: |
+          একটা ব্যাংকিং অ্যাপ ব্যর্থ লেনদেনেও 200 ফেরত দিত, ভেতরে লেখা থাকত "failed"। monitoring শুধু 5xx গুনত, তাই ড্যাশবোর্ড সবুজ আর ব্যবহারকারীর টাকা আটকে। status code মিথ্যা বললে প্রতিটা টুল (cache, monitoring, retry) ভুল পথে চলে।
+      - type: terms
+        items:
+          - {term: 'Status code', meaning: 'response-এর তিন অঙ্কের সংখ্যা, যা বলে কাজ কেমন হলো: 2xx সফল, 4xx client-এর ভুল, 5xx সার্ভারের ভুল।'}
+    check:
+      q: 'ব্যর্থ কাজেও 200 OK দিয়ে body-তে success: false লিখলে কোন কোন টুল ভুল পথে যায়?'
+      a: 'monitoring, cache আর retry-র নীতি, কারণ সবাই status code দেখেই চলে। 200 দেখে তারা ধরে নেয় সব ঠিক আছে।'
+
+  - slug: status-families
+    title: 'ফেরত-স্লিপের মতো status code'
+    kind: concept
+    tldr: '2xx সফল, 4xx তোমার (client-এর) ভুল, 5xx আমাদের (সার্ভারের) ভুল। প্রতিটা code বলে ভুলটা কার, আর আবার পাঠানো কাজে লাগবে কি না।'
+    keywords: ['400', '401', '403', '404', '409', '422', '429', '500', 'status code family', 'স্ট্যাটাস কোড']
+    blocks:
+      - type: metaphor
+        icon: truck
+        title: 'কুরিয়ারের ফেরত-স্লিপ'
+        body: |
+          কুরিয়ার পার্সেল ফেরত দিলে স্লিপে কারণ লেখে। "ঠিকানা ভুল" মানে তুমি ঠিক না করলে আবার পাঠানো বৃথা। "বাড়িতে কেউ ছিল না" মানে আবার চেষ্টা করলে হতে পারে। "আমাদের গুদামে সমস্যা" মানে দোষ কুরিয়ারের, একটু পরে আবার।
+      - type: visual
+        kind: table
+        caption: 'সবচেয়ে কাজের status code আর তাদের অর্থ'
+        headers: ['code', 'অর্থ', 'ভুল কার']
+        rows:
+          - cells: ['400 / 422', 'ইনপুট ভুল বা অসম্পূর্ণ', 'client-এর']
+            tip: '400: অনুরোধই বোঝা যায়নি (ভাঙা JSON)। 422: বোঝা গেছে, কিন্তু মান গ্রহণযোগ্য নয় (ভুল ইমেইল)। ঠিক না করে আবার পাঠানো বৃথা।'
+          - cells: ['401', 'তুমি কে, জানি না (লগইন নেই)', 'client-এর']
+            tip: 'token নেই বা মেয়াদ ফুরিয়েছে। token নবায়ন করে একবার চেষ্টা করা যায়।'
+          - cells: ['403', 'জানি তুমি কে, কিন্তু অনুমতি নেই', 'client-এর']
+            tip: 'লগইন আছে, কিন্তু এই কাজ তোমার জন্য নয়। আবার পাঠিয়ে কিছু বদলাবে না।'
+          - cells: ['404', 'এমন কিছু নেই', 'client-এর']
+            tip: 'ভুল URL অথবা মুছে যাওয়া জিনিস। সিকিউরিটির কারণে অনেক সময় 403-এর জায়গায়ও 404 দেওয়া হয়।'
+          - cells: ['409', 'বর্তমান অবস্থার সাথে সংঘাত', 'পরিস্থিতির']
+            tip: 'যেমন স্টক শেষ, বা অন্য কেউ আগেই বদলে দিয়েছে। নতুন অবস্থা দেখে client-কে সিদ্ধান্ত নিতে হয়।'
+          - cells: ['429', 'অনেক বেশি request', 'client-এর']
+            tip: 'rate limit ছাড়িয়েছে। Retry-After header দেখে একটু পরে আবার করা যায়।'
+          - cells: ['500 / 502 / 503 / 504', 'সার্ভার বা তার সামনের যন্ত্রের সমস্যা', 'আমাদের']
+            tip: 'client-এর করার কিছু নেই। 502/503/504 সাধারণত সাময়িক, আবার চেষ্টা করা যায়।'
+      - type: quote
+        body: 'সার্ভারের ভুল 5xx, client-এর ভুল 4xx। ভুল কার, status-ই সেটা বলে।'
+    aside:
+      - type: remember
+        body: '4xx: "তুমি বদলাও", 5xx: "আমরা ঠিক করছি"।'
+      - type: pitfalls
+        items:
+          - '404 আর 403 গুলিয়ে ফেলা: অন্যের অর্ডারে 404 দিলে অস্তিত্বই লুকানো থাকে, 403 দিলে ফাঁস হয় যে অর্ডারটা আছে।'
+          - 'সব ভুলে 400, অথবা সব ভুলে 500: client তখন ভুলের ধরন চেনে না।'
+      - type: refs
+        items:
+          - {to: 'api/request-path', label: '502, 503, 504 কোন ধাপ থেকে আসে'}
+    check:
+      q: 'ব্যবহারকারী লগইন করা আছে কিন্তু অন্যের অর্ডার খুলতে চাইছে। 401 নাকি 403, আর কেন?'
+      a: '403। সার্ভার জানে সে কে (তাই 401 নয়), কিন্তু এই কাজের অনুমতি তার নেই। অনেকে অস্তিত্ব লুকাতে 404-ও দেয়।'
+
+  - slug: problem-json
+    title: 'একটা সবার-চেনা error আকার: problem+json'
+    kind: howto
+    tldr: 'RFC 9457-এর application/problem+json আকারে type, title, status, detail আর নিজের machine-readable code দিয়ে সব error এক ছাঁচে ফেরত দাও।'
+    keywords: ['problem+json', 'RFC 9457', 'RFC 7807', 'exception listener', 'error code', 'machine-readable error']
+    blocks:
+      - type: text
+        body: |
+          রহিম এবার ঠিক করল, সব error একই ছাঁচে যাবে। এর জন্য একটা প্রমিত আকার আছে: **problem+json**। তাতে `status`, `title`, `detail`-এর সাথে একটা `code` থাকে, যেটা client-এর কোড পড়ে। মানুষ পড়ে `detail` (বার্তা বদলাতে পারে), কোড পড়ে `code` (কখনো বদলায় না)।
+      - type: visual
+        kind: flow
+        caption: 'exception থেকে problem+json পর্যন্ত পথ'
+        nodes:
+          - {id: ctrl, label: 'Controller', sub: 'exception ছোড়ে', icon: code, col: 0, row: 1, tip: 'ব্যবসার নিয়ম ভাঙলে নিজের exception ছোড়ে, যেমন InsufficientStockException। HTTP-র কথা এখানে ভাবে না।'}
+          - {id: listener, label: 'ExceptionListener', sub: 'এক জায়গায় map', icon: gear, tone: accent, col: 2, row: 1, tip: 'সব exception এক জায়গায় ধরে status আর code ঠিক করে। না হলে প্রতিটা controller নিজের মতো error বানায়।'}
+          - {id: client, label: 'Vue অ্যাপ', sub: 'code পড়ে সিদ্ধান্ত নেয়', icon: browser, col: 4, row: 1, tip: 'বার্তা নয়, code দেখে সিদ্ধান্ত নেয় কোন পর্দা বা কোন সংশোধন দেখাবে।'}
+        edges:
+          - {from: ctrl, to: listener, label: 'exception listener-এ পৌঁছায়'}
+          - {from: listener, to: client, label: '409 + application/problem+json', tone: good, tip: 'status বলে ধরন, body-র code বলে সুনির্দিষ্ট কারণ।'}
+      - type: code
+        lang: php
+        file: 'src/EventListener/ApiProblemListener.php'
+        variant: good
+        code: |
+          #[AsEventListener]
+          final class ApiProblemListener
+          {
+              public function __invoke(ExceptionEvent $event): void
+              {
+                  if (!str_starts_with($event->getRequest()->getPathInfo(), '/api/')) {
+                      return;
+                  }
+                  $e = $event->getThrowable();
+                  $violations = $e->getPrevious() instanceof ValidationFailedException
+                      ? $e->getPrevious()->getViolations() : null;
+
+                  [$status, $code] = match (true) {
+                      $e instanceof InsufficientStockException => [409, 'stock_insufficient'],
+                      null !== $violations => [422, 'validation_failed'],
+                      $e instanceof HttpExceptionInterface => [$e->getStatusCode(), 'http_error'],
+                      default => [500, 'internal_error'],
+                  };
+
+                  $body = [
+                      'type' => 'https://shop.example/problems/'.$code,
+                      'title' => Response::$statusTexts[$status],
+                      'status' => $status,
+                      'code' => $code,
+                      'detail' => $status < 500 ? $e->getMessage() : 'সার্ভারে সমস্যা হয়েছে',
+                  ];
+                  if (null !== $violations) {
+                      $body['errors'] = $this->errors($violations);
+                  }
+
+                  $event->setResponse(new JsonResponse($body, $status, [
+                      'Content-Type' => 'application/problem+json',
+                  ]));
+              }
+          }
+        marks:
+          - {line: 10, tip: '#[MapRequestPayload]-এর validation ব্যর্থ হলে Symfony একটা HttpException ছোড়ে, যার previous হলো ValidationFailedException।'}
+          - {line: 14, tip: 'আমাদের নিজের exception থেকে status আর স্থির code বেছে নেওয়া হচ্ছে। এটাই client-এর পড়ার জিনিস।'}
+          - {line: 25, tip: '5xx-এ আসল message client-কে দেওয়া হয় না। stack trace বা SQL ফাঁস হলে আক্রমণকারীর কাজে লাগে।'}
+      - type: code
+        lang: json
+        file: 'response: 409 Conflict'
+        code: |
+          {
+            "type": "https://shop.example/problems/stock_insufficient",
+            "title": "Conflict",
+            "status": 409,
+            "code": "stock_insufficient",
+            "detail": "স্টকে আছে ২টা, চাওয়া হয়েছে ৫টা"
+          }
+        marks:
+          - {line: 5, tip: 'client এই code দেখে সিদ্ধান্ত নেয়। detail-এর ভাষা বা বাক্য বদলালেও code একই থাকে।'}
+    aside:
+      - type: tips
+        items:
+          - 'error code ছোট, ইংরেজি, snake_case আর চিরস্থায়ী রাখো: stock_insufficient। এটা API contract-এর অংশ, একবার দিলে বদলানো যায় না।'
+          - 'প্রতিটা error response-এ request id দাও, যাতে ব্যবহারকারীর অভিযোগ তোমার log-এর সাথে মেলানো যায়।'
+      - type: refs
+        items:
+          - {to: 'api/contracts-versioning', label: 'error code-ও contract-এর অংশ'}
+    check:
+      q: 'client কোড কেন `detail` বার্তা নয়, `code` ফিল্ড দেখে সিদ্ধান্ত নেবে?'
+      a: 'detail মানুষের জন্য, ভাষা বা বাক্য বদলাতে পারে। code স্থির ও চুক্তির অংশ, তাই client-এর কোড তার ওপর নির্ভর করতে পারে।'
+
+  - slug: validation-errors
+    title: 'Validation error: কোন field-এ কী ভুল'
+    kind: howto
+    tldr: 'একটা ফর্মে একসাথে সব ভুল দাও: প্রতিটার field, machine-readable code আর বার্তা সহ। তাহলে client প্রতিটা ঘরের পাশে ঠিক ভুলটা দেখাতে পারে।'
+    keywords: ['validation error', '422', 'MapRequestPayload', 'Validator', 'violations', 'field error', 'ফর্ম ভুল']
+    blocks:
+      - type: text
+        body: |
+          রেজিস্ট্রেশন ফর্মে ইমেইলও ভুল, পাসওয়ার্ডও ছোট। প্রথম ভুলটাই ফেরত দিলে ব্যবহারকারী ঠিক করবে, আবার পাঠাবে, আর দ্বিতীয় ভুলে আটকাবে। তাই সব ভুল একসাথে `errors` তালিকায় দাও, প্রতিটার সাথে `field` আর স্থির `code`।
+      - type: code
+        lang: php
+        file: 'src/Dto/RegisterRequest.php'
+        variant: good
+        code: |
+          final readonly class RegisterRequest
+          {
+              public function __construct(
+                  #[Assert\NotBlank(message: 'ইমেইল দিন', payload: ['code' => 'email_required'])]
+                  #[Assert\Email(message: 'ইমেইলটা ঠিক নয়', payload: ['code' => 'email_invalid'])]
+                  public string $email = '',
+
+                  #[Assert\Length(
+                      min: 8,
+                      minMessage: 'কমপক্ষে ৮ অক্ষর দিন',
+                      payload: ['code' => 'password_too_short'],
+                  )]
+                  public string $password = '',
+              ) {
+              }
+          }
+        marks:
+          - {line: 4, tip: 'payload-এ স্থির code রাখা হয়। বার্তা (message) ভাষা বদলালে বদলাতে পারে, code না।'}
+          - {line: 6, tip: 'default মান দেওয়া, তাই field একেবারে না এলেও PHP type-error নয়, validation-error হয়।'}
+      - type: code
+        lang: php
+        file: 'src/EventListener/ApiProblemListener.php'
+        variant: good
+        code: |
+          private function errors(ConstraintViolationListInterface $violations): array
+          {
+              $errors = [];
+              foreach ($violations as $v) {
+                  $constraint = $v instanceof ConstraintViolation ? $v->getConstraint() : null;
+
+                  $errors[] = [
+                      'field' => $v->getPropertyPath(),
+                      'code' => $constraint?->payload['code'] ?? 'invalid',
+                      'message' => (string) $v->getMessage(),
+                  ];
+              }
+
+              return $errors;
+          }
+        marks:
+          - {line: 8, tip: 'যে ঘরে ভুল, তার নাম। client এই নাম ধরে ঠিক ঘরের পাশে বার্তা বসায়।'}
+          - {line: 9, tip: 'DTO-র payload থেকে স্থির code। না থাকলে সাধারণ invalid।'}
+      - type: visual
+        kind: table
+        caption: 'ভুল ইমেইল আর ছোট পাসওয়ার্ডে 422-এর errors তালিকা'
+        headers: ['field', 'code', 'message']
+        rows:
+          - cells: ['email', 'email_invalid', 'ইমেইলটা ঠিক নয়']
+            tip: 'client এই code দেখে ইমেইল ঘরের নিচে লাল বার্তা দেখায়, আর ঘরে focus দেয়।'
+          - cells: ['password', 'password_too_short', 'কমপক্ষে ৮ অক্ষর দিন']
+            tip: 'দ্বিতীয় ভুলটাও একই response-এ, তাই ব্যবহারকারীকে বারবার ফেরত আসতে হয় না।'
+    aside:
+      - type: pitfalls
+        items:
+          - 'ভুল পাসওয়ার্ড বা "ইমেইল নিবন্ধিত নেই" বার্তায় অতিরিক্ত তথ্য ফাঁস করো না: তাতে আক্রমণকারী কোন ইমেইল আছে বুঝে ফেলে।'
+          - 'client-এ validation থাকলেও সার্ভারে validation বাধ্যতামূলক। client-এর validation শুধু ব্যবহারকারীর সুবিধার জন্য।'
+      - type: refs
+        items:
+          - {to: 'security/input-validation', label: 'ইনপুট validation-এর আসল কারণ'}
+    check:
+      q: 'ফর্মের প্রথম ভুলটাই না পাঠিয়ে সব ভুল একসাথে `errors` তালিকায় দেওয়া ভালো কেন?'
+      a: 'ব্যবহারকারী একবারেই সব ভুল দেখে ঠিক করতে পারে। নইলে প্রতিবার একটা করে ভুল ঠিক করে আবার পাঠাতে হয়, যা বিরক্তিকর।'
+
+  - slug: blind-retry
+    title: 'অন্ধ retry: টাকা দুইবার কাটা'
+    kind: pitfall
+    tldr: 'retry শুধু সেই ভুলে করো যা সাময়িক, আর সেই কাজে যা দুইবার হলে ক্ষতি নেই। GET, PUT, DELETE নিরাপদ; POST নয়, যদি না idempotency key থাকে।'
+    keywords: ['retry', 'idempotent', 'idempotency key', 'retryable error', '503', 'POST retry', 'আবার চেষ্টা']
+    blocks:
+      - type: text
+        body: |
+          পেমেন্টের `POST /payments` কল করে timeout এল। অ্যাপ ভাবল "ব্যর্থ", আবার পাঠাল, আর ব্যবহারকারীর টাকা দুইবার কাটা গেল। কারণ timeout মানে কাজ হয়নি নয়, মানে উত্তর আসেনি। কাজ **idempotent** হলে (একই কাজ বারবার করলে ফল একই) আবার পাঠানো নিরাপদ, নইলে নয়।
+      - type: visual
+        kind: table
+        caption: 'কোন ঘটনায় retry করবে'
+        headers: ['ঘটনা', 'retry?', 'কারণ']
+        rows:
+          - cells: ['Network error বা timeout', 'শুধু idempotent হলে', 'কাজ হয়েছে কি না অজানা']
+            tip: 'উত্তর আসেনি মানে কাজ হয়নি নয়। GET, PUT, DELETE-এ নিরাপদ। POST-এ idempotency key ছাড়া নয়।'
+          - cells: ['429 Too Many Requests', 'হ্যাঁ, Retry-After মেনে', 'সাময়িক চাপ']
+            tip: 'সার্ভার নিজেই বলে কতক্ষণ থামতে হবে। তার আগে আবার পাঠালে আরও দেরি হয়।'
+          - cells: ['502 / 503 / 504', 'হ্যাঁ, backoff-সহ', 'সাময়িক সমস্যা']
+            tip: '504-এ কাজ হয়ে গিয়ে থাকতে পারে, তাই এই retry-ও idempotent কাজেই নিরাপদ।'
+          - cells: ['500', 'সাবধানে, খুব বেশি নয়', 'bug হলে একই ফল']
+            tip: 'কোডে bug থাকলে একই request বারবার একই ভাবে ভাঙে। বড়জোর একবার চেষ্টা।'
+          - cells: ['400 / 422', 'না', 'ইনপুট ভুল']
+            tip: 'ইনপুট ঠিক না করে আবার পাঠালে একই উত্তর আসে। শুধু সার্ভারের চাপ বাড়ে।'
+          - cells: ['401 / 403 / 404', 'না', 'অনুমতি বা অস্তিত্বের সমস্যা']
+            tip: '401-এ token নবায়ন করে একবার চেষ্টা করা যায়, কিন্তু বাকিগুলো আবার পাঠিয়ে বদলায় না।'
+      - type: code
+        lang: ts
+        file: 'src/api/retry.ts'
+        variant: good
+        code: |
+          const IDEMPOTENT = ['GET', 'HEAD', 'PUT', 'DELETE', 'OPTIONS']
+          const TRANSIENT = [408, 429, 502, 503, 504]
+
+          export function canRetry(
+            method: string,
+            status: number | null, // null = কোনো response আসেনি
+            hasIdempotencyKey: boolean,
+          ): boolean {
+            const safeToRepeat = IDEMPOTENT.includes(method) || hasIdempotencyKey
+            if (!safeToRepeat) return false // POST: দুইবার হয়ে যেতে পারে
+
+            if (status === null) return true
+            return TRANSIENT.includes(status)
+          }
+        marks:
+          - {line: 9, tip: 'আগে ঠিক করো কাজটা দুইবার হলে ক্ষতি আছে কি না। ক্ষতি থাকলে আর কিছু দেখারই দরকার নেই।'}
+          - {line: 12, tip: 'response না আসা (network, timeout) বা সাময়িক status হলেই retry। 400 বা 422 নয়।'}
+      - type: quote
+        body: 'Retry করবে শুধু সাময়িক ভুলে, আর শুধু সেই কাজে যা দুইবার হলে ক্ষতি নেই।'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Idempotent', meaning: 'একই request বারবার করলে ফল একবারের সমান। যেমন DELETE /orders/5।'}
+          - {term: 'Idempotency key', meaning: 'client-এর বানানো অনন্য চিহ্ন, যা দেখে সার্ভার একই কাজ দুইবার করে না।'}
+      - type: refs
+        items:
+          - {to: 'payments/idempotency-keys', label: 'Idempotency key দিয়ে POST নিরাপদ করা'}
+          - {to: 'api/rate-limiting', label: 'Backoff আর jitter'}
+    check:
+      q: 'POST /payments-এ timeout এলে অ্যাপ সরাসরি আবার পাঠালে কী ঝুঁকি, আর কীভাবে নিরাপদ করা যায়?'
+      a: 'timeout মানে কাজ হয়নি নয়, উত্তর আসেনি; ফলে টাকা দুইবার কাটতে পারে। idempotency key দিলে সার্ভার একই কাজ দ্বিতীয়বার করে না।'
+
+flashcards:
+  - q: 'ব্যর্থ কাজে 200 OK দিয়ে body-তে "success: false" দেওয়া ভুল কেন?'
+    a: 'status code মিথ্যা বললে monitoring, cache আর retry-র টুলগুলো সবাই ভুল সিদ্ধান্ত নেয়।'
+    more: |
+      monitoring সাধারণত 5xx গোনে, তাই 200-এ লুকানো ব্যর্থতা ড্যাশবোর্ডে সবুজ দেখায়। cache 200 জমিয়ে রাখতে পারে, আর client-এর সাধারণ error-হ্যান্ডলিং চলেই না। ব্যর্থতার জন্য সত্যিকারের 4xx বা 5xx দাও।
+    ref: something-went-wrong
+  - q: '4xx আর 5xx-এর মূল পার্থক্য কী?'
+    a: '4xx মানে client-এর ভুল (ঠিক করে পাঠাতে হবে)। 5xx মানে সার্ভারের ভুল (client-এর করার কিছু নেই)।'
+    more: |
+      কুরিয়ারের মতো: "ঠিকানা ভুল" হলে তুমি ঠিক না করলে লাভ নেই (4xx), "আমাদের গুদামে সমস্যা" হলে দোষ কুরিয়ারের (5xx)। এই ভাগ বলে retry কাজে লাগবে কি না। 4xx-এ সাধারণত আবার পাঠানো বৃথা।
+    ref: status-families
+  - q: '401 আর 403-এর পার্থক্য কী?'
+    a: '401: তুমি কে, জানি না (লগইন নেই বা token ভুল)। 403: জানি তুমি কে, কিন্তু এই কাজের অনুমতি তোমার নেই।'
+    more: |
+      401-এ নতুন token বা লগইন করলে ঠিক হতে পারে। 403-এ আবার পাঠিয়ে কিছু বদলায় না, অনুমতি লাগবে। অন্যের ডেটা খুলতে চাইলে অনেকে অস্তিত্ব লুকাতে 404-ও দেয়।
+    ref: status-families
+  - q: '422 আর 409-এর পার্থক্য কী?'
+    a: '422: পাঠানো ইনপুটই গ্রহণযোগ্য নয় (ভুল ইমেইল)। 409: ইনপুট ঠিক, কিন্তু বর্তমান অবস্থার সাথে সংঘাত (স্টক শেষ)।'
+    more: |
+      422 ঠিক করে আবার পাঠালে কাজ হয়। 409-এ নতুন অবস্থা দেখে client-কে সিদ্ধান্ত নিতে হয়: কম সংখ্যা চাইবে, নাকি অপেক্ষা করবে। দুটোতেই body-তে স্থির code দেওয়া উচিত।
+    ref: status-families
+  - q: 'problem+json কী?'
+    a: 'error বর্ণনার প্রমিত JSON আকার (RFC 9457) যেখানে type, title, status, detail থাকে; সাথে নিজের code যোগ করা যায়।'
+    more: |
+      Content-Type হয় `application/problem+json`। সব error এক ছাঁচে গেলে client একই কোডে সব error সামলাতে পারে। নিজের স্থির `code` যোগ করলে client বার্তা না পড়ে code দেখে সিদ্ধান্ত নেয়।
+    ref: problem-json
+  - q: 'কোন error retry করা যায়?'
+    a: 'সাময়িক ভুল: 429 (Retry-After মেনে), 502/503/504, network error ও timeout, আর তাও শুধু idempotent কাজে।'
+    more: |
+      400, 401, 403, 404, 422 ইনপুট বা অনুমতির ভুল, আবার পাঠালে একই উত্তর। 500-এ bug থাকলে বারবার একই ভাবে ভাঙে। retry-র আগে ভাবো: কাজটা দুইবার হলে ক্ষতি আছে কি না।
+    ref: blind-retry
+  - q: 'কোন HTTP method idempotent?'
+    a: 'GET, HEAD, PUT, DELETE, OPTIONS। POST সাধারণত নয়, তাই তাতে idempotency key দিয়ে নিরাপদ করা হয়।'
+    more: |
+      idempotent মানে একই request বারবার করলে ফল একবারের সমান। DELETE /orders/5 দুইবার চালালে অর্ডার একবারই মোছে। কিন্তু POST /payments দুইবার চালালে দুইবার টাকা কাটতে পারে।
+    ref: blind-retry
+
+quiz:
+  - q: 'নিচের কোডের response নিয়ে কী সমস্যা?'
+    lang: php
+    code: |
+      if (!$user = $users->findByEmail($dto->email)) {
+          return $this->json(['success' => false, 'msg' => 'error'], 200);
+      }
+    hint: 'monitoring, cache আর client কোডের চোখে এটা সফল না ব্যর্থ?'
+    options:
+      - text: 'ব্যর্থতার জন্য 200 দেওয়া হয়েছে, আর বার্তাও অর্থহীন'
+        correct: true
+        why: 'status মিথ্যা বললে সব টুল ভুল পথে যায়। উচিত ছিল সঠিক 4xx আর স্থির code-সহ কারণ দেওয়া।'
+      - text: 'json() ব্যবহার করা ভুল, Response ব্যবহার করা উচিত'
+        correct: false
+        why: 'json() ঠিক আছে। সমস্যা হলো status আর বার্তার মান।'
+      - text: 'findByEmail ধীর'
+        correct: false
+        why: 'গতি এখানে বিষয় নয়, error response-এর গঠন বিষয়।'
+      - text: 'কোনো সমস্যা নেই, কারণ client body দেখেই বুঝবে'
+        correct: false
+        why: 'টুলগুলো body পড়ে না, status দেখে। আর "error" থেকে client-ও কিছু বোঝে না।'
+    ref: something-went-wrong
+  - q: 'ব্যবহারকারী লগইন আছে, কিন্তু অন্যের অর্ডার খুলতে চাইছে। সবচেয়ে সঠিক status কোনটা?'
+    hint: 'সার্ভার কি জানে সে কে?'
+    options:
+      - text: '401 Unauthorized'
+        correct: false
+        why: '401 মানে পরিচয় অজানা। এখানে পরিচয় জানা, অনুমতি নেই।'
+      - text: '403 Forbidden (অথবা অস্তিত্ব লুকাতে 404)'
+        correct: true
+        why: 'পরিচয় জানা, কিন্তু অনুমতি নেই, তাই 403। অর্ডারের অস্তিত্ব গোপন রাখতে চাইলে 404-ও গ্রহণযোগ্য।'
+      - text: '500 Internal Server Error'
+        correct: false
+        why: 'এটা সার্ভারের ভুল নয়, client-এর অনুমতির ঘাটতি।'
+      - text: '200 OK, body-তে "অনুমতি নেই"'
+        correct: false
+        why: 'ব্যর্থতায় 200 দিলে টুলগুলো সব ঠিক ধরে নেয়।'
+    ref: status-families
+  - q: 'নিচের কোন কোন ক্ষেত্রে client স্বয়ংক্রিয়ভাবে retry করতে পারে?'
+    hint: 'আবার পাঠালে ফল বদলাতে পারে কি? আর দুইবার হলে ক্ষতি আছে কি?'
+    options:
+      - text: 'GET /products-এ 503 এসেছে'
+        correct: true
+        why: 'GET idempotent, আর 503 সাময়িক। backoff দিয়ে retry নিরাপদ।'
+      - text: 'POST /register-এ 422 এসেছে'
+        correct: false
+        why: '422 মানে ইনপুট ভুল। ঠিক না করে আবার পাঠালে একই উত্তর আসবে।'
+      - text: 'PUT /profile/7-এ timeout হয়েছে'
+        correct: true
+        why: 'PUT idempotent, দুইবার চললেও প্রোফাইল একই অবস্থায় থাকে।'
+      - text: 'POST /payments-এ timeout হয়েছে, কোনো idempotency key নেই'
+        correct: false
+        why: 'কাজ হয়েছে কি না অজানা, আর দুইবার হলে দুইবার টাকা কাটে। key ছাড়া retry বিপজ্জনক।'
+    ref: blind-retry
+  - q: 'রহিমের Vue অ্যাপ validation error পেলে ইমেইল ঘরের পাশে ঠিক বার্তা দেখাতে চায়। response-এ কী থাকা সবচেয়ে কাজের?'
+    hint: 'client কীভাবে জানবে কোন ঘরে কী ভুল?'
+    options:
+      - text: 'শুধু একটা বার্তা: "ফর্ম ভুল"'
+        correct: false
+        why: 'কোন ঘরে ভুল, client জানে না। সব ঘরে সাধারণ বার্তাই দেখাতে হয়।'
+      - text: '`errors` তালিকা: প্রতিটা ভুলের field, স্থির code আর বার্তা'
+        correct: true
+        why: 'client field ধরে ঠিক ঘরের পাশে বার্তা বসায়, আর code ধরে আচরণ ঠিক করে।'
+      - text: 'শুধু প্রথম ভুলটার বার্তা'
+        correct: false
+        why: 'ব্যবহারকারী ঠিক করে আবার পাঠিয়ে দ্বিতীয় ভুলে আটকাবে, বারবার ঘুরতে হবে।'
+      - text: 'stack trace, যাতে ডেভেলপার বুঝতে পারে'
+        correct: false
+        why: 'stack trace ব্যবহারকারীর কাজে লাগে না, আর সিকিউরিটি-ঝুঁকিও তৈরি করে।'
+    ref: validation-errors
+  - q: 'API-র error response-এ `"code": "stock_insufficient"` আর `"detail": "স্টকে আছে ২টা"` দুটোই কেন, শুধু detail কেন নয়?'
+    hint: 'detail-এর বাক্য বদলালে client-এর কোডের কী হবে?'
+    options:
+      - text: 'detail ফেলে দিলেও চলত, শুধু code-ই যথেষ্ট'
+        correct: false
+        why: 'মানুষ ও ডিবাগের জন্য detail দরকার। দুটোর কাজ আলাদা।'
+      - text: 'detail বদলাতে পারে, তাই client-এর কোড স্থির code পড়ে। detail মানুষের জন্য'
+        correct: true
+        why: 'ভাষা বা বাক্য বদলালে detail-এর ওপর নির্ভর করা কোড ভাঙে। code চুক্তির অংশ, তাই স্থির।'
+      - text: 'দুটোর কাজ একই, শুধু বাড়তি নিরাপত্তার জন্য'
+        correct: false
+        why: 'নিরাপত্তার সাথে এর সম্পর্ক নেই; এটা স্থিতিশীলতা আর পাঠযোগ্যতার প্রশ্ন।'
+      - text: 'RFC 9457 তাই বলে, কারণ জানার দরকার নেই'
+        correct: false
+        why: 'RFC ছাঁচ দেয়, আর কারণ বোঝা থাকলে তুমি সেটা ঠিকভাবে ব্যবহার করতে পারবে।'
+    ref: problem-json

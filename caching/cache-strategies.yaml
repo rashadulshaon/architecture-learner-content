@@ -1,0 +1,410 @@
+slides:
+  - slug: same-answer-again
+    title: 'একই হিসাব দিনে ৫০ হাজার বার'
+    kind: story
+    tldr: 'যে উত্তর প্রায় বদলায় না, সেটা প্রতি request-এ ডেটাবেস থেকে হিসাব করে আনলে সময় আর সার্ভার দুটোই নষ্ট; cache সেই উত্তর জমিয়ে রাখে।'
+    keywords: ['cache', 'cache hit', 'cache miss', 'ক্যাশ', 'দ্রুত উত্তর', 'latency']
+    blocks:
+      - type: metaphor
+        icon: shop
+        title: 'বিরিয়ানির হোটেলের কাউন্টার'
+        body: |
+          হোটেলে প্রতিটা অর্ডারে নতুন করে বিরিয়ানি রান্না হলে খদ্দের ঘণ্টাখানেক বসে থাকবে। তাই দুপুরের আগেই বড় ডেকচিতে রান্না হয়, আর কাউন্টারে প্যাকেট করা বিরিয়ানি সাজানো থাকে। খদ্দের আসে, প্যাকেট নেয়, চলে যায়। রান্নাঘর হলো ডেটাবেস, কাউন্টারের প্যাকেট হলো **cache**।
+      - type: text
+        body: |
+          রহিমের হোমপেজে "সবচেয়ে বেশি বিক্রি হওয়া ১০ পণ্য" দেখানো হয়। হিসাবটা চালাতে ডেটাবেসের ৮০০ms লাগে, আর পেজ খোলে দিনে ৫০ হাজার বার। উত্তরটা প্রতি ১০ মিনিটেও প্রায় বদলায় না, তবু প্রতিবার নতুন করে রান্না হচ্ছে।
+      - type: visual
+        kind: bars
+        caption: 'একই উত্তর: ডেটাবেস থেকে হিসাব বনাম cache থেকে তোলা'
+        items:
+          - {label: 'ডেটাবেস query', value: 800, display: '800ms', tone: bad, tip: 'ভারী join আর group by চালিয়ে প্রতিবার আবার হিসাব করা হচ্ছে।'}
+          - {label: 'Cache hit', value: 3, display: '3ms', tone: good, tip: 'আগে থেকে রাখা উত্তর মেমোরি থেকে সোজা তুলে দেওয়া — কোনো হিসাব নেই।'}
+      - type: quote
+        body: 'যে উত্তর বারবার লাগে অথচ কম বদলায়, সেটাই cache-এর প্রার্থী।'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Cache hit', meaning: 'চাওয়া উত্তর cache-এ পাওয়া গেল, ডেটাবেসে যেতে হলো না।'}
+          - {term: 'Cache miss', meaning: 'cache-এ উত্তর নেই, তাই আসল উৎস থেকে আনতে হলো।'}
+      - type: problem
+        body: 'ভারী কাজের ফল বারবার বানানো বন্ধ করা — যাতে ডেটাবেসের ওপর চাপ কমে আর ব্যবহারকারী দ্রুত উত্তর পায়।'
+    check:
+      q: 'কোন ধরনের উত্তর cache করলে সবচেয়ে বেশি লাভ?'
+      a: 'যে উত্তর অনেকবার চাওয়া হয়, বানাতে ভারী, আর অল্প সময়ে প্রায় বদলায় না — যেমন সেরা ১০ পণ্যের তালিকা।'
+
+  - slug: cache-aside
+    title: 'Cache-aside: অ্যাপই খোঁজে, অ্যাপই ভরে'
+    kind: concept
+    tldr: 'Cache-aside-এ অ্যাপ আগে cache দেখে; না পেলে ডেটাবেস থেকে এনে নিজেই cache-এ রেখে দেয়। এটাই সবচেয়ে প্রচলিত কৌশল।'
+    keywords: ['cache-aside', 'lazy loading', 'cache miss', 'look-aside', 'ক্যাশ অ্যাসাইড']
+    blocks:
+      - type: metaphor
+        icon: shop
+        title: 'ওয়েটার নিজে কাউন্টার দেখে'
+        body: |
+          ওয়েটার আগে কাউন্টারে খোঁজে প্যাকেট আছে কি না। থাকলে সাথে সাথে খদ্দেরকে দেয়। না থাকলে রান্নাঘর থেকে এনে খদ্দেরকে দেয়, আর একটা প্যাকেট কাউন্টারেও রেখে যায় — যাতে পরের খদ্দের পায়। কাউন্টার নিজে কিছু আনে না; সব কাজ ওয়েটারের, মানে অ্যাপের।
+      - type: visual
+        kind: flow
+        caption: 'Cache-aside: miss হলে অ্যাপ ডেটাবেস থেকে এনে cache ভরে'
+        nodes:
+          - {id: app, label: 'অ্যাপ', sub: 'Symfony service', icon: api, tone: accent, col: 0, row: 1, tip: 'ওয়েটার। cache দেখা, ডেটাবেসে যাওয়া আর cache ভরা — তিনটা কাজই এই কোডের।'}
+          - {id: cache, label: 'Cache', sub: 'Redis', icon: cache, col: 2.5, row: 0, tip: 'কাউন্টার। শুধু জমা রাখে আর চাইলে দেয়; নিজে কিছু আনতে জানে না।'}
+          - {id: db, label: 'ডেটাবেস', sub: 'আসল সত্য', icon: db, col: 2.5, row: 2, tip: 'রান্নাঘর। ধীর, কিন্তু সবসময় সঠিক উত্তর এখানে।'}
+        edges:
+          - {from: app, to: cache, label: 'অ্যাপ আগে cache-এ চাবি দিয়ে খোঁজে'}
+          - {from: cache, to: app, label: 'miss: cache বলে, এটা আমার কাছে নেই', dashed: true, tone: warn}
+          - {from: app, to: db, label: 'অ্যাপ নিজেই ডেটাবেস থেকে উত্তরটা আনে'}
+          - {from: db, to: app, label: 'ডেটাবেস উত্তর ফেরত দেয়', dashed: true}
+          - {from: app, to: cache, label: 'অ্যাপ উত্তরটা মেয়াদ দিয়ে cache-এ রেখে যায়', tone: good}
+      - type: quote
+        body: 'Cache-aside: আগে cache, না পেলে ডেটাবেস, তারপর cache ভরো।'
+    aside:
+      - type: when
+        use:
+          - 'পড়া অনেক বেশি, লেখা কম — পণ্যের পাতা, তালিকা, সেটিংস।'
+          - 'cache বন্ধ থাকলেও অ্যাপ ডেটাবেস দিয়ে চলতে পারা দরকার।'
+        avoid:
+          - 'প্রতি সেকেন্ডে বদলায় এমন ডেটা, যা ভুল দেখানো চলে না।'
+      - type: remember
+        body: 'প্রথম request ধীর (miss), পরের সবগুলো দ্রুত (hit)।'
+    check:
+      q: 'Cache বন্ধ হয়ে গেলে cache-aside অ্যাপ কী করে?'
+      a: 'প্রতিবার miss ধরে ডেটাবেস থেকে উত্তর আনে। অ্যাপ ধীর হয়, কিন্তু চালু থাকে — কারণ সত্য ডেটাবেসেই আছে।'
+
+  - slug: symfony-cache-get
+    title: 'Symfony-তে cache-aside: একটা get() কল'
+    kind: howto
+    tldr: 'Symfony Cache contracts-এর get(key, callback) একসাথে খোঁজা, miss-এ callback চালানো আর ফল রাখা করে; backend হিসেবে Redis বসাও।'
+    keywords: ['CacheInterface', 'Symfony Cache', 'Redis', 'expiresAfter', 'ItemInterface', 'cache.adapter.redis']
+    blocks:
+      - type: text
+        body: |
+          Symfony-তে `CacheInterface`-এর `get()` মেথডে তুমি চাবি আর একটা callback দাও। চাবি পেলে সাথে সাথে মান ফেরত আসে। না পেলে callback চলে, তার ফল জমা হয় আর ফেরত আসে। মেয়াদ `$item->expiresAfter()` দিয়ে বলতে হয়।
+      - type: code
+        lang: php
+        file: 'src/Catalog/TopProducts.php'
+        variant: good
+        code: |
+          final readonly class TopProducts
+          {
+              public function __construct(
+                  private CacheInterface $cache,
+                  private ProductRepository $products,
+              ) {
+              }
+
+              /** @return list<array{id: int, name: string, sold: int}> */
+              public function forHomepage(): array
+              {
+                  return $this->cache->get('top_products.v1', function (ItemInterface $item): array {
+                      $item->expiresAfter(600);      // ১০ মিনিট পরে বাসি
+
+                      return $this->products->findTopSelling(10);   // ধীর query, শুধু miss-এ
+                  });
+              }
+          }
+        marks:
+          - {line: 12, tip: 'চাবি এমন হবে যা দেখেই বোঝা যায় ভেতরে কী আছে। নামের শেষে v1 পরে কাজে লাগবে।'}
+          - {line: 13, tip: 'callback শুধু miss হলে চলে। hit হলে এই কোড ছোঁয়াই হয় না।'}
+          - {line: 15, tip: 'ফেরত মান ছোট আর serialize করার মতো রাখো: array বা DTO। Doctrine entity নয়।'}
+      - type: code
+        lang: yaml
+        file: 'config/packages/cache.yaml'
+        code: |
+          framework:
+              cache:
+                  prefix_seed: 'shop_prod'
+                  app: cache.adapter.redis
+                  default_redis_provider: '%env(REDIS_URL)%'
+        marks:
+          - {line: 3, tip: 'একই Redis একাধিক অ্যাপ বা environment ব্যবহার করলে চাবি এক হয়ে যেতে পারে; prefix সেটা আটকায়।'}
+          - {line: 4, tip: 'cache.app এখন Redis-এ লেখে। CacheInterface autowire করলেই এটা আসে।'}
+    aside:
+      - type: tips
+        items:
+          - 'Redis-এ maxmemory আর eviction policy (যেমন allkeys-lru) ঠিক করো, নইলে মেমোরি ভরে গেলে লেখা ব্যর্থ হয়।'
+          - 'Entity নয়, ছোট DTO বা array cache করো — entity serialize করলে বাসি রিলেশন আর বিপুল আকার ঢোকে।'
+      - type: commands
+        title: 'Cache কমান্ড'
+        items:
+          - {cmd: 'php bin/console cache:pool:clear cache.app', desc: 'অ্যাপের cache পুরো খালি করো'}
+          - {cmd: 'php bin/console cache:pool:delete cache.app top_products.v1', desc: 'একটা চাবি মুছো'}
+      - type: refs
+        items:
+          - {to: 'caching/cache-invalidation', label: 'TTL আর invalidation'}
+    check:
+      q: 'get() কলের callback কখন চলে, আর কখন চলে না?'
+      a: 'শুধু miss হলে চলে — চাবি না থাকলে বা মেয়াদ ফুরালে। hit হলে সরাসরি জমা মান ফেরত আসে।'
+
+  - slug: write-strategies
+    title: 'পড়া আর লেখার আরও তিন কৌশল'
+    kind: concept
+    tldr: 'Read-through, write-through আর write-behind-এ cache-ই ডেটাবেসের সাথে কথা বলে; তফাত হলো লেখা কখন ডেটাবেসে পৌঁছায় আর ঝুঁকি কোথায়।'
+    keywords: ['read-through', 'write-through', 'write-behind', 'write-back', 'cache strategy']
+    blocks:
+      - type: text
+        body: |
+          Cache-aside-এ ওয়েটার সব করে। বাকি তিন কৌশলে কাউন্টারের লোক নিজেই রান্নাঘরের সাথে কথা বলে। **Read-through**: কাউন্টার নিজেই রান্নাঘর থেকে এনে দেয়। **Write-through**: অর্ডার খাতা আর কাউন্টার একসাথে লেখা হয়। **Write-behind**: আগে কাউন্টারে লিখে রাখে, রান্নাঘরের খাতায় পরে তোলে।
+      - type: visual
+        kind: compare
+        caption: 'তিন কৌশলে কে ডেটাবেসের সাথে কথা বলে'
+        columns:
+          - title: 'Read-through'
+            tone: default
+            icon: search
+            tip: 'পড়ার দিকের কৌশল। অ্যাপ শুধু cache-কে চায়, miss-এ cache নিজেই উৎস থেকে আনে।'
+            items:
+              - 'miss হলে cache নিজেই ডেটাবেসে যায়'
+              - 'অ্যাপের কোড ছোট থাকে'
+              - 'cache-এর ভেতরে loader বসাতে হয়'
+          - title: 'Write-through'
+            tone: good
+            icon: check
+            tip: 'লেখা একসাথে দুই জায়গায় যায় আর দুটো শেষ হলে তবেই সফল ধরা হয়। cache সবসময় তাজা থাকে।'
+            items:
+              - 'লেখা cache আর ডেটাবেস দুটোতেই যায়'
+              - 'cache কখনো বাসি হয় না'
+              - 'প্রতিটা লেখা ধীর হয়'
+          - title: 'Write-behind'
+            tone: warn
+            icon: warning
+            tip: 'লেখা আগে cache-এ, ডেটাবেসে পরে ব্যাচে। দ্রুত, কিন্তু cache মরলে না-লেখা ডেটা হারায়।'
+            items:
+              - 'cache-এ লিখেই সাথে সাথে উত্তর'
+              - 'ডেটাবেসে ব্যাচে, পরে'
+              - 'cache মরলে লেখা হারায়'
+      - type: quote
+        body: 'Write-behind-এ ডেটাবেসে না পৌঁছানো লেখা শুধু cache-এ বসে আছে — cache মরলে সেটা চিরতরে গেল।'
+    aside:
+      - type: tips
+        items:
+          - 'Symfony-র get(key, callback) দেখতে read-through-এর মতো, কিন্তু আসলে cache-aside: callback তোমার অ্যাপের কোড, cache-এর নয়।'
+          - 'PHP অ্যাপে write-behind প্রায় কেউ হাতে বানায় না। টাকা বা অর্ডারের মতো ডেটায় তো নয়ই।'
+      - type: terms
+        items:
+          - {term: 'Loader', meaning: 'miss হলে উৎস থেকে মান আনার কোড; read-through-এ এটা cache-এর ভেতরে থাকে।'}
+    check:
+      q: 'কোন কৌশলে cache মরে গেলে সবচেয়ে বেশি ডেটা হারানোর ভয়, কেন?'
+      a: 'Write-behind। লেখা আগে cache-এ যায় আর ডেটাবেসে পরে; ডেটাবেসে পৌঁছানোর আগে cache মরলে সেই লেখা হারিয়ে যায়।'
+
+  - slug: what-not-to-cache
+    title: 'কী cache করবে না, আর একটা ভয়ংকর ভুল'
+    kind: pitfall
+    tldr: 'ব্যবহারকারীভেদে আলাদা ডেটা একই চাবিতে cache করলে একজনের তথ্য আরেকজন দেখে ফেলে; টাকা-স্টকের মতো সঠিকতা-নির্ভর ডেটা cache করাও ঝুঁকির।'
+    keywords: ['cache key', 'data leak', 'per-user cache', 'what to cache', 'কী cache করবে না']
+    blocks:
+      - type: text
+        body: |
+          সবচেয়ে ভয়ংকর ভুল: একজনের পাতা সবার চাবিতে রেখে দেওয়া। কাউন্টারে "রহিমের অর্ডার" লেখা প্যাকেট সাজিয়ে রাখলে পরের খদ্দের সেটা নিয়ে যাবে। নিচের কোডে চাবিতে ব্যবহারকারী নেই, তাই প্রথম যে ঢুকবে তার কার্টই সবাই দেখবে।
+      - type: code
+        lang: php
+        file: 'src/Cart/CartView.php'
+        variant: bad
+        code: |
+          public function mine(User $user): array
+          {
+              return $this->cache->get('cart', function (ItemInterface $item) use ($user): array {
+                  $item->expiresAfter(300);
+
+                  return $this->carts->summaryFor($user);
+              });
+          }
+        marks:
+          - {line: 3, tip: 'চাবি শুধু cart। প্রথম ব্যবহারকারীর কার্ট ৫ মিনিট সবাইকে দেখানো হবে।'}
+      - type: code
+        lang: php
+        file: 'src/Cart/CartView.php'
+        variant: good
+        code: |
+          public function mine(User $user): array
+          {
+              $key = 'cart.user.'.$user->getId();
+
+              return $this->cache->get($key, function (ItemInterface $item) use ($user): array {
+                  $item->expiresAfter(60);
+
+                  return $this->carts->summaryFor($user);
+              });
+          }
+        marks:
+          - {line: 3, tip: 'যার জন্য উত্তর আলাদা, তার পরিচয় চাবিতে ঢোকাও।'}
+          - {line: 6, tip: 'ব্যক্তিগত ডেটার মেয়াদ ছোট রাখা নিরাপদ। অথবা এমন ডেটা cache না করাই ভালো।'}
+      - type: points
+        title: 'এগুলো cache করবে না'
+        style: cross
+        items:
+          - 'টাকার ব্যালেন্স আর checkout-এর স্টক — ভুল মানে সরাসরি ক্ষতি।'
+          - 'যে ডেটা কেউ দ্বিতীয়বার চায় না।'
+          - 'যা বানাতে সস্তা, অথচ cache-এর ঝামেলা বেশি।'
+    aside:
+      - type: pitfalls
+        items:
+          - 'cache ছাড়া ধীর এমন query ঠিক না করে cache দিয়ে ঢাকলে মূল সমস্যা (index নেই, N+1) থেকে যায়।'
+      - type: remember
+        body: 'উত্তর যার জন্য আলাদা, চাবিতে তার পরিচয় থাকতেই হবে।'
+    check:
+      q: 'Cache-এর চাবিতে ব্যবহারকারীর আইডি না দিলে কী ঘটতে পারে?'
+      a: 'প্রথম ব্যবহারকারীর ব্যক্তিগত ডেটা পরের সবাই দেখে ফেলতে পারে — এটা সরাসরি তথ্য ফাঁস।'
+
+  - slug: strategy-compare
+    title: 'কোন কৌশল কখন'
+    kind: compare
+    tldr: 'বেশিরভাগ Symfony অ্যাপে cache-aside-ই যথেষ্ট; write-through তাজা মান চাইলে, write-behind শুধু হারানো চলে এমন চাপ-সামলানো লেখায়।'
+    keywords: ['strategy comparison', 'cache-aside vs write-through', 'কোনটা বেছে নেব', 'trade-off']
+    blocks:
+      - type: visual
+        kind: table
+        caption: 'চার কৌশল পাশাপাশি'
+        headers: ['', 'Cache-aside', 'Read-through', 'Write-through', 'Write-behind']
+        rows:
+          - cells: ['কে ডেটাবেসে যায়', 'অ্যাপ', 'cache', 'অ্যাপ বা cache', 'cache, পরে']
+            tip: 'Cache-aside-এ সব নিয়ন্ত্রণ অ্যাপের হাতে, তাই সবচেয়ে সহজ আর স্বচ্ছ।'
+          - cells: ['cache বাসি হয়?', 'হয়, TTL পর্যন্ত', 'হয়, TTL পর্যন্ত', 'প্রায় না', 'না, কিন্তু ডেটাবেস পিছিয়ে']
+            tip: 'বাসি হওয়া কমাতে চাইলে write-through; তবে প্রতিটা লেখা ধীর হয়।'
+          - cells: ['লেখার গতি', 'অপরিবর্তিত', 'অপরিবর্তিত', 'ধীর (দুই জায়গা)', 'দ্রুত']
+            tip: 'Write-behind গতি আনে, বদলে হারানোর ঝুঁকি।'
+          - cells: ['ডেটা হারানোর ভয়', 'নেই', 'নেই', 'নেই', 'আছে']
+            tip: 'টাকা বা অর্ডারের ডেটায় write-behind নয়।'
+          - cells: ['Symfony-তে', 'get(key, fn)', 'নিজে বানাতে হয়', 'ডেটাবেস লেখার পর set', 'প্রায় বানানো হয় না']
+            tip: 'Symfony Cache-এর স্বাভাবিক ব্যবহারই cache-aside।'
+      - type: points
+        title: 'সিদ্ধান্তের নিয়ম'
+        style: number
+        items:
+          - 'সন্দেহ হলে cache-aside, ছোট TTL সহ।'
+          - 'পড়ার পর সাথে সাথে তাজা মান লাগলে লেখার সময় cache বদলাও বা মুছো।'
+          - 'হারানো চলে না এমন ডেটায় write-behind কখনো নয়।'
+    aside:
+      - type: refs
+        items:
+          - {to: 'caching/cache-invalidation', label: 'বাসি cache কীভাবে সারাবে'}
+          - {to: 'caching/cache-stampede', label: 'miss-এর ঝড় ঠেকানো'}
+    check:
+      q: 'একটা সাধারণ পণ্যের পাতার জন্য কোন কৌশল দিয়ে শুরু করবে, আর কেন?'
+      a: 'Cache-aside, একটা ছোট TTL সহ। এটা সহজ, Symfony-র get() দিয়েই হয়, আর cache বন্ধ থাকলেও অ্যাপ ডেটাবেস দিয়ে চলে।'
+
+flashcards:
+  - q: 'Cache hit আর cache miss কী?'
+    a: 'Hit: উত্তর cache-এ পাওয়া গেল। Miss: cache-এ নেই, তাই আসল উৎস (ডেটাবেস) থেকে আনতে হলো।'
+    more: |
+      হিটের হার যত বেশি, cache তত কাজের। প্রথমবার চাইলে সবসময় miss হয়; সেই miss-এর পরে উত্তর cache-এ বসে, আর পরের request-গুলো hit পায়।
+    ref: same-answer-again
+  - q: 'Cache-aside কৌশল কীভাবে কাজ করে?'
+    a: 'অ্যাপ আগে cache-এ খোঁজে; না পেলে নিজে ডেটাবেস থেকে এনে cache-এ রেখে দেয়।'
+    more: |
+      cache নিজে কিছু আনে না; খোঁজা, আনা আর ভরা তিনটাই অ্যাপের কোডে। তাই cache বন্ধ থাকলেও অ্যাপ চলে, শুধু ধীর হয়। একে lazy loading-ও বলে, কারণ cache ভরে শুধু চাওয়া হলে।
+    ref: cache-aside
+  - q: 'Symfony-র CacheInterface::get($key, $callback) কী করে?'
+    a: 'চাবি থাকলে জমা মান ফেরায়; না থাকলে callback চালিয়ে ফল জমা করে আর ফেরায়।'
+    more: |
+      callback-এর ভেতরে `$item->expiresAfter(600)` দিয়ে মেয়াদ বলা হয়। এটা cache-aside-এর Symfony রূপ। এতে "খোঁজো, না পেলে বানাও, রাখো" তিন ধাপ এক কলেই হয়ে যায়, হাতে আলাদা if লিখতে হয় না।
+    ref: symfony-cache-get
+  - q: 'Write-through কৌশলে লেখা কীভাবে যায়?'
+    a: 'একসাথে cache আর ডেটাবেস দুই জায়গাতেই; দুটো শেষ হলে তবে সফল ধরা হয়।'
+    more: |
+      ফলে cache প্রায় কখনো বাসি হয় না। দাম: প্রতিটা লেখা ধীর, কারণ দুই জায়গার জন্য অপেক্ষা করতে হয়। যে ডেটা কেউ পরে পড়বে না, তার জন্যও cache ভরে অকারণে জায়গা নষ্ট হয়।
+    ref: write-strategies
+  - q: 'Write-behind কৌশলের সবচেয়ে বড় ঝুঁকি কী?'
+    a: 'লেখা আগে cache-এ যায়, ডেটাবেসে পরে। ডেটাবেসে পৌঁছানোর আগে cache মরলে সেই লেখা হারায়।'
+    more: |
+      গতি পাওয়া যায় কারণ ব্যবহারকারীকে ডেটাবেসের জন্য থামতে হয় না। কিন্তু টাকা, অর্ডার বা অনুমতির ডেটায় হারানোর সুযোগ রাখা যায় না। তাই এটা ব্যবহার হয় কেবল এমন চাপ-সামলানো লেখায়, যেখানে কিছু হারালেও চলে।
+    ref: write-strategies
+  - q: 'ব্যবহারকারীভেদে আলাদা উত্তর cache করলে চাবিতে কী থাকতে হবে?'
+    a: 'ব্যবহারকারীর আইডি বা পরিচয়। নইলে একজনের তথ্য আরেকজন দেখে ফেলে।'
+    more: |
+      যেমন `cart` নয়, `cart.user.42`। এটা শুধু cache-এর ভুল নয়, নিরাপত্তার ভুল: ব্যক্তিগত তথ্য ফাঁস হয়। সন্দেহ থাকলে ব্যক্তিগত ডেটা cache না করে ছোট মেয়াদ দাও।
+    ref: what-not-to-cache
+  - q: 'কোন ধরনের ডেটা cache না করাই ভালো?'
+    a: 'টাকার ব্যালেন্স, checkout-এর স্টক, আর যা বানাতে সস্তা বা কেউ দ্বিতীয়বার চায় না।'
+    more: |
+      cache মানে বাসি হওয়ার ঝুঁকি কিনে গতি নেওয়া। ভুল দেখালে সরাসরি ক্ষতি, এমন ডেটায় এই বদল লাভজনক নয়। আর বানাতে সস্তা ডেটায় cache-এর জটিলতাই বেশি।
+    ref: what-not-to-cache
+
+quiz:
+  - q: 'নিচের কোডের সমস্যা কী?'
+    lang: php
+    code: |
+      return $this->cache->get('profile', function (ItemInterface $item) use ($user) {
+          $item->expiresAfter(600);
+
+          return $this->profiles->forUser($user);
+      });
+    hint: 'চাবিটা কয়জন ব্যবহারকারী ভাগ করে নিচ্ছে?'
+    options:
+      - text: 'চাবি সবার জন্য এক, তাই একজনের প্রোফাইল ১০ মিনিট সবাই দেখবে'
+        correct: true
+        why: 'ব্যবহারকারীভেদে আলাদা উত্তরের চাবিতে পরিচয় থাকতে হয়, যেমন profile.user.42।'
+      - text: 'expiresAfter(600) খুব বড়, ৬০ হলেই সব ঠিক হয়ে যেত'
+        correct: false
+        why: 'মেয়াদ কমালে ফাঁস ছোট সময়ের হয় মাত্র, বন্ধ হয় না। আসল ভুল চাবিতে।'
+      - text: 'callback-এর ভেতরে ডেটাবেস query চালানো যায় না'
+        correct: false
+        why: 'যায়। miss হলে আসল উৎস থেকে আনার জন্যই callback।'
+      - text: 'Redis ছাড়া এই কোড কাজ করবে না'
+        correct: false
+        why: 'CacheInterface যেকোনো adapter-এই চলে; সমস্যা backend-এ নয়।'
+    ref: what-not-to-cache
+  - q: 'Cache-aside কৌশলে miss হলে ঠিক কোন ক্রমে কী ঘটে?'
+    hint: 'ওয়েটার আগে কোথায় দেখে, তারপর কোথায় যায়?'
+    options:
+      - text: 'cache-এ খোঁজা, ডেটাবেস থেকে আনা, cache-এ রেখে দেওয়া, উত্তর দেওয়া'
+        correct: true
+        why: 'এই ক্রমেই পরের request cache থেকে উত্তর পায়।'
+      - text: 'ডেটাবেসে লেখা, তারপর cache-এ খোঁজা'
+        correct: false
+        why: 'এটা পড়ার ক্রম নয়; আর cache-এ আগে না দেখলে cache-এর কোনো লাভ থাকে না।'
+      - text: 'cache নিজেই ডেটাবেস থেকে এনে অ্যাপকে দেয়'
+        correct: false
+        why: 'সেটা read-through। cache-aside-এ আনার কাজ অ্যাপের।'
+      - text: 'ডেটাবেস আর cache একসাথে খোঁজা, যেটা আগে পায়'
+        correct: false
+        why: 'এতে ডেটাবেসের চাপ কমে না, cache-এর উদ্দেশ্যই নষ্ট।'
+    ref: cache-aside
+  - q: 'কোন কোন ডেটা cache-এর ভালো প্রার্থী?'
+    hint: 'বারবার চাওয়া হয়, বানাতে ভারী, আর অল্পক্ষণ বাসি হলে ক্ষতি নেই।'
+    options:
+      - text: 'হোমপেজের সেরা ১০ পণ্যের তালিকা'
+        correct: true
+        why: 'অনেকে চায়, হিসাব ভারী, ১০ মিনিট পুরনো হলেও ক্ষতি নেই।'
+      - text: 'বিভাগের তালিকা, যা দিনে একবারও বদলায় না'
+        correct: true
+        why: 'প্রায় অপরিবর্তনীয় আর বারবার পড়া হয় — আদর্শ প্রার্থী।'
+      - text: 'checkout-এর সময় কোনো পণ্যের সঠিক স্টক'
+        correct: false
+        why: 'বাসি স্টক দেখালে বেশি বিক্রি হয়ে যায়; এখানে সঠিকতা গতির চেয়ে জরুরি।'
+      - text: 'ব্যবহারকারীর ব্যালেন্স, সবার জন্য এক চাবিতে'
+        correct: false
+        why: 'টাকার ডেটা বাসি হলে ক্ষতি, আর এক চাবিতে রাখলে একজনেরটা সবাই দেখে।'
+    ref: what-not-to-cache
+  - q: 'একটা গেমের অ্যাপে "লাইক" সংখ্যা প্রতি সেকেন্ডে হাজারবার বাড়ে। কিছু লাইক হারালেও ক্ষতি নেই, তবে লেখা খুব দ্রুত হতে হবে। কোন কৌশল সবচেয়ে মানায়?'
+    hint: 'হারানো চলে, কিন্তু ডেটাবেসকে প্রতিটা লেখার চাপ থেকে বাঁচাতে হবে।'
+    options:
+      - text: 'Write-behind: cache-এ গুনে রেখে ডেটাবেসে ব্যাচে তোলা'
+        correct: true
+        why: 'গতি আর কম ডেটাবেস-চাপ মেলে; কিছু লাইক হারানো এখানে গ্রহণযোগ্য।'
+      - text: 'Write-through: প্রতিটা লাইক cache আর ডেটাবেস দুটোতেই'
+        correct: false
+        why: 'প্রতিটা লেখাই ডেটাবেসে যায়, ফলে চাপ কমে না।'
+      - text: 'Cache-aside, প্রতি লাইকে cache মুছে ফেলা'
+        correct: false
+        why: 'প্রতি সেকেন্ডে হাজারবার মুছলে hit-ই হবে না।'
+      - text: 'কোনো cache নয়, প্রতিটা লাইক সরাসরি ডেটাবেসে'
+        correct: false
+        why: 'চাপ সামলানোর প্রয়োজনটাই অমীমাংসিত থাকে।'
+    ref: write-strategies
+  - q: 'Symfony-র get(key, callback) নিয়ে কোন কোন কথা ঠিক?'
+    hint: 'এটা দেখতে read-through, কিন্তু callback কার কোড?'
+    options:
+      - text: 'এটা আসলে cache-aside-এর একটা রূপ'
+        correct: true
+        why: 'callback তোমার অ্যাপের কোড; আনার দায়িত্ব অ্যাপেরই।'
+      - text: 'callback শুধু miss হলে চলে'
+        correct: true
+        why: 'hit হলে জমা মানই ফেরে, ধীর কাজ চলে না।'
+      - text: 'মেয়াদ callback-এর ভেতরে $item->expiresAfter() দিয়ে বলা যায়'
+        correct: true
+        why: 'ItemInterface ধরে মেয়াদ বা tag ঠিক করা যায়।'
+      - text: 'cache নিজেই ডেটাবেস চেনে আর loader নিজে চালায়'
+        correct: false
+        why: 'cache ডেটাবেস চেনে না; callback-এই সব বলে দিতে হয়।'
+    ref: symfony-cache-get

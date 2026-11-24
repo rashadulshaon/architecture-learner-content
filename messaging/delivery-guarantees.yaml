@@ -1,0 +1,315 @@
+slides:
+  - slug: two-emails-one-order
+    title: 'একই অর্ডারে দুটো কনফার্মেশন ইমেইল'
+    kind: story
+    tldr: 'Worker কাজ করে ফেলেও ack দেওয়ার আগে মরে গেলে broker বার্তাটা আবার দেয়, আর একই কাজ দুইবার হয়।'
+    keywords: ['ack', 'redelivery', 'duplicate message', 'at-least-once', 'ডুপ্লিকেট', 'বার্তা আবার আসা']
+    blocks:
+      - type: metaphor
+        icon: truck
+        title: 'কুরিয়ারের সই করা রসিদ'
+        body: |
+          কুরিয়ার বয় পার্সেল দিয়ে এসে রসিদে সই নেয়, তবেই অফিস লেখে "ডেলিভারি হয়েছে"। সই না পেলে অফিস ধরে নেয় পার্সেল পৌঁছায়নি, আর আরেকজনকে পাঠায়। ধরো, পার্সেল ঠিকই পৌঁছেছিল, কিন্তু সই নেওয়ার আগেই বয়ের বাইক বিগড়ে গেল। এখন ক্রেতা পার্সেল পাবে দুটো।
+      - type: visual
+        kind: sequence
+        caption: 'ইমেইল গেল, ack গেল না — তাই বার্তা আবার এল'
+        actors:
+          - {id: broker, label: 'Broker', icon: queue, tip: 'বার্তা জমা রাখে। যতক্ষণ ack না পায়, বার্তাটা মুছে ফেলে না।'}
+          - {id: worker, label: 'Worker', icon: worker, tip: 'বার্তা তুলে handler চালায়। কাজ শেষে broker-কে ack জানানোর কথা।'}
+          - {id: customer, label: 'ক্রেতা', icon: user, tip: 'যার ইনবক্সে ইমেইল পৌঁছায়।'}
+        messages:
+          - {from: broker, to: worker, label: 'OrderPlaced #501 নাও', tip: 'প্রথমবার বার্তা দেওয়া হলো।'}
+          - {from: worker, to: customer, label: 'কনফার্মেশন ইমেইল যায়', tip: 'কাজটা আসলেই হয়ে গেল।'}
+          - {at: worker, note: 'ack পাঠানোর আগেই crash', tone: bad}
+          - {from: broker, to: worker, label: 'ack পাইনি, #501 আবার নাও', dashed: true, tip: 'Broker জানে না কাজটা হয়েছিল কি না। নিরাপদ পথ হলো আবার পাঠানো।'}
+          - {from: worker, to: customer, label: 'দ্বিতীয় ইমেইল যায়', tone: bad}
+      - type: quote
+        body: 'Ack না আসা মানে broker জানে না কাজ হয়েছে কি না — তাই সে আবার পাঠায়।'
+    aside:
+      - type: story
+        title: 'দুইবার কাটা রিচার্জ'
+        body: |
+          এক অ্যাপে "রিচার্জ করো" বার্তা handler চালিয়ে অপারেটরকে টাকা পাঠাত, তারপর ack দিত। একদিন deploy-এর সময় worker মাঝপথে বন্ধ হলো। নতুন worker বার্তাটা আবার পেয়ে দ্বিতীয়বার রিচার্জ করে দিল।
+      - type: terms
+        items:
+          - {term: 'Ack', meaning: 'worker-এর "কাজ শেষ, বার্তাটা মুছে দাও" বলার সংকেত।'}
+          - {term: 'Redelivery', meaning: 'ack না পেয়ে broker-এর একই বার্তা আবার দেওয়া।'}
+    check:
+      q: 'ইমেইল পাঠিয়ে worker ack-এর আগে মরে গেলে broker কেন বার্তাটা আবার দেয়?'
+      a: 'Broker জানে না কাজটা হয়েছে কি না। ack না আসা মানে "হয়তো হয়নি", আর বার্তা হারানোর চেয়ে আবার দেওয়া নিরাপদ।'
+
+  - slug: three-guarantees
+    title: 'At-most-once, at-least-once আর "exactly-once"'
+    kind: concept
+    tldr: 'Ack কাজের আগে দিলে বার্তা হারাতে পারে, পরে দিলে দুইবার আসতে পারে; exactly-once আসলে at-least-once আর idempotent handler।'
+    keywords: ['at-most-once', 'at-least-once', 'exactly-once', 'effectively-once', 'idempotent', 'delivery guarantee']
+    blocks:
+      - type: metaphor
+        icon: receipt
+        title: 'রসিদ কখন সই হবে?'
+        body: |
+          বয় যদি পার্সেল হাতে নেওয়ামাত্রই অফিসকে "ডেলিভারি হয়ে গেছে" বলে দেয়, তাহলে পথে হারালে কেউ খুঁজবে না: এটা **at-most-once**। আর যদি পৌঁছে সই নিয়ে তবেই বলে, তাহলে সই হারালে পার্সেল দুইবার যেতে পারে: এটা **at-least-once**। দ্বিতীয়বার গেলে ক্রেতা যদি বলে "এটা আমার আগেই আছে, ফেরত নাও", তাহলে ফল দাঁড়ায় এক পার্সেল, যাকে বলে **effectively-once**।
+      - type: visual
+        kind: table
+        caption: 'তিন ধরনের গ্যারান্টি পাশাপাশি'
+        headers: ['', 'At-most-once', 'At-least-once', 'Effectively-once']
+        rows:
+          - cells: ['ack কখন', 'কাজের আগে', 'কাজের পরে', 'কাজের পরে']
+            tip: 'পার্থক্যটা শুধু ack কোথায় বসছে তাতে। Effectively-once-এর ack at-least-once-এর মতোই।'
+          - cells: ['কী ঘটতে পারে', 'বার্তা হারায়', 'বার্তা দুইবার আসে', 'দুইবার আসে, ফল একবারের']
+            tip: 'প্রথমটায় কাজ হারায়, দ্বিতীয়টায় কাজ ডুপ্লিকেট হয়। তৃতীয়টায় ডুপ্লিকেট এসেও ক্ষতি করে না।'
+          - cells: ['কাজে লাগে', 'হারালে ক্ষতি নেই এমন', 'বেশিরভাগ কাজ', 'টাকা, স্টক, অর্ডার']
+            tip: 'লাইভ লোকেশন বা মেট্রিক হারালেও পরেরটা আসে। টাকার কাজে হারানোও চলে না, দুইবারও না।'
+          - cells: ['তোমার দায়িত্ব', 'কিছু না', 'ডুপ্লিকেট সামলানো', 'handler-কে idempotent বানানো']
+            tip: 'Broker ডেলিভারি নিশ্চিত করে, কিন্তু ডুপ্লিকেটের পরিণতি সামলানো তোমার handler-এর কাজ।'
+      - type: quote
+        body: 'Exactly-once ডেলিভারি বলে কিছু নেই। আছে at-least-once আর idempotent handler।'
+    aside:
+      - type: problem
+        body: 'নেটওয়ার্ক আর process যেকোনো মুহূর্তে মরতে পারে। তাই broker আর worker দুজনেই নিশ্চিত হতে পারে না কাজ হয়েছে কি না, আর সেই অনিশ্চয়তা সামলানোর নিয়মই delivery guarantee।'
+      - type: remember
+        body: 'হারানোর চেয়ে দুইবার ভালো, আর দুইবারকে একবার বানানো handler-এর কাজ।'
+      - type: refs
+        items:
+          - {to: 'payments/idempotency-keys', label: 'Idempotency key'}
+    check:
+      q: 'Kafka বা SQS বিজ্ঞাপনে "exactly-once" বললে তোমার handler-এ কী করা উচিত?'
+      a: 'তবুও idempotent বানাও। বেশিরভাগ ক্ষেত্রে সেটা broker-এর ভেতরের সীমার গ্যারান্টি; তোমার ইমেইল বা পেমেন্ট API-র মতো বাইরের কাজ দুইবার চলতে পারে।'
+
+  - slug: ordering-by-key
+    title: 'Ordering আর partition: একই key, একই লাইন'
+    kind: concept
+    tldr: 'অনেক worker একসাথে চললে বার্তার ক্রম ভাঙে। একই key-র বার্তা একই partition-এ পাঠালে সেই key-র ভেতরে ক্রম টিকে থাকে।'
+    keywords: ['ordering', 'partition', 'partition key', 'message group', 'FIFO', 'পার্টিশন', 'ক্রম']
+    blocks:
+      - type: metaphor
+        icon: bank
+        title: 'ব্যাংকের কাউন্টার'
+        body: |
+          ব্যাংকে চারটা কাউন্টার থাকলে লাইন দ্রুত চলে, কিন্তু রহিমের জমা আর উত্তোলন যদি দুই কাউন্টারে যায়, তাহলে কে আগে শেষ করবে বলা যায় না। তাই নিয়ম হলো: রহিমের সব কাজ সবসময় একই কাউন্টারে। রহিমের ভেতরে ক্রম ঠিক থাকে, আবার সব কাউন্টার মিলে কাজও চলে সমান্তরালে।
+      - type: visual
+        kind: flow
+        caption: 'account id দিয়ে partition ঠিক হয়, partition-প্রতি একজন worker'
+        nodes:
+          - {id: prod, label: 'Producer', sub: 'key = accountId', icon: send, col: 0, row: 1, tip: 'প্রতিটা বার্তার সাথে একটা key পাঠায়, এখানে অ্যাকাউন্টের id।'}
+          - {id: p0, label: 'Partition 0', sub: 'acc 7, acc 9', icon: queue, tone: accent, col: 1.5, row: 0, tip: 'key-র hash দিয়ে এখানে পড়া বার্তাগুলো ঢোকার ক্রমেই থাকে।'}
+          - {id: p1, label: 'Partition 1', sub: 'acc 8, acc 12', icon: queue, col: 1.5, row: 2, tip: 'অন্য key-গুলোর লাইন। এটা p0-র সাথে সমান্তরালে চলে।'}
+          - {id: w0, label: 'Worker A', sub: 'শুধু partition 0', icon: worker, col: 3, row: 0, tip: 'একটা partition-এর জন্য একই সময়ে একজনই পাঠক, তাই ক্রম ভাঙে না।'}
+          - {id: w1, label: 'Worker B', sub: 'শুধু partition 1', icon: worker, col: 3, row: 2, tip: 'আলাদা worker, তাই throughput বাড়ে।'}
+        edges:
+          - {from: prod, to: p0, label: 'acc 7-এর বার্তা hash হয়ে partition 0-তে যায়'}
+          - {from: prod, to: p1, label: 'acc 8-এর বার্তা hash হয়ে partition 1-এ যায়'}
+          - {from: p0, to: w0, label: 'Worker A acc 7-এর বার্তা ঢোকার ক্রমে পায়', dashed: true}
+          - {from: p1, to: w1, label: 'Worker B আলাদা লাইন একই সময়ে চালায়', dashed: true}
+      - type: points
+        title: 'কোথায় এর নাম কী'
+        style: dot
+        items:
+          - 'Kafka: message key দিয়ে partition ঠিক হয়, partition-প্রতি consumer group-এর একজন পাঠক।'
+          - 'Amazon SQS FIFO: `MessageGroupId` একই হলে ক্রম বজায় থাকে।'
+          - 'RabbitMQ: একটা queue-তে একজন consumer হলে ক্রম থাকে; অনেকজন হলে থাকে না।'
+    aside:
+      - type: pitfalls
+        items:
+          - 'পুরো সিস্টেমে একটাই global ক্রম চাইলে সব বার্তা এক লাইনে পড়ে আর throughput আটকে যায়।'
+          - 'একটা key অতিরিক্ত গরম (hot key) হলে সেই partition-এর worker একাই ভারে নুয়ে পড়ে।'
+      - type: terms
+        items:
+          - {term: 'Partition key', meaning: 'যে মান দেখে ঠিক হয় বার্তা কোন লাইনে যাবে।'}
+          - {term: 'Hot key', meaning: 'এমন key যার বার্তা বাকিদের চেয়ে অনেক বেশি।'}
+    check:
+      q: 'একই অ্যাকাউন্টের "জমা" আর "উত্তোলন" বার্তা ক্রমে চালাতে চাও। partition key কী হবে?'
+      a: 'accountId। তাতে একই অ্যাকাউন্টের সব বার্তা একই partition-এ একজন worker-এর কাছে ক্রমে যায়, আর ভিন্ন অ্যাকাউন্ট সমান্তরালে চলে।'
+
+  - slug: messenger-ack-and-order
+    title: 'Messenger-এ ack আর ক্রম সামলানো'
+    kind: howto
+    tldr: 'Messenger handler সফল হলে তবেই ack করে, তাই গ্যারান্টি at-least-once। ক্রম দরকার হলে group id দাও আর handler-এ পুরনো বার্তা বাদ দাও।'
+    keywords: ['Symfony Messenger', 'AmazonSqsFifoStamp', 'message group id', 'stale message', 'version check', 'অর্ডারিং']
+    blocks:
+      - type: text
+        body: |
+          Messenger নিজে handler শেষ হওয়ার **পরে** ack করে, আর exception উঠলে ack করে না। তাই ডিফল্ট আচরণ at-least-once। ক্রম দরকার হলে SQS FIFO transport-এ message group বসাও, আর handler-কে এমন বানাও যেন পুরনো বার্তা এলে সে চুপচাপ বাদ দেয়।
+      - type: code
+        lang: php
+        file: 'src/Service/AccountEvents.php'
+        variant: good
+        code: |
+          public function credited(Account $account, int $amount, int $version): void
+          {
+              $this->bus->dispatch(
+                  new AccountCredited($account->getId(), $amount, $version),
+                  [
+                      // একই অ্যাকাউন্ট = একই group = ক্রমে চলবে
+                      new AmazonSqsFifoStamp(
+                          messageGroupId: (string) $account->getId(),
+                          messageDeduplicationId: 'credit-'.$account->getId().'-'.$version,
+                      ),
+                  ],
+              );
+          }
+        marks:
+          - {line: 8, tip: 'group id হলো partition key-র SQS রূপ। একই group-এর বার্তা একটার পর একটা চলে।'}
+          - {line: 9, tip: 'SQS FIFO কিছু সময়ের (৫ মিনিট) মধ্যে একই deduplication id-র দ্বিতীয় বার্তা ফেলে দেয়।'}
+      - type: code
+        lang: php
+        file: 'src/MessageHandler/AccountCreditedHandler.php'
+        variant: good
+        code: |
+          #[AsMessageHandler]
+          final readonly class AccountCreditedHandler
+          {
+              public function __construct(private ReadModelRepository $readModels) {}
+
+              public function __invoke(AccountCredited $m): void
+              {
+                  $applied = $this->readModels->applyIfNewer(
+                      $m->accountId, $m->amount, $m->version,
+                  );
+                  // applied = false মানে এই version আগেই প্রয়োগ হয়েছে: ডুপ্লিকেট বা পুরনো
+              }
+          }
+        marks:
+          - {line: 8, tip: 'ভেতরের query-তে `WHERE version < :version` থাকে, তাই পুরনো বা ডুপ্লিকেট বার্তা কিছুই বদলায় না।'}
+      - type: points
+        title: 'এই কোডের নিয়ম'
+        style: check
+        items:
+          - 'ack আসে handler সফল হওয়ার পরে, তাই কাজ হারানো যায় না।'
+          - 'ক্রম লাগলে group id দাও, নইলে ধরে নিয়ো না যে বার্তা ক্রমে আসবে।'
+          - 'version দিয়ে পুরনো বা ডুপ্লিকেট বার্তা handler নিজে ঠেকাবে।'
+    aside:
+      - type: tips
+        items:
+          - 'ক্রম সত্যিই দরকার কি না আগে ভাবো। অনেক কাজ (ইমেইল, PDF) ক্রম ছাড়াই ঠিক চলে।'
+          - 'বার্তায় একটা version বা sequence নম্বর রাখলে ক্রম ভাঙলেও handler ঠিকঠাক চলে।'
+      - type: refs
+        items:
+          - {to: 'messaging/dlq-retries', label: 'ডুপ্লিকেট ঠেকানো: idempotent consumer'}
+    check:
+      q: 'ক্রম নিশ্চিত করতে গিয়ে সব বার্তা এক group id দিলে কী সমস্যা হয়?'
+      a: 'সব বার্তা এক লাইনে একজন worker-এর হাতে পড়ে, তাই সমান্তরালতা শূন্য হয়। group id হওয়া উচিত অ্যাকাউন্ট বা অর্ডারের মতো ছোট একক।'
+
+flashcards:
+  - q: 'At-most-once, at-least-once আর exactly-once-এর মূল পার্থক্য কী?'
+    a: 'At-most-once-এ বার্তা হারাতে পারে, at-least-once-এ দুইবার আসতে পারে। Exactly-once আসলে at-least-once আর idempotent handler।'
+    more: |
+      পার্থক্যটা ack কোথায় বসছে তাতে। কাজের আগে ack দিলে crash হলে কাজ হারায়। কাজের পরে ack দিলে crash হলে কাজটা আবার চলে। শেষটায় ডুপ্লিকেট এলেও handler একই ফল দেয়।
+    ref: three-guarantees
+  - q: 'Broker একই বার্তা কেন দুইবার পাঠাতে পারে?'
+    a: 'Worker কাজ শেষ করেও ack পাঠানোর আগে মরে গেলে, বা ack পথে হারালে, broker ধরে নেয় কাজ হয়নি এবং আবার পাঠায়।'
+    more: |
+      Broker বাইরে থেকে দেখতে পারে না handler-এর ভেতরে কী ঘটেছে। সে শুধু ack পেল কি না জানে। হারানোর চেয়ে আবার পাঠানো নিরাপদ, তাই ডিফল্ট আচরণ at-least-once।
+    ref: two-emails-one-order
+  - q: 'কোন ধরনের কাজে at-most-once চলে?'
+    a: 'যেখানে একটা বার্তা হারালে ক্ষতি নেই কারণ পরেরটা আসছেই, যেমন লাইভ লোকেশন বা মেট্রিক নমুনা।'
+    more: |
+      এই গ্যারান্টিতে ডুপ্লিকেটের ভয় নেই আর সবচেয়ে সহজ। কিন্তু টাকা, অর্ডার বা ইমেইলের মতো কাজে বার্তা হারানো গ্রহণযোগ্য নয়, তাই সেখানে at-least-once নিয়ে ডুপ্লিকেট সামলানোই নিয়ম।
+    ref: three-guarantees
+  - q: 'Messenger কখন ack করে, আর handler-এ exception উঠলে কী হয়?'
+    a: 'Handler সফল হওয়ার পরে ack করে। Exception উঠলে ack করে না, তাই retry strategy অনুযায়ী বার্তাটা আবার চেষ্টা হয়।'
+    more: |
+      এই কারণে Messenger-এর আচরণ at-least-once। Handler মাঝপথে মরে গেলেও বার্তাটা হারায় না। দাম হলো একই handler দুইবার চলার সম্ভাবনা, যার জন্য তুমি প্রস্তুত থাকবে।
+    ref: messenger-ack-and-order
+  - q: 'Partition key কী কাজে লাগে?'
+    a: 'একই key-র সব বার্তা একই partition-এ যায়। সেই partition-এর একজনই পাঠক, তাই ওই key-র ভেতরে বার্তার ক্রম বজায় থাকে।'
+    more: |
+      ক্রম শুধু একই key-র ভেতরে নিশ্চিত, সব key মিলিয়ে নয়। এতে ক্রম আর সমান্তরালতা দুটোই পাওয়া যায়, কারণ আলাদা key আলাদা worker-এ একসাথে চলে।
+    ref: ordering-by-key
+  - q: 'Hot key কী, আর কেন সমস্যা?'
+    a: 'যে key-র বার্তা বাকিদের চেয়ে অনেক বেশি। তার partition-এর একজন worker একাই ভারে নুয়ে পড়ে, বাকি worker-রা বসে থাকে।'
+    more: |
+      যেমন একটা জনপ্রিয় দোকানের সব অর্ডার যদি shopId দিয়ে partition হয়। সমাধান হলো আরও ছোট একক দিয়ে partition করা, যেমন orderId, অথবা key-তে একটা সংখ্যা জুড়ে ভাগ করা, যদি ক্রম সেই স্তরে লাগে না।
+    ref: ordering-by-key
+  - q: 'অনেক worker থাকলে ক্রম কেন ভেঙে যায়?'
+    a: 'দুই worker দুটো বার্তা একসাথে তোলে, আর দ্বিতীয় বার্তাটা আগে শেষ হতে পারে। ক্রম তখন কে আগে শেষ করল তার উপর নির্ভর করে।'
+    more: |
+      সমান্তরালতা আর ক্রম একে অপরের বিপরীত টান। একটা ছাড়া অন্যটা বাড়ে না। তাই ক্রম শুধু যেখানে দরকার সেখানে, যেমন একই অ্যাকাউন্টের ভেতরে, চাও।
+    ref: ordering-by-key
+
+quiz:
+  - q: 'একটা handler ইমেইল পাঠিয়ে ack দেওয়ার আগে মরে গেল। পরে কী ঘটবে?'
+    hint: 'Broker কী জানে আর কী জানে না, সেটা ভাবো।'
+    options:
+      - text: 'বার্তা হারিয়ে যাবে, ইমেইল আর কখনো যাবে না'
+        correct: false
+        why: 'এটা at-most-once-এর আচরণ। যেখানে ack কাজের পরে, সেখানে বার্তা হারায় না।'
+      - text: 'Broker বার্তাটা আবার দেবে, ক্রেতা দুটো ইমেইল পেতে পারে'
+        correct: true
+        why: 'Ack আসেনি বলে broker ধরে নেয় কাজ হয়নি। কাজটা আসলে হয়ে গিয়েছিল, তাই ডুপ্লিকেট।'
+      - text: 'Broker বুঝে যাবে ইমেইল গেছে, তাই আর পাঠাবে না'
+        correct: false
+        why: 'Broker handler-এর ভেতরের খবর জানে না, শুধু ack পেল কি না জানে।'
+    ref: two-emails-one-order
+  - q: 'কোন বাক্যগুলো সঠিক?'
+    hint: 'Ack কাজের আগে না পরে, আর handler-এর দায়িত্ব কী।'
+    options:
+      - text: 'At-least-once-এ ack কাজের পরে দেওয়া হয়'
+        correct: true
+        why: 'কাজের পরে ack দিলে crash হলে বার্তা আবার আসে, তাই হারায় না।'
+      - text: 'At-most-once-এ বার্তা হারাতে পারে'
+        correct: true
+        why: 'ack আগে দিলে crash-এর পর broker ভাবে কাজ হয়ে গেছে, অথচ হয়নি।'
+      - text: 'Exactly-once মানে handler-কে আর idempotent বানাতে হয় না'
+        correct: false
+        why: 'বাইরের কাজ, যেমন ইমেইল বা পেমেন্ট, broker একবার চালানোর গ্যারান্টি দিতে পারে না।'
+      - text: 'At-least-once-এ বার্তা কখনো হারায় না আর কখনো দুইবার আসে না'
+        correct: false
+        why: 'দুইবার আসার সম্ভাবনাই এর দাম। সেটাই handler-কে idempotent বানাতে বাধ্য করে।'
+    ref: three-guarantees
+  - q: 'ব্যাংক অ্যাপে প্রতি অ্যাকাউন্টের লেনদেন ক্রমে চালাতে চাও, কিন্তু সব অ্যাকাউন্ট একসাথে। কী করবে?'
+    hint: 'ক্রম লাগবে শুধু একই অ্যাকাউন্টের ভেতরে।'
+    options:
+      - text: 'সব বার্তার জন্য একটাই worker চালাব'
+        correct: false
+        why: 'ক্রম থাকবে ঠিকই, কিন্তু সব অ্যাকাউন্ট একটা লাইনে আটকে যাবে।'
+      - text: 'accountId-কে partition key বা message group id বানাব'
+        correct: true
+        why: 'একই অ্যাকাউন্ট একই লাইনে ক্রমে চলে, আর আলাদা অ্যাকাউন্ট সমান্তরালে।'
+      - text: 'বার্তায় timestamp দিয়ে রাখব, worker ক্রম মিলিয়ে নেবে'
+        correct: false
+        why: 'ভিন্ন মেশিনের ঘড়ি মিলে না, আর পরের বার্তা আগে পৌঁছালে সেটা সামলানোর উপায় থাকে না।'
+    ref: ordering-by-key
+  - q: 'নিচের handler-এর সমস্যা কী?'
+    lang: php
+    code: |
+      #[AsMessageHandler]
+      final readonly class AccountCreditedHandler
+      {
+          public function __construct(private AccountRepository $accounts) {}
+
+          public function __invoke(AccountCredited $m): void
+          {
+              $account = $this->accounts->find($m->accountId);
+              $account->setBalance($account->getBalance() + $m->amount);
+              $this->accounts->save($account);
+          }
+      }
+    hint: 'বার্তাটা দুইবার এলে ব্যালেন্সের কী হবে?'
+    options:
+      - text: 'Redelivery হলে একই টাকা দুইবার জমা হবে'
+        correct: true
+        why: 'কোনো ডুপ্লিকেট চেক নেই, তাই at-least-once-এ দ্বিতীয় বার্তা আবার যোগ করে দেবে।'
+      - text: '`final readonly` হওয়ায় handler কাজ করবে না'
+        correct: false
+        why: 'এটা ঠিক আছে; Messenger handler-এ `readonly` চলে।'
+      - text: 'পুরনো বার্তা পরে এলে এই কোড সেটা ধরতে পারে না'
+        correct: true
+        why: 'কোনো version নেই, তাই ক্রম ভাঙা বা ডুপ্লিকেট বার্তা আলাদা করার উপায় নেই।'
+      - text: '`find()` দিয়ে entity পড়া ভুল'
+        correct: false
+        why: 'id দিয়ে টাটকা entity পড়াই সঠিক পদ্ধতি।'
+    ref: messenger-ack-and-order
+  - q: 'SQS FIFO-তে সব বার্তায় একই `MessageGroupId` দিলে কী হয়?'
+    hint: 'একই group-এর বার্তা একটার পর একটা চলে।'
+    options:
+      - text: 'ক্রম নিশ্চিত থাকে, কিন্তু throughput কমে প্রায় একজন worker-এর সমান হয়'
+        correct: true
+        why: 'সব বার্তা এক group-এ ক্রমে চলে, সমান্তরালতা থাকে না।'
+      - text: 'বার্তা দ্রুত চলে, কারণ group id দেখে SQS ভাগ করে দেয়'
+        correct: false
+        why: 'group id ভাগ করে দেয় না, এক group-কে এক সারিতে বেঁধে রাখে।'
+      - text: 'ডুপ্লিকেট বার্তা পুরোপুরি বন্ধ হয়ে যায়'
+        correct: false
+        why: 'ডুপ্লিকেট ঠেকায় deduplication id, group id নয়। আর তাও সীমিত সময়ের জন্য।'
+    ref: ordering-by-key

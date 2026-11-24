@@ -1,0 +1,430 @@
+slides:
+  - slug: empty-log-site-down
+    title: 'লগ ফাঁকা, অথচ সাইট বন্ধ'
+    kind: story
+    tldr: 'request তোমার Symfony কোডে পৌঁছানোর আগে অনেক হাত ঘোরে; পথের মাঝে ভাঙলে তোমার log কিছুই জানে না।'
+    keywords: ['request path', 'request lifecycle', '502', 'রিকোয়েস্টের পথ', 'সাইট বন্ধ', 'log ফাঁকা']
+    blocks:
+      - type: text
+        body: |
+          রাত ১১টায় গ্রাহকেরা ফোন করছে: সাইট খুলছে না। রহিম সার্ভারে ঢুকে `var/log/prod.log` খুলল — একটাও error নেই। সে ধরে নিল সমস্যা গ্রাহকদের ইন্টারনেটে। আসলে request-গুলো তার Symfony অ্যাপ পর্যন্ত পৌঁছাচ্ছিলই না; পথের মাঝখানে load balancer সেগুলোকে `502` দিয়ে ফিরিয়ে দিচ্ছিল।
+      - type: visual
+        kind: compare
+        caption: 'একটা request কোন পথে যায় — রহিমের ধারণা বনাম বাস্তব'
+        columns:
+          - title: 'রহিমের মাথার ছবি'
+            tone: bad
+            icon: cross
+            tip: 'localhost-এ কাজ করার সময় সত্যিই এমন দেখায়, তাই বেশিরভাগ CRUD ডেভেলপারের মাথায় এই ছবিটাই থাকে।'
+            items:
+              - 'ব্রাউজার সরাসরি Symfony-কে ডাকে'
+              - 'Symfony ডেটাবেস থেকে পড়ে উত্তর দেয়'
+              - 'কিছু ভাঙলে আমার log-এ লেখা থাকবে'
+          - title: 'প্রোডাকশনের আসল পথ'
+            tone: good
+            icon: map
+            tip: 'প্রোডাকশনে তোমার কোডের সামনে কয়েকটা আলাদা যন্ত্র বসে থাকে। প্রতিটা নিজে নিজে ভাঙতে পারে।'
+            items:
+              - 'ব্রাউজার আগে DNS-এ ঠিকানা খোঁজে'
+              - 'তারপর CDN আর load balancer পার হয়'
+              - 'এরপর Symfony, সবশেষে ডেটাবেস'
+              - 'মাঝপথে ভাঙলে Symfony-র log ফাঁকাই থাকে'
+      - type: quote
+        body: 'তোমার log শুধু সেই request-গুলো দেখে, যেগুলো তোমার কোড পর্যন্ত পৌঁছেছে।'
+    aside:
+      - type: story
+        title: 'মেয়াদ ফুরানো ডোমেইন'
+        body: |
+          একটা প্রতিষ্ঠানের সাইট এক সকালে পুরো উধাও। সার্ভার চালু, কোড ঠিক, ডেটাবেস ঠিক। কারণ: ডোমেইনের নবায়ন ফি কেউ দেয়নি, তাই DNS নামটা আর চিনছিল না। তিন ঘণ্টা ধরে সবাই কোডে bug খুঁজেছে।
+      - type: terms
+        items:
+          - {term: 'Hop', meaning: 'request-এর পথের একটা ধাপ — এক যন্ত্র থেকে পরের যন্ত্রে যাওয়া।'}
+          - {term: 'Load balancer', meaning: 'অ্যাপ সার্ভারগুলোর সামনে বসা যন্ত্র, যে request ভাগ করে দেয়।'}
+    check:
+      q: 'সাইট বন্ধ, অথচ Symfony-র log-এ কোনো error নেই — এর সবচেয়ে সম্ভাব্য মানে কী?'
+      a: 'request অ্যাপ পর্যন্ত পৌঁছায়ইনি। সমস্যা পথের আগের কোনো ধাপে — DNS, CDN বা load balancer-এ।'
+
+  - slug: six-hops
+    title: 'ছয় হাত ঘুরে তবে উত্তর'
+    kind: concept
+    tldr: 'client → DNS → CDN → load balancer → service → datastore: প্রতিটা ধাপের কাজ আলাদা, আর উত্তর ফেরে একই পথে উল্টো দিকে।'
+    keywords: ['DNS', 'CDN', 'load balancer', 'API gateway', 'hop', 'রিকোয়েস্টের যাত্রা', 'ছয় ধাপ']
+    blocks:
+      - type: metaphor
+        icon: shop
+        title: 'বিরিয়ানির হোটেলে খেতে যাওয়া'
+        body: |
+          তুমি কাচ্চি খেতে চাও। আগে কাউকে জিজ্ঞেস করো হোটেলটা কোন গলিতে — এটা **DNS**। মোড়ের শাখায় বোরহানি আর ফিরনি তৈরিই থাকে, ওগুলোর জন্য মূল হোটেলে যেতে হয় না — এটা **CDN**। মূল হোটেলের গেটে ম্যানেজার দেখে কোন ওয়েটার খালি, তার কাছে পাঠায় — এটা **load balancer**। ওয়েটার অর্ডার নেয় (**service**), আর হাঁড়ি থেকে খাবার তোলে (**datastore**)।
+      - type: visual
+        kind: flow
+        caption: 'একটা request-এর ছয় ধাপ, আর উত্তরের ফেরা'
+        nodes:
+          - {id: client, label: 'Client', sub: 'ব্রাউজার বা মোবাইল অ্যাপ', icon: browser, col: 0, row: 0, tip: 'তুমি নিজে — যে খেতে চায়। Vue অ্যাপ এখান থেকে request পাঠায় আর উত্তরের অপেক্ষায় থাকে।'}
+          - {id: dns, label: 'DNS', sub: 'নাম থেকে IP ঠিকানা', icon: dns, col: 0, row: 1.5, tip: 'ঠিকানা বলে দেওয়ার লোক। shop.example নামটাকে 203.0.113.10-এর মতো IP-তে বদলে দেয়; উত্তরটা কিছুক্ষণ (TTL) মনে রাখা হয়।'}
+          - {id: cdn, label: 'CDN', sub: 'কাছের edge সার্ভার', icon: cdn, col: 1, row: 0, tip: 'মোড়ের শাখা। JS, CSS, ছবির মতো তৈরি জিনিস ব্যবহারকারীর কাছের সার্ভার থেকে দেয়; বাকি request মূল সার্ভারে পাঠায়।'}
+          - {id: lb, label: 'Load balancer', sub: 'অথবা API gateway', icon: lb, col: 2, row: 0, tip: 'গেটের ম্যানেজার। কোন অ্যাপ সার্ভার সুস্থ আর খালি তা দেখে request ভাগ করে। gateway হলে সাথে auth আর rate limit-ও দেখে।'}
+          - {id: app, label: 'Service', sub: 'nginx + PHP-FPM + Symfony', icon: api, tone: accent, col: 3, row: 0, tip: 'ওয়েটার — তোমার লেখা কোড। শুধু এখানে পৌঁছানো request-ই তোমার log-এ ওঠে।'}
+          - {id: db, label: 'Datastore', sub: 'PostgreSQL, Redis', icon: db, col: 4, row: 0, tip: 'হাঁড়ি আর ভাঁড়ার। আসল ডেটা এখানে থাকে; এটা ধীর হলে সামনের সবাই অপেক্ষায় আটকে যায়।'}
+        edges:
+          - {from: client, to: dns, label: 'ব্রাউজার জিজ্ঞেস করে: shop.example-এর IP কত?'}
+          - {from: dns, to: client, label: 'DNS ঠিকানাটা (IP) বলে দেয়', dashed: true}
+          - {from: client, to: cdn, label: 'সেই ঠিকানায় request যায় — আগে পৌঁছায় CDN-এ'}
+          - {from: cdn, to: lb, label: 'তৈরি ফাইল না হলে CDN মূল সার্ভারের দিকে পাঠায়'}
+          - {from: lb, to: app, label: 'load balancer একটা সুস্থ অ্যাপ সার্ভার বেছে দেয়'}
+          - {from: app, to: db, label: 'Symfony ডেটাবেসে query চালায়'}
+          - {from: db, to: app, label: 'ডেটা ফেরত আসে', dashed: true}
+          - {from: app, to: lb, label: 'উত্তর একই পথে উল্টো হেঁটে ব্যবহারকারীর কাছে ফেরে', dashed: true, tone: good}
+    aside:
+      - type: terms
+        items:
+          - {term: 'DNS', meaning: 'ইন্টারনেটের ঠিকানার খাতা: ডোমেইন নাম থেকে IP ঠিকানা বের করে।'}
+          - {term: 'CDN', meaning: 'নানা শহরে ছড়ানো সার্ভার, যারা ব্যবহারকারীর কাছ থেকে তৈরি ফাইল দেয়।'}
+          - {term: 'Origin', meaning: 'তোমার নিজের মূল সার্ভার — CDN যার সামনে বসে।'}
+          - {term: 'API gateway', meaning: 'load balancer-এর মতোই দরজা, তবে auth, rate limit আর routing-ও করে।'}
+      - type: tips
+        items:
+          - 'সব সিস্টেমে ছয়টা ধাপই থাকে না। ছোট অ্যাপে CDN বা load balancer না-ও থাকতে পারে — কিন্তু DNS সবসময় থাকে।'
+          - 'প্রতিটা সংযোগের শুরুতে TLS (HTTPS) হাত মেলানোও হয়; সার্টিফিকেটের মেয়াদ ফুরালে ব্রাউজার লাল সতর্কবার্তা দেখায়।'
+      - type: refs
+        items:
+          - {to: 'scaling/load-balancing', label: 'Load balancing কীভাবে কাজ করে'}
+          - {to: 'caching/http-caching', label: 'HTTP caching ও CDN'}
+    check:
+      q: 'একটা request client থেকে datastore পর্যন্ত কোন কোন ধাপ পার হয়? ক্রম ধরে বলো।'
+      a: 'Client → DNS (ঠিকানা খোঁজা) → CDN → load balancer বা gateway → service (Symfony) → datastore। উত্তর ফেরে উল্টো পথে।'
+
+  - slug: what-breaks-where
+    title: 'কোন ধাপ ভাঙলে ব্যবহারকারী কী দেখে'
+    kind: concept
+    tldr: 'প্রতিটা ধাপের ভাঙনের চেহারা আলাদা: নাম না পাওয়া, 502/503/504, 500 বা অনন্ত spinner — চেহারা দেখেই ধাপ চেনা যায়।'
+    keywords: ['502 bad gateway', '503', '504 gateway timeout', '500', 'DNS error', 'কোথায় ভাঙল', 'status code']
+    blocks:
+      - type: text
+        body: |
+          হোটেলে গিয়ে খাবার না পেলে কারণটা জায়গা বুঝে আলাদা: গলিই খুঁজে পাওনি, গেটে তালা, নাকি ওয়েটার বলছে হাঁড়ি খালি। request-এর বেলাতেও তাই। কোন ধাপ ভাঙল তার ছাপ থাকে error-এর চেহারায় — আর **উত্তরটা কে দিল**, সেটাই সবচেয়ে বড় সূত্র।
+      - type: visual
+        kind: table
+        caption: 'ভাঙনের জায়গা আর তার চেহারা'
+        headers: ['ভাঙা ধাপ', 'কী ঘটে', 'ব্যবহারকারী যা দেখে']
+        rows:
+          - cells: ['নেটওয়ার্ক', 'ইন্টারনেট নেই বা সংযোগ কাটা', 'কোনো response নেই; fetch error ছোড়ে']
+            tip: 'request যন্ত্র ছেড়ে বেরোতেই পারেনি। কোনো status code থাকে না — Vue-তে fetch একটা TypeError ছোড়ে।'
+          - cells: ['DNS', 'নামের ঠিকানা মেলে না', 'ব্রাউজার বলে: সাইট খুঁজে পাওয়া যাচ্ছে না']
+            tip: 'ব্রাউজারে ERR_NAME_NOT_RESOLVED। ডোমেইনের মেয়াদ শেষ বা ভুল DNS record হলে হয়। পুরনো উত্তর TTL পর্যন্ত জমা থাকে বলে সবার একসাথে ভাঙে না।'
+          - cells: ['CDN', 'বাসি ফাইল দেয়, বা origin-কে পায় না', 'পুরনো পাতা, অথবা CDN-এর error পাতা']
+            tip: 'CDN জমানো পুরনো JS দিলে নতুন API-র সাথে মেলে না। আর origin-কে না পেলে CDN নিজের বানানো 5xx পাতা দেখায়।'
+          - cells: ['Load balancer', 'সুস্থ অ্যাপ সার্ভার পায় না', '502 অথবা 503']
+            tip: '502 Bad Gateway: পেছনের সার্ভার সংযোগ নেয়নি বা আজেবাজে উত্তর দিয়েছে। 503 Service Unavailable: পাঠানোর মতো সুস্থ সার্ভারই নেই।'
+          - cells: ['Service (ধীর)', 'কোড সময়মতো উত্তর দেয় না', '504, অথবা অনন্ত spinner']
+            tip: '504 Gateway Timeout: load balancer নির্দিষ্ট সময় অপেক্ষা করে হাল ছেড়েছে। তোমার কোড তখনো হয়তো কাজ করেই যাচ্ছে।'
+          - cells: ['Service (bug)', 'কোডে exception', '500']
+            tip: '500 Internal Server Error আসে তোমার অ্যাপ থেকেই — মানে request কোড পর্যন্ত পৌঁছেছে, আর log-এ stack trace আছে।'
+          - cells: ['Datastore', 'সংযোগ ফুরিয়েছে বা query ধীর', '500, 503 অথবা 504']
+            tip: 'ডেটাবেস নিজে ব্যবহারকারীকে উত্তর দেয় না। তার ভাঙন Symfony-র হাত ঘুরে 500 বা 503 হয়, আর ধীর হলে load balancer-এর 504 হয়ে পৌঁছায়।'
+      - type: quote
+        body: '502, 503, 504 সাধারণত বলে: মাঝের দারোয়ান পেছনের সার্ভারকে পায়নি। 500 বলে: তোমার কোড নিজেই ভেঙেছে।'
+    aside:
+      - type: remember
+        body: '5xx দেখলে আগে জিজ্ঞেস করো: উত্তরটা কে দিয়েছে — আমার অ্যাপ, নাকি তার সামনের কেউ?'
+      - type: tips
+        items:
+          - 'response-এর `Server` আর `Via` header দেখো — কে উত্তর দিয়েছে তা প্রায়ই সেখানে লেখা থাকে।'
+          - 'একই সমস্যা দুই চেহারায় আসতে পারে: ডেটাবেস ধীর হলে কারো কাছে 500, কারো কাছে 504।'
+      - type: refs
+        items:
+          - {to: 'api/error-design', label: 'Error ডিজাইন ও retry-র নিয়ম'}
+          - {to: 'resilience/containing-failure', label: 'প্রতিটা network call-এ timeout'}
+    check:
+      q: 'ব্যবহারকারী 504 Gateway Timeout দেখছে। উত্তরটা কে দিয়েছে, আর এর মানে কী?'
+      a: 'load balancer বা gateway দিয়েছে। সে পেছনের অ্যাপ সার্ভারের উত্তরের জন্য অপেক্ষা করতে করতে সময়সীমা পার করেছে — অ্যাপ বা ডেটাবেস খুব ধীর।'
+
+  - slug: find-the-broken-hop
+    title: 'ভাঙা ধাপ চেনা: client-এর কোডে'
+    kind: howto
+    tldr: 'Vue client-এ ভাঙনকে ভাগ করো — response নেই, সময় শেষ, gateway-র 5xx, অ্যাপের 5xx, নিজের ভুল — আর প্রতিটার জন্য আলাদা বার্তা দেখাও।'
+    keywords: ['fetch', 'timeout', 'AbortSignal', 'curl', 'dig', 'error handling', 'ভাঙা ধাপ খোঁজা']
+    blocks:
+      - type: text
+        body: |
+          সব ভাঙনে একই “কিছু একটা ভুল হয়েছে” দেখালে ব্যবহারকারী জানে না সে অপেক্ষা করবে, নাকি নিজের ইন্টারনেট দেখবে। client নিজেই ভাঙনের ধরন চিনতে পারে, কারণ প্রতিটা ধাপের ভাঙন `fetch`-এর কাছে আলাদা রূপে আসে। নিচের ছোট wrapper সেই ভাগটা করে, আর প্রতিটা request-এ একটা সময়সীমাও বসায়।
+      - type: code
+        lang: ts
+        file: 'src/api/http.ts'
+        variant: good
+        code: |
+          export type Failure = 'offline' | 'timeout' | 'gateway' | 'server' | 'client'
+
+          export class ApiError extends Error {
+            constructor(public kind: Failure, public status = 0) {
+              super(`${kind} ${status}`)
+            }
+          }
+
+          export async function apiGet<T>(path: string): Promise<T> {
+            let res: Response
+            try {
+              // ১০ সেকেন্ডে উত্তর না এলে নিজেই থামো — অনন্ত spinner নয়
+              res = await fetch(path, { signal: AbortSignal.timeout(10_000) })
+            } catch (e) {
+              // response-ই আসেনি: ইন্টারনেট, DNS বা TLS — নয়তো সময় শেষ
+              const timedOut = e instanceof DOMException && e.name === 'TimeoutError'
+              throw new ApiError(timedOut ? 'timeout' : 'offline')
+            }
+
+            if ([502, 503, 504].includes(res.status)) {
+              throw new ApiError('gateway', res.status) // অ্যাপের সামনের কেউ উত্তর দিয়েছে
+            }
+            if (res.status >= 500) throw new ApiError('server', res.status)
+            if (!res.ok) throw new ApiError('client', res.status)
+
+            return (await res.json()) as T // status দেখার পরেই JSON পড়ো
+          }
+        marks:
+          - {line: 13, tip: 'সময়সীমা না দিলে fetch অনির্দিষ্টকাল ঝুলে থাকতে পারে। AbortSignal.timeout সময় শেষে নিজেই request বাতিল করে।'}
+          - {line: 14, tip: 'fetch শুধু তখনই exception ছোড়ে, যখন কোনো response-ই আসে না। 404 বা 500 এলে ছোড়ে না।'}
+          - {line: 20, tip: 'এই তিনটা code সাধারণত load balancer বা gateway পাঠায় — সমস্যা সাময়িক হওয়ার সম্ভাবনা বেশি।'}
+          - {line: 26, tip: 'gateway-র 502 পাতার body সাধারণত HTML। আগে json() ডাকলে SyntaxError হতো আর আসল কারণ ঢাকা পড়ত।'}
+      - type: visual
+        kind: table
+        caption: 'ভাঙনের ধরন বুঝে ব্যবহারকারীকে কী বলবে'
+        headers: ['kind', 'কোন ধাপ', 'ব্যবহারকারীকে বলো']
+        rows:
+          - cells: ['offline', 'নেটওয়ার্ক বা DNS', 'ইন্টারনেট সংযোগ দেখো']
+            tip: 'কোনো response আসেনি। সার্ভারের দোষ দেওয়ার আগে ব্যবহারকারীকে নিজের সংযোগ দেখতে বলাই সৎ বার্তা।'
+          - cells: ['timeout', 'ধীর service বা datastore', 'সময় বেশি লাগছে, আবার চেষ্টা করো']
+            tip: 'কাজটা হয়েছে কি হয়নি, তা জানা নেই। টাকা কাটার মতো কাজে অন্ধভাবে আবার পাঠানো বিপজ্জনক।'
+          - cells: ['gateway', 'load balancer বা CDN', 'সার্ভারে সাময়িক সমস্যা, একটু পরে']
+            tip: 'অ্যাপ সার্ভার বন্ধ, deploy চলছে বা চাপ বেশি। সাধারণত কয়েক সেকেন্ড থেকে মিনিটে সেরে যায়।'
+          - cells: ['server', 'তোমার Symfony কোড', 'আমাদের ভুল — দলকে জানানো হয়েছে']
+            tip: 'কোডে bug। ব্যবহারকারীর করার কিছু নেই; আবার চেষ্টা করলেও সাধারণত একই ফল হবে।'
+          - cells: ['client', 'request নিজেই ভুল (4xx)', 'কী ঠিক করতে হবে তা দেখাও']
+            tip: 'ভুল ইনপুট, লগইন নেই বা অনুমতি নেই। সার্ভারের পাঠানো কারণটা ব্যবহারকারীকে দেখাও।'
+    aside:
+      - type: commands
+        title: 'বাইরে থেকে ধাপ ধরে পরীক্ষা'
+        items:
+          - cmd: 'dig +short shop.example'
+            desc: 'DNS এই নামের জন্য কোন IP দিচ্ছে'
+          - cmd: 'curl -sI https://shop.example/api/products'
+            desc: 'status আর header দেখো: কে উত্তর দিল (Server, Via)'
+          - cmd: |
+              curl -so /dev/null https://shop.example \
+                -w '%{time_namelookup} %{time_connect} %{time_starttransfer}\n'
+            desc: 'DNS, সংযোগ আর প্রথম byte পর্যন্ত সময় — কোন ধাপ ধীর'
+          - cmd: 'tail -f var/log/prod.log'
+            desc: 'request অ্যাপ পর্যন্ত পৌঁছাচ্ছে কি না'
+      - type: tips
+        items:
+          - 'পরীক্ষা করো বাইরে থেকে ভেতরে: DNS → CDN ও load balancer → অ্যাপ → ডেটাবেস। যে ধাপ পর্যন্ত ঠিক, তার পরেরটাই সন্দেহভাজন।'
+      - type: refs
+        items:
+          - {to: 'observability/logging-tracing', label: 'Correlation ID দিয়ে পুরো পথ জোড়া'}
+    check:
+      q: 'gateway-র 502 response-এর body সাধারণত HTML। client আগে `res.json()` ডাকলে কী হবে, আর সঠিক ক্রম কী?'
+      a: 'JSON parse করতে গিয়ে SyntaxError হবে, আসল কারণ ঢাকা পড়বে। আগে status দেখো, ভাঙনের ধরন ঠিক করো, শুধু সফল হলে JSON পড়ো।'
+
+  - slug: everyone-has-same-ip
+    title: 'সব ব্যবহারকারীর IP একই দেখাচ্ছে'
+    kind: pitfall
+    tldr: 'load balancer-এর পেছনে Symfony আসল client-এর IP আর HTTPS দেখতে পায় না, যদি না trusted_proxies দিয়ে বলে দাও কাকে বিশ্বাস করবে।'
+    keywords: ['trusted proxies', 'X-Forwarded-For', 'X-Forwarded-Proto', 'client IP', 'getClientIp', 'লোড ব্যালেন্সারের পেছনে']
+    blocks:
+      - type: text
+        body: |
+          পথে নতুন হাত যোগ হলে তোমার কোডের চোখে দুনিয়াটা বদলে যায়। ওয়েটার অর্ডার পায় ম্যানেজারের হাত থেকে, তাই জিজ্ঞেস না করলে সে জানে না আসল খদ্দের কে। Symfony-ও দেখে request এসেছে load balancer-এর IP থেকে, সাধারণ HTTP-তে। ফল: `getClientIp()` সবার জন্য একই IP দেয়, আর IP ধরে rate limit বসালে একজনের দোষে সবাই আটকে যায়।
+      - type: visual
+        kind: sequence
+        caption: 'load balancer পার হওয়ার পর Symfony কার IP দেখে'
+        actors:
+          - {id: client, label: 'ব্যবহারকারী', icon: user, tip: 'আসল খদ্দের। তার IP 103.4.5.6, আর সে HTTPS-এ কথা বলছে।'}
+          - {id: lb, label: 'Load balancer', icon: lb, tip: 'HTTPS এখানেই শেষ হয়। পেছনের অ্যাপের সাথে সে নিজের IP (10.0.0.5) থেকে নতুন সংযোগ খোলে।'}
+          - {id: app, label: 'Symfony', icon: api, tip: 'সরাসরি যে সংযোগ করেছে শুধু তার IP-ই জানে। বাকিটা header থেকে নিতে হয় — যদি header-কে বিশ্বাস করার অনুমতি থাকে।'}
+        messages:
+          - {from: client, to: lb, label: 'HTTPS request, IP 103.4.5.6'}
+          - {from: lb, to: app, label: 'HTTP request, IP 10.0.0.5', tip: 'load balancer নিজে নতুন সংযোগ খোলে, তাই Symfony-র কাছে প্রেরকের ঠিকানা load balancer-এর।'}
+          - {from: lb, to: app, label: 'X-Forwarded-For: 103.4.5.6', tip: 'আসল খদ্দেরের পরিচয় সে header-এ লিখে দেয়। সাথে থাকে X-Forwarded-Proto: https।'}
+          - {at: app, note: 'header-এ বিশ্বাস নেই: সবার IP 10.0.0.5', tone: bad, tip: 'ডিফল্টে Symfony এই header উপেক্ষা করে — কারণ যে কেউ নিজে এমন header বানিয়ে পাঠাতে পারে।'}
+          - {at: app, note: 'trusted_proxies আছে: IP 103.4.5.6', tone: good, tip: 'load balancer-এর ঠিকানা বিশ্বস্ত তালিকায় থাকলে Symfony তার লেখা header থেকে আসল IP নেয়।'}
+      - type: code
+        lang: yaml
+        file: 'config/packages/framework.yaml'
+        variant: good
+        code: |
+          framework:
+              # শুধু নিজের load balancer-এর ঠিকানা — পুরো ইন্টারনেট কখনো নয়
+              trusted_proxies: '%env(TRUSTED_PROXIES)%'   # যেমন 10.0.0.0/8
+              trusted_headers:
+                  - 'x-forwarded-for'      # আসল client-এর IP
+                  - 'x-forwarded-proto'    # আসলে https ছিল কি না
+                  - 'x-forwarded-host'
+                  - 'x-forwarded-port'
+        marks:
+          - {line: 3, tip: 'শুধু এই IP পরিসর থেকে আসা request-এর X-Forwarded-* header-কে বিশ্বাস করা হবে। অন্যদের পাঠানো header উপেক্ষিত থাকবে।'}
+          - {line: 6, tip: 'এটা ছাড়া Symfony ভাবে সংযোগ HTTP। তখন তৈরি করা লিংক http:// হয়, আর HTTPS-এ redirect ঘুরতেই থাকে।'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'সব IP-কে trusted বানিয়ো না। তখন যে কেউ নিজে `X-Forwarded-For` বসিয়ে যেকোনো IP সেজে rate limit ফাঁকি দিতে পারবে।'
+          - 'CDN আর load balancer দুটোই থাকলে দুটোর ঠিকানাই trusted তালিকায় লাগবে।'
+      - type: commands
+        items:
+          - {cmd: 'php bin/console debug:config framework trusted_proxies', desc: 'এখন কোন proxy-কে বিশ্বাস করা হচ্ছে'}
+      - type: refs
+        items:
+          - {to: 'api/rate-limiting', label: 'Rate limit, quota ও backoff'}
+    check:
+      q: 'load balancer-এর পেছনে `$request->getClientIp()` সবার জন্য 10.0.0.5 দিচ্ছে। কেন, আর সমাধান কী?'
+      a: 'Symfony সরাসরি সংযোগকারীর, অর্থাৎ load balancer-এর IP দেখছে। `trusted_proxies`-এ load balancer-এর ঠিকানা দিলে সে `X-Forwarded-For` থেকে আসল IP নেবে।'
+
+flashcards:
+  - q: 'একটা web request client থেকে ডেটা পর্যন্ত কোন ছয় ধাপ পার হয়?'
+    a: 'Client → DNS → CDN → load balancer বা gateway → service → datastore। উত্তর একই পথে উল্টো ফেরে।'
+    more: |
+      বিরিয়ানির হোটেলের মতো: আগে ঠিকানা জানা (DNS), মোড়ের শাখা থেকে তৈরি জিনিস নেওয়া (CDN), গেটের ম্যানেজার (load balancer), ওয়েটার (তোমার Symfony কোড) আর হাঁড়ি (ডেটাবেস)। ছোট সিস্টেমে CDN বা load balancer না-ও থাকতে পারে, কিন্তু প্রতিটা ধাপ আলাদাভাবে ভাঙতে পারে।
+    ref: six-hops
+  - q: 'DNS-এর কাজ কী?'
+    a: 'ডোমেইন নাম (যেমন shop.example) থেকে সার্ভারের IP ঠিকানা বের করে দেওয়া।'
+    more: |
+      ব্রাউজার নাম দিয়ে সার্ভার খুঁজে পায় না, তার IP লাগে। DNS সেই ঠিকানার খাতা। উত্তরটা একটা নির্দিষ্ট সময় (TTL) পর্যন্ত জমা থাকে, তাই DNS record বদলালে সব ব্যবহারকারীর কাছে পৌঁছাতে সময় লাগে। DNS ভাঙলে সার্ভার সুস্থ থাকলেও কেউ সাইটে পৌঁছাতে পারে না।
+    ref: six-hops
+  - q: 'CDN কী করে?'
+    a: 'JS, CSS, ছবির মতো তৈরি ফাইল ব্যবহারকারীর কাছের সার্ভার থেকে দেয়, আর বাকি request মূল সার্ভারে (origin) পাঠায়।'
+    more: |
+      CDN-এর সার্ভার নানা শহরে ছড়ানো থাকে, তাই ফাইল কম দূরত্ব পাড়ি দেয় আর মূল সার্ভারের চাপ কমে। ঝুঁকিও আছে: CDN পুরনো ফাইল জমিয়ে রাখলে ব্যবহারকারী বাসি JS পায়। বিস্তারিত: [[caching/http-caching|HTTP caching ও CDN]]।
+    ref: six-hops
+  - q: 'Load balancer-এর কাজ কী?'
+    a: 'একাধিক অ্যাপ সার্ভারের সামনে বসে request ভাগ করে দেওয়া, আর অসুস্থ সার্ভারে request না পাঠানো।'
+    more: |
+      সে নিয়মিত health check করে দেখে কোন সার্ভার সাড়া দিচ্ছে। কোনো সুস্থ সার্ভার না পেলে নিজেই 502 বা 503 ফেরত দেয়, আর পেছনের সার্ভার বেশি দেরি করলে 504 দেয়। API gateway একই জায়গায় বসে, সাথে auth আর rate limit-ও সামলায়।
+    ref: six-hops
+  - q: '502 Bad Gateway আর 504 Gateway Timeout-এর পার্থক্য কী?'
+    a: '502: পেছনের সার্ভার সংযোগ নেয়নি বা ভুল উত্তর দিয়েছে। 504: পেছনের সার্ভার সময়মতো উত্তরই দেয়নি।'
+    more: |
+      দুটোই পাঠায় মাঝের load balancer বা gateway, তোমার অ্যাপ নয়। 502 সাধারণত মানে অ্যাপ সার্ভার বন্ধ বা restart হচ্ছে। 504 মানে অ্যাপ চালু আছে কিন্তু খুব ধীর — প্রায়ই ডেটাবেসের ধীর query বা বাইরের কোনো সার্ভিসের জন্য।
+    ref: what-breaks-where
+  - q: '500 নাকি 502/503/504 — কোনটা দেখলে বুঝবে request তোমার কোড পর্যন্ত পৌঁছেছে?'
+    a: '500। ওটা তোমার অ্যাপ নিজে দেয়। 502/503/504 সাধারণত দেয় অ্যাপের সামনের load balancer বা gateway।'
+    more: |
+      500 এলে Symfony-র log-এ exception আর stack trace থাকবে, সেখান থেকে খোঁজা শুরু করো। 502/503/504 এলে আগে দেখো অ্যাপ সার্ভার চালু আছে কি না আর load balancer-এর health check কী বলছে। কে উত্তর দিয়েছে তা জানলে খোঁজার জায়গা অর্ধেক হয়ে যায়।
+    ref: what-breaks-where
+  - q: 'সাইট বন্ধ কিন্তু অ্যাপের log-এ কোনো error নেই। কোথায় খুঁজবে?'
+    a: 'অ্যাপের আগের ধাপগুলোতে: DNS, CDN, load balancer। request অ্যাপ পর্যন্ত পৌঁছায়ইনি।'
+    more: |
+      অ্যাপের log শুধু সেই request-গুলো দেখে যেগুলো কোড পর্যন্ত এসেছে। বাইরে থেকে ভেতরে পরীক্ষা করো: `dig` দিয়ে DNS, `curl -I` দিয়ে কে উত্তর দিচ্ছে, তারপর load balancer-এর health check। ফাঁকা log মানে “সমস্যা নেই” নয়।
+    ref: empty-log-site-down
+  - q: 'JavaScript-এর fetch কখন exception ছোড়ে, আর কখন ছোড়ে না?'
+    a: 'কোনো response না এলে (নেটওয়ার্ক, DNS, timeout) ছোড়ে। 404 বা 500 এলে ছোড়ে না — তখন `res.ok` false হয়।'
+    more: |
+      তাই শুধু try/catch দিয়ে error ধরলে 500 response-কে সফল ধরে নেওয়ার ভুল হয়। প্রতিবার `res.ok` বা `res.status` দেখতে হবে, আর JSON পড়তে হবে তার পরে — কারণ gateway-র error পাতা সাধারণত HTML।
+    ref: find-the-broken-hop
+  - q: 'Symfony-তে trusted_proxies কেন লাগে?'
+    a: 'load balancer-এর পেছনে আসল client-এর IP আর HTTPS জানতে। নইলে সব request load balancer-এর IP থেকে, HTTP-তে এসেছে বলে মনে হয়।'
+    more: |
+      load balancer আসল তথ্য `X-Forwarded-For` আর `X-Forwarded-Proto` header-এ লিখে দেয়। Symfony এগুলো শুধু তখনই মানে, যখন প্রেরকের IP `trusted_proxies` তালিকায় থাকে। তালিকায় সবাইকে রাখলে যে কেউ header বানিয়ে ভুয়া IP সাজতে পারে।
+    ref: everyone-has-same-ip
+
+quiz:
+  - q: 'ব্যবহারকারীরা nginx-এর “502 Bad Gateway” পাতা দেখছে। Symfony-র log-এ এই সময়ের কোনো error নেই। সবচেয়ে সম্ভাব্য কারণ কোনটা?'
+    hint: 'উত্তরটা কে পাঠিয়েছে — অ্যাপ, নাকি অ্যাপের সামনের কেউ?'
+    options:
+      - text: 'controller-এ একটা exception হয়েছে'
+        correct: false
+        why: 'তাহলে উত্তর দিত অ্যাপ নিজে, code হতো 500, আর log-এ stack trace থাকত।'
+      - text: 'PHP-FPM বা অ্যাপ সার্ভার বন্ধ, তাই সামনের proxy সংযোগই পাচ্ছে না'
+        correct: true
+        why: '502 মানে মাঝের proxy পেছনের সার্ভারের কাছ থেকে সংযোগ বা সঠিক উত্তর পায়নি। request কোড পর্যন্ত যায়নি বলেই log ফাঁকা।'
+      - text: 'DNS record ভুল'
+        correct: false
+        why: 'DNS ভুল হলে ব্রাউজার সার্ভারেই পৌঁছাত না; nginx-এর 502 পাতা দেখার প্রশ্নই আসত না।'
+      - text: 'ব্যবহারকারীদের ইন্টারনেট সংযোগ খারাপ'
+        correct: false
+        why: 'সংযোগ না থাকলে কোনো response-ই আসত না। 502 পাতা এসেছে মানে request সার্ভারের দরজা পর্যন্ত পৌঁছেছে।'
+    ref: what-breaks-where
+  - q: 'নিচের কোন ভাঙনগুলোতে Symfony অ্যাপের log-এ কিছুই লেখা থাকবে না?'
+    hint: 'কোন কোন ক্ষেত্রে request তোমার কোড পর্যন্ত পৌঁছায়ই না?'
+    options:
+      - text: 'ডোমেইনের DNS record মুছে গেছে'
+        correct: true
+        why: 'ব্রাউজার সার্ভারের ঠিকানাই পায় না, তাই কোনো request অ্যাপে আসে না।'
+      - text: 'load balancer-এর সব health check ফেল করছে, সে 503 দিচ্ছে'
+        correct: true
+        why: 'load balancer নিজেই উত্তর দিয়ে দিচ্ছে; request অ্যাপ সার্ভারে পাঠানোই হচ্ছে না।'
+      - text: 'controller-এ null-এর ওপর method ডাকা হয়েছে'
+        correct: false
+        why: 'এটা অ্যাপের ভেতরের exception — Symfony 500 দেবে আর log-এ পুরো stack trace লিখবে।'
+      - text: 'ব্যবহারকারীর ফোনে মোবাইল ডেটা বন্ধ'
+        correct: true
+        why: 'request ফোন ছেড়েই বেরোয় না, তাই সার্ভারের কোনো ধাপই কিছু দেখে না।'
+    ref: empty-log-site-down
+  - q: 'gateway যদি HTML body-সহ 502 ফেরত দেয়, নিচের Vue কোডে কী ঘটবে?'
+    lang: ts
+    code: |
+      const res = await fetch('/api/orders')
+      const data = await res.json()
+
+      if (!res.ok) {
+        showError(data.message)
+      }
+    hint: '502 পাতার body JSON নয়। কোন লাইনটা আগে চলে?'
+    options:
+      - text: 'fetch নিজেই 502 দেখে exception ছুড়বে'
+        correct: false
+        why: 'fetch শুধু response না এলে exception ছোড়ে। 502 একটা বৈধ response, তাই সে কিছু ছোড়ে না।'
+      - text: 'res.json() HTML parse করতে গিয়ে SyntaxError ছুড়বে; showError পর্যন্ত পৌঁছাবেই না'
+        correct: true
+        why: 'status দেখার আগেই JSON পড়া হচ্ছে। আগে res.ok দেখে তারপর body পড়া উচিত।'
+      - text: 'data.message-এ “Bad Gateway” লেখাটা আসবে'
+        correct: false
+        why: 'HTML পাতাকে JSON হিসেবে পড়াই যায় না, তাই data তৈরিই হয় না।'
+      - text: 'কোডটা ঠিক আছে'
+        correct: false
+        why: 'এটা শুধু তখন ঠিক চলে, যখন error-ও JSON-এ আসে। পথের মাঝের যন্ত্রগুলো সেই নিয়ম মানে না।'
+    ref: find-the-broken-hop
+  - q: 'করিম অ্যাপের সামনে load balancer বসাল। তার পর থেকে IP-ভিত্তিক rate limiter কয়েক মিনিট পরপর সব ব্যবহারকারীকে একসাথে আটকে দিচ্ছে। কারণ কী?'
+    hint: 'Symfony এখন কার IP দেখছে?'
+    options:
+      - text: 'rate limiter-এর সীমা খুব কম রাখা হয়েছে'
+        correct: false
+        why: 'সীমা আগের মতোই আছে। বদলেছে এই যে এখন সবাইকে একজন বলে গোনা হচ্ছে।'
+      - text: 'load balancer প্রতিটা request দুইবার করে পাঠাচ্ছে'
+        correct: false
+        why: 'load balancer request নকল করে না; সে শুধু নিজের IP থেকে এগিয়ে দেয়।'
+      - text: 'সব request load balancer-এর IP থেকে আসছে বলে মনে হচ্ছে; trusted_proxies ঠিক করা হয়নি'
+        correct: true
+        why: 'সবার IP এক হওয়ায় সবার request এক খাতায় গোনা হচ্ছে। trusted_proxies দিলে Symfony X-Forwarded-For থেকে আসল IP নেবে।'
+      - text: 'ডেটাবেসের সংযোগ ফুরিয়ে যাচ্ছে'
+        correct: false
+        why: 'তাহলে 500 বা 503 আসত, rate limit-এর 429 নয়।'
+    ref: everyone-has-same-ip
+  - q: 'DNS record ঠিক করে নতুন সার্ভারের IP দেওয়া হলো। তবু আধা ঘণ্টা ধরে কিছু ব্যবহারকারী পুরনো সার্ভারেই যাচ্ছে। কেন?'
+    hint: 'DNS-এর উত্তর কি প্রতিবার নতুন করে জিজ্ঞেস করা হয়?'
+    options:
+      - text: 'DNS-এর পুরনো উত্তর TTL শেষ না হওয়া পর্যন্ত জমা থাকে'
+        correct: true
+        why: 'ব্রাউজার, অপারেটিং সিস্টেম আর ইন্টারনেট প্রোভাইডার DNS-এর উত্তর TTL পর্যন্ত মনে রাখে; তার আগে নতুন ঠিকানা জিজ্ঞেসই করে না।'
+      - text: 'load balancer sticky session ব্যবহার করছে'
+        correct: false
+        why: 'sticky session একই load balancer-এর পেছনের সার্ভার বাছাই নিয়ে; এখানে ব্যবহারকারী ভুল ঠিকানাতেই যাচ্ছে।'
+      - text: 'Symfony-র cache পরিষ্কার করা হয়নি'
+        correct: false
+        why: 'ব্যবহারকারী কোন সার্ভারে যাবে তা ঠিক হয় অ্যাপে পৌঁছানোর অনেক আগে; অ্যাপের cache এখানে ভূমিকা রাখে না।'
+      - text: 'ওই ব্যবহারকারীদের ব্রাউজার পুরনো'
+        correct: false
+        why: 'নতুন বা পুরনো — সব ব্রাউজারই DNS-এর উত্তর TTL পর্যন্ত জমা রাখে।'
+    ref: six-hops
+  - q: 'ব্যবহারকারী ৬০ সেকেন্ড spinner দেখার পর 504 পেল। কোন বক্তব্যগুলো সঠিক?'
+    hint: '504 কে পাঠায়? আর সে হাল ছাড়ার পর পেছনের কোডের কী হয়?'
+    options:
+      - text: 'উত্তরটা দিয়েছে load balancer বা gateway, অ্যাপ নয়'
+        correct: true
+        why: '504 মানে মাঝের proxy পেছনের সার্ভারের জন্য অপেক্ষা করে সময়সীমা পার করেছে।'
+      - text: 'অ্যাপ বা তার ডেটাবেস খুব ধীর ছিল'
+        correct: true
+        why: 'পেছনের সার্ভার সময়মতো উত্তর না দিলেই 504 হয় — সাধারণত ধীর query বা বাইরের কোনো ধীর সার্ভিসের কারণে।'
+      - text: 'কাজটা নিশ্চিতভাবেই হয়নি, তাই নির্ভয়ে আবার পাঠানো যায়'
+        correct: false
+        why: 'proxy হাল ছাড়লেও অ্যাপ কাজটা শেষ করে ফেলতে পারে। ফল অজানা — অন্ধভাবে আবার পাঠালে দুইবার হয়ে যেতে পারে।'
+      - text: 'DNS ভুল ঠিকানা দিয়েছে'
+        correct: false
+        why: 'DNS ভুল হলে load balancer পর্যন্ত পৌঁছানোই যেত না, 504-ও আসত না।'
+    ref: what-breaks-where

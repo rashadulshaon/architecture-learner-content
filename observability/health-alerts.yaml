@@ -1,0 +1,419 @@
+slides:
+  - slug: alarm-that-always-rings
+    title: 'রোজ বাজা অ্যালার্ম, আর সেদিনের আসল আগুন'
+    kind: story
+    tldr: 'যে alert রোজ বাজে অথচ কিছু করার থাকে না, টিম সেটা উপেক্ষা করতে শেখে — তারপর একদিন আসল alert-ও চাপা পড়ে।'
+    keywords: ['alert fatigue', 'noisy alerts', 'on-call', 'pager', 'অ্যালার্ট ক্লান্তি', 'monitoring']
+    blocks:
+      - type: metaphor
+        icon: bell
+        title: 'বিল্ডিংয়ের ফায়ার অ্যালার্ম'
+        body: |
+          অফিসের ফায়ার অ্যালার্ম রোজ ভুল করে বাজে, কখনো টোস্টারের ধোঁয়ায়, কখনো পরীক্ষায়। কয়েক সপ্তাহ পরে কেউ আর বাইরে বের হয় না। একদিন সত্যিই আগুন লাগলে অ্যালার্ম বাজে, আর সবাই ভাবে "আবার সেই টোস্টার"। Alert fatigue ঠিক এই অবস্থা।
+      - type: visual
+        kind: bars
+        caption: 'গত সপ্তাহে on-call ইঞ্জিনিয়ারের কাছে আসা alert'
+        items:
+          - {label: 'CPU > ৭০%', value: 112, display: '112 বার', tone: warn, tip: 'কোনো ক্রেতার ক্ষতি নেই, কিছু করারও নেই। শুধু ঘুম ভাঙায়।'}
+          - {label: 'Disk > ৬০%', value: 64, display: '64 বার', tone: warn, tip: 'ধীরে বাড়ে; সকালে ticket খুললেই চলত, রাতে ঘুম ভাঙানোর কিছু নয়।'}
+          - {label: 'একটা ৫০০ error', value: 41, display: '41 বার', tone: warn, tip: 'এক-দুটো ব্যর্থ request স্বাভাবিক; তাই প্রতিটার জন্য alert অর্থহীন।'}
+          - {label: 'Worker restart', value: 23, display: '23 বার', tone: warn, tip: 'নিজে ঠিক হয়ে যায়, কোনো ক্রেতা টের পায় না।'}
+          - {label: 'Checkout error > ৫%', value: 1, display: '1 বার', tone: bad, tip: 'এটাই একমাত্র আসল alert: ক্রেতারা কিনতে পারছে না। কিন্তু ২০০টার ভিড়ে সবাই এটাকেও "আরেকটা" ভেবেছিল।'}
+      - type: quote
+        body: 'যে alert-এ জেগে উঠে কিছু করার নেই, সেটা alert নয়, শব্দদূষণ।'
+    aside:
+      - type: story
+        title: 'ব্যর্থ checkout, ২০ মিনিট দেরি'
+        body: 'রাত ২টায় checkout ব্যর্থ হতে শুরু করল। on-call ইঞ্জিনিয়ার ফোনে alert দেখে ভাবলেন "আবার CPU-র কথা" আর snooze করে ঘুমালেন। ২০ মিনিট পর সাপোর্টের ফোনে জানলেন আসল ঘটনা। ততক্ষণে বহু অর্ডার হারিয়েছে।'
+      - type: problem
+        body: 'Alert-এর কাজ হলো "এখনই একজন মানুষের কিছু করা দরকার" জানানো। বাকি সব তথ্য ড্যাশবোর্ডে বা ticket-এ থাকে, ঘুম ভাঙানোর কিছুতে নয়।'
+    check:
+      q: 'কেন প্রতি এক-দুটো ব্যর্থ request-এও alert পাঠানো ক্ষতিকর?'
+      a: 'ব্যর্থ request কিছু থাকবেই। এতে alert খুব বেশি বাজে, মানুষ উপেক্ষা করতে শেখে, আর আসল সংকটের alert-ও চাপা পড়ে।'
+
+  - slug: liveness-readiness
+    title: 'জীবিত নাকি তৈরি: liveness আর readiness'
+    kind: concept
+    tldr: 'Liveness জিজ্ঞেস করে "আটকে গেছ কি না, restart দরকার?", readiness জিজ্ঞেস করে "এখন কাজ নিতে পারবে?"; liveness-এ কখনো ডেটাবেস দেখো না।'
+    keywords: ['liveness', 'readiness', 'startup probe', 'health check', 'shallow', 'deep', 'Kubernetes probe']
+    blocks:
+      - type: metaphor
+        icon: truck
+        title: 'বাস আর যাত্রী নেওয়া'
+        body: |
+          বাসের ইঞ্জিন চালু আছে কি না, এটা আলাদা প্রশ্ন (liveness): বন্ধ হলে মেকানিক এসে আবার চালু করে। দরজা খোলা, ড্রাইভার আছে, যাত্রী তোলার জন্য বাস তৈরি কি না, এটা আরেক প্রশ্ন (readiness): তৈরি না হলে যাত্রী অন্য বাসে যায়, কিন্তু বাস নষ্ট হয়ে যায় না।
+      - type: visual
+        kind: table
+        caption: 'দুই probe: কী দেখে, ব্যর্থ হলে কী ঘটে'
+        headers: ['', 'Liveness', 'Readiness']
+        rows:
+          - cells: ['প্রশ্ন', 'আমি আটকে গেছি?', 'আমি এখন request নিতে পারব?']
+            tip: 'দুইটা আলাদা প্রশ্ন, তাই দুইটা আলাদা endpoint।'
+          - cells: ['ব্যর্থ হলে', 'process restart হয়', 'load balancer ট্র্যাফিক পাঠানো বন্ধ করে']
+            tip: 'readiness ব্যর্থ হলে process মরে না, শুধু কিছুক্ষণ ট্র্যাফিক পায় না। ঠিক হলে আবার ফেরে।'
+          - cells: ['কী দেখবে', 'শুধু নিজে সাড়া দিচ্ছে কি না (shallow)', 'নিজের ছাড়া জরুরি dependency (DB, cache)']
+            tip: 'shallow = ভেতরে হালকা, আর deep = বাইরের dependency-ও ছুঁয়ে দেখা।'
+          - cells: ['ভুল কী', 'ডেটাবেস দেখা', 'বাইরের তৃতীয় পক্ষের API দেখা']
+            tip: 'ভুল হলে বিপর্যয় বাড়ে, নিচের উদাহরণে দেখো।'
+      - type: quote
+        body: 'Liveness শুধু নিজের কথা বলে; ডেটাবেস নিচে গেলে সব সার্ভার restart করে লাভ নেই।'
+    aside:
+      - type: story
+        title: 'ডেটাবেস ধীর, তারপর সব restart'
+        body: 'এক টিমের liveness probe ডেটাবেস ছুঁয়ে দেখত। একদিন ডেটাবেস ধীর হলো, probe time out হলো, platform সব সার্ভার একসাথে restart করল। ফলে নতুন সার্ভারগুলো একসাথে ডেটাবেসে ঝাঁপিয়ে পড়ল, সমস্যা আরও বাড়ল।'
+      - type: terms
+        items:
+          - {term: 'Startup probe', meaning: 'ধীরে চালু হওয়া অ্যাপের জন্য: চালু হওয়া পর্যন্ত অন্য probe বন্ধ রাখে।'}
+          - {term: 'Shallow / Deep check', meaning: 'Shallow: শুধু নিজে সাড়া দেয়। Deep: DB, cache-এর মতো dependency-ও ছুঁয়ে দেখে।'}
+      - type: when
+        use:
+          - 'Readiness-এ শুধু সেই dependency, যা ছাড়া অ্যাপ কোনো কাজই করতে পারে না।'
+        avoid:
+          - 'Readiness-এ ঐচ্ছিক বা তৃতীয় পক্ষের সেবা: তাদের outage-এ তোমার সব সার্ভার "অসুস্থ" হয়ে যাবে।'
+    check:
+      q: 'ডেটাবেস নিচে নেমে গেছে। liveness probe-এ ডেটাবেস পরীক্ষা করা থাকলে কী ঘটবে?'
+      a: 'probe ব্যর্থ হবে, সব সার্ভার restart হতে থাকবে, কিন্তু restart করে ডেটাবেস ঠিক হয় না। ফলে ক্ষতি আর বিশৃঙ্খলা বাড়ে।'
+
+  - slug: health-endpoints
+    title: 'Symfony-তে দুই health endpoint'
+    kind: howto
+    tldr: '`/health/live` সবসময় ২০০ দেয় (শুধু নিজে বেঁচে আছে), `/health/ready` জরুরি dependency দেখে ব্যর্থ হলে ৫০৩ দেয় — আর ভেতরের ত্রুটি log-এ যায়, উত্তরে নয়।'
+    keywords: ['health controller', 'Symfony health check', 'probe', 'readiness endpoint', 'ready 503', 'Kubernetes']
+    blocks:
+      - type: code
+        lang: php
+        file: 'src/Controller/HealthController.php'
+        variant: good
+        code: |
+          #[Route('/health/live', methods: ['GET'])]
+          public function live(): JsonResponse
+          {
+              return new JsonResponse(['status' => 'up']); // কোনো dependency নয়
+          }
+
+          #[Route('/health/ready', methods: ['GET'])]
+          public function ready(): JsonResponse
+          {
+              $checks = [
+                  'database' => fn () => $this->db->executeQuery('SELECT 1'),
+                  'cache' => fn () => $this->cache->getItem('health_probe'),
+              ];
+
+              $failed = [];
+              foreach ($checks as $name => $check) {
+                  try {
+                      $check();
+                  } catch (\Throwable $e) {
+                      $failed[] = $name;
+                      $this->logger->error('health.failed', ['check' => $name, 'exception' => $e]);
+                  }
+              }
+
+              return new JsonResponse(
+                  ['status' => [] === $failed ? 'ready' : 'degraded'],
+                  [] === $failed ? 200 : 503,
+              );
+          }
+        marks:
+          - {line: 4, tip: 'কোনো dependency নেই; PHP উত্তর দিতে পারলেই "বেঁচে আছি"। restart-এর সিদ্ধান্ত শুধু এর ওপর।'}
+          - {line: 11, tip: 'মাত্র "SELECT 1": DB সংযোগ কাজ করছে কি না। ভারী query নয়; probe প্রতি কয়েক সেকেন্ডে চলে।'}
+          - {line: 21, tip: 'ত্রুটির বিস্তারিত log-এ যায়। বাইরের কেউ health পাতা থেকে stack trace বা host নাম জানতে পারে না।'}
+          - {line: 27, tip: '৫০৩ মানে "এখন নয়"; load balancer এই সার্ভার থেকে ট্র্যাফিক সরায়, restart নয়।'}
+      - type: code
+        lang: yaml
+        file: 'k8s/deployment.yaml (container-এর অংশ)'
+        variant: good
+        code: |
+          startupProbe:
+            httpGet: {path: /health/live, port: 80}
+            periodSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            httpGet: {path: /health/live, port: 80}
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: {path: /health/ready, port: 80}
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+        marks:
+          - {line: 4, tip: 'ধীরে চালু হওয়া অ্যাপকে ২.৫ মিনিট (৫ সেকেন্ড × ৩০) সময় দেয়, তার আগে liveness তাকে মেরে ফেলে না।'}
+          - {line: 8, tip: 'টানা ৩ বার ব্যর্থ হলে তবেই restart; একটা ধীর উত্তর মানেই মৃত নয়।'}
+          - {line: 12, tip: 'দুইবার ব্যর্থ হলে ট্র্যাফিক বন্ধ। timeoutSeconds ২: ধীর DB-র জন্য probe ঝুলে থাকে না।'}
+    aside:
+      - type: tips
+        items:
+          - 'health পাতা firewall-এ PUBLIC_ACCESS রাখো (access_control), যাতে probe-এর জন্য লগইন না লাগে। কিন্তু ভেতরের তথ্য উত্তরে দিও না।'
+          - 'Deploy-এর সময়: নতুন কোড ready না হওয়া পর্যন্ত ট্র্যাফিক যায় না, তাই zero-downtime deploy-এর ভিত্তি এটাই।'
+          - 'Graceful shutdown: বন্ধ হওয়ার সময় আগে readiness ব্যর্থ করো, চলমান request শেষ হতে দাও।'
+      - type: refs
+        items:
+          - {to: 'resilience/zero-downtime-deploys', label: 'Zero-downtime deploy'}
+          - {to: 'infra/containers-k8s', label: 'Container ও Kubernetes'}
+    check:
+      q: 'Readiness-এর উত্তরে ব্যর্থ dependency-র পুরো error বার্তা না দিয়ে log-এ কেন রাখা হয়?'
+      a: 'Health পাতা প্রায়ই সবার খোলা। পুরো বার্তায় host নাম, ভার্সন বা stack trace থাকলে আক্রমণকারী ভেতরের খবর জেনে ফেলে। তাই বিস্তারিত থাকে log-এ।'
+
+  - slug: alert-design
+    title: 'ভালো alert: লক্ষণে ডাকো, কারণে নয়'
+    kind: concept
+    tldr: 'Page করো ব্যবহারকারীর ক্ষতির লক্ষণে (error, ধীরতা, SLO burn), কারণে (CPU, disk) নয়; প্রতিটা alert জরুরি, করণীয়-সহ আর runbook-সহ হবে।'
+    keywords: ['symptom-based alert', 'actionable alert', 'runbook', 'severity', 'page vs ticket', 'on-call']
+    blocks:
+      - type: metaphor
+        icon: home
+        title: 'বাড়িতে ধোঁয়া বনাম কেটলি'
+        body: |
+          ঘরে ধোঁয়া উঠলে (লক্ষণ) সবাইকে জাগাতে হয়, কারণ যা-ই হোক ক্ষতি আসন্ন। কিন্তু "রান্নাঘরের তাপমাত্রা ৩৫ ডিগ্রি" (কারণ) জানিয়ে রাত ২টায় কাউকে ডাকা অর্থহীন; রান্না চললে তাপ বাড়বেই। তাই লক্ষণ দেখে ডাকো, কারণ খোঁজো পরে।
+      - type: visual
+        kind: table
+        caption: 'কোন ঘটনার জন্য কী পাঠাবে'
+        headers: ['অবস্থা', 'ক্রেতার ক্ষতি?', 'কী পাঠাবে']
+        rows:
+          - cells: ['Checkout error ৫% ছাড়াল ৫ মিনিট', 'হ্যাঁ, এখনই', 'Page: জেগে ওঠো']
+            tip: 'লক্ষণ, জরুরি, করণীয় আছে। পুরো page-যোগ্য alert।'
+          - cells: ['Error budget ৬ ঘণ্টায় দ্রুত ক্ষয়', 'ধীরে ঘটছে', 'Ticket: কাজের সময়ে']
+            tip: 'জরুরি নয় এখনই, কিন্তু অবহেলা করলে বড় হবে; ticket যথেষ্ট।'
+          - cells: ['Disk ৭০%, প্রতি সপ্তাহে ২% বাড়ছে', 'এখনো নয়', 'Ticket বা ড্যাশবোর্ড']
+            tip: 'কারণ-ভিত্তিক; ভবিষ্যদ্বাণী করা alert (এই হারে ৪ দিনে ভরবে) ভালো।'
+          - cells: ['একটা worker restart হলো', 'না', 'শুধু ড্যাশবোর্ড/log']
+            tip: 'নিজে ঠিক হয়ে যায়; মানুষের হস্তক্ষেপ লাগে না।'
+      - type: points
+        title: 'প্রতিটা alert-এর তিন পরীক্ষা'
+        style: check
+        items:
+          - 'জরুরি: ক্ষতি চলছে বা এখনই আসছে? না হলে ticket।'
+          - 'করণীয়: ঘুম ভেঙে মানুষ কিছু করতে পারে? না পারলে alert নয়।'
+          - 'runbook: alert-এর সাথে "কী দেখব, কী করব" লেখা পাতার লিংক আছে?'
+      - type: quote
+        body: 'Page করো লক্ষণে, ticket খোলো কারণে; আর প্রতিটা page-এর সাথে runbook।'
+    aside:
+      - type: tips
+        items:
+          - 'Alert মাসে একবার পর্যালোচনা করো: কোনটা কতবার বাজল, কতবার মানুষ কিছু করল। যেটায় কিছু করা হয়নি, সেটা মুছো বা নামিয়ে ticket করো।'
+          - '`for: 5m` বা সমতুল্য অপেক্ষা দাও: এক মুহূর্তের ঢেউয়ে alert নয়, টানা সমস্যায়।'
+      - type: refs
+        items:
+          - {to: 'observability/metrics-slos', label: 'SLO আর burn-rate alert'}
+    check:
+      q: 'CPU ৯০% হলে page করা কেন ভুল, আর বদলে কী দেখে page করবে?'
+      a: 'CPU কারণ, ক্রেতার ক্ষতি নয়: ৯০% CPU-তেও সব ঠিক চলতে পারে। বদলে ক্রেতার লক্ষণে: error হার, latency বা SLO burn।'
+
+  - slug: alert-rule-runbook
+    title: 'খারাপ alert, ভালো alert, আর runbook'
+    kind: pitfall
+    tldr: 'কারণ-ভিত্তিক, অপেক্ষাহীন alert ঘুম নষ্ট করে; লক্ষণ-ভিত্তিক, `for` সহ, severity আর runbook লিংকওয়ালা rule-ই কাজের।'
+    keywords: ['Prometheus alert rule', 'runbook', 'alertmanager', 'severity', 'for duration', 'annotations']
+    blocks:
+      - type: code
+        lang: yaml
+        file: 'alerts/bad.yaml'
+        variant: bad
+        code: |
+          - alert: HighCPU
+            expr: node_cpu_utilisation > 0.7
+            labels: {severity: page}
+        marks:
+          - {line: 2, tip: 'কারণ, লক্ষণ নয়। এবং ঠিক কোন সার্ভারে, কী করতে হবে, কিছুই বলে না।'}
+          - {line: 3, tip: 'কোনো অপেক্ষা (for) নেই: ১ সেকেন্ডের ঢেউয়েও page, আর runbook নেই।'}
+      - type: code
+        lang: yaml
+        file: 'alerts/checkout.yaml'
+        variant: good
+        code: |
+          - alert: CheckoutErrorsHigh
+            expr: |
+              sum(rate(shop_http_requests_total{route="checkout",status=~"5.."}[5m]))
+                / sum(rate(shop_http_requests_total{route="checkout"}[5m])) > 0.05
+            for: 5m
+            labels:
+              severity: page
+              team: payments
+            annotations:
+              summary: 'Checkout-এর ৫%-এর বেশি request ব্যর্থ, ৫ মিনিট ধরে'
+              runbook_url: 'https://wiki.shop.example/runbooks/checkout-errors'
+        marks:
+          - {line: 4, tip: 'অনুপাত: মোট request কম-বেশি হলেও সমান কাজ করে।'}
+          - {line: 5, tip: '৫ মিনিট টানা না হলে alert নয়; ক্ষণিক ঢেউ উপেক্ষা।'}
+          - {line: 8, tip: 'কে alert পাবে, তা label-এ। মালিকহীন alert কেউ সামলায় না।'}
+          - {line: 11, tip: 'runbook-এর লিংক alert-এর ভেতরেই; রাত ২টায় ঘুমন্ত মাথা খুঁজতে হয় না।'}
+      - type: visual
+        kind: steps
+        caption: 'Runbook-এর কাঠামো (এক পাতা, রাত ২টায় পড়া যায় এমন)'
+        steps:
+          - {title: '১. এটা কী', body: 'alert-এর মানে আর ক্রেতার ক্ষতি কী', tip: 'এক-দুই বাক্য। ঘুম ভেঙে বোঝার জন্য।'}
+          - {title: '২. প্রথমে দেখো', body: 'কোন ড্যাশবোর্ড, কোন log query', tip: 'সরাসরি লিংক দাও, নামের তালিকা নয়।'}
+          - {title: '৩. সম্ভাব্য কারণ', body: 'আগের ঘটনাগুলোর তালিকা, সবচেয়ে সম্ভাব্য আগে', tip: 'সাম্প্রতিক deploy আগে দেখো; বেশিরভাগ ঘটনা বদলের পরেই হয়।'}
+          - {title: '৪. থামাও', body: 'rollback, feature flag বন্ধ, scale up: আগে লক্ষণ থামাও', tip: 'কারণ খোঁজা পরে। আগে ক্ষতি থামানো।'}
+          - {title: '৫. কাকে ডাকবে', body: 'পরের স্তরের নাম আর ফোন', tip: 'নিজে না পারলে সময় নষ্ট না করে ডাকো।'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'Runbook লেখা হলো কিন্তু কখনো আপডেট হয় না। প্রতিটা ঘটনার পর ভুল বা অসম্পূর্ণ ধাপ ঠিক করো।'
+          - 'একই ঘটনায় পঁচিশটা alert: group আর inhibit করো, যাতে একটাই আসে।'
+          - 'কেউ জানে না কার দায়িত্ব; প্রতিটা alert-এর মালিক টিম লেখা থাকুক।'
+      - type: remember
+        body: 'লক্ষণ, অপেক্ষা (for), মালিক, runbook: চারটা ছাড়া alert নয়।'
+      - type: refs
+        items:
+          - {to: 'observability/incident-response', label: 'Alert-এর পরে ঘটনা সামলানো'}
+    check:
+      q: 'Alert rule-এ `for: 5m` রাখার লাভ কী, আর এর বিপদ কী?'
+      a: 'ক্ষণিক ঢেউয়ে অকারণে alert বাজে না। বিপদ: ৫ মিনিট দেরিতে জানা যায়। তাই মান ঠিক করো ক্ষতির ধরন আর SLO দেখে, যেন দুই দিক মেলে।'
+
+flashcards:
+  - q: 'Alert fatigue কী?'
+    a: 'অতিরিক্ত বা অকাজের alert-এ টিম alert উপেক্ষা করতে শেখে, ফলে আসল সংকটের alert-ও মিস হয়।'
+    more: |
+      ফায়ার অ্যালার্ম রোজ ভুল করে বাজলে কেউ আর বের হয় না। Alert-ও তা-ই: যা বাজলে কিছু করার নেই, তা কমাও বা মুছে দাও। লক্ষ্য হলো প্রতিটা page-এ মানুষ সত্যিই কিছু করে।
+    ref: alarm-that-always-rings
+  - q: 'Liveness আর readiness probe-এর পার্থক্য কী?'
+    a: 'Liveness: "আটকে গেছ, restart দরকার?" ব্যর্থ হলে restart। Readiness: "এখন request নিতে পারবে?" ব্যর্থ হলে ট্র্যাফিক বন্ধ।'
+    more: |
+      Readiness ব্যর্থ হলে process মরে না; শুধু load balancer তাকে কিছুক্ষণ বাদ রাখে। ঠিক হলে আবার ফেরে। দুটোর আলাদা endpoint লাগে, কারণ প্রশ্ন আলাদা, আর ব্যর্থতার ফলও আলাদা।
+    ref: liveness-readiness
+  - q: 'Liveness probe-এ ডেটাবেস পরীক্ষা করা কেন ভুল?'
+    a: 'ডেটাবেস নামলে সব সার্ভার একসাথে restart হয়, অথচ restart-এ ডেটাবেস ঠিক হয় না; সমস্যা আরও বাড়ে।'
+    more: |
+      Liveness শুধু নিজের অবস্থা বলবে: PHP উত্তর দিতে পারছে কি না। বাইরের dependency-র অবস্থা readiness-এর কাজ। নইলে একটা dependency-র সমস্যা পুরো ফ্লিট-এর restart ঝড়ে বদলে যায়।
+    ref: liveness-readiness
+  - q: 'Shallow আর deep health check-এর পার্থক্য কী?'
+    a: 'Shallow শুধু নিজে সাড়া দেয়। Deep ডেটাবেস বা cache-এর মতো dependency-ও ছুঁয়ে দেখে।'
+    more: |
+      Shallow সস্তা আর স্থিতিশীল, liveness-এ উপযুক্ত। Deep বেশি তথ্য দেয় কিন্তু ধীর ও ভঙ্গুর, তাই readiness-এ শুধু জরুরি dependency-তে ব্যবহার হয়। তৃতীয় পক্ষের API deep check-এ ধরলে তাদের outage-এ তুমিও বন্ধ।
+    ref: liveness-readiness
+  - q: 'Readiness endpoint ব্যর্থ হলে কোন HTTP status দেয়?'
+    a: '৫০৩ (Service Unavailable)। সফল হলে ২০০।'
+    more: |
+      ৫০৩ বলে "এখন নয়, পরে চেষ্টা করো"। Kubernetes-সহ বেশিরভাগ load balancer ২xx/৩xx-কে সফল আর বাকিটা ব্যর্থ ধরে। উত্তরের বডিতে ভেতরের ত্রুটির বিস্তারিত দিও না, সেটা log-এ থাকবে।
+    ref: health-endpoints
+  - q: 'Page কোন ধরনের alert-এ করা উচিত: লক্ষণে না কারণে?'
+    a: 'লক্ষণে: ব্যবহারকারীর ক্ষতি (error, ধীরতা, SLO burn)। কারণের (CPU, disk) জন্য ticket বা ড্যাশবোর্ড।'
+    more: |
+      CPU ৯০% হলেও ক্রেতা কিছু টের না পেতে পারে, আবার CPU ৩০% থাকলেও checkout ভেঙে থাকতে পারে। লক্ষণ-ভিত্তিক alert দুইটাই ঠিকমতো ধরে। কারণ খোঁজা হয় alert-এর পরে, ড্যাশবোর্ডে।
+    ref: alert-design
+  - q: 'ভালো alert-এর তিন শর্ত কী?'
+    a: 'জরুরি (ক্ষতি এখনই), করণীয় (মানুষ কিছু করতে পারে), আর runbook আছে।'
+    more: |
+      যে alert-এ কিছু করার নেই, সেটা ticket বা ড্যাশবোর্ডের। যে alert-এ করণীয় আছে কিন্তু জরুরি নয়, সেটা ticket। তিনটাই সত্য হলেই page। প্রতিটা page-এর সাথে একজন মালিক টিম লেখা থাকা উচিত।
+    ref: alert-design
+  - q: 'Runbook কী, আর কী থাকে?'
+    a: 'Alert বাজলে কী দেখব আর কী করব তার এক পাতার নির্দেশনা: অর্থ, প্রথমে কী দেখব, সম্ভাব্য কারণ, কীভাবে থামাব, কাকে ডাকব।'
+    more: |
+      রাত ২টায় ঘুমন্ত মাথা নতুন করে ভাবতে পারে না। Runbook আগের অভিজ্ঞতা কাজে লাগায়। প্রতিটা ঘটনার পর এটা হালনাগাদ করো। Alert rule-এর `runbook_url` annotation-এ লিংক থাকলে এক ক্লিকে পৌঁছানো যায়।
+    ref: alert-rule-runbook
+  - q: 'Alert rule-এ `for` কেন দেয়?'
+    a: 'শর্ত টানা নির্দিষ্ট সময় সত্য থাকলে তবেই alert; ক্ষণিক ঢেউয়ে নয়।'
+    more: |
+      একটা মুহূর্তের error ঢেউ স্বাভাবিক, deploy বা retry-র কারণে হয়। `for: 5m` বলে "টানা ৫ মিনিট"। বেশি দিলে জানতে দেরি, কম দিলে ভুয়া alert; তাই SLO আর ক্ষতির ধরন দেখে ঠিক করো।
+    ref: alert-rule-runbook
+
+quiz:
+  - q: 'নিচের endpoint লাইভনেস probe-এ ব্যবহার হচ্ছে। সমস্যা কী?'
+    lang: php
+    code: |
+      #[Route('/health/live')]
+      public function live(): JsonResponse
+      {
+          $this->db->executeQuery('SELECT 1');
+
+          return new JsonResponse(['status' => 'up']);
+      }
+    hint: 'ডেটাবেস নামলে এই probe-এর ফল কী হবে?'
+    options:
+      - text: 'ডেটাবেস নামলে liveness ব্যর্থ, সব সার্ভার restart; অথচ restart-এ ডেটাবেস ঠিক হয় না'
+        correct: true
+        why: 'Liveness-এ dependency নয়। DB পরীক্ষা readiness endpoint-এর কাজ।'
+      - text: 'JsonResponse-এর বদলে Response ব্যবহার করা উচিত'
+        correct: false
+        why: 'response-এর ধরনে সমস্যা নেই।'
+      - text: '"SELECT 1" ধীর, তাই আরও জটিল query লাগবে'
+        correct: false
+        why: 'সমস্যা query-র ধরনে নয়, probe-এর উদ্দেশ্যে।'
+      - text: 'কোনো সমস্যা নেই: ডেটাবেস না থাকলে অ্যাপ বেঁচে থাকার মানে নেই'
+        correct: false
+        why: 'অ্যাপ বেঁচে আছে, ডেটাবেস ফিরলে আবার কাজ করবে। restart করলে চলমান কাজ আর ক্যাশ হারায়।'
+    ref: liveness-readiness
+  - q: 'কোন dependency readiness-এ রাখা উচিত?'
+    hint: 'যা ছাড়া অ্যাপ কোনো request-ই সামলাতে পারে না।'
+    options:
+      - text: 'প্রধান ডেটাবেস'
+        correct: true
+        why: 'এটা ছাড়া প্রায় কোনো request-ই সফল হয় না; ট্র্যাফিক অন্য সার্ভারে যাওয়া ভালো।'
+      - text: 'ইমেইল পাঠানোর তৃতীয় পক্ষ সেবা'
+        correct: false
+        why: 'ইমেইল queue-তে রেখে পরে পাঠানো যায়। এর outage-এ সব সার্ভার বন্ধ করা অতিরিক্ত।'
+      - text: 'Session বা cache (Redis), যদি অ্যাপ এর ওপর নির্ভর করে'
+        correct: true
+        why: 'login-নির্ভর অ্যাপে Redis না থাকলে কাজ হয় না, তাই এটাও জরুরি dependency।'
+      - text: 'বিজ্ঞাপন বা analytics সেবা'
+        correct: false
+        why: 'ঐচ্ছিক সেবা। এটা না থাকলে ক্রেতার কাজ চলে।'
+    ref: liveness-readiness
+  - q: 'Readiness probe ব্যর্থ হলে কী হওয়া উচিত?'
+    hint: 'process কি মরে যাবে?'
+    options:
+      - text: 'Load balancer সেই সার্ভারে ট্র্যাফিক পাঠানো বন্ধ করে; ঠিক হলে আবার পাঠায়'
+        correct: true
+        why: 'সার্ভার বন্ধ হয় না, শুধু কিছুক্ষণ বিশ্রামে থাকে।'
+      - text: 'সার্ভার সাথে সাথে restart হয়'
+        correct: false
+        why: 'এটা liveness-এর কাজ। readiness শুধু ট্র্যাফিক নিয়ন্ত্রণ করে।'
+      - text: 'নতুন deploy বাতিল হয়ে যায়'
+        correct: false
+        why: 'deploy-এর rollout আটকাতে পারে, কিন্তু বাতিল করে না।'
+    ref: liveness-readiness
+  - q: 'নিচের কোন alert-গুলো page করার যোগ্য?'
+    hint: 'ক্রেতার ক্ষতি এখন চলছে কি?'
+    options:
+      - text: 'Checkout error ৫%-এর বেশি, টানা ৫ মিনিট'
+        correct: true
+        why: 'লক্ষণ, জরুরি, করণীয় আছে (rollback বা অনুসন্ধান)।'
+      - text: 'Payment success হার হঠাৎ ৯৯% থেকে ৮০%-এ'
+        correct: true
+        why: 'টাকার পথ ভেঙেছে; ক্রেতার সরাসরি ক্ষতি, তাই page।'
+      - text: 'Disk ব্যবহার ৬০% ছাড়াল'
+        correct: false
+        why: 'ধীরে বাড়ে, জরুরি নয়। ticket বা ভবিষ্যদ্বাণী-ভিত্তিক alert।'
+      - text: 'একটা worker restart হয়েছে'
+        correct: false
+        why: 'নিজে ঠিক হয়ে যায়, মানুষের কাজ নেই।'
+    ref: alert-design
+  - q: 'রাশেদের টিমে মাসে ৩০০টা alert আসে, আর কেউ আর পড়ে না। প্রথমে কী করা উচিত?'
+    hint: 'কোন alert-এ মানুষ সত্যিই কিছু করেছিল?'
+    options:
+      - text: 'প্রতিটা alert গুনে দেখা কতবার কিছু করা হয়েছে, আর যেগুলোতে কিছু করা হয়নি সেগুলো মুছে বা ticket-এ নামানো'
+        correct: true
+        why: 'অকাজের alert কমালে বাকিগুলো আবার গুরুত্ব পায়।'
+      - text: 'সব alert ফোনে আরও জোরে বাজানো'
+        correct: false
+        why: 'সমস্যা শব্দে নয়, সংখ্যায় আর প্রাসঙ্গিকতায়।'
+      - text: 'আরও নতুন alert যোগ করা, যাতে কিছু মিস না হয়'
+        correct: false
+        why: 'আরও alert মানে আরও গোলমাল; আসল alert আরও চাপা পড়ে।'
+      - text: 'on-call-কে রাতে ফোন বন্ধ রাখতে বলা'
+        correct: false
+        why: 'তাহলে আসল আগুনেও কেউ জাগবে না।'
+    ref: alarm-that-always-rings
+  - q: 'এই alert rule-এর কোন অংশ runbook-এর সাথে সরাসরি জড়িত?'
+    lang: yaml
+    code: |
+      - alert: CheckoutErrorsHigh
+        expr: error_ratio > 0.05
+        for: 5m
+        labels: {severity: page, team: payments}
+        annotations:
+          runbook_url: 'https://wiki.shop.example/runbooks/checkout-errors'
+    hint: 'on-call ঘুম ভেঙে কোথায় যাবে?'
+    options:
+      - text: 'annotations.runbook_url'
+        correct: true
+        why: 'alert-এর সাথে নির্দেশনার লিংক এক ক্লিকে পাওয়া যায়।'
+      - text: 'for: 5m'
+        correct: false
+        why: 'এটা অপেক্ষার সময়, নির্দেশনা নয়।'
+      - text: 'labels.severity'
+        correct: false
+        why: 'এটা জরুরিতার মাত্রা; কী করতে হবে, বলে না।'
+    ref: alert-rule-runbook

@@ -1,0 +1,396 @@
+slides:
+  - slug: works-on-my-machine
+    title: 'আমার মেশিনে চলে, prod-এ চলে না'
+    kind: story
+    tldr: 'কোডে বসানো ঠিকানা, পাসওয়ার্ড আর সেটিং এক environment-এ ঠিক, অন্যটায় ভুল; আর পাসওয়ার্ড git-এ গেলে সেটা চিরকালের জন্য ফাঁস। কনফিগ কোডের বাইরে রাখতে হবে।'
+    keywords: ['configuration', 'environment', 'hardcoded config', 'কনফিগ', '12-factor', 'staging prod']
+    blocks:
+      - type: metaphor
+        icon: book
+        title: 'বিয়েবাড়ির রেসিপি আর মশলার মাপ'
+        body: |
+          রেসিপি এক: বিরিয়ানি। কিন্তু ৫০ জনের জন্য আর ৫০০ জনের জন্য মশলার মাপ আলাদা। মাপ রেসিপির ভেতরে লিখে দিলে প্রতিবার রেসিপিই নতুন করে ছাপাতে হবে। তাই রেসিপি এক থাকে, মাপ বাইরের একটা কাগজে লেখা হয়। কোড হলো রেসিপি, config হলো সেই কাগজ।
+      - type: text
+        body: |
+          রহিম ডেটাবেসের ঠিকানা আর পেমেন্ট গেটওয়ের key সোজা কোডে লিখে রেখেছিল। staging-এ গিয়ে দেখল, কোড প্রোডাকশনের ডেটাবেসে লিখছে! আর কয়েক সপ্তাহ পরে এক ইন্টার্ন কোড public GitHub-এ দিয়ে দিল, সাথে পেমেন্ট key।
+      - type: visual
+        kind: compare
+        caption: 'কোডে বসানো config বনাম বাইরে রাখা config'
+        columns:
+          - title: 'কোডের ভেতরে'
+            tone: bad
+            icon: cross
+            tip: 'config বদলাতে কোড বদলাতে হয়, আর কোডের সাথে গোপন জিনিসও git-এ যায়।'
+            items:
+              - 'ডেটাবেসের ঠিকানা কোডে লেখা'
+              - 'প্রতি environment-এর জন্য আলাদা build'
+              - 'পাসওয়ার্ড git-এর ইতিহাসে চিরকাল'
+          - title: 'কোডের বাইরে'
+            tone: good
+            icon: check
+            tip: 'কোড এক, মান আসে চালানোর সময়। গোপন মান কখনো repository-তে যায় না।'
+            items:
+              - 'ঠিকানা আসে environment variable থেকে'
+              - 'একটাই build সব জায়গায়'
+              - 'গোপন মান আলাদা নিরাপদ জায়গায়'
+      - type: quote
+        body: 'যা environment ভেদে বদলায়, তা কোডে নয়; কোডের বাইরে।'
+    aside:
+      - type: story
+        title: 'GitHub-এ বসে থাকা key'
+        body: 'একটা পেমেন্ট key public repository-তে যাওয়ার কয়েক ঘণ্টার মধ্যে স্বয়ংক্রিয় স্ক্যানার সেটা খুঁজে পায়। key মুছে ফেললেও git-এর ইতিহাসে থেকে যায়, তাই key বদলে ফেলাই একমাত্র উপায়।'
+      - type: terms
+        items:
+          - {term: 'Environment', meaning: 'অ্যাপ চলার জায়গা: dev (নিজের মেশিন), staging (মহড়া), prod (আসল)।'}
+          - {term: 'Config', meaning: 'environment ভেদে বদলায় এমন সেটিং, কোডের বাইরে রাখা হয়।'}
+    check:
+      q: 'কোডে ডেটাবেসের ঠিকানা লিখে রাখলে staging আর prod-এর জন্য কী সমস্যা হয়?'
+      a: 'প্রতি environment-এর জন্য কোড বদলাতে হয়, আর ভুল করলে staging প্রোডাকশনের ডেটাবেসে লিখে ফেলে। কোড এক রেখে ঠিকানা বাইরে থেকে দিলে এই ভুল হয় না।'
+
+  - slug: build-once-config-outside
+    title: 'একবার build, সব জায়গায় চালাও'
+    kind: concept
+    tldr: '12-factor-এর নিয়ম: একই build বা image সব environment-এ চলবে, আর তফাত আসবে environment variable থেকে। এতে staging-এ যা test হলো, prod-এ ঠিক সেটাই যায়।'
+    keywords: ['12-factor', 'build once', 'environment variables', 'immutable build', 'image', 'config outside code']
+    blocks:
+      - type: metaphor
+        icon: box
+        title: 'এক ডেকচি রান্না, আলাদা পরিবেশন'
+        body: |
+          বাবুর্চি এক ডেকচিতেই রান্না করে। কোনো টেবিলে বেশি ঝাল চাইলে আলাদা বাটিতে ঝাল দেওয়া হয়। রান্নাটা আবার করতে হয় না। একবার build হওয়া image ঠিক সেই ডেকচি, আর env variable সেই ঝালের বাটি।
+      - type: visual
+        kind: flow
+        caption: 'একটাই image, তিন জায়গা, আলাদা env variable'
+        nodes:
+          - {id: ci, label: 'CI build', sub: 'কোড একবারই', icon: gear, col: 0, row: 1, tip: 'test পেরিয়ে একটা image বানায়। আর কোনো environment-এর জন্য নতুন build হয় না।'}
+          - {id: image, label: 'Image v42', sub: 'অপরিবর্তনীয়', icon: box, tone: accent, col: 1.5, row: 1, tip: 'ভেতরে কোনো পাসওয়ার্ড বা ঠিকানা নেই। সব environment এই একই image পায়।'}
+          - {id: staging, label: 'Staging', sub: 'staging-এর env', icon: server, col: 3, row: 0, tip: 'নিজের ডেটাবেস, নিজের পেমেন্ট sandbox key নিয়ে চলে।'}
+          - {id: prod, label: 'Production', sub: 'prod-এর env', icon: server, col: 3, row: 2, tip: 'আসল ডেটাবেস আর আসল key; চালানোর সময় বাইরে থেকে আসে।'}
+        edges:
+          - {from: ci, to: image, label: 'CI কোড থেকে একবারই image বানায়'}
+          - {from: image, to: staging, label: 'staging-এ staging-এর env variable দিয়ে চলে'}
+          - {from: image, to: prod, label: 'prod-এ একই image, শুধু prod-এর env আর secret', tone: good}
+      - type: points
+        title: 'এতে কী লাভ'
+        style: check
+        items:
+          - 'staging-এ যা পরীক্ষা হলো, prod-এ ঠিক সেটাই চলে — কোনো আলাদা build-এর ঝুঁকি নেই।'
+          - 'config বদলাতে নতুন build লাগে না; শুধু env বদলে restart।'
+          - 'image-এ গোপন কিছু নেই, তাই image কেউ পেলেও ক্ষতি নেই।'
+      - type: quote
+        body: 'কোড একবার build হবে। আচরণ ঠিক হবে চালানোর সময়, environment variable দিয়ে।'
+    aside:
+      - type: problem
+        body: '"staging-এ ঠিক ছিল, prod-এ ভাঙল" — কারণ দুই জায়গায় আসলে আলাদা কোড বা আলাদা build চলছিল।'
+      - type: refs
+        items:
+          - {to: 'infra/ci-cd', label: 'CI/CD pipeline'}
+          - {to: 'resilience/zero-downtime-deploys', label: 'Zero-downtime deploy'}
+    check:
+      q: '"প্রতি environment-এর জন্য আলাদা build" করলে কোন ঝুঁকি তৈরি হয়?'
+      a: 'staging-এ যে build test হলো, prod-এ সেটা চলে না — আলাদা build আলাদা কোড হতে পারে। একই image থাকলে ঠিক যা test হলো তা-ই চলে।'
+
+  - slug: symfony-env-vars
+    title: 'Symfony-তে env variable ব্যবহার'
+    kind: howto
+    tldr: '.env-এ নিরাপদ ডিফল্ট, সার্ভারে আসল মান; কোডে #[Autowire(env: ''int:NAME'')] দিয়ে টাইপসহ ঢোকাও, আর YAML-এ %env(int:NAME)% লেখো।'
+    keywords: ['.env', '.env.local', 'Autowire env', 'env processor', 'APP_ENV', 'Symfony Dotenv', 'int:', 'bool:']
+    blocks:
+      - type: text
+        body: |
+          Symfony `.env` ফাইল পড়ে, কিন্তু সার্ভারের আসল environment variable সবসময় জেতে। `.env` git-এ যায় এবং শুধু নিরাপদ ডিফল্ট রাখে। নিজের মেশিনের বদল যায় `.env.local`-এ (git-এ নয়)। env variable সবসময় string, তাই সংখ্যা বা true/false দরকার হলে processor (`int:`, `bool:`) বসাও।
+      - type: code
+        lang: env
+        file: '.env  (git-এ থাকে: শুধু নিরাপদ ডিফল্ট)'
+        code: |
+          APP_ENV=dev
+          PAYMENT_TIMEOUT=5
+          SEARCH_ENABLED=1
+          PAYMENT_BASE_URL=https://sandbox.pay.example
+          # PAYMENT_API_KEY এখানে নেই: সেটা গোপন, secrets vault-এ
+        marks:
+          - {line: 2, tip: 'সংখ্যা হলেও এটা string। কোডে ঢোকার সময় int: দিয়ে সংখ্যা বানাতে হয়।'}
+          - {line: 5, tip: 'গোপন মানের নামটাও এখানে লেখার দরকার নেই; পরের স্লাইডে এর ঠিকানা।'}
+      - type: code
+        lang: php
+        file: 'src/Payment/PaymentGateway.php'
+        variant: good
+        code: |
+          final readonly class PaymentGateway
+          {
+              public function __construct(
+                  private HttpClientInterface $http,
+                  #[Autowire(env: 'PAYMENT_BASE_URL')]
+                  private string $baseUrl,
+                  #[Autowire(env: 'int:PAYMENT_TIMEOUT')]
+                  private int $timeout,
+                  #[Autowire(env: 'bool:SEARCH_ENABLED')]
+                  private bool $searchEnabled,
+              ) {
+              }
+
+              public function charge(Money $amount): void
+              {
+                  $this->http->request('POST', $this->baseUrl.'/charges', [
+                      'timeout' => $this->timeout,
+                      'json' => ['amount' => $amount->paisa()],
+                  ]);
+              }
+          }
+        marks:
+          - {line: 7, tip: 'int: processor মান পড়ার সময়েই সংখ্যা বানায়। "5" string হিসেবে timeout-এ গেলে ভুল হতো।'}
+          - {line: 9, tip: 'bool: processor "1", "true", "on" ইত্যাদিকে true বানায়।'}
+          - {line: 18, tip: 'কোডে কোনো ঠিকানা বা সংখ্যা লেখা নেই; সব বাইরে থেকে এসেছে।'}
+    aside:
+      - type: commands
+        title: 'কোন মান কোথা থেকে আসছে'
+        items:
+          - {cmd: 'php bin/console debug:dotenv', desc: 'কোন .env ফাইল থেকে কোন মান'}
+          - {cmd: 'php bin/console debug:container --env-vars', desc: 'অ্যাপ কোন env variable ব্যবহার করে'}
+          - {cmd: 'php bin/console lint:container', desc: 'ভুল বা মেলে না এমন কনফিগ ধরো'}
+      - type: tips
+        items:
+          - 'APP_ENV শুধু Symfony নিজে পড়ার জন্য। নিজের কোডে if (APP_ENV === ''prod'') লিখো না — পরের পিটফল দেখো।'
+          - 'প্রোডাকশনে `composer dump-env prod` দিয়ে .env-কে একটা PHP ফাইলে বানিয়ে নেওয়া যায়; প্রতি request-এ ফাইল পার্স করতে হয় না।'
+    check:
+      q: 'PAYMENT_TIMEOUT=5 কে timeout হিসেবে কোডে ঢোকাতে কেন int: processor লাগে?'
+      a: 'কারণ env variable সবসময় string। int: processor সেটাকে সংখ্যা বানায়, নইলে "5" string গিয়ে টাইপ-ভুল বা অদ্ভুত আচরণ হতো।'
+
+  - slug: secrets-vs-config
+    title: 'Config আর secret এক জিনিস নয়'
+    kind: concept
+    tldr: 'ঠিকানা আর timeout-এর মতো config ফাঁস হলে বড় ক্ষতি নেই; পাসওয়ার্ড আর API key ফাঁস হলে আছে। গোপন মান Symfony secrets vault বা secret manager-এ রাখো, git-এ নয়।'
+    keywords: ['secrets', 'Symfony secrets vault', 'secrets:set', 'API key', 'DATABASE_URL', 'secret manager', 'গোপন মান']
+    blocks:
+      - type: metaphor
+        icon: lock
+        title: 'দোকানের মশলার তালিকা আর সিন্দুকের চাবি'
+        body: |
+          মশলার মাপের কাগজ ফাঁস হলে ক্ষতি সামান্য। কিন্তু সিন্দুকের চাবি ফাঁস হলে দোকানই ফাঁকা। তাই কাগজ দেয়ালে ঝোলে, আর চাবি থাকে মালিকের কোমরে। Config আর secret আলাদা করে রাখার কারণ এটাই।
+      - type: visual
+        kind: table
+        caption: 'কী কোথায় রাখবে'
+        headers: ['ধরন', 'উদাহরণ', 'কোথায় থাকবে']
+        rows:
+          - cells: ['নিরাপদ ডিফল্ট', 'timeout, ফিচারের সুইচ', '.env (git-এ)']
+            tip: 'ফাঁস হলেও ক্ষতি নেই, আর নতুন ডেভেলপার সাথে সাথে অ্যাপ চালাতে পারে।'
+          - cells: ['environment-ভেদে মান', 'ডেটাবেসের host, CDN-এর URL', 'সার্ভারের env বা deploy টুল']
+            tip: 'কোডের বাইরে, প্রতি environment-এ নিজস্ব।'
+          - cells: ['গোপন মান', 'API key, DB password, JWT private key', 'secrets vault বা cloud secret manager']
+            tip: 'এনক্রিপ্টেড বা আলাদা সংরক্ষণ; সাধারণ টেক্সটে repository-তে কখনো নয়।'
+          - cells: ['নিজের মেশিনের মান', 'নিজের ডেটাবেসের পাসওয়ার্ড', '.env.local (git-এ নয়)']
+            tip: '.gitignore-এ আছে কি না একবার যাচাই করো।'
+      - type: quote
+        body: 'গোপন মান কখনো git-এ নয়। ভুল করে গেলে মুছো না: key বদলে ফেলো।'
+    aside:
+      - type: commands
+        title: 'Symfony secrets'
+        items:
+          - {cmd: 'php bin/console secrets:set PAYMENT_API_KEY', desc: 'গোপন মান এনক্রিপ্ট করে সংরক্ষণ করো'}
+          - {cmd: 'php bin/console secrets:list --reveal', desc: 'সব গোপন মান দেখো (dev-এ)'}
+          - {cmd: 'php bin/console secrets:set PAYMENT_API_KEY --env=prod', desc: 'prod-এর জন্য আলাদা মান'}
+      - type: tips
+        items:
+          - 'vault-এর এনক্রিপ্টেড ফাইল আর encrypt key git-এ যায়। decrypt key যায় না; prod সার্ভারে SYMFONY_DECRYPTION_SECRET দিয়ে দাও।'
+          - 'বড় সিস্টেমে cloud secret manager বা HashiCorp Vault ব্যবহার হয়; সেগুলো মান ঘোরানো আর অডিটও দেয়।'
+      - type: refs
+        items:
+          - {to: 'security/secrets-management', label: 'Secrets management বিস্তারিত'}
+    check:
+      q: 'timeout আর পেমেন্ট API key — কোনটা .env-এ git-এ থাকতে পারে, কোনটা পারে না?'
+      a: 'timeout পারে, কারণ ফাঁস হলে ক্ষতি নেই। API key পারে না, সেটা secrets vault বা secret manager-এ থাকবে।'
+
+  - slug: config-drift
+    title: 'Environment-এ ফাঁক: config drift'
+    kind: pitfall
+    tldr: 'কোডে APP_ENV দেখে আচরণ বদলালে বা environment গুলো আলাদা দিকে সরে গেলে staging-এর test prod-এর আচরণ দেখায় না। তফাত রাখো config-এ, কোডের শাখায় নয়।'
+    keywords: ['config drift', 'environment parity', 'APP_ENV check', 'staging vs prod', 'dev prod parity', 'ফাঁক']
+    blocks:
+      - type: text
+        body: |
+          দুই মেশিনে একই রেসিপি, কিন্তু একজন চুপচাপ চিনি বাড়িয়ে নেয়। কয়েক মাসে দুই রান্না আলাদা হয়ে যায়। এটাই **config drift**। সবচেয়ে সাধারণ কারণ: কোডের ভেতরে `if (prod)` লিখে দেওয়া। তখন prod-এর পথ staging-এ কখনো চলেই না, আর প্রথম চলে ঠিক ক্রেতার সামনে।
+      - type: code
+        lang: php
+        file: 'src/Notification/OrderSms.php'
+        variant: bad
+        code: |
+          public function send(Order $order): void
+          {
+              if ('prod' === $_ENV['APP_ENV']) {
+                  $this->bulkSms->send($order->phone(), $this->text($order));
+              } else {
+                  $this->logger->info('SMS skipped', ['order' => $order->id()]);
+              }
+          }
+        marks:
+          - {line: 3, tip: 'আসল SMS পাঠানোর পথ শুধু prod-এ চলে। staging-এ কেউ পরীক্ষা করেনি।'}
+          - {line: 6, tip: 'staging আর prod দুটো আলাদা কোডপথ চালাচ্ছে, তাই staging-এর পরীক্ষা prod-এর গ্যারান্টি নয়।'}
+      - type: code
+        lang: yaml
+        file: 'config/services.yaml'
+        variant: good
+        code: |
+          services:
+              App\Sms\SmsGateway: '@App\Sms\BulkSmsGateway'
+
+          when@dev:
+              services:
+                  App\Sms\SmsGateway: '@App\Sms\LogSmsGateway'
+        marks:
+          - {line: 2, tip: 'কোড সবসময় SmsGateway interface ডাকে, নতুন কোনো if নেই; কোন বাস্তবায়ন তা config ঠিক করে।'}
+          - {line: 4, tip: 'dev-এ আসল SMS বদলে log। তফাতটা এক জায়গায়, দেখে নেওয়া যায়।'}
+      - type: points
+        title: 'Drift ঠেকানোর চার উপায়'
+        style: check
+        items:
+          - 'staging-এ prod-এর মতো ডেটাবেস ভার্সন, একই image, একই env variable-এর তালিকা।'
+          - 'config বদল হোক code review-এর ভেতর দিয়ে বা deploy টুলে; সার্ভারে হাতে বদল নয়।'
+          - 'অ্যাপ চালুর সময় দরকারি env variable-এর অনুপস্থিতি ধরো; তারপর ঠিক ঠিক ব্যর্থ হোক।'
+          - 'নিয়মিত staging আর prod-এর env variable-এর নামের তালিকা মেলাও।'
+    aside:
+      - type: pitfalls
+        items:
+          - 'নিজের কোডে APP_ENV পড়ে আচরণ বদলিয়ো না; Symfony-কে সেটা করতে দাও (when@dev, বিভিন্ন config)।'
+          - 'সার্ভারে সরাসরি ঢুকে .env.local বদলিয়ে ফেলা drift-এর সবচেয়ে সাধারণ উৎস।'
+      - type: remember
+        body: 'কোডে if (prod) নয়; তফাত থাকুক config-এ।'
+      - type: refs
+        items:
+          - {to: 'infra/cloud-primitives', label: 'Environment আর infrastructure as code'}
+    check:
+      q: 'কোডে if (APP_ENV === ''prod'') লিখে আচরণ বদলালে staging-এ test করে কেন prod-এর নিশ্চয়তা পাওয়া যায় না?'
+      a: 'কারণ prod-এর শাখা staging-এ কখনো চলে না; test হলো অন্য কোডপথের। তফাত config-এ থাকলে একই কোডপথ চলে।'
+
+flashcards:
+  - q: 'Config বলতে কী বোঝায়, আর কোথায় রাখা উচিত?'
+    a: 'যা environment ভেদে বদলায় (ঠিকানা, timeout, key)। কোডের বাইরে, environment variable বা secrets-এ।'
+    more: |
+      কোড এক থাকে, মান বদলায়। কোডে মান বসালে প্রতি environment-এর জন্য কোড বদলাতে হয়, আর পাসওয়ার্ড git-এ চলে যায়। কোড হলো রেসিপি, config হলো মশলার মাপের আলাদা কাগজ।
+    ref: works-on-my-machine
+  - q: '12-factor অ্যাপের config সম্পর্কে নিয়ম কী?'
+    a: 'config রাখো environment variable-এ। একটা build সব environment-এ চলবে, তফাত আসবে বাইরের মান থেকে।'
+    more: |
+      এতে staging-এ যা test হয়েছে, prod-এ ঠিক সেটাই যায়। config বদলাতে নতুন build লাগে না। image-এ গোপন কিছু থাকে না, তাই সেটা ছড়িয়ে পড়লেও ক্ষতি নেই।
+    ref: build-once-config-outside
+  - q: 'Symfony-তে .env আর .env.local-এর তফাত কী?'
+    a: '.env git-এ যায় আর নিরাপদ ডিফল্ট রাখে। .env.local git-এ যায় না, নিজের মেশিনের মান থাকে।'
+    more: |
+      আসল environment variable (সার্ভারের) সবসময় .env ফাইলের ওপর জেতে। প্রোডাকশনে সাধারণত .env.local নয়, সার্ভারের env বা secrets ব্যবহার হয়। দেখে নিতে: `php bin/console debug:dotenv`।
+    ref: symfony-env-vars
+  - q: 'Env variable সবসময় string — সংখ্যা বা bool কীভাবে পাবে?'
+    a: 'Env processor দিয়ে: %env(int:NAME)% বা #[Autowire(env: ''bool:NAME'')]।'
+    more: |
+      `int:`, `bool:`, `float:`, `json:`, `file:`, `default:` প্রভৃতি processor আছে। এগুলো মান পড়ার সময়েই টাইপ বদলে দেয়, তাই পরে কোডে টাইপ-ভুল হয় না। না দিলে "5" string ঢুকে অদ্ভুত আচরণ হতে পারে।
+    ref: symfony-env-vars
+  - q: 'Config আর secret-এর তফাত কী?'
+    a: 'Config ফাঁস হলে বড় ক্ষতি নেই (timeout, URL); secret ফাঁস হলে ক্ষতি (পাসওয়ার্ড, API key)। secret আলাদা, নিরাপদ জায়গায়।'
+    more: |
+      Config নিরাপদ ডিফল্ট হয়ে .env-এ git-এ যেতে পারে। Secret যায় Symfony secrets vault বা cloud secret manager-এ। যে key ভুল করে git-এ গেছে, সেটা মুছলে হয় না: git-এর ইতিহাসে থাকে, তাই key বদলে ফেলতে হয়।
+    ref: secrets-vs-config
+  - q: 'Symfony secrets vault কীভাবে কাজ করে?'
+    a: 'secrets:set দিয়ে মান এনক্রিপ্ট হয়। এনক্রিপ্টেড ফাইল git-এ যায়; decrypt key সার্ভারে আলাদা পৌঁছায়।'
+    more: |
+      encrypt (public) key আর এনক্রিপ্টেড মান repository-তে থাকে। decrypt (private) key git-এ যায় না; প্রোডাকশনে `SYMFONY_DECRYPTION_SECRET` env variable বা আলাদা ফাইলে দেওয়া হয়। dev আর prod-এর vault আলাদা।
+    ref: secrets-vs-config
+  - q: 'Config drift কী আর কেন বিপজ্জনক?'
+    a: 'environment গুলো আলাদা দিকে সরে যাওয়া। তখন staging-এর পরীক্ষা prod-এর আচরণ দেখায় না।'
+    more: |
+      কারণ: সার্ভারে হাতে বদল, ভিন্ন ডেটাবেস ভার্সন, বা কোডে if (prod)। ঠেকাতে: একই image, config বদল code review-এর ভেতর দিয়ে, চালুর সময় দরকারি env-এর অনুপস্থিতি ধরা।
+    ref: config-drift
+
+quiz:
+  - q: 'নিচের কোডে কী সমস্যা?'
+    lang: php
+    code: |
+      private const DB_URL = 'mysql://root:secret@prod-db.internal/shop';
+
+      public function connect(): PDO
+      {
+          return new PDO(self::DB_URL);
+      }
+    hint: 'এই কোড staging-এ চালালে কোন ডেটাবেসে যাবে?'
+    options:
+      - text: 'ঠিকানা আর পাসওয়ার্ড কোডে লেখা: git-এ যায়, আর staging-ও prod-এর ডেটাবেসে যাবে'
+        correct: true
+        why: 'config কোডের বাইরে থাকলে এই দুটো ঝুঁকিই থাকত না।'
+      - text: 'const ব্যবহার করা উচিত নয়, static property ঠিক'
+        correct: false
+        why: 'কোড কোথায় লেখা হলো, সেটা নয়; মান কোডের ভেতরেই থাকা সমস্যা।'
+      - text: 'PDO পুরনো, Doctrine DBAL ব্যবহার করতে হবে'
+        correct: false
+        why: 'লাইব্রেরি বিষয় নয়; DBAL-এও কোডে লিখলে একই সমস্যা।'
+      - text: 'কোনো সমস্যা নেই, internal host'
+        correct: false
+        why: 'internal হোক বা না হোক, পাসওয়ার্ড git-এর ইতিহাসে চিরকাল থাকবে।'
+    ref: works-on-my-machine
+  - q: 'Staging-এ test পাস, prod-এ deploy করার পর ভাঙল। দলটা প্রতি environment-এর জন্য আলাদা build করত। সবচেয়ে ভালো সংশোধন কোনটা?'
+    hint: 'যা test হলো আর যা চলল, তারা কি একই জিনিস?'
+    options:
+      - text: 'একটাই image build করে সব environment-এ চালানো, তফাত env variable দিয়ে'
+        correct: true
+        why: 'staging-এ যা test হলো ঠিক সেটাই prod-এ যায়।'
+      - text: 'prod-এর build-ও staging-এ চালিয়ে test করা'
+        correct: false
+        why: 'এখনো দুটো আলাদা build; তাদের তফাত থাকবে।'
+      - text: 'test পাস দেখে deploy করা বন্ধ করা'
+        correct: false
+        why: 'deploy বন্ধ করা সমাধান নয়, সমস্যা এড়ানো।'
+      - text: 'prod-এ সরাসরি কোড বদলে ঠিক করা'
+        correct: false
+        why: 'এটা drift বাড়ায়; আরও আলাদা কোড তৈরি হয়।'
+    ref: build-once-config-outside
+  - q: 'কোন কোন মান Symfony secrets vault (বা secret manager)-এ যাওয়া উচিত?'
+    hint: 'ফাঁস হলে কার ক্ষতি?'
+    options:
+      - text: 'পেমেন্ট গেটওয়ের API key'
+        correct: true
+        why: 'ফাঁস হলে অন্য কেউ তোমার নামে লেনদেন করতে পারে।'
+      - text: 'ডেটাবেসের পাসওয়ার্ড'
+        correct: true
+        why: 'ফাঁস হলে সব ডেটা বিপদে।'
+      - text: 'JWT সই করার private key'
+        correct: true
+        why: 'ফাঁস হলে যে কেউ জাল token বানাতে পারে।'
+      - text: 'PAYMENT_TIMEOUT=5'
+        correct: false
+        why: 'ফাঁসে ক্ষতি নেই; নিরাপদ ডিফল্ট হিসেবে .env-এ থাকতে পারে।'
+    ref: secrets-vs-config
+  - q: 'নিচের Symfony কোডে সমস্যা কী হতে পারে?'
+    lang: php
+    code: |
+      public function __construct(
+          #[Autowire(env: 'PAYMENT_TIMEOUT')]
+          private int $timeout,
+      ) {
+      }
+    hint: 'env variable-এর টাইপ কী?'
+    options:
+      - text: 'env মান string; int: processor ছাড়া টাইপ মেলে না (বা প্রত্যাশিত রূপান্তর হয় না)'
+        correct: true
+        why: 'দরকার #[Autowire(env: ''int:PAYMENT_TIMEOUT'')]।'
+      - text: 'readonly ছাড়া Autowire কাজ করে না'
+        correct: false
+        why: 'readonly-র সাথে Autowire-এর সম্পর্ক নেই।'
+      - text: '#[Autowire(env: ...)] Symfony-তে নেই'
+        correct: false
+        why: 'আছে; এটা env variable ঢোকানোর আধুনিক উপায়।'
+      - text: 'env variable কোডে পড়া যায় না, শুধু YAML-এ'
+        correct: false
+        why: 'কোডেও #[Autowire(env: ...)] দিয়ে পড়া যায়।'
+    ref: symfony-env-vars
+  - q: 'কোন পদ্ধতিটা config drift কমায়?'
+    hint: 'staging আর prod আলাদা পথে চলছে কেন?'
+    options:
+      - text: 'staging আর prod-এ একই image, এবং env variable-এর তালিকা একই রাখা'
+        correct: true
+        why: 'দুই জায়গায় একই কোড আর একই ধরনের config চলে।'
+      - text: 'if (APP_ENV === ''prod'') দিয়ে prod-এর জন্য আলাদা কোডপথ রাখা'
+        correct: false
+        why: 'prod-এর পথ staging-এ কখনো চলে না; drift বাড়ে।'
+      - text: 'দরকার হলে সার্ভারে ঢুকে .env.local হাতে বদলে দেওয়া'
+        correct: false
+        why: 'এ বদল কারো চোখে পড়ে না, আর ছয় মাস পরে কেউ জানে না কেন সার্ভারটা আলাদা।'
+      - text: 'staging-এ সবচেয়ে সস্তা ডেটাবেস ভার্সন নেওয়া'
+        correct: false
+        why: 'ভার্সন আলাদা হলে ক্যোয়ারি বা আচরণও আলাদা হতে পারে।'
+    ref: config-drift

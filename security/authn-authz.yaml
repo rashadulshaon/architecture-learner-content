@@ -1,0 +1,471 @@
+slides:
+  - slug: invoice-number-plus-one
+    title: 'URL-এর একটা সংখ্যা বদলালেই অন্যের ইনভয়েস'
+    kind: story
+    tldr: 'লগইন যাচাই করাই যথেষ্ট নয়; প্রতিটা জিনিস দেওয়ার আগে দেখতে হয় সেটা এই ব্যবহারকারীর কি না — নইলে IDOR।'
+    keywords: ['IDOR', 'BOLA', 'broken access control', 'object level authorization', 'অন্যের ডেটা', 'ইনভয়েস ফাঁস']
+    blocks:
+      - type: text
+        body: |
+          রহিমের বিলিং অ্যাপে লগইন ছাড়া কিছুই দেখা যায় না, তাই সে নিশ্চিন্ত। একদিন করিম নিজের ইনভয়েস খুলে দেখল ঠিকানাটা `/api/invoices/1042`। কৌতূহলে সে শেষে `1043` লিখল — আর অন্য কোম্পানির ইনভয়েস, ঠিকানা, টাকার অঙ্ক সব চলে এল। করিম কোনো পাসওয়ার্ড ভাঙেনি; অ্যাপটা শুধু জিজ্ঞেস করতে ভুলে গেছে, **ইনভয়েসটা কার**।
+      - type: code
+        lang: php
+        file: 'src/Controller/InvoiceController.php'
+        variant: bad
+        code: |
+          #[Route('/api/invoices/{id}', methods: ['GET'])]
+          #[IsGranted('IS_AUTHENTICATED_FULLY')]   // শুধু দেখছে: লগইন করা আছে?
+          public function show(Invoice $invoice): JsonResponse
+          {
+              // ইনভয়েসটা কার — সেটা কেউ দেখল না
+              return $this->json($invoice, context: ['groups' => 'invoice:read']);
+          }
+        marks:
+          - {line: 2, tip: 'এটা শুধু প্রমাণ করে লোকটা লগইন করেছে। ইনভয়েসটা তার কি না, তা এখানে দেখা হয়নি।'}
+          - {line: 3, tip: 'Symfony `{id}` দিয়ে যেকোনো ইনভয়েস তুলে আনে — 1043 হোক বা 9999, তার কাছে সবই সমান।'}
+      - type: visual
+        kind: sequence
+        caption: 'করিম শুধু id বদলাল — কোথাও কেউ মালিকানা জিজ্ঞেস করল না'
+        actors:
+          - {id: karim, label: 'করিম', icon: user, tip: 'বৈধ ব্যবহারকারী, নিজের পাসওয়ার্ড দিয়েই লগইন করা। তার নিজের ইনভয়েস 1042।'}
+          - {id: api, label: 'API', icon: api, tip: 'Symfony controller। শুধু দেখে request-এর সাথে বৈধ লগইন আছে কি না।'}
+          - {id: db, label: 'ডেটাবেস', icon: db, tip: 'সব কোম্পানির ইনভয়েস একই টেবিলে। যে id চাওয়া হয়, সেটাই ফেরত দেয়।'}
+        messages:
+          - {from: karim, to: api, label: 'GET /api/invoices/1043', tip: 'নিজের 1042-এর জায়গায় শুধু শেষ সংখ্যাটা এক বাড়িয়েছে।'}
+          - {at: api, note: 'লগইন আছে? হ্যাঁ — ব্যস', tone: warn, tip: 'একমাত্র যাচাই এটাই। "এই ইনভয়েস কি করিমের?" প্রশ্নটা করা হয়নি।'}
+          - {from: api, to: db, label: 'id = 1043 দাও'}
+          - {from: db, to: api, label: 'অন্য কোম্পানির ইনভয়েস', dashed: true}
+          - {from: api, to: karim, label: '200 OK — পুরো ইনভয়েস', dashed: true, tone: bad, tip: 'সার্ভারের চোখে এটা একটা সফল, স্বাভাবিক request — কোনো error log-ও পড়ে না।'}
+          - {at: karim, note: 'এরপর 1044, 1045, 1046…', tone: bad, tip: 'ছোট একটা script লিখলে কয়েক মিনিটে সব কোম্পানির সব ইনভয়েস নামিয়ে ফেলা যায়।'}
+    aside:
+      - type: story
+        title: 'তালিকার এক নম্বর ঝুঁকি'
+        body: |
+          OWASP-এর Top 10 ঝুঁকির তালিকায় এক নম্বরে আছে Broken Access Control, আর API ঝুঁকির তালিকায় এক নম্বরে BOLA — মানে ঠিক এই ভুলটাই। কারণ সহজ: এটা ধরতে কোনো হ্যাকিং টুল লাগে না, লাগে শুধু URL-এর একটা সংখ্যা বদলানোর কৌতূহল।
+      - type: terms
+        items:
+          - {term: 'IDOR', meaning: 'Insecure Direct Object Reference — id বদলে অন্যের জিনিস পেয়ে যাওয়া।'}
+          - {term: 'BOLA', meaning: 'Broken Object Level Authorization — API-র জগতে IDOR-এর আরেক নাম।'}
+    check:
+      q: 'করিম কোনো পাসওয়ার্ড না ভেঙেও অন্যের ইনভয়েস দেখল কীভাবে?'
+      a: 'অ্যাপ শুধু দেখেছিল সে লগইন করা কি না। ইনভয়েসটা তার নিজের কি না — এই প্রশ্ন কোথাও করা হয়নি, তাই id বদলালেই যেকোনো ইনভয়েস চলে এসেছে।'
+
+  - slug: two-questions
+    title: 'দুইটা আলাদা প্রশ্ন: তুমি কে? আর এটা কি তোমার?'
+    kind: concept
+    tldr: 'Authentication (AuthN) যাচাই করে তুমি কে; authorization (AuthZ) ঠিক করে তুমি এই জিনিসে এই কাজটা করতে পারো কি না।'
+    keywords: ['authentication', 'authorization', 'AuthN', 'AuthZ', '401 বনাম 403', 'পরিচয় যাচাই', 'অনুমতি']
+    blocks:
+      - type: metaphor
+        icon: box
+        title: 'কুরিয়ার অফিসের কাউন্টার'
+        body: |
+          পার্সেল তুলতে গেলে কাউন্টারে আগে NID দেখাতে হয় — এটা **authentication**: তুমি সত্যিই রহিম তো? এরপর কর্মী খাতা মিলিয়ে দেখে, যে পার্সেলটা চাইছ সেটা রহিমের নামে এসেছে কি না — এটা **authorization**। NID আসল হলেও করিমের পার্সেল রহিমকে দেওয়া যায় না। আর এই দ্বিতীয় যাচাই হয় প্রতিটা পার্সেলের জন্য আলাদা করে, দিনে একবার নয়।
+      - type: visual
+        kind: table
+        caption: 'দুই প্রশ্ন পাশাপাশি — কুরিয়ার অফিসে আর তোমার API-তে'
+        headers: ['', 'Authentication (AuthN)', 'Authorization (AuthZ)']
+        rows:
+          - cells: ['প্রশ্ন', 'তুমি কে?', 'এই জিনিসে এই কাজ করতে পারো?']
+            tip: 'প্রথমটার উত্তর একজন মানুষ (বা সার্ভিস)। দ্বিতীয়টার উত্তর হ্যাঁ বা না — আর সেটা নির্ভর করে কোন জিনিস আর কোন কাজ, তার ওপর।'
+          - cells: ['কুরিয়ার অফিসে', 'কাউন্টারে NID দেখানো', 'পার্সেলটা তোমার নামে কি না মেলানো']
+            tip: 'NID যাচাই একবারই হয়। কিন্তু দশটা পার্সেল চাইলে দশবারই নাম মেলাতে হয়।'
+          - cells: ['কখন হয়', 'request-এর শুরুতে, একবার', 'প্রতিটা কাজে, প্রতিটা জিনিসে']
+            tip: 'পরিচয় একবার বের করে পুরো request-এ ব্যবহার হয়। অনুমতি যাচাই হয় যতবার একটা জিনিস ছোঁয়া হয়, ততবার।'
+          - cells: ['কী দিয়ে', 'পাসওয়ার্ড, session cookie, token', 'role, মালিকানা, ব্যবসার নিয়ম']
+            tip: 'পরিচয়ের প্রমাণ আসে ব্যবহারকারীর কাছ থেকে। অনুমতির নিয়ম থাকে সার্ভারের কোড আর ডেটায় — ব্যবহারকারী সেটা পাঠায় না।'
+          - cells: ['ব্যর্থ হলে', '401 Unauthorized', '403 Forbidden']
+            tip: '401 মানে "আগে পরিচয় দাও"। 403 মানে "চিনেছি, কিন্তু এটা তোমার জন্য নয়" — আবার লগইন করেও লাভ হবে না।'
+      - type: quote
+        body: 'Authentication বলে তুমি কে। Authorization বলে তুমি কী করতে পারো। একটা পাস করলে অন্যটা পাস হয়ে যায় না।'
+    aside:
+      - type: remember
+        body: 'AuthN-এর N মানে নাম — তুমি কে। AuthZ-এর Z মানে জোন — কোন এলাকায় ঢুকতে পারো।'
+      - type: tips
+        items:
+          - 'অন্যের জিনিস চাইলে অনেক API 403-র বদলে 404 দেয়, যাতে জিনিসটা আছে কি না সেটাও ফাঁস না হয়। যেটাই বাছো, সব জায়গায় একই রাখো।'
+          - 'Authentication ছাড়া authorization অর্থহীন: কে চাইছে তা না জানলে সে কী পারে, তা ঠিক করা যায় না।'
+      - type: refs
+        items:
+          - {to: 'api/error-design', label: 'কোন error-এ কোন status code'}
+    check:
+      q: 'লগইন করা একজন ব্যবহারকারী অন্যের অর্ডার বাতিল করতে চাইল। সার্ভার কোন status code দেবে, আর 401 কেন নয়?'
+      a: '403 Forbidden (বা অস্তিত্ব লুকাতে 404)। 401 মানে "পরিচয় দাও"; এখানে পরিচয় জানা আছে, শুধু এই জিনিসে এই কাজের অনুমতি নেই।'
+
+  - slug: where-in-symfony
+    title: 'Symfony Security-তে কে কোথায় থাকে'
+    kind: howto
+    tldr: 'Firewall-এর authenticator করে AuthN; access_control, #[IsGranted] আর voter করে AuthZ — মোটা দাগ থেকে সূক্ষ্ম, তিন স্তরে।'
+    keywords: ['firewall', 'authenticator', 'access_control', 'IsGranted', 'voter', 'security.yaml', 'Symfony Security', 'deny by default']
+    blocks:
+      - type: text
+        body: |
+          Symfony-তে দুই প্রশ্নের জন্য আলাদা যন্ত্র আছে। **Firewall**-এর authenticator request-এর session cookie বা token দেখে ঠিক করে ব্যবহারকারী কে। এরপর অনুমতি যাচাই হয় তিন স্তরে: `access_control` পুরো একটা URL-এলাকা আটকায়, `#[IsGranted]` একটা action আটকায়, আর **voter** একটা নির্দিষ্ট জিনিসের মালিকানা দেখে।
+      - type: visual
+        kind: flow
+        caption: 'একটা request কোন কোন পাহারা পেরিয়ে controller-এ পৌঁছায়'
+        nodes:
+          - {id: req, label: 'Request', sub: 'cookie বা token সহ', icon: browser, col: 0, row: 0, tip: 'ব্রাউজার বা মোবাইল অ্যাপ থেকে আসা request। পরিচয়ের প্রমাণ থাকে cookie বা Authorization header-এ।'}
+          - {id: fw, label: 'Firewall', sub: 'authenticator — AuthN', icon: shield, col: 1, row: 0, tip: 'কুরিয়ার কাউন্টারের NID যাচাই। প্রমাণ দেখে ব্যবহারকারী বের করে; এরপর পুরো request-এ সেই পরিচয় ব্যবহার হয়।'}
+          - {id: ac, label: 'access_control', sub: 'URL ধরে — AuthZ', icon: filter, col: 2, row: 0, tip: 'মোটা দাগের নিয়ম: এই পথে ঢুকতে কোন role লাগবে। কোনো নির্দিষ্ট ইনভয়েস বা অর্ডার সে চেনে না।'}
+          - {id: ctrl, label: '#[IsGranted]', sub: 'action ধরে — AuthZ', icon: code, col: 3, row: 0, tip: 'একটা controller action-এর ওপর বসানো পাহারা। role দেখতে পারে, আবার voter-কে প্রশ্নও করতে পারে।'}
+          - {id: voter, label: 'Voter', sub: 'object ধরে — AuthZ', icon: check, tone: accent, col: 4, row: 0, tip: 'সবচেয়ে সূক্ষ্ম স্তর: "এই ইনভয়েসটা কি এই ব্যবহারকারীর?" IDOR ঠেকায় শুধু এই স্তর।'}
+          - {id: e401, label: '401', sub: 'আগে লগইন করো', icon: lock, tone: bad, col: 1, row: 1.5, tip: 'পরিচয় ছাড়া সুরক্ষিত জায়গায় এলে, বা cookie/token অচল হলে এই উত্তর। ব্যবহারকারীকে আবার লগইন করতে হবে।'}
+          - {id: e403, label: '403', sub: 'তোমার অনুমতি নেই', icon: cross, tone: bad, col: 3, row: 1.5, tip: 'পরিচয় জানা, কিন্তু role বা মালিকানা মেলেনি। আবার লগইন করেও এই উত্তর বদলাবে না।'}
+        edges:
+          - {from: req, to: fw, label: 'request ঢোকে, সাথে session cookie বা token'}
+          - {from: fw, to: e401, label: 'প্রমাণ নেই বা অচল হলে উত্তর 401', tone: bad}
+          - {from: fw, to: ac, label: 'পরিচয় মিলল: ব্যবহারকারী এখন রহিম'}
+          - {from: ac, to: ctrl, label: 'URL-এর নিয়ম পাস: /api-তে লগইন থাকলেই চলে'}
+          - {from: ctrl, to: voter, label: 'action জিজ্ঞেস করে: এই ইনভয়েস কি রহিম দেখতে পারে?'}
+          - {from: voter, to: e403, label: 'ইনভয়েসটা রহিমের না হলে উত্তর 403', tone: bad}
+          - {from: voter, to: ctrl, label: 'মালিক হলে তবেই action চলে, উত্তর 200', tone: good, dashed: true}
+      - type: code
+        lang: yaml
+        file: 'config/packages/security.yaml'
+        code: |
+          security:
+              firewalls:
+                  main:
+                      lazy: true
+                      provider: app_user_provider
+                      json_login:                  # AuthN: ইমেইল-পাসওয়ার্ড মিলিয়ে দেখে
+                          check_path: api_login
+                      logout:
+                          path: api_logout
+
+              access_control:                      # AuthZ: মোটা দাগে, URL ধরে
+                  - { path: ^/api/login, roles: PUBLIC_ACCESS }
+                  - { path: ^/api/admin, roles: ROLE_ADMIN }
+                  - { path: ^/api,       roles: IS_AUTHENTICATED_FULLY }
+        marks:
+          - {line: 6, tip: 'এটা একটা authenticator। লগইন সফল হলে Symfony পরিচয়টা session-এ রাখে, পরের request-গুলোতে cookie দেখেই চিনে নেয়।'}
+          - {line: 12, tip: 'ওপর থেকে প্রথম যে নিয়মটা মেলে শুধু সেটাই খাটে। তাই নির্দিষ্ট পথ ওপরে, সাধারণ পথ নিচে।'}
+          - {line: 14, tip: 'ডিফল্ট হলো বন্ধ: /api-র নিচে নতুন যে route-ই বানাও, লগইন ছাড়া ঢোকা যাবে না।'}
+      - type: quote
+        body: 'ডিফল্ট উত্তর হবে "না"। অনুমতি দিতে হবে আলাদা করে, জেনেশুনে।'
+    aside:
+      - type: commands
+        title: 'কী বসানো আছে দেখে নাও'
+        items:
+          - {cmd: 'php bin/console debug:firewall main', desc: 'main firewall-এ কোন কোন authenticator চালু'}
+          - {cmd: 'php bin/console debug:config security access_control', desc: 'URL ধরে নিয়মগুলো, যে ক্রমে খাটে'}
+          - {cmd: 'php bin/console debug:container --tag=security.voter', desc: 'অ্যাপে নিবন্ধিত সব voter'}
+      - type: terms
+        items:
+          - {term: 'Firewall', meaning: 'কোন URL-এ কোন পদ্ধতিতে পরিচয় যাচাই হবে, তার কনফিগ।'}
+          - {term: 'Authenticator', meaning: 'request থেকে প্রমাণ (পাসওয়ার্ড, cookie, token) নিয়ে ব্যবহারকারী বের করে।'}
+          - {term: 'Voter', meaning: 'একটা প্রশ্নের হ্যাঁ/না উত্তর দেয়: এই ব্যবহারকারী এই জিনিসে এই কাজ করতে পারে?'}
+      - type: refs
+        items:
+          - {to: 'security/sessions-tokens', label: 'পরিচয়টা request-এ আসে কীভাবে: session না token'}
+    check:
+      q: '`access_control`-এ `^/api` পথে লগইন বাধ্যতামূলক করা আছে। তবু IDOR ঠেকাতে voter লাগে কেন?'
+      a: '`access_control` শুধু URL আর role দেখে; সে জানে না `/api/invoices/1043` কার ইনভয়েস। নির্দিষ্ট জিনিসের মালিকানা দেখতে পারে শুধু voter, বা মালিক ধরে করা query।'
+
+  - slug: object-level-check
+    title: 'প্রতিটা জিনিসে মালিকানা যাচাই: voter'
+    kind: howto
+    tldr: 'মালিকানার নিয়ম একটা voter-এ লেখো, action-এ #[IsGranted] দিয়ে ডাকো; তালিকার বেলায় query-তেই মালিক ধরে ছাঁকো।'
+    keywords: ['voter', 'IsGranted subject', 'object level check', 'ownership check', 'CurrentUser', 'মালিকানা যাচাই', 'IDOR সমাধান']
+    blocks:
+      - type: text
+        body: |
+          কুরিয়ার কর্মীর "পার্সেলটা কি এর নামে?" প্রশ্নটা এক জায়গায় লেখো — একটা **voter**-এ। তারপর যে action-ই ইনভয়েস ছোঁয়, সে `#[IsGranted]` দিয়ে সেই একই নিয়ম ডাকে। নিয়ম বদলালে বদলাবে এক জায়গায়, চল্লিশটা controller-এ নয়।
+      - type: code
+        lang: php
+        file: 'src/Security/Voter/InvoiceVoter.php'
+        variant: good
+        code: |
+          final class InvoiceVoter extends Voter
+          {
+              public const VIEW = 'INVOICE_VIEW';
+
+              protected function supports(string $attribute, mixed $subject): bool
+              {
+                  return self::VIEW === $attribute && $subject instanceof Invoice;
+              }
+
+              protected function voteOnAttribute(
+                  string $attribute,
+                  mixed $subject,
+                  TokenInterface $token,
+                  ?Vote $vote = null,
+              ): bool {
+                  $user = $token->getUser();
+                  if (!$user instanceof User) {
+                      return false;                 // পরিচয়ই নেই
+                  }
+
+                  // পার্সেলটা কি এই লোকের নামে?
+                  return $subject->getCompany() === $user->getCompany();
+              }
+          }
+        marks:
+          - {line: 7, tip: 'এই voter শুধু INVOICE_VIEW প্রশ্নে আর Invoice object-এ সাড়া দেয়; বাকি সব প্রশ্নে চুপ থাকে।'}
+          - {line: 18, tip: 'লগইন না থাকলে সোজা "না"। voter-এর ডিফল্ট উত্তর সবসময় না হওয়া উচিত।'}
+          - {line: 22, tip: 'আসল নিয়ম এই এক লাইন: ইনভয়েসের কোম্পানি আর ব্যবহারকারীর কোম্পানি একই হতে হবে।'}
+      - type: code
+        lang: php
+        file: 'src/Controller/InvoiceController.php'
+        variant: good
+        code: |
+          #[Route('/api/invoices/{id}', methods: ['GET'])]
+          #[IsGranted(InvoiceVoter::VIEW, subject: 'invoice')]
+          public function show(Invoice $invoice): JsonResponse
+          {
+              return $this->json($invoice, context: ['groups' => 'invoice:read']);
+          }
+
+          #[Route('/api/invoices', methods: ['GET'])]
+          public function index(#[CurrentUser] User $user, InvoiceRepository $invoices): JsonResponse
+          {
+              // তালিকায় voter নয় — query-তেই মালিক ধরে ছাঁকো
+              return $this->json(
+                  $invoices->findBy(['company' => $user->getCompany()], ['id' => 'DESC'], 50),
+                  context: ['groups' => 'invoice:read'],
+              );
+          }
+        marks:
+          - {line: 2, tip: 'subject-এ argument-এর নাম দিলে নিচের $invoice-ই voter-এর কাছে যায়। অনুমতি না মিললে action চলার আগেই 403।'}
+          - {line: 9, tip: '#[CurrentUser] দেয় যাচাই হওয়া লগইন-ব্যবহারকারী — session বা token থেকে, request-এর কোনো প্যারামিটার থেকে নয়।'}
+          - {line: 13, tip: 'কোম্পানি দিয়ে ছাঁকা হচ্ছে ডেটাবেসেই, তাই অন্য কোম্পানির row কখনো PHP পর্যন্ত আসেই না।'}
+      - type: quote
+        body: 'id যেখান থেকেই আসুক — URL, body বা query string — কাজে লাগানোর আগে মালিকানা মেলাও।'
+    aside:
+      - type: tips
+        items:
+          - 'object হাতে তৈরি হলে action-এর ভেতরে `$this->denyAccessUnlessGranted(InvoiceVoter::VIEW, $invoice)` ডাকো — কাজ একই।'
+          - 'লেখার কাজে আলাদা attribute রাখো: INVOICE_EDIT, INVOICE_DELETE। দেখতে পারা মানেই বদলাতে পারা নয়।'
+          - 'Voter-এর ছোট unit test লেখো: মালিক → হ্যাঁ, অন্য কোম্পানি → না, লগইন ছাড়া → না।'
+      - type: refs
+        items:
+          - {to: 'security/authorization-models', label: 'Role, attribute আর সম্পর্ক দিয়ে নিয়ম সাজানো'}
+          - {to: 'security/multi-tenancy', label: 'পুরো অ্যাপে কোম্পানি ধরে ছাঁকা'}
+    check:
+      q: 'একটা ইনভয়েস দেখানোর action-এ voter ব্যবহার হলো, কিন্তু তালিকার action-এ হলো না কেন?'
+      a: 'হাজারটা row এনে একটা একটা করে voter চালানো ধীর, আর pagination-ও ভেঙে যায়। তাই query-তেই লগইন করা ব্যবহারকারীর কোম্পানি দিয়ে ছেঁকে শুধু তার row আনা হয়।'
+
+  - slug: classic-authz-mistakes
+    title: 'চারটা চেনা ফাঁক, যেখান দিয়ে অন্যের ডেটা বেরোয়'
+    kind: pitfall
+    tldr: 'request থেকে userId নেওয়া, UI-তে বাটন লুকানো, UUID-কে তালা ভাবা আর শুধু GET-এ যাচাই — চারটাই ভাঙা authorization।'
+    keywords: ['broken access control', 'mass assignment', 'function level authorization', 'UUID', 'hidden button', 'চেনা ভুল', 'userId parameter']
+    blocks:
+      - type: text
+        body: |
+          IDOR সবসময় URL-এর সংখ্যা হয়ে আসে না। নিচের চারটা ভুল দেখতে আলাদা, কিন্তু রোগ একই: সার্ভার নিজে যাচাই না করে client-এর কথায় বিশ্বাস করেছে।
+      - type: code
+        lang: php
+        file: 'src/Controller/OrderController.php'
+        variant: bad
+        code: |
+          #[Route('/api/orders', methods: ['GET'])]
+          public function index(Request $request, OrderRepository $orders): JsonResponse
+          {
+              // কার অর্ডার দেখাবে, সেটা client নিজেই বলে দিচ্ছে
+              $userId = $request->query->getInt('userId');
+
+              return $this->json($orders->findBy(['user' => $userId]));
+          }
+        marks:
+          - {line: 5, tip: '?userId=7 বদলে ?userId=8 লিখলেই অন্যের অর্ডার। পরিচয় কখনো request-এর প্যারামিটার থেকে নেবে না।'}
+      - type: code
+        lang: php
+        file: 'src/Controller/OrderController.php'
+        variant: good
+        code: |
+          #[Route('/api/orders', methods: ['GET'])]
+          public function index(#[CurrentUser] User $user, OrderRepository $orders): JsonResponse
+          {
+              // পরিচয় আসে যাচাই হওয়া session বা token থেকে
+              return $this->json($orders->findBy(['user' => $user]));
+          }
+        marks:
+          - {line: 2, tip: 'client আর বলতে পারে না "আমি ৮ নম্বর ব্যবহারকারী"। সার্ভার নিজেই জানে কে লগইন করা।'}
+      - type: visual
+        kind: table
+        caption: 'চার ফাঁক, কেন ভাঙে, আর ঠিক উপায়'
+        headers: ['ভুল', 'কেন ভাঙে', 'ঠিক উপায়']
+        rows:
+          - cells: ['পরিচয় request থেকে নেওয়া', 'client যা খুশি পাঠাতে পারে', 'session বা token-এর user ব্যবহার']
+            tip: 'userId, companyId, role — এগুলো body, query বা header থেকে নিলে client নিজেই নিজের অনুমতি ঠিক করে ফেলে।'
+          - cells: ['বাটন শুধু UI-তে লুকানো', 'API সরাসরি ডাকা যায়', 'সার্ভারে প্রতিটা action-এ যাচাই']
+            tip: 'Vue-তে v-if দিয়ে "মুছুন" বাটন লুকালে শুধু চোখের আড়াল হয়। curl বা DevTools দিয়ে endpoint ডাকলে সার্ভারই শেষ ভরসা।'
+          - cells: ['UUID হলেই নিরাপদ ভাবা', 'id ফাঁস হয়: লিংক, log, ইমেইল', 'UUID রাখো, তবু মালিকানা মেলাও']
+            tip: 'UUID অনুমান করা কঠিন, কিন্তু গোপন নয়। id জানা মানে অনুমতি থাকা নয়।'
+          - cells: ['শুধু GET-এ যাচাই', 'PATCH আর DELETE খোলা থাকে', 'প্রতিটা method-এ আলাদা যাচাই']
+            tip: 'দেখার action-এ voter বসিয়ে বদলানো বা মোছার action ভুলে যাওয়া খুব সাধারণ। আক্রমণকারী সব method-ই চেষ্টা করে।'
+      - type: quote
+        body: 'Client যা পাঠায় তা অনুরোধ, প্রমাণ নয়। কে চাইছে আর সে কী পারে — সার্ভার নিজে বের করবে।'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Admin মেনু লুকানো, অথচ `/api/admin/*` route-এ role যাচাই নেই — এর নাম broken function-level authorization।'
+          - 'প্রোফাইল আপডেটের body-তে `roles` বা `isAdmin` ফিল্ড মেনে নেওয়া (mass assignment)। DTO-তে শুধু অনুমোদিত ফিল্ড রাখো।'
+          - 'ফাইল ডাউনলোড, export আর রিপোর্ট endpoint-এ যাচাই ভুলে যাওয়া — এগুলোও ডেটা দেয়।'
+      - type: remember
+        body: 'প্রতিটা endpoint-এ তিন প্রশ্ন: কে চাইছে? কোন জিনিস? কোন কাজ?'
+      - type: refs
+        items:
+          - {to: 'api/thin-clients', label: 'সিদ্ধান্ত সার্ভারে, client শুধু দেখায়'}
+          - {to: 'security/input-validation', label: 'ইনপুটকে কখনো বিশ্বাস নয়'}
+    check:
+      q: 'ইনভয়েসের id এখন UUID, অনুমান করা প্রায় অসম্ভব। তবু মালিকানা যাচাই বাদ দেওয়া যাবে না কেন?'
+      a: 'UUID অনুমান করা কঠিন, কিন্তু গোপন নয় — লিংক, ইমেইল, log বা screenshot থেকে ফাঁস হয়। যাচাই না থাকলে যে id পাবে, সে-ই ডেটা পাবে।'
+
+flashcards:
+  - q: 'Authentication আর authorization-এর পার্থক্য কী?'
+    a: 'Authentication যাচাই করে তুমি কে। Authorization ঠিক করে তুমি একটা নির্দিষ্ট জিনিসে একটা নির্দিষ্ট কাজ করতে পারো কি না।'
+    more: |
+      কুরিয়ার অফিসে NID দেখানো হলো authentication; পার্সেলটা তোমার নামে এসেছে কি না মেলানো হলো authorization। পরিচয় যাচাই হয় request-এর শুরুতে একবার, কিন্তু অনুমতি যাচাই হয় প্রতিটা জিনিসে আলাদা করে। একটা পাস করলে অন্যটা পাস হয়ে যায় না।
+    ref: two-questions
+  - q: 'IDOR বলতে কী বোঝায়?'
+    a: 'URL বা body-র id বদলে অন্যের ডেটা পেয়ে যাওয়া — কারণ সার্ভার দেখেনি জিনিসটা এই ব্যবহারকারীর কি না।'
+    more: |
+      পুরো নাম Insecure Direct Object Reference; API-র জগতে একে BOLA-ও বলে। `/api/invoices/1042` থেকে `1043` করলেই অন্যের ইনভয়েস এলে সেটাই IDOR। এটা ধরতে কোনো টুল লাগে না, আর সার্ভারের log-এ সব request স্বাভাবিক দেখায় — তাই অনেকদিন চোখে পড়ে না।
+    ref: invoice-number-plus-one
+  - q: '401 আর 403 — কখন কোনটা?'
+    a: '401: পরিচয় নেই বা প্রমাণ অচল — লগইন করো। 403: পরিচয় জানা, কিন্তু এই কাজের অনুমতি নেই।'
+    more: |
+      401 পেলে client-এর কাজ হলো লগইন পাতায় পাঠানো বা token নবায়ন করা। 403 পেলে আবার লগইন করে লাভ নেই — অনুমতিটাই নেই। অন্যের জিনিসের অস্তিত্ব লুকাতে অনেক API 403-র জায়গায় 404 দেয়; সেটাও গ্রহণযোগ্য, যদি সব জায়গায় একই নিয়ম থাকে।
+    ref: two-questions
+  - q: 'Symfony-তে AuthN আর AuthZ কোথায় থাকে?'
+    a: 'AuthN: firewall-এর authenticator। AuthZ: `access_control` (URL ধরে), `#[IsGranted]` (action ধরে) আর voter (object ধরে)।'
+    more: |
+      Authenticator (যেমন `json_login`, `form_login`, `access_token`) request-এর cookie বা token থেকে ব্যবহারকারী বের করে। এরপর অনুমতি যাচাই হয় মোটা দাগ থেকে সূক্ষ্ম — তিন স্তরে। প্রথম দুই স্তর শুধু role বোঝে; নির্দিষ্ট একটা object-এর মালিকানা দেখতে পারে শুধু voter।
+    ref: where-in-symfony
+  - q: 'Symfony voter কী কাজ করে?'
+    a: 'একটা প্রশ্নের হ্যাঁ/না উত্তর দেয়: এই ব্যবহারকারী এই object-এ এই কাজ করতে পারে কি না। নিয়মটা এক জায়গায় থাকে।'
+    more: |
+      Voter-এ দুইটা method: `supports()` ঠিক করে প্রশ্নটা তার এখতিয়ারে কি না, আর `voteOnAttribute()` আসল নিয়ম চালায়। Controller-এ `#[IsGranted('INVOICE_VIEW', subject: 'invoice')]` লিখলেই Symfony voter-কে ডাকে। বিস্তারিত: [[security/authorization-models|authorization model]]।
+    ref: object-level-check
+  - q: 'তালিকার endpoint-এ অন্যের ডেটা ঠেকানোর সঠিক উপায় কী?'
+    a: 'Query-তেই লগইন করা ব্যবহারকারী (বা তার কোম্পানি) দিয়ে ছাঁকা — সব এনে পরে বাছা নয়।'
+    more: |
+      সব row এনে loop-এ voter চালালে query ধীর হয়, pagination-এর হিসাব ভাঙে, আর একটা শর্ত ভুললেই ডেটা ফাঁস। `findBy(['company' => $user->getCompany()])`-এর মতো query করলে অন্যের row ডেটাবেস থেকে বেরই হয় না।
+    ref: object-level-check
+  - q: 'Vue-তে বাটন লুকানো কি authorization?'
+    a: 'না, ওটা শুধু ব্যবহারের সুবিধা। API সরাসরি ডাকা যায়, তাই আসল যাচাই হতে হবে সার্ভারে, প্রতিটা action-এ।'
+    more: |
+      ব্রাউজারে যা চলে তার পুরো নিয়ন্ত্রণ ব্যবহারকারীর হাতে: DevTools খুলে লুকানো বাটন দেখানো যায়, curl দিয়ে endpoint ডাকা যায়। তাই UI-তে লুকানো মানে শুধু চোখের আড়াল। সার্ভার প্রতিটা request-কে এমনভাবে দেখবে যেন সেটা অচেনা কারও হাতে লেখা।
+    ref: classic-authz-mistakes
+  - q: 'id হিসেবে UUID ব্যবহার করলে কি IDOR মিটে যায়?'
+    a: 'না। UUID অনুমান কঠিন করে, কিন্তু id ফাঁস হলেই ডেটা খোলা। মালিকানা যাচাই তবুও লাগবে।'
+    more: |
+      UUID গোপন তথ্য নয় — শেয়ার করা লিংক, ইমেইল, log, ব্রাউজারের history আর screenshot-এ সে ঘুরে বেড়ায়। নিরাপত্তার ভিত্তি হবে "এই ব্যবহারকারীর অনুমতি আছে কি না", "id-টা সে জানে কি না" নয়। UUID বাড়তি একটা বাধা মাত্র, তালা নয়।
+    ref: classic-authz-mistakes
+  - q: 'Deny by default মানে কী?'
+    a: 'কোনো নিয়ম না মিললে উত্তর "না"। নতুন route নিজে থেকেই বন্ধ থাকে; খুলতে হলে জেনেশুনে খুলতে হয়।'
+    more: |
+      `access_control`-এর শেষে `^/api` → `IS_AUTHENTICATED_FULLY` রাখলে নতুন কোনো endpoint ভুল করে খোলা থাকে না। উল্টো পথে — সব খোলা, বেছে বেছে বন্ধ — একটা route ভুলে গেলেই ফাঁক তৈরি হয়। Voter-এও একই নীতি: সন্দেহ হলে `false`।
+    ref: where-in-symfony
+
+quiz:
+  - q: 'নিচের action-এ নিরাপত্তার সমস্যাটা কী?'
+    lang: php
+    code: |
+      #[Route('/api/documents/{id}/download', methods: ['GET'])]
+      #[IsGranted('ROLE_USER')]
+      public function download(Document $document): BinaryFileResponse
+      {
+          return $this->file($document->getPath());
+      }
+    hint: 'ROLE_USER কার কার আছে? আর {id} বদলালে কী আসবে?'
+    options:
+      - text: 'লগইন করা যে কেউ id বদলে অন্যের ফাইল নামাতে পারে — মালিকানা যাচাই নেই'
+        correct: true
+        why: '`ROLE_USER` শুধু বলে লোকটা লগইন করা। ডকুমেন্টটা তার কি না, তা দেখতে voter বা মালিক ধরে query লাগত।'
+      - text: '`ROLE_USER`-এর জায়গায় `ROLE_ADMIN` দিলেই সমস্যা মিটত'
+        correct: false
+        why: 'তাতে সাধারণ ব্যবহারকারী নিজের ফাইলও পেত না। সমস্যা role-এর স্তরে নয়, object-এর মালিকানায়।'
+      - text: 'GET-এর বদলে POST করলে নিরাপদ হতো'
+        correct: false
+        why: 'HTTP method বদলালে মালিকানা যাচাই হয়ে যায় না; POST-এও id বদলানো সমান সহজ।'
+      - text: 'সমস্যা নেই — `#[IsGranted]` তো বসানো আছে'
+        correct: false
+        why: '`#[IsGranted]` আছে, কিন্তু সে শুধু role দেখছে। কোন ডকুমেন্ট চাওয়া হচ্ছে, সেটা সে জানেই না।'
+    ref: invoice-number-plus-one
+  - q: 'সুমির session-এর মেয়াদ শেষ, সে `/api/orders` ডাকল। রাজু লগইন করা অবস্থায় অন্যের অর্ডার মুছতে চাইল। কে কোন status code পাবে?'
+    hint: 'কার পরিচয় সার্ভার জানে না, আর কার পরিচয় জানে কিন্তু অনুমতি নেই?'
+    options:
+      - text: 'সুমি 403, রাজু 401'
+        correct: false
+        why: 'উল্টো হয়ে গেছে। 401 পরিচয়ের অভাবে, 403 অনুমতির অভাবে।'
+      - text: 'সুমি 401, রাজু 403'
+        correct: true
+        why: 'সুমির পরিচয়ের প্রমাণ অচল — তাকে লগইন করতে হবে (401)। রাজুকে সার্ভার চেনে, কিন্তু কাজটার অনুমতি তার নেই (403)।'
+      - text: 'দুজনই 401'
+        correct: false
+        why: 'রাজু 401 পেলে তার অ্যাপ তাকে আবার লগইন করাবে — অথচ লগইন করে কোনো লাভ নেই, অনুমতিটাই নেই।'
+      - text: 'দুজনই 400 Bad Request'
+        correct: false
+        why: '400 মানে request-এর গঠন ভুল। এখানে request ঠিকই আছে; সমস্যা পরিচয় আর অনুমতিতে।'
+    ref: two-questions
+  - q: 'নিচের কোনগুলো authorization-এর কাজ (authentication-এর নয়)?'
+    hint: 'কোনগুলো "তুমি কে" নয়, বরং "তুমি কী পারো" প্রশ্নের উত্তর দেয়?'
+    options:
+      - text: 'পাসওয়ার্ড মিলিয়ে দেখা'
+        correct: false
+        why: 'পাসওয়ার্ড মেলানো পরিচয়ের প্রমাণ যাচাই — এটা authentication।'
+      - text: 'অর্ডারটা এই ব্যবহারকারীর কি না দেখা'
+        correct: true
+        why: 'নির্দিষ্ট একটা জিনিসে অনুমতি আছে কি না ঠিক করাই object-level authorization।'
+      - text: '`/api/admin` পথে শুধু ROLE_ADMIN-কে ঢুকতে দেওয়া'
+        correct: true
+        why: 'পরিচয় আগেই জানা; এখানে ঠিক হচ্ছে সে এই এলাকায় ঢুকতে পারে কি না — এটা authorization।'
+      - text: 'token-এর signature যাচাই করা'
+        correct: false
+        why: 'signature যাচাই বলে token-টা আসল কি না, মানে পরিচয়ের প্রমাণ ঠিক কি না — এটা authentication।'
+      - text: 'ইনভয়েস মুছতে পারবে কি না ঠিক করা'
+        correct: true
+        why: 'একটা কাজের অনুমতি আছে কি না — হ্যাঁ/না — এটাই authorization-এর সিদ্ধান্ত।'
+    ref: two-questions
+  - q: 'Symfony-তে কোন অংশটা request থেকে ব্যবহারকারীর পরিচয় বের করে?'
+    hint: 'কুরিয়ার অফিসে NID কে দেখে — কাউন্টার, নাকি পার্সেলের খাতা?'
+    options:
+      - text: 'Voter'
+        correct: false
+        why: 'Voter পরিচয় বের করে না; আগে থেকে জানা পরিচয় নিয়ে অনুমতির সিদ্ধান্ত দেয়।'
+      - text: '`access_control`'
+        correct: false
+        why: '`access_control` URL আর role মিলিয়ে ঢুকতে দেয় বা আটকায় — এটা authorization-এর স্তর।'
+      - text: 'Firewall-এর authenticator'
+        correct: true
+        why: 'Authenticator-ই cookie, পাসওয়ার্ড বা token দেখে ব্যবহারকারী খুঁজে বের করে — এটাই authentication।'
+      - text: '`#[IsGranted]`'
+        correct: false
+        why: '`#[IsGranted]` একটা action-এর ওপর অনুমতির পাহারা; পরিচয় তার আগেই ঠিক হয়ে যায়।'
+    ref: where-in-symfony
+  - q: '`/api/invoices` তালিকায় ১০ হাজার ইনভয়েস, অনেক কোম্পানির। অন্য কোম্পানির ইনভয়েস যেন না আসে — সবচেয়ে ভালো উপায় কোনটা?'
+    hint: 'অন্যের row কি আদৌ ডেটাবেস থেকে বের হওয়া দরকার?'
+    options:
+      - text: 'সব ইনভয়েস এনে loop-এ প্রতিটায় voter চালানো'
+        correct: false
+        why: 'কাজ করে, কিন্তু ধীর, pagination-এর হিসাব ভাঙে, আর অন্যের ডেটা অকারণে মেমোরিতে আসে।'
+      - text: 'Query-তেই লগইন করা ব্যবহারকারীর কোম্পানি দিয়ে ছাঁকা'
+        correct: true
+        why: 'অন্যের row ডেটাবেস থেকে বেরই হয় না; দ্রুত, pagination ঠিক থাকে, ভুলের জায়গাও কম।'
+      - text: 'সব পাঠিয়ে Vue-তে filter করে শুধু নিজেরগুলো দেখানো'
+        correct: false
+        why: 'ডেটা ততক্ষণে ব্রাউজারে পৌঁছে গেছে; Network ট্যাব খুললেই সব দেখা যায়।'
+      - text: 'client-কে `?companyId=` পাঠাতে বলা'
+        correct: false
+        why: 'client তখন যেকোনো companyId পাঠাতে পারে — এটাই তো IDOR।'
+    ref: object-level-check
+  - q: 'একটা টিম IDOR ঠেকাতে নিচের কাজগুলো করল। কোনগুলো সত্যিই সুরক্ষা দেয়?'
+    hint: 'কোনগুলো সার্ভারে যাচাই করে, আর কোনগুলো শুধু কাজটা একটু কঠিন বা চোখের আড়াল করে?'
+    options:
+      - text: 'প্রতিটা object-এ voter দিয়ে মালিকানা যাচাই'
+        correct: true
+        why: 'এটাই মূল সমাধান: id যা-ই হোক, জিনিসটা ব্যবহারকারীর না হলে 403।'
+      - text: 'auto-increment id বদলে UUID করা'
+        correct: false
+        why: 'অনুমান কঠিন হয়, কিন্তু id ফাঁস হলেই ডেটা খোলা। এটা বাড়তি বাধা, সমাধান নয়।'
+      - text: 'পরিচয় `#[CurrentUser]` থেকে নেওয়া, body-র `userId` থেকে নয়'
+        correct: true
+        why: 'পরিচয় তখন আসে যাচাই হওয়া session বা token থেকে; client নিজেকে অন্য কেউ বলে দাবি করতে পারে না।'
+      - text: 'Vue-তে অন্যের ডেটার লিংক আর বাটন লুকানো'
+        correct: false
+        why: 'UI লুকালে endpoint বন্ধ হয় না; সরাসরি API ডাকলে সার্ভারই একমাত্র পাহারা।'
+    ref: classic-authz-mistakes

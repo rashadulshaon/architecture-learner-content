@@ -1,0 +1,416 @@
+slides:
+  - slug: photos-in-the-wrong-place
+    title: 'ছবি রাখলাম ডেটাবেসে আর সার্ভারের ডিস্কে'
+    kind: story
+    tldr: 'ছবি ডেটাবেসে রাখলে সেটা ফুলে যায়; সার্ভারের ডিস্কে রাখলে দ্বিতীয় সার্ভারে ছবি মেলে না আর deploy-এ হারায়।'
+    keywords: ['blob', 'file upload', 'local disk', 'BLOB column', 'object storage', 'ফাইল আপলোড']
+    blocks:
+      - type: metaphor
+        icon: box
+        title: 'দোকানের পেছনের কোণে গুদাম'
+        body: |
+          মুদি দোকানদার প্রতিটা বস্তা খাতার পাতার ভেতরে গুঁজে রাখলে খাতা ফুলে ফেঁপে যায়। আবার সব বস্তা দোকানের এক কোণেই রাখলে নতুন শাখায় সেই মাল নেই, আর দোকান বদলালে মালও হারায়। দরকার আলাদা গুদাম; খাতায় লেখা থাকে শুধু "বস্তা নম্বর ১২, গুদামের তাক ৩"।
+      - type: text
+        body: |
+          রহিমের অ্যাপে ব্যবহারকারীর প্রোফাইল ছবি দুইভাবে রাখা যেত, আর দুটোই পরে ভোগায়। নিচের কোড ছবিটা সার্ভারের `public/uploads` ফোল্ডারে রাখে।
+      - type: code
+        lang: php
+        file: 'src/Controller/AvatarController.php'
+        variant: bad
+        code: |
+          #[Route('/avatar', methods: ['POST'])]
+          public function upload(Request $request): JsonResponse
+          {
+              $file = $request->files->get('avatar');
+              $name = $file->getClientOriginalName();   // ব্যবহারকারীর দেওয়া নাম
+
+              // এই সার্ভারের নিজের ডিস্কে
+              $file->move($this->getParameter('kernel.project_dir').'/public/uploads', $name);
+
+              return $this->json(['url' => '/uploads/'.$name]);
+          }
+        marks:
+          - {line: 8, tip: 'দ্বিতীয় সার্ভার বা নতুন container এই ফাইল দেখতে পাবে না। deploy-এ ফোল্ডার মুছে গেলে ছবিও যায়।'}
+          - {line: 5, tip: 'একই নামে দুজন আপলোড করলে একজনের ছবি আরেকজনের উপর লেখা হয়ে যায়।'}
+      - type: visual
+        kind: compare
+        caption: 'ফাইল রাখার তিন জায়গা: দুইটা সমস্যার, একটা ঠিক'
+        columns:
+          - title: 'ডেটাবেসের BLOB'
+            tone: bad
+            icon: db
+            tip: 'ডেটাবেস ছোট, দ্রুত, জটিল query-র জন্য; বড় বাইনারি রাখার জন্য নয়।'
+            items:
+              - 'ডেটাবেস ফুলে যায়, backup বিশাল'
+              - 'প্রতিটা ছবি পড়া মানে ডেটাবেসের বাড়তি চাপ'
+          - title: 'সার্ভারের লোকাল ডিস্ক'
+            tone: bad
+            icon: server
+            tip: 'একটাই সার্ভার থাকলে চলে; সার্ভার বাড়লেই ভাঙে।'
+            items:
+              - 'অন্য সার্ভারে ফাইল নেই'
+              - 'deploy বা container বদলালে হারায়'
+          - title: 'Object storage'
+            tone: good
+            icon: storage
+            tip: 'S3-এর মতো সেবা, ফাইল রাখার জন্যই বানানো; কত ফাইল রাখলে ক্ষতি নেই।'
+            items:
+              - 'সব সার্ভার একই জায়গা পায়'
+              - 'অনেক সস্তা, টেকসই, ঠিকমতো backup'
+    aside:
+      - type: story
+        title: 'দুই সার্ভারের ছবি-রহস্য'
+        body: |
+          অ্যাপে দ্বিতীয় সার্ভার যোগ হওয়ার পর কিছু ব্যবহারকারী বলল, ছবি কখনো আসে কখনো আসে না। load balancer অর্ধেক request পাঠাত সেই সার্ভারে, যেখানে ছবিটাই ছিল না।
+      - type: terms
+        items:
+          - {term: 'BLOB', meaning: 'Binary Large Object: ছবি, PDF, ভিডিওর মতো বড় বাইনারি ডেটা।'}
+          - {term: 'Object storage', meaning: 'key ধরে ফাইল রাখার সেবা (S3, Cloudflare R2, MinIO)।'}
+    check:
+      q: 'দুই সার্ভারে অ্যাপ চলছে। ছবি একটা সার্ভারের ডিস্কে রাখলে কী সমস্যা হবে?'
+      a: 'অন্য সার্ভারে ফাইলটা নেই, তাই load balancer সেখানে request পাঠালে ছবি পাওয়া যাবে না। ফাইল এমন জায়গায় রাখতে হবে, যেটা সব সার্ভার দেখতে পায়।'
+
+  - slug: object-storage-flysystem
+    title: 'Object storage: ডেটাবেসে থাকবে শুধু key'
+    kind: concept
+    tldr: 'ফাইল যায় object storage-এ, ডেটাবেসে থাকে ফাইলের key আর metadata। Flysystem দিয়ে লিখলে storage বদলালেও কোড বদলায় না।'
+    keywords: ['Flysystem', 'S3', 'storage key', 'metadata', 'filesystem abstraction', 'অবজেক্ট স্টোরেজ']
+    blocks:
+      - type: text
+        body: |
+          গুদামের বস্তার নম্বরটাই **key**, যেমন `avatars/0192.../original.jpg`। অ্যাপের ডেটাবেসে শুধু এই key, আকার, ধরন আর মালিকের id থাকে। ফাইলের নাম ব্যবহারকারী যা-ই দিক, key সার্ভার নিজে বানায় (UUID), যাতে কেউ কারো ফাইল ওভাররাইট না করে। Symfony-তে **Flysystem** দিয়ে লিখলে আজ লোকাল ফোল্ডার, কাল S3: শুধু config বদলায়।
+      - type: code
+        lang: yaml
+        file: 'config/packages/flysystem.yaml'
+        variant: good
+        code: |
+          flysystem:
+              storages:
+                  uploads.storage:
+                      adapter: 'aws'
+                      options:
+                          client: 'aws_s3_client'   # services.yaml-এ বানানো Aws\S3\S3Client
+                          bucket: '%env(S3_BUCKET)%'
+                          prefix: 'uploads'
+        marks:
+          - {line: 3, tip: 'storage-এর নাম। এই নাম থেকেই autowiring-এর `$uploadsStorage` আসে।'}
+          - {line: 4, tip: 'adapter বদলালেই (local, aws, gcs) বাকি কোড অপরিবর্তিত থাকে।'}
+      - type: code
+        lang: php
+        file: 'src/Service/AvatarStorage.php'
+        variant: good
+        code: |
+          final readonly class AvatarStorage
+          {
+              public function __construct(private FilesystemOperator $uploadsStorage) {}
+
+              public function store(UploadedFile $file): string
+              {
+                  $key = sprintf('avatars/%s.%s', Uuid::v7(), $file->guessExtension());
+
+                  $stream = fopen($file->getPathname(), 'rb');
+                  $this->uploadsStorage->writeStream($key, $stream);   // stream, পুরো ফাইল RAM-এ নয়
+                  is_resource($stream) && fclose($stream);
+
+                  return $key;   // ডেটাবেসের কলামে এটাই যাবে
+              }
+          }
+        marks:
+          - {line: 7, tip: 'key সার্ভার বানায়, তাই ব্যবহারকারীর দেওয়া নাম নিয়ে কোনো বিপদ নেই।'}
+          - {line: 10, tip: '`writeStream` ফাইল ধাপে ধাপে পাঠায়, তাই বড় ফাইলেও মেমোরি বেশি খরচ হয় না।'}
+      - type: quote
+        body: 'ডেটাবেসে রাখো key; ফাইল রাখো object storage-এ।'
+    aside:
+      - type: tips
+        items:
+          - 'bucket ডিফল্টে private রাখো। ফাইল দেখাতে হলে signed URL বা CDN ব্যবহার করো।'
+          - 'কলামে `avatar_key VARCHAR(255)` রাখো, পুরো URL নয়; পরে domain বদলালেও ডেটা ঠিক থাকে।'
+      - type: commands
+        title: 'প্যাকেজ'
+        items:
+          - {cmd: 'composer require league/flysystem-bundle', desc: 'Flysystem বান্ডেল'}
+          - {cmd: 'composer require league/flysystem-aws-s3-v3', desc: 'S3 adapter'}
+    check:
+      q: 'ডেটাবেসে ফাইলের পুরো URL না রেখে শুধু key রাখলে কী সুবিধা?'
+      a: 'bucket, CDN বা domain বদলালেও ডেটাবেসের ডেটা বদলাতে হয় না। URL তখন key থেকে বানিয়ে নেওয়া যায়।'
+
+  - slug: presigned-direct-upload
+    title: 'Presigned URL: ফাইল যাক সরাসরি storage-এ'
+    kind: howto
+    tldr: 'সার্ভার একটা সময়-সীমার signed URL বানিয়ে দেয়; Vue অ্যাপ সেই URL-এ সরাসরি ফাইল PUT করে, ফাইল সার্ভারের ভেতর দিয়ে যায় না।'
+    keywords: ['presigned URL', 'signed URL', 'direct upload', 'S3 PutObject', 'XMLHttpRequest progress']
+    blocks:
+      - type: text
+        body: |
+          গুদামের গেটে ঢুকতে সবাইকে ঠেকাতে হয়, আবার প্রত্যেক ট্রাক মালিকের অফিস হয়ে যেতে হলে সময় যায়। তাই মালিক ১০ মিনিটের একটা সই-করা চিরকুট (**presigned URL**) দেয়; ট্রাক সোজা গুদামে মাল নামায়। এতে তোমার PHP সার্ভার ফাইলের বোঝা বয় না। সার্ভার শুধু অনুমতি দেয়, আর পরে নিশ্চিত করে ফাইল সত্যিই এসেছে কি না।
+      - type: visual
+        kind: sequence
+        caption: 'আপলোডের তিন ধাপ: অনুমতি, সরাসরি আপলোড, নিশ্চিতকরণ'
+        actors:
+          - {id: vue, label: 'Vue অ্যাপ', icon: browser, tip: 'ব্যবহারকারীর ব্রাউজারে ফাইল বাছাই হয়।'}
+          - {id: api, label: 'Symfony API', icon: server, tip: 'অনুমতি দেয় আর শেষে যাচাই করে; ফাইল ধরে না।'}
+          - {id: s3, label: 'Object storage', icon: storage, tip: 'ফাইল সরাসরি এখানে আসে।'}
+        messages:
+          - {from: vue, to: api, label: 'avatar.jpg আপলোড করতে চাই'}
+          - {from: api, to: vue, label: 'এই URL-এ ১০ মিনিটের মধ্যে PUT করো', dashed: true, tip: 'URL-এ key, ধরন আর মেয়াদের সই বসানো; বদলালে সই মেলে না।'}
+          - {from: vue, to: s3, label: 'PUT ফাইল (সরাসরি)', tone: good, tip: 'তোমার সার্ভারের CPU, মেমোরি বা নেটওয়ার্ক এতে খরচ হয় না।'}
+          - {from: vue, to: api, label: 'আপলোড শেষ'}
+          - {from: api, to: s3, label: 'ফাইল আছে? আকার কত?', tip: 'ক্লায়েন্টকে অন্ধভাবে বিশ্বাস না করে নিজে যাচাই।'}
+          - {at: api, note: 'সব ঠিক: ডেটাবেসে key সেভ', tone: good}
+      - type: code
+        lang: php
+        file: 'src/Controller/UploadController.php'
+        variant: good
+        code: |
+          #[Route('/uploads/presign', methods: ['POST'])]
+          #[IsGranted('ROLE_USER')]
+          public function presign(S3Client $s3, #[MapRequestPayload] PresignRequest $in): JsonResponse
+          {
+              $key = sprintf('avatars/%s.jpg', Uuid::v7());
+
+              $cmd = $s3->getCommand('PutObject', [
+                  'Bucket'      => $this->bucket,
+                  'Key'         => $key,
+                  'ContentType' => 'image/jpeg',   // সইয়ের অংশ, বদলালে আপলোড ফেল
+              ]);
+              $url = (string) $s3->createPresignedRequest($cmd, '+10 minutes')->getUri();
+
+              return $this->json(['key' => $key, 'url' => $url]);
+          }
+        marks:
+          - {line: 5, tip: 'key সার্ভার ঠিক করে। ক্লায়েন্ট কোন পথে লিখবে সেটা সে ঠিক করতে পারে না।'}
+          - {line: 12, tip: '১০ মিনিট পর URL মরে যায়। মেয়াদ যত ছোট, ফাঁস হলে ক্ষতি তত কম।'}
+      - type: code
+        lang: vue
+        file: 'src/components/AvatarUpload.vue'
+        variant: good
+        code: |
+          <script setup lang="ts">
+          import { ref } from 'vue'
+          const progress = ref(0)
+
+          async function upload(file: File) {
+            const res = await fetch('/uploads/presign', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ size: file.size, type: file.type }),
+            })
+            const { key, url } = await res.json()
+
+            await new Promise<void>((resolve, reject) => {
+              const xhr = new XMLHttpRequest()
+              xhr.open('PUT', url)
+              xhr.setRequestHeader('Content-Type', 'image/jpeg')
+              xhr.upload.onprogress = (e) => (progress.value = Math.round((e.loaded / e.total) * 100))
+              xhr.onload = () => (xhr.status < 300 ? resolve() : reject(new Error('upload failed')))
+              xhr.onerror = () => reject(new Error('network'))
+              xhr.send(file)
+            })
+            await fetch('/uploads/confirm', { method: 'POST', body: JSON.stringify({ key }) })
+          }
+          </script>
+        marks:
+          - {line: 17, tip: '`fetch` upload progress দেখায় না; `XMLHttpRequest` দেখায়, তাই এখানে সেটাই।'}
+          - {line: 22, tip: 'আপলোডের পর সার্ভারকে জানানো। সে যাচাই করে তবেই key ডেটাবেসে বসায়।'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'bucket-এর CORS-এ তোমার domain আর `PUT` মেথড অনুমতি না দিলে ব্রাউজার আপলোড আটকে দেয়।'
+          - 'সার্ভারকে confirm-এ `headObject` দিয়ে আকার ও ধরন মিলিয়ে নিতে হয়; ক্লায়েন্টের কথা ধরে নিলে চলবে না।'
+      - type: refs
+        items:
+          - {to: 'security/input-validation', label: 'আপলোড করা ফাইল যাচাই'}
+    check:
+      q: 'presigned URL-এ ফাইল সরাসরি যায়। তাহলে সার্ভারের আর কী কাজ বাকি থাকে?'
+      a: 'অনুমতি দেওয়া (URL বানানো) আর আপলোড শেষে যাচাই করা: ফাইল সত্যিই আছে কি, আকার-ধরন ঠিক কি। তারপরই key ডেটাবেসে বসে।'
+
+  - slug: large-uploads-multipart
+    title: 'বড় ফাইল: টুকরো টুকরো আর আবার শুরু'
+    kind: howto
+    tldr: 'বড় ফাইল এক টানে পাঠালে নেট কেটে গেলে শুরু থেকে। multipart upload ফাইল ভেঙে টুকরোয় পাঠায়, ব্যর্থ টুকরোই শুধু আবার পাঠাতে হয়।'
+    keywords: ['multipart upload', 'resumable upload', 'chunk', 'CompleteMultipartUpload', 'বড় ফাইল']
+    blocks:
+      - type: text
+        body: |
+          ২ গিগাবাইটের ভিডিও এক request-এ পাঠাতে ৯০% হয়ে নেট গেলে সব নষ্ট। গুদামে বড় মাল যেমন ছোট ছোট বস্তায় ভাগ করে আনা হয়, **multipart upload** তেমন: ফাইল ৫ থেকে ১০০ মেগাবাইটের টুকরোয় (part) ভাগ হয়, প্রতিটা আলাদা URL-এ যায়, আর সবশেষে "সব টুকরো এসেছে" বলে জুড়ে দেওয়া হয়। ব্যর্থ টুকরো আবার পাঠালেই চলে।
+      - type: visual
+        kind: steps
+        caption: 'S3 multipart upload-এর চার ধাপ'
+        steps:
+          - {title: '১. Create', body: 'সার্ভার uploadId নেয়', tip: '`CreateMultipartUpload` একটা uploadId দেয়, যা এই আপলোডের পরিচয়।'}
+          - {title: '২. Sign parts', body: 'প্রতি টুকরোর জন্য presigned URL', tip: 'প্রতি part নম্বরের জন্য আলাদা `UploadPart` URL বানানো হয়।'}
+          - {title: '৩. Upload', body: 'ক্লায়েন্ট টুকরোগুলো PUT করে', tip: 'প্রতিটার উত্তরে ETag আসে; ব্যর্থ টুকরো আলাদা করে আবার পাঠানো যায়।'}
+          - {title: '৪. Complete', body: 'সব ETag দিয়ে জুড়ে দাও', tip: '`CompleteMultipartUpload` part নম্বর আর ETag-এর তালিকা নিয়ে ফাইলটা জোড়া লাগায়।'}
+      - type: code
+        lang: php
+        file: 'src/Service/MultipartUploader.php'
+        variant: good
+        code: |
+          public function start(string $key): string
+          {
+              return $this->s3->createMultipartUpload([
+                  'Bucket' => $this->bucket, 'Key' => $key,
+              ])['UploadId'];
+          }
+
+          public function partUrl(string $key, string $uploadId, int $part): string
+          {
+              $cmd = $this->s3->getCommand('UploadPart', [
+                  'Bucket' => $this->bucket, 'Key' => $key,
+                  'UploadId' => $uploadId, 'PartNumber' => $part,
+              ]);
+              return (string) $this->s3->createPresignedRequest($cmd, '+1 hour')->getUri();
+          }
+
+          /** @param list<array{PartNumber:int, ETag:string}> $parts */
+          public function finish(string $key, string $uploadId, array $parts): void
+          {
+              $this->s3->completeMultipartUpload([
+                  'Bucket' => $this->bucket, 'Key' => $key, 'UploadId' => $uploadId,
+                  'MultipartUpload' => ['Parts' => $parts],
+              ]);
+          }
+        marks:
+          - {line: 14, tip: 'URL-এর মেয়াদ এখানে বেশি, কারণ বড় ফাইলে অনেক সময় লাগে।'}
+          - {line: 20, tip: 'এই ডাকের পরেই object দেখা যায়। তার আগে পর্যন্ত টুকরোগুলো অর্ধেক জমা, কেউ ফাইল পড়তে পারে না।'}
+      - type: quote
+        body: 'বড় ফাইল ভাঙো, টুকরো গোনো, আর ব্যর্থটাই শুধু আবার পাঠাও।'
+    aside:
+      - type: pitfalls
+        items:
+          - 'অসম্পূর্ণ multipart আপলোড টাকা খরচ করে। bucket-এ lifecycle rule দাও, যেন ৭ দিন পর বাতিল হয়।'
+          - 'প্রতিটা part (শেষটা বাদে) কমপক্ষে ৫MB হতে হবে, নইলে S3 complete-এ ফেল করে।'
+      - type: when
+        use:
+          - 'ভিডিও, ব্যাকআপ, বড় PDF বা ১০০MB-এর বেশি যেকোনো ফাইল'
+        avoid:
+          - 'প্রোফাইল ছবির মতো ছোট ফাইল: সাধারণ presigned PUT যথেষ্ট'
+      - type: refs
+        items:
+          - {to: 'infra/cloud-primitives', label: 'Object storage ও cloud-এর মূল উপাদান'}
+    check:
+      q: '২GB ফাইল multipart-এ ৪০০টা টুকরোয় গেল, ৩৯৯ নম্বরে নেট গেল। কী আবার পাঠাতে হবে?'
+      a: 'শুধু ব্যর্থ ওই টুকরোটা (আর যেগুলো যায়নি)। আগের টুকরোগুলো ইতিমধ্যে জমা আছে, তাই শুরু থেকে নয়।'
+
+flashcards:
+  - q: 'ছবি ডেটাবেসের BLOB কলামে রাখলে কী সমস্যা?'
+    a: 'ডেটাবেস ফুলে যায়, backup বিশাল হয়, আর প্রতিটা ছবি পড়া ডেটাবেসের চাপ বাড়ায়।'
+    more: |
+      ডেটাবেস জটিল query আর ছোট সারির জন্য ভালো, বড় বাইনারির জন্য নয়। BLOB এর cache আর replication খরচ বাড়ায়। ছবি object storage-এ রেখে ডেটাবেসে শুধু key রাখো।
+    ref: photos-in-the-wrong-place
+  - q: 'সার্ভারের লোকাল ডিস্কে আপলোড রাখা কখন ভাঙে?'
+    a: 'একাধিক সার্ভার বা container থাকলে, আর deploy করলে ফাইল হারালে।'
+    more: |
+      প্রতিটা সার্ভারের ডিস্ক আলাদা। load balancer অন্য সার্ভারে request পাঠালে ফাইল মেলে না। container নতুন করে বানালে ডিস্কের ফাইলও চলে যায়। সার্ভারকে stateless রাখতে ফাইল বাইরে রাখো।
+    ref: photos-in-the-wrong-place
+  - q: 'Object storage-এ "key" কী?'
+    a: 'ফাইলের অনন্য পথ-নাম (যেমন `avatars/uuid.jpg`), যা দিয়ে storage থেকে ফাইলটা খুঁজে পাওয়া যায়।'
+    more: |
+      key সার্ভার নিজে বানায়, সাধারণত UUID দিয়ে, যাতে দুজনের ফাইল এক নামে ধাক্কা না খায়। ডেটাবেসে URL নয়, key রাখলে domain বা CDN বদলালেও ডেটা অপরিবর্তিত থাকে।
+    ref: object-storage-flysystem
+  - q: 'Symfony-তে Flysystem কী কাজে আসে?'
+    a: 'লোকাল ডিস্ক, S3, GCS সবকিছুর জন্য একই API দেয়; storage বদলালে শুধু config বদলায়।'
+    more: |
+      `FilesystemOperator`-এর `write`, `writeStream`, `read`, `delete` কোডে একই থাকে। ডেভেলপমেন্টে local adapter, প্রোডাকশনে aws adapter, এটাই সাধারণ রীতি। বড় ফাইলে `writeStream` ব্যবহার করো যেন RAM ফুরিয়ে না যায়।
+    ref: object-storage-flysystem
+  - q: 'Presigned URL কী?'
+    a: 'সার্ভারের সই করা, সময়সীমাওয়ালা URL, যা দিয়ে ক্লায়েন্ট সরাসরি storage-এ ফাইল রাখতে বা পড়তে পারে।'
+    more: |
+      সইয়ের মধ্যে key, HTTP method, মেয়াদ ও কখনো content-type থাকে; এর কিছু বদলালে storage প্রত্যাখ্যান করে। মেয়াদ শেষ হলে URL আর কাজ করে না। তাই ক্লায়েন্টকে সরাসরি storage-এর পাসওয়ার্ড না দিয়েও অনুমতি দেওয়া যায়।
+    ref: presigned-direct-upload
+  - q: 'আপলোড শেষে সার্ভারকে confirm ডাকতে হয় কেন?'
+    a: 'ক্লায়েন্টের কথা বিশ্বাস না করে সার্ভার নিজে ফাইলটা আছে কি, আকার-ধরন ঠিক কি যাচাই করে তবেই key সেভ করে।'
+    more: |
+      ক্লায়েন্ট আপলোড না করেও "শেষ" বলতে পারে, বা অন্য আকারের ফাইল রাখতে পারে। সার্ভার `headObject` দিয়ে আকার, content-type দেখে নেয়। ঠিক হলে ডেটাবেসের record-কে `pending` থেকে `uploaded` করে।
+    ref: presigned-direct-upload
+  - q: 'Multipart upload কখন লাগে আর কীভাবে চলে?'
+    a: 'বড় ফাইলে (১০০MB+); ফাইল টুকরো করে আলাদা URL-এ পাঠিয়ে শেষে সব টুকরো জুড়ে দেওয়া হয়।'
+    more: |
+      ধাপ: `CreateMultipartUpload` (uploadId), প্রতি part-এ presigned `UploadPart`, ETag জমা, শেষে `CompleteMultipartUpload`। একটা টুকরো ব্যর্থ হলে শুধু সেটা আবার পাঠাতে হয়। না জোড়া টুকরোর খরচ এড়াতে lifecycle rule দাও।
+    ref: large-uploads-multipart
+quiz:
+  - q: 'অ্যাপে ২টা সার্ভার চলছে। ব্যবহারকারী ছবি দিয়েছে, কিন্তু কখনো ছবি দেখা যায়, কখনো 404। সম্ভাব্য কারণ?'
+    hint: 'ছবিটা ঠিক কোথায় সেভ হয়েছিল?'
+    options:
+      - text: 'ছবি এক সার্ভারের লোকাল ডিস্কে আছে, অন্যটায় নেই'
+        correct: true
+        why: 'load balancer যেদিকে পাঠায় সেদিকে ফাইল না থাকলে 404 আসে।'
+      - text: 'ছবির আকার বেশি বড়'
+        correct: false
+        why: 'আকার বড় হলে সবসময় সমস্যা হতো; এখানে সমস্যা মাঝে মাঝে।'
+      - text: 'CDN ক্যাশে ভুল আছে'
+        correct: false
+        why: 'এখানে সমস্যা সার্ভার অনুযায়ী বদলাচ্ছে, যা ফাইলের জায়গা নির্দেশ করে।'
+      - text: 'ডেটাবেস ধীর'
+        correct: false
+        why: 'ধীর হলে দেরি হতো; 404 মানে ফাইল পাওয়া যায়নি।'
+    ref: photos-in-the-wrong-place
+  - q: 'এই কোডে ঝুঁকি কোনগুলো?'
+    lang: php
+    code: |
+      $name = $request->files->get('doc')->getClientOriginalName();
+      $request->files->get('doc')->move($uploadDir, $name);
+      $doc->setPath('/uploads/'.$name);
+    hint: 'ব্যবহারকারীর দেওয়া নাম সরাসরি ব্যবহার হচ্ছে।'
+    options:
+      - text: 'একই নামে দুজন আপলোড করলে একজনের ফাইল আরেকজন ওভাররাইট করবে'
+        correct: true
+        why: 'ক্লায়েন্টের নাম অনন্য নয়। key সার্ভারের বানানো UUID হওয়া উচিত।'
+      - text: 'ফাইল শুধু একটা সার্ভারের ডিস্কে থাকবে'
+        correct: true
+        why: 'অন্য সার্ভার বা নতুন deploy-এ ফাইলটা মিলবে না।'
+      - text: '`move()` পুরনো PHP-র মেথড, চলবে না'
+        correct: false
+        why: '`move()` ঠিকই কাজ করে; সমস্যা ফাইল কোথায় ও কী নামে যাচ্ছে সেটা।'
+      - text: 'নামে ../ থাকলে ফোল্ডারের বাইরে লেখা যেতে পারে'
+        correct: true
+        why: 'ক্লায়েন্টের পাঠানো নাম বিশ্বাস করা বিপজ্জনক; সার্ভারের নিজে বানানো key-ই নিরাপদ।'
+    ref: object-storage-flysystem
+  - q: 'presigned URL দিয়ে আপলোডের সুবিধা কী?'
+    hint: 'ফাইলটা কোন পথে যাচ্ছে?'
+    options:
+      - text: 'ফাইল সরাসরি storage-এ যায়, তোমার সার্ভারের CPU, মেমোরি, নেটওয়ার্ক বাঁচে'
+        correct: true
+        why: 'সার্ভার শুধু অনুমতি দেয়; ভারী বহনের কাজ করে না।'
+      - text: 'আপলোডে কোনো যাচাই দরকার হয় না'
+        correct: false
+        why: 'যাচাই লাগেই; confirm ধাপে সার্ভার আকার-ধরন মিলিয়ে দেখে।'
+      - text: 'URL চিরকাল কাজ করে'
+        correct: false
+        why: 'URL-এর মেয়াদ থাকে, এটাই নিরাপত্তার অংশ।'
+      - text: 'bucket সবার জন্য public করে রাখা যায়'
+        correct: false
+        why: 'public bucket বিপজ্জনক; presigned URL ঠিক সেই কারণেই ব্যবহার করা হয়।'
+    ref: presigned-direct-upload
+  - q: 'আপলোড শেষে ক্লায়েন্ট `/uploads/confirm` ডাকে। সার্ভারের সঠিক আচরণ কোনটা?'
+    hint: 'ক্লায়েন্ট মিথ্যা বলতে পারে।'
+    options:
+      - text: 'storage-এ গিয়ে `headObject` দিয়ে ফাইলের অস্তিত্ব, আকার, ধরন যাচাই করে তারপর key সেভ করা'
+        correct: true
+        why: 'ক্লায়েন্ট না জেনে বা ইচ্ছে করে ভুল জানাতে পারে; নিজে মিলিয়ে নেওয়াই নিরাপদ।'
+      - text: 'ক্লায়েন্ট যা বলেছে তা-ই ডেটাবেসে সেভ করা'
+        correct: false
+        why: 'ফাইল না থাকলেও ডেটাবেসে ভাঙা রেফারেন্স জমবে।'
+      - text: 'প্রতিবার ফাইল ডাউনলোড করে সার্ভারে স্ক্যান করা'
+        correct: false
+        why: 'এতে presigned URL-এর সুবিধাই নষ্ট; আকার-ধরন যাচাইয়ে `headObject`ই যথেষ্ট।'
+      - text: 'কিছুই করবে না, URL আছে বলে'
+        correct: false
+        why: 'URL-এর অস্তিত্ব ফাইল আপলোডের প্রমাণ নয়।'
+    ref: presigned-direct-upload
+  - q: '৫০০MB ভিডিও multipart-এ ৫০টা টুকরোয় যাচ্ছে। ২৩ নম্বর টুকরোটা নেট কেটে ব্যর্থ। সঠিক কাজ?'
+    hint: 'বাকি টুকরোগুলোর কী হয়েছে?'
+    options:
+      - text: 'শুধু ২৩ নম্বর (আর বাকিগুলো) আবার পাঠিয়ে শেষে complete করা'
+        correct: true
+        why: 'অন্য টুকরোগুলো uploadId-র অধীনে জমা আছে; আবার পাঠানোর দরকার নেই।'
+      - text: 'পুরো ফাইল নতুন করে শুরু করা'
+        correct: false
+        why: 'এটাই multipart-এর যে সমস্যা এড়ানোর কথা।'
+      - text: 'যেটুকু গেছে সেটুকুই ফাইল ধরে নেওয়া'
+        correct: false
+        why: 'complete না ডাকলে ফাইল তৈরিই হয় না; আর কম টুকরো থাকলে ফাইল নষ্ট।'
+      - text: 'ETag ছাড়াই complete ডাকা'
+        correct: false
+        why: 'complete-এ প্রতিটা part-এর নম্বর ও ETag লাগে।'
+    ref: large-uploads-multipart

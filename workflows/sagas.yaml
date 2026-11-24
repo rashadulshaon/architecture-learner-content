@@ -1,0 +1,385 @@
+slides:
+  - slug: half-done-order
+    title: 'টাকা কাটা, stock আটকা, courier নেই'
+    kind: story
+    tldr: 'একাধিক সার্ভিসের কাজ এক ডেটাবেস transaction-এ ধরা যায় না; মাঝের ধাপ ব্যর্থ হলে আগের ধাপগুলো থেকে যায় আর অর্ডার আধখানা হয়ে ঝুলে থাকে।'
+    keywords: ['saga', 'distributed transaction', 'partial failure', 'multi-service', 'আধখানা অর্ডার', 'সাগা']
+    blocks:
+      - type: text
+        body: |
+          রহিমের অর্ডার তিন সার্ভিসে ভাগ: পেমেন্ট, stock আর courier। রিনা অর্ডার দিল, পেমেন্ট সার্ভিস টাকা কাটল, stock সার্ভিস মাল আটকাল — তারপর courier সার্ভিস জানাল "আজ কোনো courier নেই"। তিনটা সার্ভিসের তিনটা আলাদা ডেটাবেস, তাই একটা `ROLLBACK` দিয়ে সব ফেরানো যায় না। রিনার টাকা কাটা, মাল আটকা, আর অর্ডার কোথাও পৌঁছাল না।
+      - type: visual
+        kind: sequence
+        caption: 'তৃতীয় ধাপ ব্যর্থ, আগের দুই ধাপ থেকে গেল'
+        actors:
+          - {id: order, label: 'অর্ডার সার্ভিস', icon: cart, tip: 'পুরো অর্ডারের কাজ ধাপে ধাপে চালানোর দায়িত্ব এর।'}
+          - {id: pay, label: 'পেমেন্ট', icon: wallet, tip: 'নিজের ডেটাবেসে টাকা কেটে commit করে ফেলেছে।'}
+          - {id: stock, label: 'Stock', icon: box, tip: 'নিজের ডেটাবেসে মাল আটকে commit করে ফেলেছে।'}
+          - {id: ship, label: 'Courier', icon: truck, tip: 'আজ courier নেই, তাই সে ব্যর্থ বলে ফেরত দিল।'}
+        messages:
+          - {from: order, to: pay, label: 'টাকা কাটো ১২০০'}
+          - {from: order, to: stock, label: 'মাল আটকাও'}
+          - {from: order, to: ship, label: 'courier বুক করো'}
+          - {from: ship, to: order, label: 'ব্যর্থ — courier নেই', dashed: true, tone: bad}
+          - {at: order, note: 'টাকা কাটা, মাল আটকা, অর্ডার ঝুলে', tone: bad, tip: 'দুই ধাপ আগেই commit হয়ে গেছে। এখন তা নিজে নিজে ফিরবে না।'}
+      - type: quote
+        body: 'অনেক সার্ভিসের কাজে মাঝপথে ভাঙবেই। আগে থেকে ঠিক করো ভাঙলে আগের ধাপগুলো কীভাবে ফেরানো হবে।'
+    aside:
+      - type: problem
+        body: 'প্রতিটা সার্ভিসের ডেটাবেস আলাদা, তাই সবার ওপর একটা transaction চালানো কঠিন আর ধীর (two-phase commit)। Saga সেই জায়গায় ছোট ছোট transaction-এর শৃঙ্খল আর উল্টো পথ ঠিক করে দেয়।'
+      - type: refs
+        items:
+          - {to: 'concurrency/distributed-transactions', label: 'কেন distributed transaction কঠিন'}
+    check:
+      q: 'এখানে একটা `ROLLBACK` দিয়ে সব ফেরানো যায় না কেন?'
+      a: 'পেমেন্ট আর stock সার্ভিস নিজেদের আলাদা ডেটাবেসে আগেই commit করে ফেলেছে। commit হওয়া কাজ ROLLBACK-এ ফেরে না।'
+
+  - slug: cancel-the-wedding
+    title: 'বিয়ের বুকিং বাতিল: compensating action'
+    kind: concept
+    tldr: 'Saga হলো ছোট ছোট local transaction-এর ধারা, যেখানে প্রতিটা ধাপের একটা উল্টো কাজ (compensation) আছে; ব্যর্থ হলে আগের ধাপগুলো উল্টো ক্রমে বাতিল হয়।'
+    keywords: ['compensating action', 'semantic rollback', 'saga steps', 'reverse order', 'compensation', 'ক্ষতিপূরক কাজ']
+    blocks:
+      - type: metaphor
+        icon: calendar
+        title: 'বিয়েবাড়ির বুকিং বাতিল'
+        body: |
+          বিয়ের জন্য কমিউনিটি সেন্টার, ক্যাটারার আর ফটোগ্রাফার বুক হলো, প্রত্যেকে বায়না নিয়েছে। ফটোগ্রাফার শেষে জানাল সে আসতে পারবে না। তখন বুকিং "মুছে ফেলা" যায় না, কারণ বায়না আগেই নেওয়া হয়ে গেছে। বরং **নতুন কাজ** করতে হয়: ক্যাটারারকে ফোন করে বাতিল জানানো, বায়না ফেরত চাওয়া, সেন্টারকে বাতিল জানানো। ফেরত পুরোটা নাও হতে পারে।
+      - type: visual
+        kind: flow
+        caption: 'ধাপ এগোয়, courier ব্যর্থ হলে উল্টো কাজ চলে'
+        nodes:
+          - {id: pay, label: 'টাকা কাটো', sub: 'ধাপ ১', icon: wallet, col: 0, row: 0, tip: 'পেমেন্ট সার্ভিস নিজের transaction-এ টাকা কেটে commit করে।'}
+          - {id: stock, label: 'মাল আটকাও', sub: 'ধাপ ২', icon: box, col: 2, row: 0, tip: 'stock সার্ভিস নিজের transaction-এ মাল আটকে commit করে।'}
+          - {id: ship, label: 'courier বুক', sub: 'ধাপ ৩ — ব্যর্থ', icon: truck, tone: bad, col: 4, row: 0, tip: 'এই ধাপ ব্যর্থ। এখন থেকে পেছনের ধাপগুলোর উল্টো কাজ চালাতে হবে।'}
+          - {id: release, label: 'মাল ছাড়ো', sub: 'ধাপ ২-এর উল্টো', icon: archive, tone: warn, col: 2, row: 2, tip: 'stock-এর compensation: আটকানো মাল আবার বিক্রির জন্য খুলে দেওয়া।'}
+          - {id: refund, label: 'টাকা ফেরত', sub: 'ধাপ ১-এর উল্টো', icon: money, tone: warn, col: 0, row: 2, tip: 'পেমেন্টের compensation: কাটা টাকা ক্রেতাকে ফেরত দেওয়া।'}
+        edges:
+          - {from: pay, to: stock, label: 'টাকা কাটা হলো, এবার মাল আটকানো', tone: good}
+          - {from: stock, to: ship, label: 'মাল আটকানো হলো, এবার courier বুক', tone: good}
+          - {from: ship, to: release, label: 'courier ব্যর্থ, আগে stock ছাড়ো', tone: bad, dashed: true}
+          - {from: release, to: refund, label: 'তারপর টাকা ফেরত দাও', tone: warn, dashed: true}
+      - type: text
+        body: |
+          একে বলে **semantic rollback**: আসল rollback নয় (মুছে ফেলা নয়), বরং অর্থের দিক থেকে উল্টো একটা নতুন কাজ। ফলে ভেতরের খাতায় দেখা যায় টাকা কাটা হয়েছিল, তারপর ফেরত গেছে।
+    aside:
+      - type: terms
+        items:
+          - {term: 'Saga', meaning: 'ছোট ছোট local transaction-এর ধারা, যেখানে প্রতিটা ধাপের একটা উল্টো কাজ আছে।'}
+          - {term: 'Compensating action', meaning: 'আগের কাজের প্রভাব অর্থের দিক থেকে উল্টে দেওয়া একটা নতুন কাজ।'}
+      - type: remember
+        body: 'ফেরানো মানে মুছে ফেলা নয়। ফেরানো মানে নতুন একটা উল্টো কাজ।'
+    check:
+      q: 'কেন compensation উল্টো ক্রমে চলে, আর কেন সেটা "আসল rollback" নয়?'
+      a: 'পরের ধাপ আগের ধাপের ওপর নির্ভর করতে পারে, তাই আগে পরেরটা ফেরাতে হয়। আর এটা মুছে ফেলা নয়: একটা নতুন কাজ, যার ইতিহাস খাতায় থেকে যায়।'
+
+  - slug: persist-saga-state
+    title: 'Saga-র অবস্থা ডেটাবেসে: orchestrator বানানো'
+    kind: howto
+    tldr: 'Saga-র ধাপ OrderSaga entity-তে সংরক্ষণ করো; একটা orchestrator Messenger handler-এ event শুনে পরের command পাঠায় বা ব্যর্থ হলে compensation চালায়।'
+    keywords: ['saga state', 'orchestrator', 'Messenger handler', 'AsMessageHandler', 'Doctrine entity', 'saga persistence']
+    blocks:
+      - type: text
+        body: |
+          Orchestrator মেমরিতে চললে সার্ভার restart-এ সব ভুলে যায়। তাই saga কোন ধাপে আছে তা একটা টেবিলে লেখা থাকে: ধাপ, শেষ সময়সীমা (deadline), ব্যর্থতার কারণ। প্রতিটা event এলে orchestrator টেবিল পড়ে, ধাপ বদলায়, আর পরের command পাঠায়।
+      - type: code
+        lang: php
+        file: 'src/Saga/OrderSaga.php'
+        variant: good
+        code: |
+          #[ORM\Entity]
+          class OrderSaga
+          {
+              #[ORM\Id, ORM\Column(type: 'uuid')]
+              private Uuid $orderId;
+
+              #[ORM\Column(length: 20)]
+              private string $step = 'started';   // started → paid → reserved → completed
+                                                  // ব্যর্থ হলে: compensating → cancelled
+              #[ORM\Column]
+              private \DateTimeImmutable $deadline;
+
+              #[ORM\Column(nullable: true)]
+              private ?string $failure = null;
+
+              public function step(): string { return $this->step; }
+              public function moveTo(string $step): void { $this->step = $step; }
+          }
+        marks:
+          - {line: 8, tip: 'saga এখন কোন ধাপে — এটাই restart বা crash-এর পরেও কাজ চালিয়ে যাওয়ার ভিত্তি।'}
+          - {line: 11, tip: 'এই সময়ের মধ্যে ধাপ না এগোলে sweeper একে timeout ধরবে (পরের slide-এ)।'}
+      - type: code
+        lang: php
+        file: 'src/Saga/OrderSagaOrchestrator.php'
+        variant: good
+        code: |
+          #[AsMessageHandler]
+          public function onPaid(PaymentCharged $e): void
+          {
+              $saga = $this->sagas->find($e->orderId);
+              if ('started' !== $saga->step()) {
+                  return;                                      // duplicate event
+              }
+              $saga->moveTo('paid');
+              $this->em->flush();
+              $this->bus->dispatch(new ReserveStock($e->orderId));
+          }
+
+          #[AsMessageHandler]
+          public function onCourierFailed(CourierBookingFailed $e): void
+          {
+              $this->sagas->find($e->orderId)->moveTo('compensating');
+              $this->em->flush();
+              $this->bus->dispatch(new ReleaseStock($e->orderId));   // আগে stock
+          }
+
+          #[AsMessageHandler]
+          public function onStockReleased(StockReleased $e): void
+          {
+              $this->bus->dispatch(new RefundPayment($e->orderId));  // তারপর টাকা
+          }
+        marks:
+          - {line: 5, tip: 'প্রত্যাশিত ধাপে না থাকলে event পুরনো বা duplicate। কিছু না করে ফিরে যাও।'}
+          - {line: 9, tip: 'flush আর dispatch আলাদা ধাপ, মাঝে ফাঁক আছে। সেটা ঢাকতে outbox ব্যবহার করো।'}
+          - {line: 24, tip: 'compensation উল্টো ক্রমে: stock ছাড়ার খবর এলে তবেই টাকা ফেরত।'}
+    aside:
+      - type: tips
+        items:
+          - 'প্রতিটা command-এ saga/order id রাখো, আর handler-কে idempotent বানাও। ঘটনা duplicate আসবেই।'
+          - 'dispatch-এর ফাঁক বন্ধ করতে [[workflows/outbox-inbox|outbox]] ব্যবহার করো।'
+      - type: refs
+        items:
+          - {to: 'payments/payment-state-machine', label: 'State machine দিয়ে step গুছানো'}
+    check:
+      q: 'Orchestrator saga-র ধাপ ডেটাবেসে না রেখে memory-তে রাখলে কী হবে?'
+      a: 'সার্ভার restart বা crash-এ কোন অর্ডার কোন ধাপে ছিল তা হারিয়ে যায়, আর আধখানা অর্ডারগুলো ঝুলে থাকে, কেউ উল্টো কাজ চালাতে পারে না।'
+
+  - slug: orchestration-vs-choreography
+    title: 'পরিচালক নাকি নাচের দল: orchestration বনাম choreography'
+    kind: compare
+    tldr: 'Orchestration-এ একজন পরিচালক ধাপ ঠিক করে; choreography-তে প্রতিটা সার্ভিস event শুনে নিজে পরেরটা চালায়। ধাপ বেশি বা জটিল হলে orchestration সহজ।'
+    keywords: ['orchestration', 'choreography', 'saga coordination', 'event-driven saga', 'পরিচালক', 'ক্রম নিয়ন্ত্রণ']
+    blocks:
+      - type: metaphor
+        icon: users
+        title: 'বিয়েবাড়ির ম্যানেজার বনাম যে যার মতো'
+        body: |
+          Orchestration হলো বিয়েবাড়ির ম্যানেজার, যে সবাইকে বলে দেয় কে কখন কী করবে, আর কোথায় আটকাল তা সে-ই জানে। Choreography হলো ম্যানেজার ছাড়া: বাবুর্চি রান্না শেষ করে সার্ভারকে ডাকে, সার্ভার খাবার দিয়ে ডেকোরেটরকে জানায়। কেউ পুরো ছবিটা দেখে না।
+      - type: visual
+        kind: table
+        caption: 'দুই ধরনের saga পাশাপাশি'
+        headers: ['', 'Orchestration', 'Choreography']
+        rows:
+          - cells: ['কে ক্রম ঠিক করে', 'একটা orchestrator', 'প্রতিটা সার্ভিস নিজে']
+            tip: 'orchestration-এ পুরো গল্প এক জায়গায় লেখা। choreography-তে গল্প event-গুলোর মধ্যে ছড়িয়ে থাকে।'
+          - cells: ['পুরো প্রবাহ দেখা', 'এক জায়গায় পড়া যায়', 'সব সার্ভিস ঘেঁটে বুঝতে হয়']
+            tip: 'ভুল খুঁজতে হলে orchestrator-এর টেবিল দেখলেই ধাপ বোঝা যায়।'
+          - cells: ['Coupling', 'orchestrator সবাইকে চেনে', 'সার্ভিস শুধু event চেনে']
+            tip: 'choreography-তে সার্ভিসগুলো একে অপরকে সরাসরি চেনে না, তাই আলগা সংযোগ।'
+          - cells: ['নতুন ধাপ যোগ', 'orchestrator-এ এক জায়গায়', 'নতুন subscriber, কিন্তু প্রভাব অস্পষ্ট']
+            tip: 'choreography-তে ধাপ যোগ সহজ দেখায়, কিন্তু কে কার ওপর নির্ভর করছে তা হারিয়ে যায়।'
+          - cells: ['কখন ভালো', 'বেশি ধাপ, শর্ত, timeout', 'ছোট, দুই-তিন ধাপের সরল প্রবাহ']
+            tip: 'ধাপ বাড়লে choreography-র event-জাল বোঝা কঠিন হয়ে পড়ে।'
+      - type: quote
+        body: 'দুই-তিন ধাপের সরল প্রবাহে choreography, বেশি ধাপ বা শর্ত থাকলে orchestration।'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Orchestrator যেন সব ব্যবসায়িক নিয়মে ফুলে না ওঠে। শুধু ক্রম আর ব্যর্থতা সামলাক, নিয়ম থাকুক সার্ভিসে।'
+          - 'Choreography-তে চক্র (A→B→A) সহজেই তৈরি হয়, আর কেউ টের পায় না।'
+      - type: refs
+        items:
+          - {to: 'messaging/events-vs-commands', label: 'Event আর command-এর পার্থক্য'}
+    check:
+      q: 'দশটা ধাপ, কয়েকটা শর্ত আর timeout আছে এমন প্রবাহে কোনটা বেছে নেবে, আর কেন?'
+      a: 'Orchestration। পুরো ক্রম, শর্ত আর timeout এক জায়গায় পড়া যায় বলে ভুল খোঁজা আর বদলানো সহজ। choreography-তে এই জটিলতা event-জালে হারিয়ে যায়।'
+
+  - slug: timeouts-and-failing-compensations
+    title: 'আটকে যাওয়া saga আর ব্যর্থ compensation'
+    kind: pitfall
+    tldr: 'Deadline পেরোলে sweeper saga-কে timeout ধরে compensation শুরু করে; compensation নিজে idempotent ও অবিরাম retry-যোগ্য হতে হয়, আর ফেরানো যায় না এমন ধাপ শেষে রাখতে হয়।'
+    keywords: ['saga timeout', 'compensation failure', 'idempotent compensation', 'pivot step', 'deadline', 'sweeper']
+    blocks:
+      - type: text
+        body: |
+          সবচেয়ে কঠিন জিনিস হলো নীরবতা: courier সার্ভিস কোনো উত্তর দিল না। তখন saga চিরকাল ঝুলে থাকে। তাই প্রতিটা saga-র একটা **deadline** থাকে, আর একটা sweeper পেরিয়ে যাওয়া saga-গুলোকে timeout ধরে compensation শুরু করে।
+      - type: code
+        lang: php
+        file: 'src/Saga/SagaTimeoutSweeper.php'
+        variant: good
+        code: |
+          #[AsPeriodicTask(frequency: '1 minute', schedule: 'default')]
+          final readonly class SagaTimeoutSweeper
+          {
+              public function __invoke(): void
+              {
+                  $ids = $this->db->fetchFirstColumn(
+                      "SELECT order_id FROM order_saga
+                       WHERE step IN ('started', 'paid', 'reserved') AND deadline < now()"
+                  );
+                  foreach ($ids as $id) {
+                      $this->bus->dispatch(new SagaTimedOut($id));  // orchestrator ধরবে
+                  }
+              }
+          }
+        marks:
+          - {line: 8, tip: 'এখনো শেষ হয়নি এমন ধাপে আটকে থাকা, আর সময় পেরোনো saga।'}
+          - {line: 11, tip: 'timeout একটা সাধারণ event, যা orchestrator-ও আর সব ব্যর্থতার মতোই compensation শুরু করার সংকেত ধরে।'}
+      - type: points
+        title: 'Compensation-এর নিয়ম'
+        style: check
+        items:
+          - 'Compensation idempotent হোক: `refund` দুইবার চললেও একবারই ফেরত যাক (key দাও)।'
+          - 'Compensation ব্যর্থ হলে retry করতেই থাকো। "ফেরানো ব্যর্থ" বলে থেমে যাওয়ার সুযোগ নেই।'
+          - 'যে ধাপ ফেরানো যায় না (ইমেইল পাঠানো, courier রওনা) তা সবার শেষে রাখো।'
+          - 'ফেরানো যায় না এমন কিছুর জন্য মানুষকে alert করো।'
+      - type: quote
+        body: 'Compensation কখনো "ব্যর্থ" হয়ে থেমে যায় না। সে সফল না হওয়া পর্যন্ত retry করে, তাই idempotent হতে হয়।'
+    aside:
+      - type: tips
+        items:
+          - 'ফেরানো যায় না এমন ধাপকে বলে pivot step। তার আগের সব ধাপ ফেরানো যায় এমন রাখো, পরের সব ধাপ অবশ্যই সফল হবে এমন (retry-যোগ্য) রাখো।'
+          - 'compensation-এর নিজের idempotency key রাখো: `saga-refund-<orderId>`।'
+      - type: refs
+        items:
+          - {to: 'payments/idempotency-keys', label: 'Idempotency key'}
+    check:
+      q: 'Refund compensation-টা নেটওয়ার্ক ত্রুটিতে ব্যর্থ হলে saga কী করবে, আর কেন?'
+      a: 'আবার চেষ্টা করবে, একই idempotency key দিয়ে। থেমে গেলে ক্রেতার টাকা কাটা থেকে যায়, আর key থাকলে retry-তে দুইবার ফেরত যায় না।'
+
+flashcards:
+  - q: 'Saga কী, আর কেন লাগে?'
+    a: 'অনেক সার্ভিসের কাজকে ছোট ছোট local transaction-এর ধারা হিসেবে চালানো, যেখানে প্রতিটার একটা উল্টো কাজ আছে। কারণ সার্ভিসগুলোর মধ্যে একটা বড় transaction চালানো যায় না।'
+    more: |
+      প্রতিটা সার্ভিস নিজের ডেটাবেসে নিজের transaction commit করে। মাঝের কোনো ধাপ ব্যর্থ হলে আগের ধাপগুলোর উল্টো কাজ চালিয়ে অর্ডারকে একটা সুসংগত অবস্থায় ফেরানো হয়।
+    ref: half-done-order
+  - q: 'Compensating action কী?'
+    a: 'আগের ধাপের প্রভাব অর্থের দিক থেকে উল্টে দেওয়া একটা নতুন কাজ, যেমন টাকা কাটার উল্টো হলো ফেরত দেওয়া।'
+    more: |
+      এটা আসল rollback নয়। কাটা টাকা আর "না কাটা" হয়ে যায় না; বরং টাকা কাটা আর ফেরত — দুটোই খাতায় থাকে। এজন্য একে semantic rollback বলে।
+    ref: cancel-the-wedding
+  - q: 'Semantic rollback আর আসল (ডেটাবেস) rollback-এর পার্থক্য কী?'
+    a: 'আসল rollback কাজটাকে মুছে দেয়। Semantic rollback মোছে না, বরং উল্টো একটা নতুন কাজ করে, আর পুরনো ইতিহাস থেকে যায়।'
+    more: |
+      commit হয়ে যাওয়া কাজ ডেটাবেস rollback করতে পারে না। তাই সার্ভিসের মধ্যে ফেরানোর একমাত্র উপায় নতুন একটা কাজ। এর পার্শ্বপ্রভাবও থাকে: ক্রেতা ইতিমধ্যে নোটিফিকেশন পেয়ে থাকতে পারে, ফেরতে ফি কাটা যেতে পারে।
+    ref: cancel-the-wedding
+  - q: 'Saga-র compensation কোন ক্রমে চলে?'
+    a: 'উল্টো ক্রমে: শেষ সফল ধাপ আগে ফেরানো হয়, সবার শেষে প্রথম ধাপ।'
+    more: |
+      পরের ধাপ আগের ধাপের ফলের ওপর নির্ভর করতে পারে। ঘর বানানোর উল্টো হলো আগে ছাদ ভাঙা, পরে ভিত। তাই ধাপ ১-২-৩ চললে ফেরানো হয় ৩-২-১ ক্রমে, যাতে প্রতিটা ধাপ ফেরানোর সময় তার ভিত্তিটা তখনো থাকে।
+    ref: cancel-the-wedding
+  - q: 'Saga-র ধাপ ডেটাবেসে সংরক্ষণ করা হয় কেন?'
+    a: 'যাতে crash বা restart-এর পরেও জানা যায় কোন saga কোন ধাপে আছে, আর কাজ চালিয়ে যাওয়া বা ফেরানো যায়।'
+    more: |
+      Orchestrator-এর state মেমরিতে থাকলে সার্ভার বন্ধ হলে সব আধখানা অর্ডার অনাথ হয়ে যায়। ডেটাবেসে ধাপ, deadline আর ব্যর্থতার কারণ থাকলে নতুন process এসে ঠিক সেখান থেকে শুরু করতে পারে।
+    ref: persist-saga-state
+  - q: 'Orchestration আর choreography-র মূল পার্থক্য কী?'
+    a: 'Orchestration-এ একজন পরিচালক ক্রম ঠিক করে। Choreography-তে প্রতিটা সার্ভিস event শুনে নিজে পরের ধাপ চালায়।'
+    more: |
+      Orchestration-এ পুরো প্রবাহ এক জায়গায় পড়া যায়, কিন্তু orchestrator সবাইকে চেনে। Choreography-তে সংযোগ আলগা, কিন্তু প্রবাহ ছড়িয়ে থাকে। ধাপ বেশি হলে orchestration সাধারণত সহজ।
+    ref: orchestration-vs-choreography
+  - q: 'Saga-য় timeout কীভাবে সামলাতে হয়?'
+    a: 'প্রতিটা saga-র একটা deadline রাখো। একটা sweeper deadline পেরোলে সেটাকে timeout ধরে compensation শুরু করে।'
+    more: |
+      অন্য সার্ভিস নীরব থাকলে saga চিরকাল ঝুলে থাকতে পারে। Deadline আর sweeper থাকলে নীরবতাকেও একটা সাধারণ ব্যর্থতার event হিসেবে সামলানো যায়।
+    ref: timeouts-and-failing-compensations
+  - q: 'Compensation ব্যর্থ হলে কী করতে হবে, আর compensation কেমন হতে হবে?'
+    a: 'সফল না হওয়া পর্যন্ত retry করতে হবে, তাই compensation-কে idempotent হতে হবে (যেমন refund-এ একই key)।'
+    more: |
+      Compensation "ব্যর্থ হয়ে থেমে যাওয়া" পথ নয়, কারণ তাহলে সিস্টেম আধখানা অবস্থায় আটকে থাকে। যে ধাপ ফেরানোই যায় না (pivot step), তাকে সবার শেষে রাখো আর প্রয়োজনে মানুষকে alert করো।
+    ref: timeouts-and-failing-compensations
+
+quiz:
+  - q: 'Order সার্ভিস payment আর stock সার্ভিসে সফল হলো, courier সার্ভিসে ব্যর্থ। কেন একটা `ROLLBACK` যথেষ্ট নয়?'
+    hint: 'প্রতিটা সার্ভিসের ডেটাবেস কি এক?'
+    options:
+      - text: 'প্রতিটা সার্ভিস নিজের ডেটাবেসে আগেই commit করেছে, তাই বাইরে থেকে rollback করা যায় না'
+        correct: true
+        why: 'commit হয়ে যাওয়া কাজ ফেরানোর জন্য উল্টো একটা নতুন কাজ (compensation) লাগে।'
+      - text: 'ROLLBACK কেবল SELECT-এর জন্য'
+        correct: false
+        why: 'ROLLBACK লেখার কাজেই চলে, কিন্তু একই transaction-এর ভেতরে।'
+      - text: 'Messenger rollback সমর্থন করে না'
+        correct: false
+        why: 'সমস্যাটা Messenger-এর নয়; কাজগুলো আলাদা সার্ভিসের আলাদা ডেটাবেসে commit হয়েছে।'
+      - text: 'courier সার্ভিস সবসময় ধীর'
+        correct: false
+        why: 'গতির সাথে এর সম্পর্ক নেই।'
+    ref: half-done-order
+  - q: 'নিচের saga-র compensation ক্রম কোনটা ঠিক? ধাপ: ১) পেমেন্ট, ২) stock আটকানো, ৩) courier (ব্যর্থ)।'
+    hint: 'যা সবার শেষে হয়েছে, তা কী আগে ফেরানো উচিত?'
+    options:
+      - text: 'টাকা ফেরত, তারপর stock ছাড়া'
+        correct: false
+        why: 'এই ক্রম সোজা, উল্টো নয়। আগের ধাপ আগে ফেরানো হচ্ছে।'
+      - text: 'stock ছাড়া, তারপর টাকা ফেরত'
+        correct: true
+        why: 'শেষ সফল ধাপ (stock) আগে, প্রথম ধাপ (পেমেন্ট) সবার শেষে — উল্টো ক্রম।'
+      - text: 'একই সাথে দুটোই, ক্রম গুরুত্বহীন'
+        correct: false
+        why: 'ধাপগুলো একে অপরের ওপর নির্ভর করতে পারে, তাই ক্রম গুরুত্বপূর্ণ।'
+      - text: 'কিছুই করতে হবে না, courier আবার চেষ্টা করবে'
+        correct: false
+        why: 'আবার চেষ্টা একটা বিকল্প হতে পারে, কিন্তু ব্যর্থতা চূড়ান্ত হলে compensation লাগবেই।'
+    ref: cancel-the-wedding
+  - q: 'Orchestrator-এর কোড নিচে। কোন লাইনটা duplicate event ঠেকায়?'
+    lang: php
+    code: |
+      #[AsMessageHandler]
+      public function onPaid(PaymentCharged $e): void
+      {
+          $saga = $this->sagas->find($e->orderId);
+          if ('started' !== $saga->step()) {
+              return;
+          }
+          $saga->moveTo('paid');
+          $this->em->flush();
+          $this->bus->dispatch(new ReserveStock($e->orderId));
+      }
+    hint: 'PaymentCharged দ্বিতীয়বার এলে saga কোন ধাপে থাকবে?'
+    options:
+      - text: '`if (''started'' !== $saga->step())` — ধাপ আগেই এগিয়ে গেছে, তাই ফিরে যায়'
+        correct: true
+        why: 'দ্বিতীয়বার এলে ধাপ আর started নেই, তাই ReserveStock দুইবার যায় না।'
+      - text: '`$this->em->flush()`'
+        correct: false
+        why: 'flush শুধু অবস্থা সংরক্ষণ করে; duplicate চেনে না।'
+      - text: '`$this->bus->dispatch(...)`'
+        correct: false
+        why: 'dispatch পরের command পাঠায়, duplicate ঠেকায় না।'
+      - text: '`#[AsMessageHandler]`'
+        correct: false
+        why: 'এই attribute শুধু handler হিসেবে নিবন্ধন করে।'
+    ref: persist-saga-state
+  - q: 'দুই-তিন ধাপের ছোট প্রবাহ আর দশ ধাপের শর্তসহ প্রবাহ — কোনটায় কোন ধরন বেশি মানায়?'
+    hint: 'পুরো ছবি এক জায়গায় দেখা কখন বেশি জরুরি?'
+    options:
+      - text: 'ছোট প্রবাহে choreography চলে, বড় আর শর্তসহ প্রবাহে orchestration ভালো'
+        correct: true
+        why: 'ধাপ বাড়লে event-জাল বোঝা কঠিন, আর timeout আর শর্ত এক জায়গায় সামলানোই সহজ।'
+      - text: 'দুটোতেই choreography, কারণ এতে coupling কম'
+        correct: false
+        why: 'coupling কম হলেও প্রবাহ ছড়িয়ে থাকে, বড় প্রবাহে ভুল খোঁজা কঠিন।'
+      - text: 'দুটোতেই orchestration, কারণ এটাই একমাত্র সঠিক'
+        correct: false
+        why: 'ছোট প্রবাহে orchestrator বাড়তি ভার হতে পারে। দুটোই বৈধ, বিষয়টা জটিলতার।'
+      - text: 'কোনোটাতেই saga লাগে না'
+        correct: false
+        why: 'একাধিক সার্ভিসের কাজে saga-ই সাধারণ উপায়।'
+    ref: orchestration-vs-choreography
+  - q: 'Saga-র কোন কোন নিয়ম ঠিক?'
+    hint: 'ব্যর্থ compensation-কে কী করা যায়, আর কী যায় না?'
+    options:
+      - text: 'Compensation idempotent হতে হবে'
+        correct: true
+        why: 'retry-তে দুইবার চললেও ফল একই হতে হয়, যেমন refund-এ একই key।'
+      - text: 'ফেরানো যায় না এমন ধাপ (যেমন ইমেইল পাঠানো) সবার শেষে রাখা উচিত'
+        correct: true
+        why: 'আগের সব ধাপ সফল হওয়ার পরেই অপরিবর্তনীয় কাজ করলে ফেরানোর প্রয়োজন কমে।'
+      - text: 'Compensation ব্যর্থ হলে saga-কে সফল বলে বন্ধ করে দেওয়া যায়'
+        correct: false
+        why: 'তাহলে ক্রেতার টাকা কাটা থেকে যায়। compensation retry হয়, বন্ধ হয় না।'
+      - text: 'Saga-র ধাপ মেমরিতে রাখলেই যথেষ্ট'
+        correct: false
+        why: 'restart-এ সব হারাবে। ধাপ ডেটাবেসে রাখতে হয়।'
+    ref: timeouts-and-failing-compensations

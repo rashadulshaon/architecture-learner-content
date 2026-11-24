@@ -1,0 +1,442 @@
+slides:
+  - slug: friday-hand-deploy
+    title: 'শুক্রবার রাতের হাতে-করা deploy'
+    kind: story
+    tldr: 'হাতে deploy করলে ধাপ ভুলে যায়, প্রোডাকশনে আলাদা কোড ওঠে, আর ভুল হলে ফেরার পথ থাকে না।'
+    keywords: ['deploy', 'manual deploy', 'CI/CD', 'ডিপ্লয়', 'release', 'rollback']
+    blocks:
+      - type: text
+        body: |
+          রাত ১০টায় রাফি সার্ভারে ঢুকে deploy শুরু করল: `git pull`, `composer install`, `migrate`। মাঝপথে ইন্টারনেট গেল, `migrate` অর্ধেক চলে থেমে গেল। সার্ভারে নতুন কোড, ডেটাবেসে অর্ধেক পুরনো — সাইট বন্ধ, আর আগের অবস্থায় ফেরার কোনো উপায় নেই।
+      - type: code
+        lang: bash
+        file: 'deploy.sh (হাতে চালানো)'
+        variant: bad
+        code: |
+          ssh prod-1
+          cd /var/www/shop
+          git pull origin main
+          composer install
+          php bin/console doctrine:migrations:migrate
+          php bin/console cache:clear
+          sudo systemctl restart php8.3-fpm
+        marks:
+          - {line: 3, tip: 'সার্ভারেই কোড নামছে: এই মুহূর্তে main-এ যা আছে তা-ই চলবে, test হয়েছে কি না কেউ দেখেনি।'}
+          - {line: 4, tip: 'সার্ভারেই build। dev library ও ঢুকতে পারে, আর দুই সার্ভারে দুই রকম ফল হতে পারে।'}
+          - {line: 5, tip: 'মাঝপথে থামলে ডেটাবেস অর্ধেক বদলানো। কোনো সুরক্ষা জাল নেই।'}
+      - type: quote
+        body: 'যে কাজ মানুষ হাতে করে, সেখানে ভুল হবেই — তাই deploy হতে হবে যন্ত্রের কাজ।'
+    aside:
+      - type: problem
+        body: 'হাতের deploy ধীর, ভয়ের, আর প্রতিবার আলাদা। CI/CD সেটাকে একটা বোরিং, বারবার চলা, পরীক্ষিত পাইপলাইনে বদলে দেয়।'
+      - type: terms
+        items:
+          - {term: 'CI', meaning: 'Continuous Integration: প্রতি push-এ নিজে থেকে build আর test চালানো।'}
+          - {term: 'CD', meaning: 'Continuous Delivery/Deployment: পাস হওয়া কোড নিজে থেকে (বা এক ক্লিকে) সার্ভারে পৌঁছে দেওয়া।'}
+    check:
+      q: 'সার্ভারে গিয়ে `git pull` চালিয়ে deploy করার তিনটা বিপদ বলো।'
+      a: 'Test না হওয়া কোড উঠতে পারে, সার্ভারে সার্ভারে ফল আলাদা হতে পারে, আর মাঝপথে ব্যর্থ হলে আগের অবস্থায় ফেরার পথ থাকে না।'
+
+  - slug: pipeline-stages
+    title: 'Pipeline: কারখানার কনভেয়ার বেল্ট'
+    kind: concept
+    tldr: 'প্রতিটা push একই ধাপ পেরোয় — lint, test, build, scan, staging, তারপর অনুমোদন নিয়ে production। কোনো ধাপ ফেল করলে সেখানেই থামে।'
+    keywords: ['pipeline', 'CI', 'stages', 'quality gate', 'পাইপলাইন', 'automated checks']
+    blocks:
+      - type: metaphor
+        icon: gear
+        title: 'বিস্কুট কারখানার লাইন'
+        body: |
+          কারখানায় বিস্কুট কনভেয়ারে চলে: ওজন-চেক, ভাঙা-চেক, প্যাকেট সিল। যে কোনো চেকে ফেল করলে বিস্কুট বাজারে যায় না, বেল্ট সেখানেই থামে। Pipeline হলো কোডের কনভেয়ার, আর প্রতিটা চেক এক-একটা **quality gate**।
+      - type: visual
+        kind: steps
+        caption: 'এক push-এর যাত্রা: প্রতিটা ধাপ ফেল করলে সেখানেই থামে'
+        steps:
+          - {title: '১. Lint ও static analysis', body: 'PHPStan, code style, composer audit', tip: 'কয়েক সেকেন্ডে ধরা পড়া ভুল। সবচেয়ে সস্তা চেক, তাই সবার আগে।'}
+          - {title: '২. Test', body: 'PHPUnit — unit আর DB সহ integration', tip: 'আসল MySQL দিয়ে চালাও, নইলে SQL-এর ভুল প্রোডাকশনে গিয়ে ধরা পড়ে।'}
+          - {title: '৩. Build image', body: 'একবারই; tag = git commit hash', tip: 'এই image-টাই পরে সব environment-এ যাবে, আর কোনোদিন আবার build হবে না।'}
+          - {title: '৪. Scan', body: 'image-এ জানা দুর্বলতা আছে কি?', tip: 'Trivy-র মতো টুল image-এর library মিলিয়ে দেখে। গুরুতর দুর্বলতায় pipeline থামে।'}
+          - {title: '৫. Staging-এ deploy', body: 'smoke test আর health check', tip: 'প্রোডাকশনের মতো পরিবেশে একই image চালিয়ে দেখো সত্যিই ওঠে কি না।'}
+          - {title: '৬. Production', body: 'অনুমোদনের পর, ধাপে ধাপে', tip: 'মানুষের এক ক্লিকের অনুমোদন থাকতে পারে, কিন্তু কাজটা যন্ত্রের।'}
+      - type: quote
+        body: 'Main branch সবসময় deploy করার মতো অবস্থায় থাকবে।'
+    aside:
+      - type: tips
+        items:
+          - 'Pipeline দশ মিনিটের বেশি হলে মানুষ এড়িয়ে চলে; ধীর test আলাদা করো আর cache ব্যবহার করো।'
+          - 'Flaky (কখনো পাস, কখনো ফেল) test সারাও বা বাদ দাও — নইলে কেউ ফেলকে আর বিশ্বাস করে না।'
+      - type: remember
+        body: 'সস্তা চেক আগে, দামি চেক পরে।'
+      - type: refs
+        items:
+          - {to: 'testing/what-to-test', label: 'কোন test কী ধরে'}
+    check:
+      q: 'Lint আর static analysis কেন test-এর আগে চালানো হয়?'
+      a: 'কারণ এগুলো কয়েক সেকেন্ডে চলে। সস্তা চেকে ভুল ধরা পড়লে ধীর test আর build-এর সময় বাঁচে।'
+
+  - slug: github-actions-ci
+    title: 'GitHub Actions-এ CI আর image build'
+    kind: howto
+    tldr: 'আসল MySQL সার্ভিস সহ test চালাও, পাস হলে image বানিয়ে git commit hash-এ tag দিয়ে registry-তে তোলো।'
+    keywords: ['GitHub Actions', 'CI pipeline', 'phpunit', 'docker build', 'workflow', 'ওয়ার্কফ্লো']
+    blocks:
+      - type: code
+        lang: yaml
+        file: '.github/workflows/ci.yaml (১ম অংশ)'
+        variant: good
+        code: |
+          name: ci
+          on:
+            push:
+              branches: [main]
+            pull_request:
+          jobs:
+            test:
+              runs-on: ubuntu-latest
+              services:
+                mysql:
+                  image: mysql:8.0
+                  env:
+                    MYSQL_ROOT_PASSWORD: root
+                    MYSQL_DATABASE: shop_test
+                  ports: ['3306:3306']
+                  options: --health-cmd="mysqladmin ping" --health-retries=10
+              steps:
+                - uses: actions/checkout@v4
+                - uses: shivammathur/setup-php@v2
+                  with:
+                    php-version: '8.3'
+                    extensions: intl, pdo_mysql
+                - run: composer install --no-interaction --prefer-dist
+                - run: vendor/bin/phpstan analyse
+                - run: vendor/bin/phpunit
+                  env:
+                    DATABASE_URL: mysql://root:root@127.0.0.1:3306/shop_test
+        marks:
+          - {line: 5, tip: 'Pull request-এও চলে — merge-এর আগেই জানা যায় ভাঙছে কি না।'}
+          - {line: 11, tip: 'প্রোডাকশনে MySQL চললে test-ও MySQL-এ। SQLite দিয়ে test করলে আচরণ আলাদা হয়ে যায়।'}
+          - {line: 25, tip: 'ধাপের কমান্ড non-zero দিলেই job ফেল — pipeline এখানে থামে।'}
+      - type: code
+        lang: yaml
+        file: '.github/workflows/ci.yaml (২য় অংশ)'
+        variant: good
+        code: |
+            build:
+              needs: test
+              if: github.ref == 'refs/heads/main'
+              runs-on: ubuntu-latest
+              steps:
+                - uses: actions/checkout@v4
+                - uses: docker/login-action@v3
+                  with:
+                    registry: registry.example.com
+                    username: ${{ secrets.REG_USER }}
+                    password: ${{ secrets.REG_TOKEN }}
+                - uses: docker/build-push-action@v6
+                  with:
+                    push: true
+                    tags: registry.example.com/shop-api:${{ github.sha }}
+        marks:
+          - {line: 2, tip: 'test পাস না করলে build শুরুই হয় না।'}
+          - {line: 3, tip: 'শুধু main থেকে image বানাও — pull request-এর কাঁচা কোড registry-তে নয়।'}
+          - {line: 11, tip: 'Registry-র পাসওয়ার্ড কোডে নয়, GitHub-এর secret store থেকে আসে।'}
+          - {line: 15, tip: 'Tag হলো commit hash — এই image ঠিক কোন কোড থেকে এসেছে, তা সবসময় জানা।'}
+      - type: quote
+        body: 'Image-এর tag হবে git commit hash — "latest" নয়।'
+    aside:
+      - type: tips
+        items:
+          - 'Composer cache আর Docker layer cache চালু করো — pipeline অর্ধেক সময়ে শেষ হয়।'
+          - 'Secret শুধু যে job-এ দরকার সেখানেই দাও; pull request-এর fork থেকে secret পাওয়া যায় না।'
+      - type: refs
+        items:
+          - {to: 'infra/containers-k8s', label: 'Image আর Dockerfile'}
+          - {to: 'security/supply-chain-compliance', label: 'Dependency ও image নিরাপত্তা'}
+    check:
+      q: 'Image-এর tag হিসেবে commit hash দিলে কী সুবিধা?'
+      a: 'প্রতিটা image-কে নির্দিষ্ট কোডের সাথে জোড়া যায়, আর প্রোডাকশনে কোনটা চলছে এক নজরে বোঝা যায়। Rollback মানে আগের hash-এ ফেরা।'
+
+  - slug: build-once-promote
+    title: 'একবার build, একই artifact promote'
+    kind: compare
+    tldr: 'Staging আর production-এ আলাদা করে build করো না — একই image এগোও, শুধু config বদলাও। তাহলেই test করা জিনিসটাই প্রোডাকশনে যায়।'
+    keywords: ['build once', 'promote', 'artifact', 'environment parity', 'staging', 'config']
+    blocks:
+      - type: metaphor
+        icon: archive
+        title: 'সিল করা কার্টন'
+        body: |
+          কারখানা বিস্কুটের কার্টন একবার সিল করে ব্যাচ নম্বর দেয়। সেই কার্টনই আগে শোরুমে যায়, পাস হলে দোকানে — কেউ খুলে আবার প্যাক করে না। প্রতিবার নতুন প্যাক করলে, যেটা পরীক্ষা হয়েছে আর যেটা বিক্রি হচ্ছে, তারা আলাদা জিনিস।
+      - type: visual
+        kind: flow
+        caption: 'এক image, তিন জায়গা — hash 3f9a2c1 সব জায়গায় একই'
+        nodes:
+          - {id: ci, label: 'CI', sub: 'একবারই build', icon: gear, col: 0, row: 1, tip: 'Image এখানে শুধু একবার তৈরি হয়। পরে কেউ এটা আবার build করে না।'}
+          - {id: reg, label: 'Registry', sub: 'shop-api:3f9a2c1', icon: archive, tone: accent, col: 1.5, row: 1, tip: 'Image-এর গুদাম। এই tag-এর image বদলায় না — তার ভেতরের কোড চিরস্থির।'}
+          - {id: stg, label: 'Staging', sub: 'config: staging', icon: server, col: 3, row: 0, tip: 'প্রোডাকশনের প্রায় যমজ। আলাদা ডেটাবেস, আলাদা secret — কিন্তু একই image।'}
+          - {id: prod, label: 'Production', sub: 'config: prod', icon: cloud, col: 3, row: 2, tip: 'আসল ব্যবহারকারীর পরিবেশ। staging-এ পাস হওয়া ঠিক সেই image-ই এখানে আসে।'}
+        edges:
+          - {from: ci, to: reg, label: 'CI image বানিয়ে commit hash 3f9a2c1 tag-এ তোলে'}
+          - {from: reg, to: stg, label: 'Staging একই image নামিয়ে নিজের config দিয়ে চালায়'}
+          - {from: stg, to: prod, label: 'Staging-এ পাস করলে একই hash production-এ পদোন্নতি পায়', tone: good, dashed: true}
+      - type: visual
+        kind: table
+        caption: 'Environment parity: কী এক থাকবে, কী আলাদা'
+        headers: ['', 'Staging', 'Production']
+        rows:
+          - cells: ['Image', 'shop-api:3f9a2c1', 'shop-api:3f9a2c1']
+            tip: 'এক, কোনো ব্যতিক্রম নেই।'
+          - cells: ['PHP ও MySQL version', '8.3 / 8.0', '8.3 / 8.0']
+            tip: 'Version আলাদা হলে staging-এর পাস অর্থহীন।'
+          - cells: ['Config ও secret', 'staging-এর নিজের', 'production-এর নিজের']
+            tip: 'আলাদা হওয়া উচিত — ENV দিয়ে দেওয়া হয়, image-এ নয়।'
+          - cells: ['ডেটা', 'নকল বা মুখোশ-পরানো', 'আসল']
+            tip: 'আসল ডেটা staging-এ কপি করতে হলে ব্যক্তিগত তথ্য মুছে বা বদলে নাও।'
+    aside:
+      - type: problem
+        body: 'Environment-এ আলাদা build করলে "staging-এ চলল, prod-এ চলল না" ঘটতে পারে। কারণ দুই build-এ library-র নতুন version আসতে পারে।'
+      - type: terms
+        items:
+          - {term: 'Artifact', meaning: 'pipeline-এর তৈরি, বদলানো যায় না এমন ফলাফল — এখানে Docker image।'}
+          - {term: 'Promote', meaning: 'পরীক্ষিত artifact-টাই পরের environment-এ পাঠানো, নতুন করে build না করে।'}
+    check:
+      q: 'Production-এর জন্য আবার build করলে আসল ঝুঁকিটা কী?'
+      a: 'যে image staging-এ test হয়েছে, আর যেটা production-এ চলছে, তারা আলাদা জিনিস হয়ে যেতে পারে — dependency-র নতুন version বা build-পরিবেশের ফারাকে।'
+
+  - slug: safe-deploy-rollback
+    title: 'নিরাপদ deploy আর দ্রুত rollback'
+    kind: howto
+    tldr: 'Staging-এ smoke test, production-এ অনুমোদন, rollout status দেখা — আর ব্যর্থ হলে নিজে থেকে আগের version-এ ফেরা।'
+    keywords: ['rollback', 'deploy safety', 'smoke test', 'kubectl rollout', 'approval', 'রোলব্যাক']
+    blocks:
+      - type: text
+        body: |
+          নিরাপদ deploy মানে ভুল হবে না, তা নয় — ভুল হলে মিনিটে ফিরে আসা। তাই প্রতিটা ধাপের পরে একটা পরীক্ষা, আর ব্যর্থ হলে আগের image-এ ফেরার কমান্ড তৈরি। Rollback সবচেয়ে সহজ যখন আগের image registry-তে অক্ষত আছে।
+      - type: code
+        lang: yaml
+        file: '.github/workflows/deploy.yaml'
+        variant: good
+        code: |
+          deploy-staging:
+            environment: staging
+            steps:
+              - run: |
+                  kubectl set image deploy/shop-api \
+                    api=registry.example.com/shop-api:${{ github.sha }}
+                  kubectl rollout status deploy/shop-api --timeout=120s
+              - run: curl --fail --retry 5 https://staging.shop.example.com/health/ready
+
+          deploy-prod:
+            needs: deploy-staging
+            environment: production # এখানে মানুষের অনুমোদন লাগে
+            steps:
+              - run: |
+                  kubectl set image deploy/shop-api \
+                    api=registry.example.com/shop-api:${{ github.sha }}
+                  kubectl rollout status deploy/shop-api --timeout=180s \
+                    || { kubectl rollout undo deploy/shop-api; exit 1; }
+        marks:
+          - {line: 7, tip: 'Rollout শেষ না হওয়া পর্যন্ত অপেক্ষা: নতুন Pod ready না হলে এই ধাপ ফেল করে।'}
+          - {line: 8, tip: 'Smoke test: কয়েকটা সবচেয়ে জরুরি URL ডেকে দেখা সত্যিই সাড়া দেয় কি না।'}
+          - {line: 12, tip: 'GitHub environment-এ "required reviewers" দিলে production-এ যাওয়ার আগে একজনের অনুমোদন লাগে।'}
+          - {line: 18, tip: 'Rollout ব্যর্থ হলে নিজে থেকে আগের version-এ ফেরা; মানুষ ঘুম থেকে ওঠার আগেই সাইট ঠিক।'}
+      - type: quote
+        body: 'Rollback-এর পথ deploy-এর আগেই ঠিক করে রাখো।'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Migration-এ কলাম মুছে ফেললে কোড rollback করেও আর লাভ নেই — আগের কোড কলামটা খুঁজবে। Migration হবে backward-compatible (expand, তারপর contract)।'
+          - 'Rollback কখনো পরীক্ষা না করা। মাঝে মাঝে staging-এ ইচ্ছে করে চালিয়ে দেখো।'
+      - type: refs
+        items:
+          - {to: 'data/zero-downtime-migrations', label: 'Backward-compatible migration'}
+          - {to: 'resilience/zero-downtime-deploys', label: 'Canary আর blue-green'}
+      - type: commands
+        title: 'Rollback'
+        items:
+          - {cmd: 'kubectl rollout history deploy/shop-api', desc: 'আগের revision-গুলো দেখো'}
+          - {cmd: 'kubectl rollout undo deploy/shop-api', desc: 'আগের version-এ ফিরো'}
+    check:
+      q: 'কোড rollback করলেও ডেটাবেস migration-এর কারণে কাজ না করতে পারে — কখন?'
+      a: 'যখন migration আগের কোডের দরকারি কলাম বা টেবিল মুছে ফেলেছে। তাই migration আগে শুধু যোগ করবে (expand), পুরনোটা পরে সরাবে।'
+
+  - slug: pipeline-pitfalls
+    title: 'Pipeline-এর তিনটা ক্লাসিক ফাঁদ'
+    kind: pitfall
+    tldr: 'প্রোডাকশনে আবার build, সার্ভারে secret রেখে দেওয়া, আর ফেল-করা test এড়িয়ে যাওয়া — তিনটাই pipeline-এর উদ্দেশ্য নষ্ট করে।'
+    keywords: ['pipeline pitfalls', 'secret', 'rebuild', 'flaky tests', 'CI mistakes']
+    blocks:
+      - type: code
+        lang: yaml
+        file: '.github/workflows/bad.yaml'
+        variant: bad
+        code: |
+          deploy-prod:
+            steps:
+              - uses: actions/checkout@v4
+              - run: composer install
+              - run: docker build -t shop-api:latest .
+              - run: docker push shop-api:latest
+              - run: kubectl rollout restart deploy/shop-api
+                continue-on-error: true
+        marks:
+          - {line: 5, tip: 'প্রোডাকশনের জন্য আবার build — staging-এ test হওয়া image-এর সাথে এটার কোনো গ্যারান্টি-সম্পর্ক নেই।'}
+          - {line: 6, tip: '"latest" ঢেলে দেওয়া মানে আগের version হারিয়ে ফেলা; rollback করার কিছু থাকে না।'}
+          - {line: 8, tip: 'ব্যর্থ হলেও pipeline সবুজ — কেউ জানে না deploy আসলে হয়নি।'}
+      - type: points
+        title: 'ঠিক উপায়'
+        style: check
+        items:
+          - 'Build একবারই; deploy ধাপে শুধু tag বদলাও'
+          - 'প্রতিটা ধাপ ব্যর্থ হলে pipeline থামুক, ঢাকবে না'
+          - 'Secret থাকবে CI-এর secret store-এ, কোড বা image-এ নয়'
+          - 'Flaky test ঠিক করো, "আবার চালাও" অভ্যাস নয়'
+      - type: quote
+        body: 'সবুজ pipeline তখনই মূল্যবান, যখন লাল হলে সবাই থামে।'
+    aside:
+      - type: story
+        title: 'সবসময় সবুজ'
+        body: |
+          এক টিমের pipeline সবসময় সবুজ ছিল — কারণ test ধাপে `|| true` বসানো ছিল। একদিন একটা মারাত্মক bug প্রোডাকশনে গেল, অথচ test আগের দুই সপ্তাহ ধরেই ফেল করছিল।
+      - type: when
+        use: ['প্রতিটা ধাপের ফেল মানে pipeline থামা', 'আগের version-এর image সবসময় registry-তে রাখা']
+        avoid: ['continue-on-error বা || true দিয়ে ফেল লুকানো']
+    check:
+      q: 'Deploy ধাপে `continue-on-error: true` দেওয়া কেন বিপজ্জনক?'
+      a: 'Deploy ব্যর্থ হলেও pipeline সবুজ দেখায়, তাই কেউ জানতেই পারে না যে নতুন version ওঠেনি — বা অর্ধেক উঠেছে।'
+
+flashcards:
+  - q: 'CI আর CD-এর পার্থক্য কী?'
+    a: 'CI: প্রতিটা push-এ নিজে থেকে build ও test। CD: পাস হওয়া কোড নিজে থেকে (বা এক ক্লিকে) সার্ভারে পৌঁছে দেওয়া।'
+    more: |
+      CI-এর মূল প্রশ্ন "কোডটা কি ভাঙেনি?"। CD-র মূল প্রশ্ন "কোডটা নিরাপদে ব্যবহারকারীর কাছে পৌঁছাল কি?"। Continuous delivery-তে শেষ ধাপে মানুষের অনুমোদন থাকে; continuous deployment-এ তা-ও থাকে না।
+    ref: friday-hand-deploy
+  - q: 'কেন সার্ভারে গিয়ে হাতে git pull করে deploy করা উচিত নয়?'
+    a: 'ধাপ ভুলে যেতে পারে, test না হওয়া কোড উঠতে পারে, সার্ভারে সার্ভারে ফল আলাদা হয়, আর ফেরার পথ থাকে না।'
+    more: |
+      Pipeline প্রতিবার একই ধাপ একই ক্রমে চালায় এবং কে কী deploy করল তার রেকর্ড রাখে। হাতের deploy-এ এই দুটোই নেই।
+    ref: friday-hand-deploy
+  - q: 'Pipeline-এ সস্তা চেক আগে কেন চালানো হয়?'
+    a: 'Lint বা static analysis কয়েক সেকেন্ডে চলে। সেখানে ভুল ধরা পড়লে ধীর test আর build-এর সময় বাঁচে।'
+    more: |
+      সাধারণ ক্রম: lint → static analysis → unit test → integration test → build → scan → deploy। যত ডানে যাও, চেক তত ধীর আর দামি।
+    ref: pipeline-stages
+  - q: 'Quality gate কী?'
+    a: 'Pipeline-এর এমন ধাপ, যেটা ফেল করলে কোড পরের ধাপে যেতে পারে না।'
+    more: |
+      যেমন test পাস না করলে build হবে না, scan-এ গুরুতর দুর্বলতা মিললে deploy হবে না। Gate কাজ করে তখনই, যখন ফেল সত্যিই pipeline থামায়।
+    ref: pipeline-stages
+  - q: 'CI-তে test কেন আসল MySQL দিয়ে চালানো উচিত?'
+    a: 'প্রোডাকশনের মতো ডেটাবেসে চালালে SQL, ইনডেক্স আর migration-এর আসল আচরণ ধরা পড়ে। SQLite-এ এগুলো আলাদা।'
+    more: |
+      GitHub Actions-এ services দিয়ে MySQL container চালানো যায়। Version-ও প্রোডাকশনের সাথে মেলাও (MySQL 8.0 হলে 8.0)।
+    ref: github-actions-ci
+  - q: 'Build once, promote the same artifact — মানে কী?'
+    a: 'Image একবারই build হয়; সেই একই image staging থেকে production-এ যায়। শুধু config বদলায়, কোড নয়।'
+    more: |
+      এতে test করা জিনিস আর চালানো জিনিস সবসময় এক। প্রতি environment-এর জন্য আবার build করলে dependency-র নতুন version ঢুকে ফল আলাদা হতে পারে।
+    ref: build-once-promote
+  - q: 'Environment parity বলতে কী বোঝায়?'
+    a: 'Staging আর production যতটা সম্ভব এক রাখা: একই image, একই PHP ও ডেটাবেস version। আলাদা শুধু config, secret আর ডেটা।'
+    more: |
+      Version আলাদা হলে staging-এ পাস করা মানে প্রোডাকশনে পাস করা নয়। Config আলাদা হয় ENV variable দিয়ে, image-এর ভেতরে লেখা থাকে না।
+    ref: build-once-promote
+  - q: 'দ্রুত rollback সম্ভব রাখতে কী কী লাগে?'
+    a: 'আগের image registry-তে অক্ষত থাকা, commit-hash tag, আর backward-compatible migration।'
+    more: |
+      Kubernetes-এ `kubectl rollout undo` এক কমান্ডে আগের Deployment-এ ফেরে। কিন্তু migration যদি পুরনো কলাম মুছে ফেলে, কোড ফিরলেও অ্যাপ চলে না — তাই migration আগে যোগ করে, পরে মুছে।
+    ref: safe-deploy-rollback
+
+quiz:
+  - q: 'নিচের pipeline-এ কোন সমস্যাগুলো আছে?'
+    lang: yaml
+    code: |
+      deploy-prod:
+        steps:
+          - run: docker build -t shop-api:latest .
+          - run: docker push shop-api:latest
+          - run: kubectl rollout restart deploy/shop-api
+            continue-on-error: true
+    hint: 'কোন image deploy হচ্ছে, আর ব্যর্থ হলে কী ঘটে?'
+    options:
+      - text: 'Production-এর জন্য আবার build — staging-এ test হওয়া image নয়'
+        correct: true
+        why: 'ফলে test করা আর চালানো জিনিস আলাদা হতে পারে।'
+      - text: '"latest" tag — কোন কোড চলছে জানা যায় না, rollback-ও কঠিন'
+        correct: true
+        why: 'প্রতিবার একই tag ওভাররাইট হয়, আগের version হারিয়ে যায়।'
+      - text: 'continue-on-error: ব্যর্থ deploy-ও সবুজ দেখায়'
+        correct: true
+        why: 'কেউ জানেই না যে নতুন version ওঠেনি।'
+      - text: 'YAML-এ কমান্ড লেখা ভুল, শুধু shell script ব্যবহার করা উচিত'
+        correct: false
+        why: 'Pipeline-এ কমান্ড লেখা স্বাভাবিক; সমস্যা কমান্ডের উদ্দেশ্য ও ক্রমে।'
+    ref: pipeline-pitfalls
+  - q: 'তানভীরের টিমে প্রতিটা PR-এ pipeline ৪০ মিনিট নেয়, তাই সবাই merge-এর পরে test দেখে। সবচেয়ে ভালো প্রথম পদক্ষেপ কী?'
+    hint: 'মানুষ কেন pipeline এড়িয়ে চলে?'
+    options:
+      - text: 'Test বন্ধ করে দেওয়া'
+        correct: false
+        why: 'গতি বাড়বে, কিন্তু নিরাপত্তা জাল ছিঁড়ে যাবে।'
+      - text: 'Cache চালু করা, পরস্পর-নির্ভর নয় এমন ধাপ সমান্তরালে চালানো, ধীর test আলাদা করা'
+        correct: true
+        why: 'নিরাপত্তা না কমিয়ে সময় কমানোর স্বীকৃত পথ। দ্রুত ফিডব্যাক মানুষকে pipeline-এ ভরসা রাখতে দেয়।'
+      - text: 'শুধু release-এর আগে pipeline চালানো'
+        correct: false
+        why: 'ভুল দেরিতে ধরা পড়ে, আর কোন commit-এ ভেঙেছে খোঁজা কঠিন।'
+    ref: pipeline-stages
+  - q: 'Staging-এ test পাস করা image-এর hash 3f9a2c1। Production-এ ঠিক কী deploy করা উচিত?'
+    hint: 'পরীক্ষিত জিনিসটাই কি যাচ্ছে?'
+    options:
+      - text: 'main branch-এর বর্তমান কোড থেকে আবার build করা image'
+        correct: false
+        why: 'ইতিমধ্যে main-এ নতুন commit ঢুকে থাকতে পারে; সেটা test হয়নি।'
+      - text: 'registry-র shop-api:3f9a2c1 image-ই, শুধু production config দিয়ে'
+        correct: true
+        why: 'যা পরীক্ষা হয়েছে, ঠিক তা-ই যায়। শুধু ENV আলাদা।'
+      - text: 'shop-api:latest'
+        correct: false
+        why: '"latest" যেকোনো সময় অন্য image হতে পারে।'
+    ref: build-once-promote
+  - q: 'Production deploy ব্যর্থ হলে কী নিজে থেকে হওয়া উচিত?'
+    hint: 'মানুষ ঘুমিয়ে থাকলে কী হবে?'
+    options:
+      - text: 'কিছু না; সকালে কেউ দেখে ঠিক করবে'
+        correct: false
+        why: 'সারা রাত সাইট ভাঙা থাকতে পারে।'
+      - text: 'আগের পরীক্ষিত image-এ ফেরা (rollout undo) আর pipeline ফেল দেখানো'
+        correct: true
+        why: 'সাইট দ্রুত সুস্থ হয়, আর ফেলটাও দৃশ্যমান থাকে — কিছু ঢাকা পড়ে না।'
+      - text: 'ব্যর্থ অবস্থাতেই আবার চালানো, যতক্ষণ না পাস করে'
+        correct: false
+        why: 'অনেক সময় একই কারণে বারবার ব্যর্থ হয়, আর অর্ধেক-চালু অবস্থা দীর্ঘ হয়।'
+    ref: safe-deploy-rollback
+  - q: 'নতুন release-এ migration একটা কলাম মুছে ফেলল। Deploy-এর পর bug ধরা পড়ল। এখন কোড rollback করলে কী হবে?'
+    hint: 'আগের কোড কলামটা খুঁজবে না?'
+    options:
+      - text: 'পুরনো কোড ফিরে এসে স্বাভাবিক চলবে'
+        correct: false
+        why: 'পুরনো কোড মুছে যাওয়া কলামটা চাইবে এবং ভেঙে পড়বে।'
+      - text: 'আগের কোড ও ডেটাবেসের গঠন মিলবে না, তাই ভাঙতে পারে — migration আগে শুধু যোগ করে পরে সরানো উচিত ছিল'
+        correct: true
+        why: 'Expand-contract পদ্ধতিতে দুই version-ই চলার জায়গা থাকে, তাই rollback নিরাপদ।'
+      - text: 'ডেটাবেস নিজে থেকেই আগের অবস্থায় ফিরে যাবে'
+        correct: false
+        why: 'Migration নিজে নিজে উল্টায় না; কলামের ডেটা চলে গেলে backup ছাড়া ফেরে না।'
+    ref: safe-deploy-rollback
+  - q: 'Staging আর production-এ কোন কোনটা আলাদা হওয়া ঠিক?'
+    hint: 'কোনগুলো ENV দিয়ে দেওয়া হয়?'
+    options:
+      - text: 'ডেটাবেসের পাসওয়ার্ড ও secret'
+        correct: true
+        why: 'Staging-এর secret দিয়ে প্রোডাকশন খোলা উচিত নয়; এগুলো চালানোর সময় বাইরে থেকে আসে।'
+      - text: 'ডেটার ভরা ধরন — staging-এ নকল/মুখোশ-পরানো'
+        correct: true
+        why: 'আসল ব্যক্তিগত তথ্য staging-এ ছড়ানো ঝুঁকি।'
+      - text: 'PHP বা MySQL-এর version'
+        correct: false
+        why: 'এগুলো আলাদা হলে staging-এর পাস অর্থহীন হয়ে যায়।'
+      - text: 'অ্যাপের image'
+        correct: false
+        why: 'Image এক হওয়াই build-once নীতির মূল কথা।'
+    ref: build-once-promote

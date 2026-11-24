@@ -1,0 +1,557 @@
+slides:
+  - slug: like-fails
+    title: 'LIKE দিয়ে search: ছোট ডেটায় চলে, বড় ডেটায় ভাঙে'
+    kind: story
+    tldr: 'LIKE %x% প্রতিটা সারি পড়ে দেখে, বানান ভুল বোঝে না, আর কোন ফলাফল বেশি মানানসই তা-ও জানে না।'
+    keywords: ['LIKE', 'full table scan', 'search', 'সার্চ', 'খোঁজা', 'ধীর query']
+    blocks:
+      - type: metaphor
+        icon: book
+        title: 'লাইব্রেরির প্রতিটা বই খুলে দেখা'
+        body: |
+          লাইব্রেরিতে ৫ লাখ বই। তুমি বললে, "যে বইয়ে ইলিশ শব্দটা আছে, সব দাও।" লাইব্রেরিয়ান যদি প্রতিটা বইয়ের প্রতিটা পাতা উল্টে খোঁজেন, সন্ধ্যা পেরিয়ে যাবে। `LIKE '%ইলিশ%'` ঠিক এটাই করে — টেবিলের প্রতিটা সারি পড়ে দেখে, লেখার মাঝখানে কোথাও শব্দটা আছে কি না। সাধারণ index এখানে কাজে আসে না, কারণ সেটা অভিধানের মতো **প্রথম অক্ষর** ধরে সাজানো।
+      - type: code
+        lang: sql
+        file: 'রহিমের দোকানের search box'
+        variant: bad
+        code: |
+          -- ৫ লাখ পণ্যের টেবিল
+          SELECT id, name FROM product
+          WHERE name LIKE '%ফোন%' OR description LIKE '%ফোন%'
+          ORDER BY created_at DESC
+          LIMIT 20;
+
+          -- EXPLAIN বলছে: type = ALL, rows ≈ 500000
+          -- অর্থাৎ index ব্যবহার হয়নি, পুরো টেবিল পড়া হয়েছে
+        marks:
+          - {line: 3, tip: 'শুরুতে % থাকায় B-tree index কাজে লাগে না; প্রতিটা সারির পুরো লেখা পড়ে মেলাতে হয়।'}
+          - {line: 4, tip: 'সবচেয়ে মানানসই পণ্য নয়, শুধু সবচেয়ে নতুনটা আগে আসে। কোনটা বেশি প্রাসঙ্গিক তা SQL জানেই না।'}
+      - type: visual
+        kind: table
+        caption: 'খদ্দের যা লিখল, LIKE যা করল, আর খদ্দের আসলে যা চেয়েছিল'
+        headers: ['খদ্দের লিখল', 'LIKE কী করল', 'খদ্দের চেয়েছিল']
+        rows:
+          - cells: ['samsung phone', 'কিছুই পায়নি', 'Samsung Galaxy A15 Phone']
+            tip: 'নামের ভেতরে "samsung" আর "phone" পাশাপাশি নেই, মাঝে "Galaxy A15" আছে — তাই হুবহু টুকরোটা মেলেনি।'
+          - cells: ['phones', 'কিছুই পায়নি', '"phone" লেখা সব পণ্য']
+            tip: 'LIKE জানে না যে phones আর phone একই শব্দের দুই রূপ। সে শুধু অক্ষর মেলায়।'
+          - cells: ['samsang', 'কিছুই পায়নি', 'Samsung-এর পণ্য']
+            tip: 'এক অক্ষরের বানান ভুল। মানুষ বুঝে নেয়, LIKE বোঝে না।'
+          - cells: ['ফোন', 'হেডফোন, মাইক্রোফোনও এনেছে', 'আগে মোবাইল ফোন']
+            tip: 'অক্ষর মিললেই LIKE খুশি। কোনটা আগে দেখানো উচিত, সেই বিচার তার নেই।'
+    aside:
+      - type: problem
+        body: 'পণ্য কয়েক হাজার থাকা পর্যন্ত LIKE দিয়ে বানানো search box দিব্যি চলে। সমস্যা ধরা পড়ে পরে: পাতা খুলতে কয়েক সেকেন্ড লাগে, আর খদ্দের বলে "খুঁজে কিছু পাই না"।'
+      - type: terms
+        items:
+          - {term: 'Full table scan', meaning: 'index ছাড়া টেবিলের প্রতিটা সারি পড়ে দেখা।'}
+          - {term: 'Relevance', meaning: 'খোঁজের সাথে একটা ফলাফল কতটা মানানসই, তার মাপ।'}
+      - type: refs
+        items:
+          - {to: 'data/indexing', label: 'B-tree index কীভাবে কাজ করে'}
+    check:
+      q: 'name কলামে index আছে। তবু LIKE ''%ফোন%'' ধীর, অথচ LIKE ''ফোন%'' দ্রুত — কেন?'
+      a: 'Index সাজানো থাকে লেখার শুরু ধরে। শুরুটা জানা থাকলে সরাসরি সেখানে যাওয়া যায়; শুরুতে % থাকলে কোথা থেকে খুঁজবে তা জানা নেই, তাই সব সারি পড়তে হয়।'
+
+  - slug: inverted-index
+    title: 'Inverted index: শব্দ থেকে document-এর তালিকা'
+    kind: concept
+    tldr: 'Inverted index প্রতিটা শব্দের পাশে লিখে রাখে কোন কোন document-এ সেটা আছে; খোঁজা মানে শুধু সেই তালিকা তুলে আনা।'
+    keywords: ['inverted index', 'posting list', 'term', 'নির্ঘণ্ট', 'search index', 'শব্দের তালিকা']
+    blocks:
+      - type: metaphor
+        icon: list
+        title: 'বইয়ের শেষের নির্ঘণ্ট'
+        body: |
+          মোটা বইয়ের শেষে নির্ঘণ্ট থাকে: "ইলিশ — পৃষ্ঠা ১২, ৮৭, ২০৩"। শব্দটা খুঁজতে পুরো বই পড়তে হয় না, এক লাইন দেখলেই চলে। লাইব্রেরিয়ান পুরো লাইব্রেরির জন্য এমন একটা খাতা বানালেন — প্রতিটা শব্দের পাশে লেখা, কোন কোন বইয়ে সেটা আছে। এই খাতাই **inverted index**। টেবিল বলে "বই → শব্দ"; এই খাতা উল্টো দিক থেকে বলে "শব্দ → বই"।
+      - type: visual
+        kind: table
+        caption: 'তিনটা পণ্যের নাম থেকে বানানো inverted index'
+        headers: ['শব্দ (term)', 'কোন document-এ আছে']
+        rows:
+          - cells: ['samsung', '১, ৩']
+            tip: 'Document ১ (Samsung Galaxy phone) আর ৩ (Samsung charger)-এ শব্দটা আছে। এই তালিকাকে বলে posting list।'
+          - cells: ['phone', '১, ২']
+            tip: 'Document ১ (Samsung Galaxy phone) আর ২ (Phone cover)-এ আছে।'
+          - cells: ['galaxy', '১']
+            tip: 'শুধু document ১-এ আছে। যে শব্দ কম জায়গায় থাকে, খোঁজার সময় সেটার দাম বেশি।'
+          - cells: ['cover', '২']
+            tip: 'শুধু document ২ (Phone cover)-এ আছে।'
+          - cells: ['charger', '৩']
+            tip: 'শুধু document ৩ (Samsung charger)-এ আছে।'
+      - type: visual
+        kind: flow
+        caption: '"samsung phone" খুঁজলে index-এর ভেতরে কী ঘটে'
+        nodes:
+          - {id: query, label: 'খোঁজ', sub: 'samsung phone', icon: search, col: 0, row: 1, tip: 'খদ্দেরের লেখা। এটাকে আগে আলাদা শব্দে ভাঙা হয়।'}
+          - {id: t1, label: 'samsung', sub: 'তালিকা: ১, ৩', icon: list, col: 1.5, row: 0, tip: 'খাতা থেকে samsung শব্দের posting list সরাসরি তুলে আনা হয় — কোনো document পড়তে হয় না।'}
+          - {id: t2, label: 'phone', sub: 'তালিকা: ১, ২', icon: list, col: 1.5, row: 2, tip: 'একইভাবে phone শব্দের posting list তুলে আনা হয়।'}
+          - {id: merge, label: 'মিলিয়ে দেখা', sub: 'দুই তালিকা', icon: filter, tone: accent, col: 3, row: 1, tip: 'সাজানো দুইটা ছোট তালিকা মেলানো খুব সস্তা কাজ। লাখ লাখ document থাকলেও এটা মিলিসেকেন্ডে হয়।'}
+          - {id: result, label: 'ফলাফল', sub: '১ আগে, পরে ২ ও ৩', icon: check, tone: good, col: 4, row: 1, tip: 'Document ১-এ দুই শব্দই আছে, তাই সেটা সবার ওপরে। ২ আর ৩-এ একটা করে শব্দ মিলেছে।'}
+        edges:
+          - {from: query, to: t1, label: 'খোঁজটা শব্দে ভাঙে; samsung-এর তালিকা তোলা হয়'}
+          - {from: query, to: t2, label: 'phone-এর তালিকাও তোলা হয়'}
+          - {from: t1, to: merge, label: 'samsung আছে document ১ আর ৩-এ'}
+          - {from: t2, to: merge, label: 'phone আছে document ১ আর ২-এ'}
+          - {from: merge, to: result, label: 'দুই তালিকাতেই আছে ১ — সেটাই সবার আগে', tone: good}
+      - type: quote
+        body: 'খোঁজার সময় কাজ কমাতে চাইলে লেখার সময় কাজ বাড়াতে হয়। Index মানে আগে থেকে খেটে রাখা।'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Document', meaning: 'search engine-এ জমা রাখা একটা জিনিস — যেমন একটা পণ্য। টেবিলের একটা সারির মতো।'}
+          - {term: 'Term', meaning: 'index-এ জমা থাকা একটা শব্দ।'}
+          - {term: 'Posting list', meaning: 'একটা term কোন কোন document-এ আছে, তার সাজানো তালিকা।'}
+      - type: remember
+        body: 'টেবিল: document → শব্দ। Inverted index: শব্দ → document। দিক উল্টে দিলেই খোঁজা সহজ।'
+    check:
+      q: 'ওপরের index-এ "samsung charger" খুঁজলে কোন document সবার আগে আসবে, আর কেন?'
+      a: 'Document ৩। samsung-এর তালিকা (১, ৩) আর charger-এর তালিকা (৩) — দুটোতেই শুধু ৩ আছে।'
+
+  - slug: analyzer-pipeline
+    title: 'Analyzer: লেখাকে term বানানোর কারখানা'
+    kind: concept
+    tldr: 'Analyzer লেখাকে শব্দে কাটে, ছোট হাতের করে, মূল রূপে আনে; index আর query — দুই দিকে একই analyzer না চললে শব্দ মেলে না।'
+    keywords: ['analyzer', 'tokenizer', 'token filter', 'stemming', 'stop word', 'শব্দ ভাঙা', 'bengali analyzer']
+    blocks:
+      - type: text
+        body: |
+          নির্ঘণ্টের খাতায় "Phones", "phone" আর "PHONE" আলাদা তিন লাইনে উঠলে "phone" খুঁজে বাকি দুটো পাওয়া যাবে না। তাই খাতায় তোলার আগে প্রতিটা লেখা একটা ছোট কারখানার ভেতর দিয়ে যায় — এর নাম **analyzer**। এর ভেতরে **tokenizer** লেখাকে শব্দে কাটে, আর **token filter** শব্দগুলোকে এক ছাঁচে আনে। খোঁজার সময় খদ্দেরের লেখাও একই কারখানা দিয়ে যায়।
+      - type: visual
+        kind: steps
+        caption: '"<b>Samsung</b> Phones for Gaming" লেখাটা কীভাবে তিনটা term হয়'
+        steps:
+          - {title: '১. Character filter', body: 'HTML ট্যাগ সরায়: Samsung Phones for Gaming', tip: 'লেখা কাটার আগের ধোয়ামোছা। html_strip ট্যাগ ফেলে দেয়; অন্য filter দিয়ে অক্ষর বদলানোও যায়।'}
+          - {title: '২. Tokenizer', body: 'শব্দে কাটে: Samsung · Phones · for · Gaming', tip: 'standard tokenizer ফাঁকা জায়গা আর যতিচিহ্ন ধরে কাটে। প্রতিটা টুকরোকে বলে token।'}
+          - {title: '৩. Lowercase', body: 'ছোট হাতের করে: samsung · phones · for · gaming', tip: 'এরপর থেকে Samsung, SAMSUNG আর samsung — সব একই term।'}
+          - {title: '৪. Stop word', body: 'অর্থহীন শব্দ বাদ: samsung · phones · gaming', tip: 'for, the, is-এর মতো শব্দ প্রায় সব লেখায় থাকে, তাই খোঁজায় কোনো কাজে আসে না।'}
+          - {title: '৫. Stemmer', body: 'মূল রূপে আনে: samsung · phone · game', tone: accent, tip: 'phones → phone, gaming → game। এখন "phone" খুঁজলেও এই পণ্য মিলবে। মূল রূপটা সবসময় আসল শব্দ হয় না — তাতে ক্ষতি নেই।'}
+      - type: code
+        lang: http
+        file: 'Elasticsearch: index তৈরি'
+        code: |
+          PUT /products
+          {
+            "settings": {
+              "analysis": {
+                "analyzer": {
+                  "product_text": {
+                    "type": "custom",
+                    "char_filter": ["html_strip"],
+                    "tokenizer": "standard",
+                    "filter": ["lowercase", "stop", "porter_stem"]
+                  }
+                }
+              }
+            },
+            "mappings": {
+              "properties": {
+                "name":  { "type": "text", "analyzer": "product_text" },
+                "brand": { "type": "keyword" },
+                "price": { "type": "integer" }
+              }
+            }
+          }
+        marks:
+          - {line: 10, tip: 'filter-গুলো এই ক্রমেই চলে। আগে lowercase না করলে stop word আর stemmer বড় হাতের শব্দ চিনবে না।'}
+          - {line: 17, tip: 'text মানে analyzer চলবে — পুরো লেখায় খোঁজার জন্য। index আর query, দুই সময়েই product_text ব্যবহার হবে।'}
+          - {line: 18, tip: 'keyword মানে analyzer চলবে না; পুরো মানটা হুবহু একটা term। filter, sort আর facet-এর জন্য এটাই লাগে।'}
+      - type: quote
+        body: 'Index আর query — দুই দিকে একই analyzer। নইলে শব্দ খাতায় থাকবে, কিন্তু মিলবে না।'
+    aside:
+      - type: commands
+        title: 'Analyzer পরখ করা'
+        items:
+          - {cmd: 'POST /products/_analyze', desc: 'body-তে analyzer আর text দিলে দেখায় লেখাটা কোন কোন term-এ ভাঙল'}
+      - type: tips
+        items:
+          - 'বাংলা লেখার জন্য Elasticsearch-এ তৈরি `bengali` analyzer আছে। নামে বাংলা-ইংরেজি মিশে থাকলে দুইটা field-এ দুই analyzer রাখো।'
+          - 'synonym filter দিয়ে "mobile" আর "phone"-কে এক করা যায় — খদ্দের যে শব্দে খোঁজে, সেটাই শেখাও।'
+      - type: terms
+        items:
+          - {term: 'Token', meaning: 'tokenizer-এর কাটা একটা টুকরো; filter পেরিয়ে index-এ উঠলে সেটাই term।'}
+          - {term: 'Stemming', meaning: 'শব্দের শেষের অংশ ছেঁটে মূল রূপে আনা (phones → phone)।'}
+    check:
+      q: 'পণ্যের নাম index হয়েছে lowercase filter দিয়ে, কিন্তু খোঁজার লেখায় filter চলেনি। "Samsung" লিখে খুঁজলে কী হবে?'
+      a: 'কিছুই মিলবে না। খাতায় আছে "samsung", আর খোঁজা হচ্ছে "Samsung" — search engine-এর কাছে এ দুটো আলাদা term।'
+
+  - slug: relevance-scoring
+    title: 'Relevance: কোন ফলাফল আগে আসবে'
+    kind: concept
+    tldr: 'Search engine প্রতিটা document-কে score দেয় (BM25): বিরল শব্দ মিললে বেশি, শব্দটা বারবার থাকলে বেশি, ছোট লেখায় মিললে বেশি।'
+    keywords: ['relevance', 'BM25', 'TF-IDF', 'score', 'boost', 'fuzziness', 'ranking', 'প্রাসঙ্গিকতা']
+    blocks:
+      - type: text
+        body: |
+          লাইব্রেরিয়ান "ইলিশ রান্না" খুঁজে ৩০০টা বই পেলেন। সব একসাথে হাতে ধরিয়ে দিলে লাভ নেই — সবচেয়ে কাজের বইটা সবার ওপরে থাকা চাই। Search engine তাই প্রতিটা document-কে একটা নম্বর দেয়, যার নাম **score**, আর বেশি নম্বরেরটা আগে দেখায়। Elasticsearch-এর নম্বর দেওয়ার নিয়মের নাম BM25; সে তিনটা জিনিস দেখে।
+      - type: points
+        title: 'BM25 যে তিনটা জিনিস দেখে'
+        style: number
+        items:
+          - '**শব্দটা কত বিরল:** "রান্না" হাজার বইয়ে আছে, "ইলিশ" মাত্র ৪০টায়। বিরল শব্দ মিললে নম্বর বেশি।'
+          - '**কতবার আছে:** শব্দটা বারবার থাকলে নম্বর বাড়ে, তবে একটা সীমার পরে আর বাড়ে না।'
+          - '**লেখাটা কত ছোট:** পাঁচ শব্দের নামে "ইলিশ" থাকা আর ৫০০ পাতার বইয়ের এক কোণে থাকা এক নয়।'
+      - type: visual
+        kind: bars
+        caption: '"samsung phone" খোঁজে তিনটা পণ্যের score (উদাহরণ)'
+        items:
+          - {label: 'Samsung Galaxy Phone', value: 82, display: '৮.২', tone: good, tip: 'দুই শব্দই মিলেছে, তা-ও ছোট একটা নামের ভেতরে — তাই সবচেয়ে বেশি নম্বর।'}
+          - {label: 'Samsung Charger', value: 31, display: '৩.১', tip: 'শুধু samsung মিলেছে। শব্দটা তুলনায় বিরল, তাই মাঝারি নম্বর।'}
+          - {label: 'Phone Cover', value: 14, display: '১.৪', tone: muted, tip: 'শুধু phone মিলেছে, আর phone শব্দটা হাজারো পণ্যে আছে — তাই নম্বর কম।'}
+      - type: code
+        lang: http
+        file: 'Elasticsearch: খোঁজার query'
+        variant: good
+        code: |
+          POST /products/_search
+          {
+            "query": {
+              "multi_match": {
+                "query": "samsang phone",
+                "fields": ["name^3", "description"],
+                "fuzziness": "AUTO"
+              }
+            }
+          }
+        marks:
+          - {line: 6, tip: 'name^3 মানে নামে মিললে description-এর চেয়ে তিন গুণ ওজন। একে বলে boost।'}
+          - {line: 7, tip: 'এক-দুই অক্ষরের বানান ভুল মেনে নেয় — তাই "samsang" লিখলেও Samsung-এর পণ্য আসে।'}
+      - type: quote
+        body: 'Search-এর প্রশ্ন শুধু "আছে কি নেই" নয় — "কতটা মানানসই"।'
+    aside:
+      - type: terms
+        items:
+          - {term: 'TF (term frequency)', meaning: 'একটা document-এ শব্দটা কতবার আছে।'}
+          - {term: 'IDF', meaning: 'পুরো index-এ শব্দটা কত বিরল; যত বিরল, তত দামি।'}
+          - {term: 'Boost', meaning: 'কোনো field বা শর্তের ওজন হাতে বাড়িয়ে দেওয়া।'}
+      - type: tips
+        items:
+          - 'query-তে `"explain": true` দিলে প্রতিটা ফলাফলের score কীভাবে হলো, তার পুরো হিসাব দেখায়।'
+          - 'বিক্রি বা রেটিংয়ের মতো ব্যবসার সংকেতও score-এ মেশানো যায় (`function_score`) — তবে আগে নাম আর analyzer ঠিক করো।'
+    check:
+      q: '"ইলিশ রান্না" খোঁজে কোন বই বেশি score পাবে: যার নামেই "ইলিশ" আছে, নাকি যার ৫০০ পাতার এক জায়গায় "রান্না" আছে? কেন?'
+      a: 'নামে "ইলিশ" থাকা বইটা। "ইলিশ" বিরল শব্দ, আর সেটা মিলেছে খুব ছোট একটা লেখায় — দুই কারণেই নম্বর বাড়ে।'
+
+  - slug: search-with-facets
+    title: 'Symfony থেকে search: ফলাফল আর facet এক request-এ'
+    kind: howto
+    tldr: 'Facet মানে ফলাফলের পাশে "Samsung (১২), Xiaomi (৮)" ধরনের গোনা তালিকা; query, filter আর aggregation এক request-এ পাঠাও।'
+    keywords: ['facet', 'aggregation', 'bool query', 'filter', 'HttpClient', 'ফ্যাসেট', 'keyword field']
+    blocks:
+      - type: text
+        body: |
+          অনলাইন দোকানে "phone" লিখলে বাম পাশে দেখায়: Samsung (১২), Xiaomi (৮)। এই গোনা তালিকাই **facet** — ফলাফলকে ভাগ করে প্রতিটা ভাগে কয়টা আছে তা দেখায়, যাতে খদ্দের এক ক্লিকে তালিকা ছোট করতে পারে। Elasticsearch-এ এর নাম aggregation। খোঁজার লেখা যায় `must`-এ, যেখানে score হয়। খদ্দেরের বাছাই করা brand যায় `filter`-এ, যেখানে শুধু হ্যাঁ বা না।
+      - type: code
+        lang: yaml
+        file: 'config/packages/framework.yaml'
+        code: |
+          framework:
+              http_client:
+                  scoped_clients:
+                      search.client:
+                          base_uri: '%env(SEARCH_URL)%'
+      - type: code
+        lang: php
+        file: 'src/Search/ProductSearch.php'
+        variant: good
+        code: |
+          final readonly class ProductSearch
+          {
+              public function __construct(private HttpClientInterface $searchClient)
+              {
+              }
+
+              /** @return array{hits: list<array>, brands: list<array>} */
+              public function search(string $text, ?string $brand = null): array
+              {
+                  $filter = null === $brand ? [] : [['term' => ['brand' => $brand]]];
+
+                  $data = $this->searchClient->request('POST', '/products/_search', [
+                      'json' => [
+                          'size' => 20,
+                          'query' => ['bool' => [
+                              'must' => [['multi_match' => [
+                                  'query' => $text,
+                                  'fields' => ['name^3', 'description'],
+                              ]]],
+                              'filter' => $filter,
+                          ]],
+                          'aggs' => [
+                              'brands' => ['terms' => ['field' => 'brand', 'size' => 10]],
+                          ],
+                      ],
+                  ])->toArray();
+
+                  return [
+                      'hits' => array_column($data['hits']['hits'], '_source'),
+                      'brands' => $data['aggregations']['brands']['buckets'],
+                  ];
+              }
+          }
+        marks:
+          - {line: 3, tip: 'search.client নামের scoped client এই নামের argument-এ নিজে থেকেই autowire হয়।'}
+          - {line: 16, tip: 'must-এর ভেতরের query score হিসাব করে — কোন পণ্য আগে আসবে তা এখানেই ঠিক হয়।'}
+          - {line: 20, tip: 'filter score বদলায় না, শুধু বাদ দেয়। ফলটা cache-ও হয়, তাই হ্যাঁ/না ধরনের শর্ত সবসময় এখানে রাখো।'}
+          - {line: 23, tip: 'প্রতিটা brand-এ কয়টা পণ্য মিলল তা গুনে দেয়: [{key: samsung, doc_count: 12}, …]। field-টা keyword হতেই হবে।'}
+      - type: visual
+        kind: flow
+        caption: 'এক request-এ ফলাফল আর facet'
+        nodes:
+          - {id: vue, label: 'Vue অ্যাপ', sub: 'search box', icon: browser, col: 0, row: 0, tip: 'খদ্দের এখানে লেখে আর facet-এ ক্লিক করে। প্রতিটা অক্ষরে request না পাঠিয়ে লেখা থামার ৩০০ms পরে পাঠানো ভালো।'}
+          - {id: api, label: 'ProductSearch', sub: 'Symfony service', icon: api, tone: accent, col: 2, row: 0, tip: 'খদ্দেরের লেখা আর বাছাই থেকে Elasticsearch-এর query বানায়। ব্রাউজার কখনো সরাসরি Elasticsearch-এ যায় না।'}
+          - {id: es, label: 'Elasticsearch', sub: 'products index', icon: search, col: 4, row: 0, tip: 'inverted index থেকে মিলে যাওয়া document বের করে, score দেয়, আর একই সাথে brand ধরে গোনে।'}
+        edges:
+          - {from: vue, to: api, label: 'খদ্দের লেখে "phone", আর brand বাছে Samsung'}
+          - {from: api, to: es, label: 'এক request-এ query, filter আর aggs যায়'}
+          - {from: es, to: api, label: 'score অনুযায়ী ২০টা hit আর brand-এর bucket ফেরে', dashed: true}
+          - {from: api, to: vue, label: 'Vue বামে facet আর ডানে ফলাফল দেখায়', dashed: true, tone: good}
+    aside:
+      - type: pitfalls
+        items:
+          - '`text` field-এ aggregation চালালে error আসে। facet-এর field সবসময় `keyword` রাখো।'
+          - 'brand-এর filter মূল query-তে থাকলে facet-এ শুধু বাছাই করা brand-ই থাকে। বাকি brand-ও দেখাতে চাইলে সেটা `post_filter`-এ দাও।'
+          - 'Elasticsearch-কে কখনো সরাসরি ইন্টারনেটে খুলে দিয়ো না; সব request Symfony হয়ে যাবে।'
+      - type: terms
+        items:
+          - {term: 'Facet / aggregation', meaning: 'ফলাফলকে ভাগ করে প্রতিটা ভাগে কয়টা document আছে তার গণনা।'}
+          - {term: 'Bucket', meaning: 'aggregation-এর একটা ভাগ, যেমন brand = samsung, সাথে তার সংখ্যা।'}
+    check:
+      q: 'খদ্দের "phone" লিখে brand হিসেবে Samsung বাছল। কোনটা `must`-এ যাবে আর কোনটা `filter`-এ, কেন?'
+      a: '"phone" যাবে must-এ, কারণ সেটার জন্য score দরকার। brand = Samsung যাবে filter-এ, কারণ ওটা শুধু হ্যাঁ বা না — score লাগে না, আর cache হয়।'
+
+  - slug: search-engine-tradeoffs
+    title: 'Elasticsearch / OpenSearch: কখন আনবে, কখন নয়'
+    kind: compare
+    tldr: 'Search engine শক্তিশালী, কিন্তু আলাদা cluster চালানো, ডেটা sync রাখা আর এক-দুই সেকেন্ডের দেরি মেনে নিতে হয়; ছোট অবস্থায় ডেটাবেসের full-text যথেষ্ট।'
+    keywords: ['Elasticsearch', 'OpenSearch', 'full-text search', 'PostgreSQL tsvector', 'Meilisearch', 'trade-off', 'কখন লাগবে']
+    blocks:
+      - type: text
+        body: |
+          Elasticsearch আর OpenSearch — দুটোই Lucene নামের একই library-র ওপর বানানো search engine, তাই ভেতরের ধারণা আর API প্রায় এক। (OpenSearch হলো Elasticsearch 7.10 থেকে বেরোনো Apache 2.0 লাইসেন্সের শাখা।) দুটোই দারুণ search দেয়, কিন্তু বিনা দামে নয়: এটা তোমার সিস্টেমে আরেকটা চলন্ত অংশ, যাকে চালাতে, পাহারা দিতে আর ডেটাবেসের সাথে মিলিয়ে রাখতে হয়।
+      - type: visual
+        kind: compare
+        caption: 'তিন পথ — কী পাও আর কী দাম দাও'
+        columns:
+          - title: 'ডেটাবেসের full-text'
+            tone: good
+            icon: db
+            tip: 'PostgreSQL-এ tsvector কলাম আর GIN index, MySQL-এ FULLTEXT index। ভেতরে এটাও একটা inverted index।'
+            items:
+              - 'নতুন কোনো সার্ভার লাগে না'
+              - 'ডেটা সবসময় তাজা, transaction-এর ভেতরেই'
+              - 'কয়েক লাখ সারি পর্যন্ত প্রায়ই যথেষ্ট'
+              - 'বানান ভুল, facet আর সূক্ষ্ম ranking-এ দুর্বল'
+          - title: 'Elasticsearch / OpenSearch'
+            tone: accent
+            icon: search
+            tip: 'পুরোদস্তুর search engine। কাজ সবচেয়ে বেশি পারে, চালানোর খরচও সবচেয়ে বেশি।'
+            items:
+              - 'বানান ভুল, synonym, facet, ভাষাভিত্তিক analyzer'
+              - 'কোটি document-এও মিলিসেকেন্ডে উত্তর'
+              - 'আলাদা cluster: RAM, monitoring, upgrade, backup'
+              - 'ডেটাবেস থেকে sync রাখতে হয়; এক-দুই সেকেন্ড পিছিয়ে থাকে'
+              - 'analyzer বা mapping বদলালে পুরো reindex'
+          - title: 'Meilisearch / Typesense'
+            icon: bolt
+            tip: 'ছোট ও সহজ search engine। বসানো সহজ, শুরু থেকেই বানান ভুল সামলায়।'
+            items:
+              - 'চালানো আর শেখা সহজ'
+              - 'ছোট থেকে মাঝারি ক্যাটালগে দারুণ'
+              - 'বিশাল ডেটা বা জটিল aggregation-এ সীমিত'
+              - 'এখানেও ডেটাবেস থেকে sync রাখতে হয়'
+      - type: points
+        title: 'সিদ্ধান্তের নিয়ম'
+        style: number
+        items:
+          - 'আগে ডেটাবেসের full-text দিয়ে শুরু করো।'
+          - 'বানান ভুল, facet, ভাষা বা ranking নিয়ে সত্যিকারের অভিযোগ এলে search engine আনো।'
+          - 'Search engine-এ যা রাখবে, তা যেন ডেটাবেস থেকে যেকোনো দিন আবার বানানো যায়।'
+      - type: quote
+        body: 'Search index হলো কপি, আসল সত্য নয়। টাকা বা স্টকের সিদ্ধান্ত কখনো index দেখে নিয়ো না।'
+    aside:
+      - type: when
+        use:
+          - 'খদ্দেরের মূল কাজই খোঁজা: ই-কমার্স ক্যাটালগ, চাকরির বিজ্ঞাপন, ডকুমেন্ট।'
+          - 'বানান ভুল সহ্য করা, facet আর বাংলা-ইংরেজি মেশানো লেখা দরকার।'
+        avoid:
+          - 'অ্যাডমিন প্যানেলের ছোট তালিকায় নাম বা আইডি দিয়ে খোঁজা।'
+          - 'টিমে কেউ cluster চালাতে পারে না, আর managed service-এর বাজেটও নেই।'
+      - type: refs
+        items:
+          - {to: 'caching/search-pipeline', label: 'Search index আপডেট রাখা'}
+          - {to: 'thinking/build-vs-buy', label: 'নতুন প্রযুক্তির আসল খরচ'}
+    check:
+      q: 'রহিমের দোকানে ৮ হাজার পণ্য, এক সার্ভার, টিমে দুইজন। Search-এর জন্য প্রথমে কী বেছে নেওয়া উচিত, আর কেন?'
+      a: 'ডেটাবেসের full-text search। এত কম ডেটায় সেটাই যথেষ্ট দ্রুত, নতুন সার্ভার বা sync-এর ঝামেলা নেই। অভিযোগ এলে তখন search engine।'
+
+flashcards:
+  - q: 'LIKE ''%শব্দ%'' বড় টেবিলে ধীর কেন?'
+    a: 'শুরুতে % থাকায় B-tree index ব্যবহার করা যায় না, তাই প্রতিটা সারি পড়ে মেলাতে হয় (full table scan)।'
+    more: |
+      B-tree index লেখার প্রথম অক্ষর ধরে সাজানো থাকে, অভিধানের মতো। তাই `LIKE 'ফোন%'` index ধরে দ্রুত চলে, কিন্তু `LIKE '%ফোন%'`-এ শুরুটাই অজানা। ডেটা দশ গুণ হলে সময়ও দশ গুণ হয়। তার ওপর LIKE বানান ভুল বোঝে না, আর কোন ফলাফল বেশি মানানসই তা-ও জানে না।
+    ref: like-fails
+  - q: 'Inverted index কী?'
+    a: 'এমন একটা তালিকা, যেখানে প্রতিটা শব্দের পাশে লেখা থাকে কোন কোন document-এ সেটা আছে।'
+    more: |
+      বইয়ের শেষের নির্ঘণ্টের মতো: "ইলিশ — পৃষ্ঠা ১২, ৮৭"। খোঁজার সময় কোনো document পড়তে হয় না; শুধু শব্দটার তালিকা (posting list) তুলে আনলেই হয়। একাধিক শব্দ খুঁজলে তালিকাগুলো মিলিয়ে দেখা হয়। এই কারণেই কোটি document-এও search মিলিসেকেন্ডে শেষ হয়।
+    ref: inverted-index
+  - q: 'Analyzer-এর তিনটা অংশ কী কী?'
+    a: 'Character filter (ধোয়ামোছা), tokenizer (শব্দে কাটা) আর token filter (lowercase, stop word, stemming)।'
+    more: |
+      Analyzer লেখাকে index-এ তোলার উপযোগী term-এ বদলায়। "Samsung Phones" হয়ে যায় samsung আর phone। তাই পরে "phone" বা "PHONES" — যেভাবেই খোঁজো, মিলে যায়। কোন লেখা কোন term-এ ভাঙছে তা `_analyze` API দিয়ে দেখে নেওয়া যায়।
+    ref: analyzer-pipeline
+  - q: 'Index করার সময় আর খোঁজার সময় আলাদা analyzer চললে কী হয়?'
+    a: 'দুই পাশের term আলাদা হয়ে যায়, তাই শব্দ index-এ থাকলেও খোঁজে মেলে না।'
+    more: |
+      Search engine অর্থ বোঝে না, শুধু term হুবহু মেলায়। index-এ যদি "phone" উঠে থাকে আর query থেকে আসে "Phones", তাহলে মিল নেই। এজন্য নিয়ম: দুই দিকেই একই analyzer। Elasticsearch-এ field-এ analyzer ঠিক করে দিলে query-তেও নিজে থেকে সেটাই চলে।
+    ref: analyzer-pipeline
+  - q: 'Elasticsearch-এ text আর keyword field-এর পার্থক্য কী?'
+    a: 'text-এ analyzer চলে — পুরো লেখায় খোঁজার জন্য। keyword হুবহু একটা মান — filter, sort আর facet-এর জন্য।'
+    more: |
+      পণ্যের নাম বা বিবরণ হবে text, কারণ খদ্দের ভেতরের যেকোনো শব্দ দিয়ে খুঁজবে। brand, status বা category হবে keyword, কারণ এগুলো পুরোটাই মেলাতে বা গুনতে হয়। text field-এ aggregation চালাতে গেলে Elasticsearch error দেয়।
+    ref: analyzer-pipeline
+  - q: 'BM25 কোন তিনটা জিনিস দেখে score দেয়?'
+    a: 'শব্দটা পুরো index-এ কত বিরল, document-এ কতবার আছে, আর লেখাটা কত ছোট।'
+    more: |
+      বিরল শব্দ মিললে নম্বর বেশি, কারণ সেটা বেশি তথ্য বহন করে। শব্দ বারবার থাকলে নম্বর বাড়ে, তবে একটা সীমার পরে থেমে যায়। ছোট লেখায় মিল পাওয়া বড় লেখার এক কোণে মিল পাওয়ার চেয়ে দামি। এর ওপর boost দিয়ে নাম-এর মতো field-কে বাড়তি ওজন দেওয়া যায়।
+    ref: relevance-scoring
+  - q: 'Facet কী?'
+    a: 'ফলাফলকে ভাগ করে প্রতিটা ভাগে কয়টা আছে তার গোনা তালিকা — যেমন Samsung (১২), Xiaomi (৮)।'
+    more: |
+      Facet দেখে খদ্দের বোঝে ফলাফলে কী কী আছে, আর এক ক্লিকে তালিকা ছোট করে। Elasticsearch-এ এটা বানানো হয় aggregation দিয়ে, আর field-টা হতে হয় keyword। খোঁজার ফলাফল আর facet একই request-এ আসে।
+    ref: search-with-facets
+  - q: 'bool query-তে must আর filter-এর পার্থক্য কী?'
+    a: 'must-এর শর্ত score হিসাব করে; filter শুধু হ্যাঁ/না বলে — score বদলায় না, আর cache হয়।'
+    more: |
+      খদ্দেরের লেখা শব্দ যায় must-এ, কারণ সেখানে "কতটা মানানসই" জানা দরকার। brand, দামের সীমা বা স্টকে আছে কি না — এ ধরনের শর্ত যায় filter-এ। ভুল করে সব must-এ দিলে কাজ হয়, কিন্তু query ধীর হয় আর score অকারণে বদলে যায়।
+    ref: search-with-facets
+  - q: 'Search index-কে আসল ডেটার একমাত্র ঠিকানা বানানো উচিত নয় কেন?'
+    a: 'ওটা ডেটাবেসের কপি; এক-দুই সেকেন্ড পিছিয়ে থাকে, transaction নেই, আর mapping বদলালে পুরোটা নতুন করে বানাতে হয়।'
+    more: |
+      আসল সত্য থাকে ডেটাবেসে। Search index যেকোনো দিন মুছে ডেটাবেস থেকে আবার বানানো যাবে — এই ধরে নিয়ে ডিজাইন করো। দাম বা স্টকের মতো সিদ্ধান্ত সবসময় ডেটাবেস দেখে নাও। কপিটা কীভাবে তাজা রাখবে: [[caching/search-pipeline|search index আপডেট রাখা]]।
+    ref: search-engine-tradeoffs
+
+quiz:
+  - q: 'করিম `product.name`-এ index বসাল, তবু `WHERE name LIKE ''%চার্জার%''` আগের মতোই ধীর। কারণ কী?'
+    hint: 'অভিধানে "র" দিয়ে শেষ হওয়া সব শব্দ খুঁজতে হলে কোন পাতা থেকে শুরু করবে?'
+    options:
+      - text: 'index সাজানো লেখার শুরু ধরে; শুরুতে % থাকলে index কাজে লাগে না'
+        correct: true
+        why: 'কোথা থেকে খুঁজতে হবে তা অজানা, তাই ডেটাবেস প্রতিটা সারি পড়তে বাধ্য হয়।'
+      - text: 'index বানানোর পরে সার্ভার restart করা হয়নি'
+        correct: false
+        why: 'index বানানো শেষ হলেই ব্যবহার শুরু হয়; restart-এর সাথে এর কোনো সম্পর্ক নেই।'
+      - text: 'বাংলা লেখায় index কাজ করে না'
+        correct: false
+        why: 'index যেকোনো ভাষার লেখায় কাজ করে। ইংরেজি শব্দেও `%x%` একইভাবে ধীর।'
+      - text: 'LIMIT না দেওয়ায় সব সারি পড়তে হচ্ছে'
+        correct: false
+        why: 'LIMIT দিলেও মেলে এমন সারি খুঁজে পেতে আগে সারিগুলো পড়তেই হয়।'
+    ref: like-fails
+  - q: 'Inverted index-এ আছে: laptop → ২, ৫, ৯ এবং bag → ৫, ৭। "laptop bag" খুঁজলে কোন document-এ দুই শব্দই আছে?'
+    hint: 'দুই তালিকায় যে সংখ্যাটা একসাথে আছে, সেটা খোঁজো।'
+    options:
+      - text: 'শুধু ৫'
+        correct: true
+        why: 'দুই posting list-এর মিল শুধু ৫-এ। এই মিলিয়ে দেখাটাই search engine-এর মূল কাজ।'
+      - text: '২, ৫, ৭, ৯ — সবগুলো'
+        correct: false
+        why: 'এগুলোতে অন্তত একটা শব্দ আছে, কিন্তু দুই শব্দই আছে শুধু একটায়।'
+      - text: '২ আর ৯'
+        correct: false
+        why: 'এ দুটোয় শুধু laptop আছে, bag নেই।'
+      - text: 'বলা যাবে না, আগে সব document পড়তে হবে'
+        correct: false
+        why: 'inverted index-এর সুবিধাই হলো document না পড়ে শুধু তালিকা মিলিয়ে উত্তর পাওয়া।'
+    ref: inverted-index
+  - q: 'পণ্যের নাম index হয়েছে lowercase আর stemmer দিয়ে। পরে কেউ query-র analyzer বদলে এমন একটা বসাল, যেটা লেখাকে হুবহু রেখে দেয়। খদ্দের "Phones" লিখলে কী হবে?'
+    hint: 'index-এ কোন term জমা আছে, আর query থেকে কোন term আসছে?'
+    options:
+      - text: 'কিছু মিলবে না — index-এ আছে "phone", আর খোঁজা হচ্ছে "Phones"'
+        correct: true
+        why: 'দুই দিকে analyzer আলাদা হওয়ায় term আলাদা হয়ে গেছে; search engine হুবহু term মেলায়।'
+      - text: 'সব ঠিক থাকবে, search engine নিজেই বুঝে নেবে'
+        correct: false
+        why: 'search engine অর্থ বোঝে না। analyzer যা বানায়, সে শুধু সেই term-ই মেলায়।'
+      - text: 'ফলাফল আসবে, শুধু score একটু কম হবে'
+        correct: false
+        why: 'term একেবারেই না মিললে score হিসাবের প্রশ্নই ওঠে না — ফলাফল শূন্য।'
+      - text: 'Elasticsearch error দেবে'
+        correct: false
+        why: 'এটা বৈধ configuration, তাই error আসে না। এজন্যই ভুলটা ধরা কঠিন — চুপচাপ শূন্য ফলাফল আসে।'
+    ref: analyzer-pipeline
+  - q: 'নিচের mapping দিয়ে brand ধরে facet বানাতে গেলে error আসছে। সমস্যা কোথায়?'
+    lang: json
+    code: |
+      {
+        "mappings": {
+          "properties": {
+            "name":  { "type": "text" },
+            "brand": { "type": "text" },
+            "price": { "type": "integer" }
+          }
+        }
+      }
+    hint: 'facet-এ পুরো মানটা হুবহু একটা term হিসেবে গুনতে হয়।'
+    options:
+      - text: 'brand হওয়া উচিত keyword; text field-এ aggregation চলে না'
+        correct: true
+        why: 'text field analyzer দিয়ে টুকরো হয়ে যায়, আর তাতে aggregation বন্ধ থাকে। হুবহু মান গুনতে keyword লাগে।'
+      - text: 'price হওয়া উচিত text'
+        correct: false
+        why: 'সংখ্যার field-এ range filter আর sort ভালো চলে; text করলে সেগুলোই নষ্ট হবে।'
+      - text: 'name-এ analyzer উল্লেখ নেই বলে'
+        correct: false
+        why: 'analyzer না দিলে standard analyzer চলে; brand-এর facet-এর সাথে এর সম্পর্ক নেই।'
+      - text: 'একটা index-এ দুইটা লেখার field রাখা যায় না'
+        correct: false
+        why: 'একটা index-এ যত খুশি field রাখা যায়।'
+    ref: search-with-facets
+  - q: 'BM25 অনুযায়ী কোন কোন ক্ষেত্রে একটা document-এর score বাড়ে?'
+    hint: 'বিরল, বারবার, ছোট — এই তিন শব্দ মনে করো।'
+    options:
+      - text: 'মিলে যাওয়া শব্দটা পুরো index-এ খুব কম document-এ আছে'
+        correct: true
+        why: 'বিরল শব্দ বেশি তথ্য দেয়, তাই তার ওজন বেশি (IDF)।'
+      - text: 'শব্দটা document-এর ভেতরে কয়েকবার আছে'
+        correct: true
+        why: 'বারবার থাকলে নম্বর বাড়ে (TF), যদিও একটা সীমার পরে আর বাড়ে না।'
+      - text: 'document-টা সবচেয়ে নতুন'
+        correct: false
+        why: 'BM25 তারিখ দেখে না। নতুনকে আগে আনতে চাইলে আলাদা করে sort বা boost দিতে হয়।'
+      - text: 'মিলটা পাওয়া গেছে খুব ছোট একটা field-এ'
+        correct: true
+        why: 'ছোট লেখায় মিল পাওয়া মানে লেখাটা মূলত ওই বিষয়েই — তাই নম্বর বেশি।'
+    ref: relevance-scoring
+  - q: 'কোন কোন পরিস্থিতিতে Elasticsearch বা OpenSearch আনা যুক্তিসঙ্গত?'
+    hint: 'সমস্যাটা সত্যিই আছে কি না, আর চালানোর খরচ বইতে পারবে কি না — দুটোই ভাবো।'
+    options:
+      - text: '৩০ লাখ পণ্যের ক্যাটালগ; খদ্দের বানান ভুল করে আর brand-দাম ধরে facet চায়'
+        correct: true
+        why: 'ডেটা বড়, আর বানান ভুল ও facet — দুটোই ডেটাবেসের full-text-এর দুর্বল জায়গা।'
+      - text: 'অ্যাডমিন প্যানেলে ২০০ জন কর্মীর নাম দিয়ে খোঁজা'
+        correct: false
+        why: '২০০ সারিতে LIKE-ও চোখের পলকে চলে। এখানে নতুন cluster শুধুই বাড়তি বোঝা।'
+      - text: 'বাংলা ও ইংরেজি মেশানো লাখো বিজ্ঞাপনে মানানসই ফলাফল আগে দেখানো দরকার'
+        correct: true
+        why: 'ভাষাভিত্তিক analyzer আর relevance scoring — এ কাজের জন্যই search engine।'
+      - text: 'checkout-এর সময় পণ্যের স্টক আছে কি না তা যাচাই করা'
+        correct: false
+        why: 'স্টকের সিদ্ধান্ত নিতে হয় ডেটাবেস দেখে; search index পিছিয়ে থাকতে পারে।'
+    ref: search-engine-tradeoffs
+  - q: 'খদ্দের "samsang" লিখে খুঁজল, কিছুই এল না। সবচেয়ে সঠিক সমাধান কোনটা?'
+    hint: 'এক-দুই অক্ষরের ভুল মেনে নেওয়ার ব্যবস্থা search engine-এ আগে থেকেই আছে।'
+    options:
+      - text: 'query-তে fuzziness চালু করা'
+        correct: true
+        why: 'fuzziness এক-দুই অক্ষরের অমিল মেনে নিয়ে কাছাকাছি term খুঁজে দেয়।'
+      - text: 'প্রতিটা সম্ভাব্য ভুল বানান পণ্যের নামে যোগ করে রাখা'
+        correct: false
+        why: 'ভুল বানানের শেষ নেই; ডেটা নোংরা হবে, তবু সব ভুল ধরা পড়বে না।'
+      - text: 'খদ্দেরকে error দেখিয়ে সঠিক বানান লিখতে বলা'
+        correct: false
+        why: 'খদ্দের সঠিক বানান জানলে তো ভুল লিখত না। সে খালি পাতা দেখে অন্য দোকানে চলে যাবে।'
+      - text: 'stemmer filter যোগ করা'
+        correct: false
+        why: 'stemmer শব্দের রূপ এক করে (phones → phone); বানান ভুল শোধরায় না।'
+    ref: relevance-scoring

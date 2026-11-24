@@ -1,0 +1,393 @@
+slides:
+  - slug: bad-release-night
+    title: 'রাত ১১টায় ভুল release, ফেরানোর সুইচ নেই'
+    kind: story
+    tldr: 'কোড deploy করা আর ফিচার ব্যবহারকারীর সামনে খোলা আলাদা কাজ; feature flag এই দুটোকে আলাদা করে, তাই ভুল হলে deploy ছাড়াই ফিচার বন্ধ করা যায়।'
+    keywords: ['feature flag', 'feature toggle', 'rollback', 'deploy vs release', 'ফিচার ফ্ল্যাগ', 'kill switch']
+    blocks:
+      - type: metaphor
+        icon: switch
+        title: 'বাড়ির সুইচ বোর্ড'
+        body: |
+          বাড়িতে নতুন একটা ঘরের লাইন টানা হলো। শর্ট সার্কিট হলে পুরো এলাকার লাইন কাটতে হয় না, শুধু ওই ঘরের সুইচটা off করলেই চলে। তার টানা হলো deploy, আর সুইচ অন করা হলো release। দুটো আলাদা হলে ভুল হলে তুমি তার খোলো না, শুধু সুইচ off করো।
+      - type: text
+        body: |
+          রহিমের টিম রাত ১১টায় নতুন checkout deploy করল, আর তাতে একটা bug। পুরনো কোডে ফেরাতে গেলে rollback deploy লাগবে, যা ২০ মিনিটের কাজ আর নিজেই ঝুঁকিপূর্ণ। এই ২০ মিনিটে ক্রেতারা অর্ডার দিতে পারছে না।
+      - type: visual
+        kind: compare
+        caption: 'ভুল release-এর পর ঠিক করার দুই পথ'
+        columns:
+          - title: 'ফ্ল্যাগ ছাড়া'
+            tone: bad
+            icon: cross
+            tip: 'ফিচার আর কোড এক জিনিস, তাই ফিচার ফেরাতে কোডই ফেরাতে হয়।'
+            items:
+              - 'rollback deploy: ২০ মিনিট'
+              - 'rollback-এও নতুন ভুলের ঝুঁকি'
+              - 'অন্য টিমের ভালো কোডও ফিরে যায়'
+          - title: 'ফ্ল্যাগ সহ'
+            tone: good
+            icon: check
+            tip: 'কোড আগেই deploy হয়ে বসে আছে, শুধু সুইচ বন্ধ। কোনো deploy লাগে না।'
+            items:
+              - 'সুইচ off: ৫ সেকেন্ড'
+              - 'কোড বদলায় না, তাই নতুন ঝুঁকিও নেই'
+              - 'শুধু ওই ফিচার বন্ধ, বাকি সব চালু'
+      - type: quote
+        body: 'Deploy মানে কোড সার্ভারে রাখা। Release মানে ব্যবহারকারীর সামনে খোলা। দুটো আলাদা সিদ্ধান্ত।'
+    aside:
+      - type: problem
+        body: 'ঝুঁকিপূর্ণ বদল ধীরে খোলা আর ভুল হলে এক সেকেন্ডে বন্ধ করা — কোড ফেরানো ছাড়াই।'
+      - type: terms
+        items:
+          - {term: 'Feature flag', meaning: 'কোডে একটা শর্ত, যার চালু বা বন্ধ থাকা কনফিগ বা ডেটা থেকে ঠিক হয়, কোড বদলে নয়।'}
+          - {term: 'Rollback', meaning: 'নতুন সংস্করণ ফিরিয়ে আগেরটা চালু করা।'}
+    check:
+      q: 'Feature flag থাকলে ভুল checkout ফেরাতে কেন deploy লাগে না?'
+      a: 'কারণ নতুন কোড আগেই সার্ভারে আছে, শুধু flag দিয়ে বন্ধ রাখা। ভুল হলে flag off করলেই পুরনো পথ চলে, কোড বদলাতে হয় না।'
+
+  - slug: four-kinds-of-flags
+    title: 'চার ধরনের flag: কাজ আর আয়ু আলাদা'
+    kind: concept
+    tldr: 'Flag চার ধরনের: release (ধীরে ফিচার খোলা), ops/kill switch (জরুরি বন্ধ), experiment (A/B), permission (কে পাবে)। ধরন ঠিক হলে আয়ু আর মালিক ঠিক হয়।'
+    keywords: ['release flag', 'ops flag', 'kill switch', 'experiment flag', 'permission flag', 'A/B test', 'flag types']
+    blocks:
+      - type: text
+        body: |
+          সব সুইচ এক নয়। বাড়ির মেইন সুইচ বছরের পর বছর থাকে, কিন্তু নতুন ঘরের অস্থায়ী সুইচ কাজ শেষে খুলে ফেলা হয়। Flag-ও তাই। আগে ঠিক করো এটা কোন ধরনের, কারণ ধরনই বলে দেয় কত দিন বাঁচবে আর কে বদলাবে।
+      - type: visual
+        kind: table
+        caption: 'চার ধরনের feature flag'
+        headers: ['ধরন', 'কী কাজে', 'আয়ু', 'কে বদলায়']
+        rows:
+          - cells: ['Release', 'নতুন ফিচার ধীরে খোলা', 'কয়েক দিন-সপ্তাহ', 'ডেভেলপার']
+            tip: 'কাজ শেষ হলেই মুছে ফেলার flag। এটাই সবচেয়ে বেশি জমে।'
+          - cells: ['Ops / kill switch', 'জরুরিতে ফিচার বন্ধ', 'বছরের পর বছর', 'অন-কল, ops']
+            tip: 'পেমেন্ট গেটওয়ে ধীর হলে সেই অংশ বন্ধ করে বাকিটা চালু রাখার সুইচ।'
+          - cells: ['Experiment', 'A/B পরীক্ষা', 'পরীক্ষা শেষ পর্যন্ত', 'প্রোডাক্ট টিম']
+            tip: 'ব্যবহারকারীরা দুই দলে ভাগ হয়; ফল দেখে একটা বেছে নিয়ে flag সরানো হয়।'
+          - cells: ['Permission', 'কে পাবে (প্ল্যান, দল)', 'দীর্ঘ, কখনো স্থায়ী', 'প্রোডাক্ট, সাপোর্ট']
+            tip: 'যেমন "প্রিমিয়াম গ্রাহকদের রিপোর্ট"। এটা আসলে ব্যবসার নিয়ম, অস্থায়ী নয়।'
+      - type: points
+        title: 'Kill switch-এর তিন শর্ত'
+        style: check
+        items:
+          - 'deploy ছাড়া বদলানো যায় (ডেটাবেস বা কনফিগ সার্ভিস থেকে)।'
+          - 'অন-কল ইঞ্জিনিয়ার এক মিনিটে খুঁজে পায় আর বদলাতে পারে।'
+          - 'বন্ধ থাকলে অ্যাপ ভেঙে পড়ে না, বিকল্প পথে চলে (যেমন "পরে চেষ্টা করুন" বার্তা)।'
+    aside:
+      - type: tips
+        items:
+          - 'প্রতিটা flag-এ লেখো: ধরন, মালিক, আর কখন সরানো হবে। permission ও kill switch ছাড়া সবগুলোর মেয়াদ থাকা দরকার।'
+          - 'Permission flag আসলে অনুমতির নিয়ম; সেটা security-র আলোচনায় authorization-এর অংশ।'
+      - type: refs
+        items:
+          - {to: 'security/authorization-models', label: 'Permission আর authorization'}
+          - {to: 'resilience/graceful-degradation', label: 'Kill switch আর graceful degradation'}
+    check:
+      q: 'পেমেন্ট গেটওয়ে হঠাৎ ধীর হলে অন-কলকে এক মিনিটে সেই অংশ বন্ধ করার জন্য কোন ধরনের flag দরকার?'
+      a: 'Ops flag বা kill switch। এটা deploy ছাড়া বদলানো যায় আর বন্ধ থাকলে অ্যাপ বিকল্প পথে চলে।'
+
+  - slug: flag-service-symfony
+    title: 'Symfony-তে সাধারণ flag service ও শতাংশ rollout'
+    kind: howto
+    tldr: 'Flag-এর অবস্থা ডেটাবেসে রাখো, ছোট TTL দিয়ে cache করো; শতাংশ rollout-এ ব্যবহারকারীর আইডি hash করে ০ থেকে ৯৯ বের করো, যাতে একই ব্যবহারকারী সবসময় একই ফল পায়।'
+    keywords: ['FeatureFlags service', 'percentage rollout', 'gradual rollout', 'crc32', 'sticky bucketing', 'Symfony']
+    blocks:
+      - type: text
+        body: |
+          ফিচার একবারে সবাইকে নয়, ধাপে ধাপে খোলো। ১% দিয়ে শুরু করে সব ঠিক থাকলে বাড়াও। মূল কৌশল: ব্যবহারকারীর আইডি আর flag-এর নাম মিলিয়ে একটা hash বের করে ০–৯৯ সংখ্যায় নামাও। সংখ্যাটা শতাংশের চেয়ে ছোট হলে ফিচার চালু। একই আইডি সবসময় একই সংখ্যা পায়, তাই ব্যবহারকারী একবার চালু পেলে চালুই থাকে।
+      - type: visual
+        kind: steps
+        caption: 'একটা নতুন checkout-এর ধাপে ধাপে rollout'
+        steps:
+          - {title: '১. শুধু টিম', body: 'allow list-এ নিজেদের আইডি; শতাংশ ০।', tip: 'আসল ব্যবহারকারীর আগে নিজেরা প্রোডাকশনে ব্যবহার করে দেখো।'}
+          - {title: '২. ১% ব্যবহারকারী', body: 'error rate আর অর্ডার সংখ্যা মেলাও।', tip: 'খারাপ হলে মাত্র ১% ক্ষতিগ্রস্ত। flag off করলেই ফিরে।'}
+          - {title: '৩. ২৫%', body: 'এক দিন চালিয়ে দেখো, লোড আর error ঠিক আছে কি না।', tip: 'পূর্ণ লোডে ধরা পড়ে এমন সমস্যা এখানে বেরিয়ে আসে।'}
+          - {title: '৪. ১০০%', body: 'সবার জন্য চালু।', tip: 'এখনো flag মোছা হয়নি; কয়েক দিন চোখ রাখো।'}
+          - {title: '৫. flag আর পুরনো কোড মোছো', body: 'শর্ত সরিয়ে শুধু নতুন পথ রাখো।', tone: accent, tip: 'এই ধাপ বাদ পড়লে flag ঋণ জমে। পরের স্লাইডে আরও।'}
+      - type: code
+        lang: php
+        file: 'src/Flag/FeatureFlags.php'
+        variant: good
+        code: |
+          final readonly class FeatureFlags
+          {
+              public function __construct(
+                  private FlagRepository $flags,
+                  private CacheInterface $cache,
+              ) {
+              }
+
+              public function isOn(string $name, ?User $user = null): bool
+              {
+                  $flag = $this->cache->get("flag.$name", function (ItemInterface $item) use ($name) {
+                      $item->expiresAfter(30);     // ৩০ সেকেন্ডে সুইচ বদল সবখানে পৌঁছায়
+
+                      return $this->flags->snapshot($name);   // না থাকলে ['enabled' => false, ...]
+                  });
+
+                  if (!$flag['enabled'] || null === $user) {
+                      return $flag['enabled'] && 100 === $flag['percent'];
+                  }
+
+                  return \in_array($user->getId(), $flag['allow'], true)
+                      || crc32($name.':'.$user->getId()) % 100 < $flag['percent'];
+              }
+          }
+        marks:
+          - {line: 12, tip: 'ছোট TTL: ডেটাবেসে flag বদলালে সর্বোচ্চ ৩০ সেকেন্ডে সব সার্ভার জেনে যায়।'}
+          - {line: 14, tip: 'flag-ই নেই বা ডেটাবেস থেকে আনা গেল না? নিরাপদ ডিফল্ট হলো false: নতুন ফিচার বন্ধ।'}
+          - {line: 22, tip: 'flag-এর নামও hash-এ ঢোকে, তাই প্রতিটা flag-এর জন্য আলাদা ১% ব্যবহারকারী বাছাই হয়।'}
+    aside:
+      - type: tips
+        items:
+          - 'একটা ব্যবহারকারীকে প্রথমে চালু, পরে বন্ধ দেখানো এড়াও; তাই hash-ই ব্যবহার করো, random() নয়।'
+          - 'লগে লেখো কোন request-এ কোন flag কী ছিল; ভুল খুঁজতে তা অমূল্য।'
+      - type: pitfalls
+        items:
+          - 'flag-এর অবস্থা কনফিগ ফাইলে রাখলে বদলাতে deploy লাগে — সেটা তো আসল উদ্দেশ্যই মারে।'
+    check:
+      q: 'শতাংশ rollout-এ random() না লাগিয়ে আইডির hash কেন ব্যবহার করা হয়?'
+      a: 'random() প্রতি request-এ আলাদা ফল দেয়, তাই একই ব্যবহারকারী একবার নতুন, একবার পুরনো পথ দেখে। hash একই আইডিকে সবসময় একই ফল দেয়।'
+
+  - slug: flag-in-vue
+    title: 'Vue-তে flag: সার্ভার ঠিক করে, ক্লায়েন্ট দেখায়'
+    kind: howto
+    tldr: 'Flag-এর সিদ্ধান্ত সার্ভারে নাও, ব্যবহারকারীর জন্য মূল্যায়ন করা ফল API থেকে Vue-তে পাঠাও; Vue শুধু দেখানো বা লুকানোর কাজ করে, সুরক্ষা সার্ভারেই।'
+    keywords: ['Vue feature flag', 'Pinia', 'flags endpoint', 'client side flag', 'server enforcement', 'UI toggle']
+    blocks:
+      - type: text
+        body: |
+          Vue অ্যাপ নিজে flag-এর সিদ্ধান্ত নেয় না। সার্ভার ব্যবহারকারীর জন্য প্রতিটা flag মূল্যায়ন করে একটা ছোট JSON দেয়। Vue সেটা Pinia store-এ রেখে `v-if`-এ ব্যবহার করে। তবে মনে রাখো, ব্রাউজারে সব কিছু দেখা যায়: UI লুকালেই কিছু নিরাপদ হয় না। নতুন checkout-এর API-ও সার্ভারে একই flag দিয়ে আটকাতে হবে।
+      - type: code
+        lang: php
+        file: 'src/Controller/FlagController.php'
+        variant: good
+        code: |
+          #[Route('/api/flags', methods: ['GET'])]
+          public function index(): JsonResponse
+          {
+              $user = $this->getUser();
+              $response = $this->json([
+                  'new-checkout' => $this->flags->isOn('new-checkout', $user),
+                  'new-search' => $this->flags->isOn('new-search', $user),
+              ]);
+              $response->setPrivate();           // ব্যবহারকারীভেদে আলাদা, CDN রাখবে না
+
+              return $response;
+          }
+        marks:
+          - {line: 5, tip: 'ক্লায়েন্টকে শুধু true/false ফল দাও। শতাংশ বা allow list দেখাবে না।'}
+          - {line: 9, tip: 'উত্তরটা ব্যবহারকারীর ওপর নির্ভর করে, তাই private।'}
+      - type: code
+        lang: vue
+        file: 'src/pages/CheckoutPage.vue'
+        variant: good
+        code: |
+          <script setup lang="ts">
+          import { useFlagsStore } from '@/stores/flags'
+          import NewCheckout from '@/components/NewCheckout.vue'
+          import OldCheckout from '@/components/OldCheckout.vue'
+
+          const flags = useFlagsStore()
+          </script>
+
+          <template>
+            <NewCheckout v-if="flags.isOn('new-checkout')" />
+            <OldCheckout v-else />
+          </template>
+        marks:
+          - {line: 11, tip: 'ফিচার বন্ধ থাকলে আগের পথই দেখা যায়। ফেরার রাস্তা ঠিক থাকে।'}
+    aside:
+      - type: tips
+        items:
+          - 'পাতা খোলার সময়ই একবার /api/flags ডেকে store-এ রাখো; প্রতিটা component আলাদা করে ডেকো না।'
+          - 'flag না এলে বা request ব্যর্থ হলে isOn() false ফেরাক: নতুন ফিচার বন্ধ।'
+      - type: pitfalls
+        items:
+          - 'শুধু Vue-তে বাটন লুকিয়ে API খোলা রাখলে যে কেউ সরাসরি request পাঠিয়ে বন্ধ ফিচার ব্যবহার করতে পারে।'
+    check:
+      q: 'Vue-তে বাটন লুকালে ফিচার নিরাপদ হয় না কেন?'
+      a: 'ব্রাউজারের কোড আর request ব্যবহারকারীর হাতে। সে সরাসরি API ডাকতে পারে। তাই সার্ভারে একই flag দিয়ে আটকাতে হয়।'
+
+  - slug: flag-debt
+    title: 'Flag ঋণ: যে সুইচ কেউ খোলে না'
+    kind: pitfall
+    tldr: 'মুছে ফেলা হয়নি এমন পুরনো release flag কোডে দুই পথ বাঁচিয়ে রাখে, test দ্বিগুণ করে আর ভয়ের জায়গা বানায়; প্রতিটা flag-এর মালিক আর মুছে ফেলার তারিখ রাখো।'
+    keywords: ['flag debt', 'flag cleanup', 'stale flags', 'technical debt', 'flag registry', 'remove_by']
+    blocks:
+      - type: text
+        body: |
+          সুইচ বোর্ডে বছর পুরনো, কেউ চেনে না এমন সুইচ থাকলে কেউ সেটা ছুঁতে সাহস পায় না। কোডেও তাই। ১০টা flag মানে তত্ত্বে ১০২৪ রকম সংমিশ্রণ, অথচ test হয় দু-একটার। সবচেয়ে দুঃখজনক ঘটনা: কেউ ভুল করে এমন পুরনো flag বদলে দিল, যার পুরনো পথ বহুদিন আগে ভাঙা।
+      - type: code
+        lang: yaml
+        file: 'config/flags.yaml (নথি হিসেবে)'
+        code: |
+          new-checkout:
+            type: release
+            owner: 'rahim'
+            created: '2026-11-01'
+            remove_by: '2026-12-15'      # এর পরে CI warning দেবে
+          payments-kill-switch:
+            type: ops
+            owner: 'oncall-payments'
+            runbook: 'wiki/payments-kill-switch'
+        marks:
+          - {line: 5, tip: 'প্রতিটা release flag-এ মুছে ফেলার তারিখ। তারিখ পেরোলে CI বা সাপ্তাহিক রিপোর্ট জানাবে।'}
+          - {line: 9, tip: 'ops flag-এ থাকে runbook: বন্ধ করলে কী হয় আর কখন ব্যবহার করতে হয়।'}
+      - type: points
+        title: 'flag মোছার নিয়ম'
+        style: number
+        items:
+          - 'ফিচার ১০০% হলে এক সপ্তাহের মধ্যে flag আর পুরনো পথ মুছে ফেলো।'
+          - 'ফিচারটা বাতিল হলে flag আর নতুন পথ মুছে পুরনোটাই রাখো।'
+          - 'ticket তৈরি করে মুছে ফেলার কাজটা release-এর অংশ ধরো, "পরে করব" নয়।'
+      - type: quote
+        body: 'যে flag-এর কাজ শেষ, সে এখন ঋণ। মুছে ফেলাটা ফিচার শেষ করার অংশ।'
+    aside:
+      - type: when
+        use:
+          - 'release আর experiment flag: কাজ শেষে সরাও।'
+        avoid:
+          - 'একটা flag-এর ভেতরে আরেকটা flag জুড়ে ফেলা; জট পাকায়।'
+      - type: remember
+        body: 'প্রতিটা flag জন্মের সময়েই মৃত্যুর তারিখ নিয়ে আসে।'
+      - type: refs
+        items:
+          - {to: 'thinking/tech-debt', label: 'Technical debt'}
+    check:
+      q: 'একটা ১০০% চালু release flag দুই মাস কোডে থেকে গেলে কোন কোন ক্ষতি হয়?'
+      a: 'কোডে দুটো পথ বাঁচিয়ে রাখতে হয়, test দ্বিগুণ লাগে, আর কেউ ভুল করে flag বদলালে পুরনো ভাঙা পথ চালু হয়ে যায়।'
+
+flashcards:
+  - q: 'Feature flag কী?'
+    a: 'কোডের একটা শর্ত, যার চালু বা বন্ধ থাকা কনফিগ বা ডেটা থেকে ঠিক হয়; কোড বদলাতে বা deploy করতে হয় না।'
+    more: |
+      এতে নতুন কোড আগে থেকেই সার্ভারে বন্ধ অবস্থায় থাকে। চাইলে ধীরে খোলা যায়, ভুল হলে সাথে সাথে বন্ধ। বাড়ির সুইচ বোর্ডের মতো: তার টানা আর সুইচ অন করা আলাদা।
+    ref: bad-release-night
+  - q: 'Deploy আর release-এর তফাত কী?'
+    a: 'Deploy: কোড সার্ভারে পৌঁছানো। Release: ফিচার ব্যবহারকারীর সামনে খোলা। Flag এই দুটোকে আলাদা করে।'
+    more: |
+      আলাদা হলে deploy ঝুঁকিহীন হয়ে ওঠে, কারণ নতুন কোড বন্ধ থাকে। ঝুঁকি যায় release-এ, আর সেটা ধীরে, শতাংশ ধরে, আর এক সুইচে ফেরানো যায়।
+    ref: bad-release-night
+  - q: 'Feature flag-এর চার ধরন কী কী?'
+    a: 'Release (ধীরে খোলা), ops/kill switch (জরুরি বন্ধ), experiment (A/B), permission (কে পাবে)।'
+    more: |
+      ধরন ঠিক করলেই আয়ু আর মালিক ঠিক হয়। release আর experiment অস্থায়ী: কাজ শেষে মুছতে হয়। kill switch দীর্ঘস্থায়ী, সাথে runbook রাখা ভালো। permission আসলে ব্যবসার নিয়ম, তাই সেটাকে authorization-এর অংশ ভাবো।
+    ref: four-kinds-of-flags
+  - q: 'Kill switch কী আর কেন লাগে?'
+    a: 'জরুরিতে deploy ছাড়া কোনো ফিচার বা নির্ভরতা বন্ধ করার flag। যেমন ধীর পেমেন্ট গেটওয়ে বন্ধ করা।'
+    more: |
+      বন্ধ থাকলে অ্যাপ বিকল্প পথে চলতে হবে, যেমন "এখন এই পদ্ধতি পাওয়া যাচ্ছে না" বার্তা। অন-কল ইঞ্জিনিয়ার এক মিনিটে খুঁজে বদলাতে পারে, এমন জায়গায় রাখো, সাথে runbook।
+    ref: four-kinds-of-flags
+  - q: 'শতাংশ rollout-এ কীভাবে ঠিক হয় কে নতুন ফিচার পাবে?'
+    a: 'ব্যবহারকারীর আইডি আর flag-এর নাম মিলিয়ে hash করে ০–৯৯ বের করা হয়; শতাংশের চেয়ে ছোট হলে ফিচার চালু।'
+    more: |
+      যেমন `crc32($name.':'.$userId) % 100 < $percent`। একই আইডি সবসময় একই সংখ্যা পায়, তাই ব্যবহারকারী একবার চালু পেলে ২৫% থেকে ১০০%-এ যাওয়া পর্যন্ত চালুই থাকে। random() হলে সে কখনো নতুন, কখনো পুরনো পথ দেখত।
+    ref: flag-service-symfony
+  - q: 'Flag-এর অবস্থা কনফিগ ফাইলে না রেখে ডেটাবেসে রাখি কেন?'
+    a: 'ফাইল বদলাতে deploy লাগে, ডেটাবেসের মান বদলাতে লাগে না। তাই ভুলে সাথে সাথে বন্ধ করা যায়।'
+    more: |
+      ডেটাবেস থেকে পড়ে ছোট TTL (যেমন ৩০ সেকেন্ড) দিয়ে cache করলে প্রতি request-এ ডেটাবেসে যাওয়া লাগে না, আবার বদল দ্রুত পৌঁছায়। flag-ই না পেলে ডিফল্ট হবে false।
+    ref: flag-service-symfony
+  - q: 'Flag ঋণ (flag debt) কী, আর কীভাবে এড়ানো যায়?'
+    a: 'কাজ শেষ হওয়া flag কোডে থেকে যাওয়া। এড়াতে প্রতিটা flag-এ মালিক আর মুছে ফেলার তারিখ রাখো।'
+    more: |
+      পুরনো flag দুই পথ বাঁচিয়ে রাখে, test দ্বিগুণ করে আর ভুল করে বদলালে ভাঙা পথ চালু হয়। ফিচার ১০০% হলে এক সপ্তাহে flag আর পুরনো কোড মুছে ফেলো। এটা release-এর অংশ।
+    ref: flag-debt
+  - q: 'Vue-তে flag দিয়ে বাটন লুকালেই কি ফিচার সুরক্ষিত?'
+    a: 'না। ব্যবহারকারী সরাসরি API ডাকতে পারে, তাই সার্ভারেও একই flag দিয়ে আটকাতে হবে।'
+    more: |
+      Vue শুধু দেখানো বা লুকানোর কাজ করে। সিদ্ধান্ত নেয় সার্ভার, আর সে ব্যবহারকারীর জন্য ফল (true/false) একটা API দিয়ে পাঠায়। flag-এর শতাংশ বা allow list ক্লায়েন্টকে জানানোর দরকার নেই।
+    ref: flag-in-vue
+
+quiz:
+  - q: 'রাত ১১টায় নতুন ফিচারে bug পাওয়া গেল। ফিচারটি flag-এর পেছনে ছিল। সবচেয়ে দ্রুত আর নিরাপদ পদক্ষেপ কী?'
+    hint: 'কোড কি বদলাতে হবে, নাকি কেবল সুইচ?'
+    options:
+      - text: 'flag off করা'
+        correct: true
+        why: 'কোড বদলায় না, তাই নতুন ঝুঁকি নেই, আর কাজটা সেকেন্ডের।'
+      - text: 'আগের সংস্করণে rollback deploy করা'
+        correct: false
+        why: 'কাজ করবে, কিন্তু ধীর, আর rollback নিজেও ঝুঁকিপূর্ণ। flag-এর উদ্দেশ্যই এটা এড়ানো।'
+      - text: 'সকাল পর্যন্ত অপেক্ষা করে hotfix লেখা'
+        correct: false
+        why: 'ক্রেতারা সারা রাত ভুগবে।'
+      - text: 'সার্ভার restart করা'
+        correct: false
+        why: 'restart-এ bug-যুক্ত কোড একই থেকে যায়।'
+    ref: bad-release-night
+  - q: 'নিচের কোনটি kill switch হওয়ার জন্য সঠিক বর্ণনা?'
+    hint: 'জরুরিতে কে বদলাবে, কীভাবে?'
+    options:
+      - text: 'deploy ছাড়া বদলানো যায় আর বন্ধ থাকলে অ্যাপ বিকল্প পথে চলে'
+        correct: true
+        why: 'জরুরি বন্ধের জন্য এই দুটোই মূল শর্ত।'
+      - text: 'কনফিগ ফাইলে লেখা, বদলাতে পুরো deploy লাগে'
+        correct: false
+        why: 'জরুরিতে deploy-এর অপেক্ষা করা যায় না।'
+      - text: 'ফিচার ১০০% হলে মুছে ফেলার flag'
+        correct: false
+        why: 'এটা release flag। kill switch স্থায়ী, কারণ ভবিষ্যতেও দরকার হবে।'
+      - text: 'শুধু Vue-তে লুকিয়ে রাখা বাটন'
+        correct: false
+        why: 'সার্ভারে API খোলা থাকলে বন্ধ করা হলো না।'
+    ref: four-kinds-of-flags
+  - q: 'নিচের কোডে ব্যবহারকারীরা মাঝে মাঝে নতুন, মাঝে মাঝে পুরনো checkout পাচ্ছে। কেন?'
+    lang: php
+    code: |
+      public function isOn(string $name, User $user): bool
+      {
+          $percent = $this->flags->percent($name);
+
+          return random_int(0, 99) < $percent;
+      }
+    hint: 'একই ব্যবহারকারী দ্বিতীয়বার এলে কী সংখ্যা পাবে?'
+    options:
+      - text: 'প্রতি request-এ নতুন এলোমেলো সংখ্যা, তাই একই ব্যবহারকারীর ফল বদলায়'
+        correct: true
+        why: 'ব্যবহারকারীর আইডি আর flag-এর নামের hash নিলে ফল স্থির থাকত।'
+      - text: 'random_int() ধীর বলে'
+        correct: false
+        why: 'গতি এখানে সমস্যা নয়, ফলের স্থিরতা।'
+      - text: '$percent-এর মান ভুল'
+        correct: false
+        why: 'শতাংশ ঠিক থাকলেও এলোমেলো সংখ্যা প্রতিবার আলাদা।'
+      - text: 'flag-এর নাম ইংরেজিতে না হলে'
+        correct: false
+        why: 'নামের ভাষা বিষয় নয়।'
+    ref: flag-service-symfony
+  - q: 'নতুন checkout ধীরে খোলার ঠিক নিয়মগুলো কোনগুলো?'
+    hint: 'প্রথমে কারা, তারপর কত শতাংশ?'
+    options:
+      - text: 'প্রথমে শুধু টিম, তারপর ১%, ২৫%, শেষে ১০০%'
+        correct: true
+        why: 'প্রতি ধাপে error rate আর অর্ডার দেখে এগোলে ক্ষতি ছোট থাকে।'
+      - text: 'প্রতি ধাপে মেট্রিক দেখে খারাপ হলে flag off করা'
+        correct: true
+        why: 'ধীরে খোলার মূল উদ্দেশ্য এটাই: সীমিত ক্ষতিতে ধরা।'
+      - text: '১০০% হওয়ার পর flag আর পুরনো কোড মুছে ফেলা'
+        correct: true
+        why: 'না মুছলে flag ঋণ জমে।'
+      - text: 'সব ব্যবহারকারীকে একসাথে খুলে সমস্যা হলে তারপর flag ব্যবহার করা'
+        correct: false
+        why: 'ক্ষতি তখন সবাইকে ছোঁয়; ধীরে খোলার সুবিধাই হারায়।'
+    ref: flag-service-symfony
+  - q: 'দুই মাস আগে ১০০% হওয়া release flag এখনো কোডে আছে। এখন কী করা উচিত?'
+    hint: 'flag-এর কাজ ফুরিয়েছে; তাহলে কোডে তার জায়গা আছে কি?'
+    options:
+      - text: 'flag আর পুরনো পথ মুছে শুধু নতুন কোড রাখা'
+        correct: true
+        why: 'কাজ শেষ হওয়া flag ঋণ; মুছলে কোড সরল হয়, test কমে।'
+      - text: 'রেখে দেওয়া — কখন লাগে বলা যায় না'
+        correct: false
+        why: 'পুরনো পথ প্রায়ই আর কাজ করে না; ভুল করে চালু হলে বিপদ।'
+      - text: 'আরও কয়েকটা flag জুড়ে সব ঠিকঠাক রাখা'
+        correct: false
+        why: 'সংমিশ্রণ আরও বাড়ে, জট বাড়ে।'
+      - text: 'flag-এর মান true করে রেখে ভুলে যাওয়া'
+        correct: false
+        why: 'ঋণ থেকেই যায়; কেউ ভুল করে false করলে ভাঙা পথ চলবে।'
+    ref: flag-debt

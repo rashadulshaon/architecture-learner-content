@@ -1,0 +1,420 @@
+slides:
+  - slug: deploy-breaks-live-users
+    title: 'Deploy চলাকালীন পুরোনো কোড আর নতুন ডেটাবেস'
+    kind: story
+    tldr: 'Deploy এক মুহূর্তে হয় না। কয়েক মিনিট পুরোনো ও নতুন কোড একসাথে একই ডেটাবেসে চলে, তাই একটা কলামের নাম বদলালেই ব্যবহারকারী 500 পায়।'
+    keywords: ['zero downtime', 'deploy', 'rolling', 'schema change', 'column rename', 'ডাউনটাইম']
+    blocks:
+      - type: metaphor
+        icon: shop
+        title: 'চা দোকানে নতুন চুলা বসানো'
+        body: |
+          চা দোকানের মালিক পুরোনো চুলা ভেঙে সেখানে নতুন চুলা বসাতে চায়। দোকান বন্ধ রাখলে ক্রেতা অন্য দোকানে যায়। তাই বুদ্ধিমান মালিক আগে পাশে নতুন চুলা বসায়, চালিয়ে দেখে, তারপর ক্রেতাদের সরিয়ে দেয়, শেষে পুরোনোটা সরায়। ওই বদলের সময় দুটো চুলাই এক সাথে ক্রেতা সামলায়। কোডেও ঠিক তাই: **zero-downtime deploy**-এ নতুন ও পুরোনো ভার্সন কিছুক্ষণ একসাথে চলে।
+      - type: visual
+        kind: sequence
+        caption: 'Rolling deploy: নতুন সার্ভার migration চালাল, পুরোনো সার্ভার তখনো ক্রেতা সামলাচ্ছে'
+        actors:
+          - {id: user, label: 'ব্যবহারকারী', icon: user, tip: 'সে জানেই না deploy চলছে। তার কাছে সাইট সবসময় খোলা থাকার কথা।'}
+          - {id: v1, label: 'পুরোনো সার্ভার (v1)', icon: server, tip: 'এখনো পুরোনো কোড চালাচ্ছে। এটা `phone` কলাম পড়ে।'}
+          - {id: v2, label: 'নতুন সার্ভার (v2)', icon: rocket, tip: 'নতুন কোড, যা `mobile` কলাম ব্যবহার করে। প্রথমে এটাই চালু হয়েছে।'}
+          - {id: db, label: 'ডেটাবেস', icon: db, tip: 'একটাই ডেটাবেস, দুই ভার্সনই এটাকে ব্যবহার করে। সব সমস্যার শিকড় এখানে।'}
+        messages:
+          - {from: v2, to: db, label: 'migration: phone কলামের নাম হলো mobile', tip: 'RENAME COLUMN এক মুহূর্তে হয়ে যায়, কিন্তু পুরোনো কোড তখনো চলছে।'}
+          - {at: db, note: 'এখন আর phone নামে কোনো কলাম নেই', tone: warn}
+          - {from: user, to: v1, label: 'প্রোফাইল দেখাও'}
+          - {from: v1, to: db, label: 'SELECT phone FROM user'}
+          - {from: db, to: v1, label: 'ERROR: column phone নেই', dashed: true, tone: bad}
+          - {from: v1, to: user, label: '500 Internal Server Error', dashed: true, tone: bad}
+      - type: quote
+        body: 'Deploy চলার সময় পুরোনো ও নতুন কোড একসাথে একই ডেটাবেস ব্যবহার করে।'
+    aside:
+      - type: story
+        title: 'শুক্রবার সন্ধ্যার deploy'
+        body: |
+          একটা টিম শুক্রবার সন্ধ্যায় একটা কলামের নাম বদলে "২ মিনিটের deploy" করল। rolling deploy শেষ হতে লাগল ৮ মিনিট। এই ৮ মিনিট পুরোনো সার্ভারগুলো প্রতিটা প্রোফাইল request-এ 500 দিল। মিনিটে প্রায় ২০০ ব্যবহারকারী চেকআউট ছাড়ল।
+      - type: terms
+        items:
+          - {term: 'Zero-downtime deploy', meaning: 'নতুন ভার্সন চালু করার সময় সাইট একটুও বন্ধ না থাকা।'}
+          - {term: 'Backward compatible', meaning: 'নতুন পরিবর্তন পুরোনো কোডের সাথেও ঠিকঠাক চলে।'}
+    check:
+      q: 'Deploy মাত্র ২ মিনিটে শেষ হয়। তবু কলামের নাম বদলালে কেন সমস্যা হয়?'
+      a: 'ওই দুই মিনিট (বা আরও বেশি) পুরোনো সার্ভার তখনো চলে। তারা পুরোনো নামে কলাম খোঁজে, ডেটাবেসে সেটা আর নেই, তাই error।'
+
+  - slug: rolling-bluegreen-canary
+    title: 'তিন উপায়: rolling, blue/green, canary'
+    kind: compare
+    tldr: 'Rolling এক এক করে সার্ভার বদলায়, blue/green পুরো নতুন পরিবেশে সুইচ করে, canary ছোট অংশে আগে পরীক্ষা করে। তিনটাতেই দুই ভার্সন কিছুক্ষণ একসাথে চলে।'
+    keywords: ['rolling deploy', 'blue green', 'canary', 'deployment strategy', 'rollback', 'ট্রাফিক সুইচ']
+    blocks:
+      - type: text
+        body: |
+          চা দোকানের উদাহরণেই বলি। **Rolling**: একটা একটা করে চুলা বদলাও। **Blue/green**: পাশে পুরো নতুন দোকান সাজিয়ে এক মুহূর্তে সব ক্রেতা সেদিকে পাঠাও, পুরোনোটা প্রস্তুত থাকে। **Canary**: নতুন চায়ের এক কাপ শুধু কয়েকজনকে চেখে দেখতে দাও, ভালো হলে সবাইকে।
+      - type: visual
+        kind: flow
+        caption: 'Blue/green: Green চালু ও পরীক্ষা শেষে সুইচ, Blue থাকে ফেরার পথ হিসেবে'
+        nodes:
+          - {id: lb, label: 'Load balancer', sub: 'ট্রাফিক বাছে', icon: lb, tone: accent, col: 0, row: 1, tip: 'সুইচটা এখানেই। সে ঠিক করে ট্রাফিক Blue-তে যাবে না Green-এ।'}
+          - {id: blue, label: 'Blue (v1)', sub: 'বর্তমান', icon: server, col: 2, row: 0, tip: 'এখন যে ভার্সন লাইভ। সুইচের পরেও বন্ধ করা হয় না।'}
+          - {id: green, label: 'Green (v2)', sub: 'নতুন', icon: rocket, tone: good, col: 2, row: 2, tip: 'নতুন ভার্সন, আলাদা সার্ভারে। ট্রাফিক পাওয়ার আগে পুরো পরীক্ষা হয়।'}
+          - {id: db, label: 'ডেটাবেস', sub: 'একটাই', icon: db, col: 4, row: 1, tip: 'দুই পরিবেশ একই ডেটাবেস ব্যবহার করে, তাই schema দুই ভার্সনের সাথেই মানাতে হবে।'}
+        edges:
+          - {from: lb, to: blue, label: 'এখন সব ট্রাফিক Blue (v1)-এ যায়'}
+          - {from: lb, to: green, label: 'Green (v2) চালু হয়, health check পাশ করে, কিন্তু ট্রাফিক নেই', dashed: true, tone: warn}
+          - {from: green, to: db, label: 'Green smoke test চালায় একই ডেটাবেসে', dashed: true}
+          - {from: lb, to: green, label: 'সুইচ: সব ট্রাফিক Green-এ চলে যায়', tone: good}
+          - {from: lb, to: blue, label: 'সমস্যা হলে সুইচ আবার Blue-তে ফেরে', tone: warn, dashed: true, tip: 'এটাই blue/green-এর শক্তি: রোলব্যাক মানে শুধু সুইচ ঘোরানো, নতুন করে deploy নয়।'}
+      - type: visual
+        kind: table
+        caption: 'তিন কৌশলের তুলনা'
+        headers: ['', 'Rolling', 'Blue/green', 'Canary']
+        rows:
+          - cells: ['কীভাবে', 'এক এক সার্ভার বদলায়', 'দুই পরিবেশ, সুইচ', 'ছোট অংশে আগে নতুন']
+            tip: 'তিনটাই শেষ পর্যন্ত নতুন ভার্সন সবার কাছে পৌঁছায়, শুধু ঝুঁকি ভাগ করার কায়দা আলাদা।'
+          - cells: ['বাড়তি খরচ', 'প্রায় নেই', 'সাময়িক দ্বিগুণ সার্ভার', 'ছোট একটা অতিরিক্ত দল']
+            tip: 'blue/green ভাড়ার সার্ভারে দামি, কিন্তু cloud-এ কয়েক মিনিটের জন্য ভাড়ায় সস্তা।'
+          - cells: ['রোলব্যাক', 'ধীর: আবার rolling', 'সবচেয়ে দ্রুত: সুইচ ফেরাও', 'দ্রুত: ছোট অংশ ফেরাও']
+            tip: 'রোলব্যাকের গতিই ঠিক করে ভুল হলে ক্ষতি কত বড় হবে।'
+          - cells: ['মূল ঝুঁকি', 'v1 ও v2 একসাথে চলে', 'সুইচের মুহূর্তে সবাই নতুনে', 'ভালো মনিটরিং লাগে']
+            tip: 'canary-র সাফল্য নির্ভর করে error rate আর latency ঠিকভাবে দেখতে পারার ওপর।'
+          - cells: ['কখন', 'নিয়মিত ছোট release', 'বড় বা ঝুঁকির বদল', 'ঝুঁকিপূর্ণ ফিচার']
+            tip: 'বেশিরভাগ টিম rolling দিয়ে শুরু করে, ঝুঁকির কাজে canary বা blue/green যোগ করে।'
+      - type: quote
+        body: 'যে কৌশলই হোক, deploy-র সময় পুরোনো ও নতুন কোড একসাথে চলবে: প্রতিটা release পেছনের দিকে সামঞ্জস্যপূর্ণ হতে হবে।'
+    aside:
+      - type: when
+        use: ['Rolling: প্রতিদিনের ছোট বদল, কম খরচ চাইলে', 'Blue/green: বড় বদল, দ্রুত রোলব্যাক দরকার হলে', 'Canary: ঝুঁকিপূর্ণ ফিচার, বাস্তব ট্রাফিকে পরীক্ষা']
+        avoid: ['Canary: যদি error rate মাপার ব্যবস্থাই না থাকে']
+      - type: terms
+        items:
+          - {term: 'Smoke test', meaning: 'চালু হওয়ার পরেই কয়েকটা মূল কাজ (লগইন, কার্টে দেওয়া) সত্যিই চলছে কি না দেখার ছোট পরীক্ষা।'}
+          - {term: 'Canary', meaning: 'কয়লাখনির পাখির মতো: নতুন ভার্সন প্রথমে ছোট অংশের ট্রাফিক পায়, সমস্যা হলে সেই অংশই আগে জানায়।'}
+      - type: refs
+        items:
+          - {to: 'infra/ci-cd', label: 'CI/CD ও নিরাপদ deploy'}
+    check:
+      q: 'কোন কৌশলে রোলব্যাক সবচেয়ে দ্রুত, আর কেন?'
+      a: 'Blue/green: পুরোনো পরিবেশ (Blue) তখনো চালু ও প্রস্তুত। শুধু load balancer-এর সুইচ ফিরিয়ে দিলেই হয়, নতুন করে কিছু deploy করতে হয় না।'
+
+  - slug: expand-contract
+    title: 'Expand-contract: কলাম বদলের নিরাপদ পথ'
+    kind: howto
+    tldr: 'একবারে নয়, কয়েক release-এ: আগে নতুন কলাম যোগ (expand), দুইটাতেই লেখা, পড়া নতুনে সরানো, সবশেষে পুরোনো মোছা (contract)। প্রতিটা ধাপে পুরোনো কোড বাঁচে।'
+    keywords: ['expand contract', 'parallel change', 'Doctrine Migrations', 'dual write', 'backfill', 'rename column']
+    blocks:
+      - type: text
+        body: |
+          `phone` কলামকে `mobile` করতে হবে। একটা rename-এর বদলে নতুন চুলা পাশে বসানোর মতো করো: আগে নতুন কলাম যোগ (**expand**), সবকিছু সরিয়ে নেওয়ার পর পুরোনোটা বাদ (**contract**)। প্রতিটা ধাপ আলাদা release, তাই প্রতিটা ধাপে পুরোনো ও নতুন কোড দুটোই চলে।
+      - type: visual
+        kind: steps
+        caption: 'phone থেকে mobile: চার ধাপ, চার আলাদা release'
+        steps:
+          - {title: '১. Expand', body: 'mobile কলাম যোগ করো (nullable)। কোড বদলায় না।', tip: 'কলাম যোগ করা সবসময় নিরাপদ: পুরোনো কোড নতুন কলামের কথা জানেই না।'}
+          - {title: '২. দুইটাতেই লেখো', body: 'নতুন কোড phone ও mobile দুটোতেই লেখে। পুরোনো ডেটা backfill।', tip: 'backfill বড় টেবিলে ছোট ছোট batch-এ চালাও, একটা বিশাল UPDATE নয়।'}
+          - {title: '৩. পড়া সরাও', body: 'নতুন কোড mobile থেকে পড়ে। phone আর কেউ পড়ে না।', tip: 'এর আগে নিশ্চিত হও কোনো পুরোনো সার্ভার বা job আর phone পড়ছে না।'}
+          - {title: '৪. Contract', body: 'phone কলাম মোছো, পরের release-এ।', tone: warn, tip: 'এই ধাপটাই একমাত্র ফেরানো-যায়-না ধাপ। তাই সবশেষে, ও যথেষ্ট সময় পর।'}
+      - type: code
+        lang: php
+        file: 'migrations/Version20261120100000.php'
+        variant: good
+        code: |
+          final class Version20261120100000 extends AbstractMigration
+          {
+              public function getDescription(): string
+              {
+                  return 'expand: user.mobile কলাম যোগ';
+              }
+
+              public function up(Schema $schema): void
+              {
+                  // nullable, তাই পুরোনো কোড INSERT করলেও ভাঙে না
+                  $this->addSql('ALTER TABLE "user" ADD mobile VARCHAR(20) DEFAULT NULL');
+              }
+
+              public function down(Schema $schema): void
+              {
+                  $this->addSql('ALTER TABLE "user" DROP mobile');
+              }
+          }
+        marks:
+          - {line: 11, tip: 'NOT NULL ছাড়া ও ডিফল্ট NULL: PostgreSQL-এ এটা তাৎক্ষণিক, টেবিল লক হয় না। পুরোনো INSERT-ও ঠিক থাকে।'}
+      - type: code
+        lang: php
+        file: 'src/Entity/User.php'
+        variant: good
+        code: |
+          #[ORM\Column(length: 20, nullable: true)]
+          private ?string $phone = null;
+
+          #[ORM\Column(length: 20, nullable: true)]
+          private ?string $mobile = null;
+
+          public function setMobile(string $number): void
+          {
+              $this->mobile = $number;
+              $this->phone = $number;      // ধাপ ২: দুইটাতেই লেখো
+          }
+
+          public function getMobile(): ?string
+          {
+              return $this->mobile ?? $this->phone;   // backfill শেষ না হওয়া পর্যন্ত নিরাপদ
+          }
+        marks:
+          - {line: 10, tip: 'পুরোনো সার্ভার এখনো phone পড়ে। সেখানে যেন নতুন নম্বর পৌঁছায়, তাই phone-এও লেখা।'}
+          - {line: 15, tip: 'নতুন কলাম ফাঁকা থাকলে পুরোনোটা দেখাও। backfill শেষ হলে এই fallback লাগবে না।'}
+      - type: quote
+        body: 'কলাম বা টেবিল কখনো এক release-এ বদলাবে না: আগে যোগ করো, সবাই সরে গেলে তবে মোছো।'
+    aside:
+      - type: pitfalls
+        items:
+          - 'NOT NULL কলাম ডিফল্ট ছাড়া যোগ করলে পুরোনো কোডের INSERT ভেঙে যায়। আগে nullable রাখো, backfill শেষে constraint বসাও।'
+          - 'বড় টেবিলে একটা UPDATE সব সারিতে lock ধরে রাখে। backfill ১,০০০ সারি করে batch-এ চালাও।'
+      - type: refs
+        items:
+          - {to: 'data/zero-downtime-migrations', label: 'ডেটাবেস migration-এ lock-এর খুঁটিনাটি'}
+    check:
+      q: 'Rename না করে expand-contract-এ কেন চার ধাপ লাগে? কোন ধাপটা ফেরানো যায় না?'
+      a: 'প্রতিটা ধাপে পুরোনো ও নতুন দুই ভার্সনই ঠিক চলে, তাই deploy-এর মাঝে ভাঙে না। শুধু শেষ ধাপে (contract) কলাম মোছা ফেরানো যায় না।'
+
+  - slug: graceful-shutdown
+    title: 'পুরোনো সার্ভার বন্ধ হবে ভদ্রভাবে'
+    kind: howto
+    tldr: 'পুরোনো সার্ভার বন্ধের আগে load balancer-কে নতুন request পাঠানো থামাতে বলো, চলমান কাজ শেষ হতে দাও, তারপর বন্ধ। Worker SIGTERM পেলে current message শেষ করে থামবে।'
+    keywords: ['graceful shutdown', 'SIGTERM', 'readiness probe', 'messenger worker', 'drain', 'connection draining']
+    blocks:
+      - type: text
+        body: |
+          চা দোকানে পুরোনো চুলা সরানোর আগে ওপরের কাপের চা শেষ করতে দিতে হয়, নইলে ক্রেতার কাপ ফেলে যাবে। সার্ভারেও একই: হঠাৎ বন্ধ করলে চলমান request মাঝপথে কাটা পড়ে। ভদ্র বন্ধের পাঁচ ধাপ নিচে।
+      - type: visual
+        kind: steps
+        caption: 'সার্ভার বন্ধের ভদ্র ক্রম'
+        steps:
+          - {title: '১. লাইন থেকে সরাও', body: 'readiness বন্ধ: load balancer নতুন request পাঠানো থামায়।', tip: 'load balancer-এ খবর পৌঁছাতে কয়েক সেকেন্ড লাগে, তাই এই ধাপে সামান্য অপেক্ষা (preStop) দেওয়া হয়।'}
+          - {title: '২. SIGTERM', body: 'প্রক্রিয়াকে "এখন শেষ করো" সংকেত পাঠানো হয়।', tip: 'SIGTERM ভদ্র অনুরোধ, প্রক্রিয়া চাইলে নিজের কাজ শেষ করে থামতে পারে।'}
+          - {title: '৩. চলমান কাজ শেষ', body: 'চলতি request ও message শেষ হয়, নতুন কিছু নেওয়া হয় না।', tip: 'Messenger worker SIGTERM পেলে বর্তমান message শেষ করে তবেই থামে (pcntl extension লাগে)।'}
+          - {title: '৪. নির্দিষ্ট সময়সীমা', body: 'ধরো ৪৫ সেকেন্ড। এর মধ্যে বন্ধ না হলে...', tip: 'সময়সীমা কাজের সবচেয়ে লম্বা request বা message-এর চেয়ে বেশি হওয়া উচিত।'}
+          - {title: '৫. SIGKILL', body: '...জোর করে মেরে ফেলা। এটা শেষ উপায়।', tone: bad, tip: 'SIGKILL ধরা যায় না। মাঝপথের কাজ হারায়, তাই এই পর্যন্ত যেন না গড়ায়।'}
+      - type: code
+        lang: yaml
+        file: 'k8s/deployment.yaml'
+        variant: good
+        code: |
+          spec:
+            terminationGracePeriodSeconds: 45
+            containers:
+              - name: app
+                readinessProbe:
+                  httpGet: { path: /health/ready, port: 8080 }
+                  periodSeconds: 5
+                  failureThreshold: 2
+                lifecycle:
+                  preStop:
+                    exec: { command: ['sleep', '10'] }
+        marks:
+          - {line: 2, tip: 'SIGTERM-এর পর এত সেকেন্ড সময়। এরপর SIGKILL। সবচেয়ে লম্বা request-এর চেয়ে বেশি রাখো।'}
+          - {line: 6, tip: 'এই URL ব্যর্থ হলে orchestrator ওই পড-কে লাইন থেকে সরিয়ে দেয়। মারে না, শুধু নতুন request পাঠানো থামায়।'}
+          - {line: 11, tip: 'SIGTERM-এর আগে ১০ সেকেন্ড অপেক্ষা: এর মধ্যে load balancer সার্ভারটাকে তালিকা থেকে বাদ দিয়ে ফেলে।'}
+      - type: code
+        lang: php
+        file: 'src/Controller/HealthController.php'
+        variant: good
+        code: |
+          #[Route('/health/ready', methods: ['GET'])]
+          public function ready(Connection $connection): Response
+          {
+              try {
+                  $connection->executeQuery('SELECT 1');   // মূল নির্ভরতা: ডেটাবেস
+              } catch (Exception) {
+                  return new Response('db unavailable', Response::HTTP_SERVICE_UNAVAILABLE);
+              }
+
+              return new Response('ok');
+          }
+        marks:
+          - {line: 5, tip: 'শুধু সেটাই দেখো যেটা ছাড়া অ্যাপ সত্যিই চলতে পারে না। বাইরের কুরিয়ার API এখানে দেখলে সেটা ধীর হলেই সব সার্ভার লাইন থেকে বেরিয়ে যাবে।'}
+    aside:
+      - type: commands
+        title: 'Worker ভদ্রভাবে চালানো'
+        items:
+          - {cmd: 'php bin/console messenger:consume async --time-limit=3600 --memory-limit=128M', desc: 'এক ঘণ্টা বা ১২৮MB পেরোলে নিজে ভদ্রভাবে থামে, supervisor আবার চালু করে'}
+          - {cmd: 'php bin/console messenger:stop-workers', desc: 'deploy-র পর চলতি worker-দের শেষ message করে থামতে বলে, নতুন কোডে আবার ওঠে'}
+      - type: tips
+        items:
+          - 'Deploy-র সময় worker-ও পুরোনো কোড চালাচ্ছে। messenger:stop-workers না চালালে তারা পুরোনো কোডেই থেকে যায়।'
+          - 'মাঝপথে কাটা message আবার queue-তে ফেরে। তাই handler idempotent রাখো, যাতে দ্বিতীয়বার চললেও ক্ষতি নেই।'
+      - type: refs
+        items:
+          - {to: 'messaging/delivery-guarantees', label: 'Message দুইবার এলে কী হয়'}
+    check:
+      q: 'Rolling deploy-এ পুরোনো সার্ভার সরাসরি বন্ধ না করে আগে readiness বন্ধ করা হয় কেন?'
+      a: 'readiness বন্ধ হলে load balancer নতুন request পাঠায় না, কিন্তু চলমান request শেষ হতে পারে। সরাসরি বন্ধ করলে ওই request-গুলো মাঝপথে কাটা পড়ত।'
+
+  - slug: rollback-trap
+    title: 'ফাঁদ: কোড ফেরানো যায়, ডেটা যায় না'
+    kind: pitfall
+    tldr: 'Release-এ কলাম মুছে দিলে কোড রোলব্যাক করলেও পুরোনো কোড আর চলে না। রোলব্যাক নিরাপদ রাখতে migration ও কোডের release আলাদা রাখো, আর plan আগে থেকে লেখো।'
+    keywords: ['rollback', 'destructive migration', 'down migration', 'rollback plan', 'feature flag', 'রোলব্যাক']
+    blocks:
+      - type: text
+        body: |
+          Deploy-এর পর error rate লাফিয়ে উঠলে আমরা প্রথমে ভাবি "আগের ভার্সনে ফিরি"। কিন্তু কোড ফেরানো সহজ, ডেটাবেস ফেরানো প্রায় অসম্ভব। যদি একই release-এ `phone` কলামটাই মুছে ফেলা হয়ে থাকে, তাহলে পুরোনো কোড ফিরলেও সে নতুন ডেটাবেসে ভেঙে পড়বে।
+      - type: code
+        lang: php
+        file: 'migrations/Version20261120103000.php'
+        variant: bad
+        code: |
+          public function up(Schema $schema): void
+          {
+              // কোড release-এর সাথে একই deploy-তে
+              $this->addSql('ALTER TABLE "user" DROP phone');
+          }
+
+          public function down(Schema $schema): void
+          {
+              // ডেটা চিরতরে চলে গেছে, ফেরানো যায় না
+              $this->addSql('ALTER TABLE "user" ADD phone VARCHAR(20) DEFAULT NULL');
+          }
+        marks:
+          - {line: 4, tip: 'কোড বদলের সাথে একই release-এ কলাম মোছা: রোলব্যাক করা পুরোনো কোড এই কলাম খুঁজে পাবে না।'}
+          - {line: 10, tip: 'down() কলামটা ফেরায় ঠিকই, কিন্তু ভেতরের নম্বরগুলো ফেরে না। এটা সত্যিকারের রোলব্যাক নয়।'}
+      - type: points
+        title: 'রোলব্যাক plan-এর পাঁচ শর্ত'
+        style: check
+        items:
+          - 'আগের ভার্সনের artifact তৈরি ও রাখা, এক কমান্ডে চালু করা যায়'
+          - 'প্রতিটা migration পুরোনো কোডের সাথেও সামঞ্জস্যপূর্ণ (শুধু expand, contract আলাদা release)'
+          - 'ঝুঁকির ফিচার feature flag-এর পেছনে, ফেরাতে deploy লাগে না'
+          - 'আগে থেকে ঠিক করা ট্রিগার: যেমন 5xx ১% পেরোলে ৫ মিনিটে রোলব্যাক'
+          - 'রোলব্যাক ব্যবহারের আগে একবার মহড়া দেওয়া'
+      - type: quote
+        body: 'রোলব্যাক plan না থাকলে সেটা deploy নয়, জুয়া।'
+    aside:
+      - type: pitfalls
+        items:
+          - '"আমরা hotfix দিয়ে ঠিক করব" রোলব্যাক নয়। ভুল ধরা, কোড লেখা ও deploy করতে কয়েক গুণ বেশি সময় লাগে।'
+          - 'ডেটা বদলানো (backfill) migration ফেরানো যায় না। তাই এগুলো চালানোর আগে ব্যাকআপ নিশ্চিত করো।'
+      - type: refs
+        items:
+          - {to: 'config/feature-flags', label: 'Feature flag দিয়ে ঝুঁকি আলাদা করা'}
+          - {to: 'recovery/backups-restore', label: 'ব্যাকআপ ও restore'}
+    check:
+      q: 'Release-এ নতুন কোডের সাথে "DROP COLUMN phone" একসাথে গেছে। রোলব্যাক করলে কেন সমস্যা মেটে না?'
+      a: 'কোড ফিরে গেলেও কলামটা আর নেই। পুরোনো কোড phone পড়তে গিয়ে error পাবে, আর down() শুধু কলাম ফেরায়, ভেতরের ডেটা নয়।'
+
+flashcards:
+  - q: 'Deploy চলার সময় কেন পুরোনো ও নতুন কোড একসাথে ডেটাবেস ব্যবহার করে?'
+    a: 'Deploy এক মুহূর্তে হয় না। কয়েক মিনিট কিছু সার্ভার পুরোনো, কিছু নতুন ভার্সন চালায়, কিন্তু ডেটাবেস সবার একটাই।'
+    more: |
+      Rolling-এ সার্ভার এক এক করে বদলায়, blue/green-এ সুইচের পরেও পুরোনো পরিবেশ রোলব্যাকের জন্য প্রস্তুত থাকে। তাই প্রতিটা release পুরোনো কোডের সাথেও সামঞ্জস্যপূর্ণ (backward compatible) রাখতে হয়।
+    ref: deploy-breaks-live-users
+  - q: 'Rolling, blue/green আর canary deploy-এর পার্থক্য কী?'
+    a: 'Rolling: এক এক সার্ভার বদলায়। Blue/green: দুই পরিবেশের মধ্যে সুইচ। Canary: আগে ছোট অংশে নতুন, ভালো হলে সবাইকে।'
+    more: |
+      Rolling সবচেয়ে সস্তা কিন্তু রোলব্যাক ধীর। Blue/green-এ রোলব্যাক শুধু সুইচ ফেরানো, তবে সাময়িক দ্বিগুণ সার্ভার লাগে। Canary-তে বাস্তব ট্রাফিকের ছোট অংশে ঝুঁকি যাচাই হয়, কিন্তু ভালো মনিটরিং দরকার।
+    ref: rolling-bluegreen-canary
+  - q: 'কোন deploy কৌশলে রোলব্যাক সবচেয়ে দ্রুত?'
+    a: 'Blue/green: পুরোনো পরিবেশ প্রস্তুত থাকে, load balancer-এর সুইচ ঘুরিয়ে দিলেই ট্রাফিক ফিরে যায়।'
+    more: |
+      Rolling-এ রোলব্যাক মানে আবার rolling deploy, কয়েক মিনিট। Blue/green-এ সেকেন্ডে সুইচ ফেরে। তবে দুই পরিবেশ একই ডেটাবেস ব্যবহার করে, তাই schema সামঞ্জস্য ছাড়া এটাও কাজ করে না।
+    ref: rolling-bluegreen-canary
+  - q: 'Expand-contract pattern কী?'
+    a: 'ডেটাবেস বদল কয়েক release-এ ভাগ করা: আগে নতুন কিছু যোগ (expand), সবাই সরে গেলে পুরোনোটা মোছা (contract)।'
+    more: |
+      কলামের নাম বদলাতে: নতুন কলাম যোগ, দুটোতেই লেখা ও পুরোনো ডেটা backfill, পড়া নতুনে সরানো, শেষ release-এ পুরোনো কলাম মোছা। প্রতিটা ধাপে পুরোনো ও নতুন দুই কোডই চলে।
+    ref: expand-contract
+  - q: 'নতুন কলাম যোগের migration কেন nullable রাখা হয়?'
+    a: 'পুরোনো কোড নতুন কলামের কথা জানে না। NOT NULL হলে পুরোনো কোডের INSERT ভেঙে যায়।'
+    more: |
+      PostgreSQL-এ nullable কলাম DEFAULT NULL দিয়ে যোগ করা তাৎক্ষণিক, টেবিল লক হয় না। backfill শেষ হওয়ার পর constraint বসানো যায়। বড় টেবিলে backfill ছোট batch-এ চালাও।
+    ref: expand-contract
+  - q: 'Graceful shutdown-এর ধাপগুলো কী?'
+    a: 'লাইন থেকে সরানো (readiness), SIGTERM, চলমান কাজ শেষ, সময়সীমা, না হলে SIGKILL।'
+    more: |
+      Load balancer-কে সরাতে সময় দিতে preStop-এ সামান্য অপেক্ষা রাখা হয়। terminationGracePeriodSeconds হবে সবচেয়ে লম্বা কাজের চেয়ে বেশি। Messenger worker SIGTERM পেলে বর্তমান message শেষ করে থামে, আর মাঝপথে কাটা message আবার queue-তে ফেরে।
+    ref: graceful-shutdown
+  - q: 'কোড রোলব্যাক সহজ, কিন্তু ডেটাবেস রোলব্যাক নয় কেন?'
+    a: 'কোড ফেরানো মানে পুরোনো ফাইল চালানো। মোছা কলাম বা বদলানো ডেটা ফেরানো যায় না, down() শুধু কাঠামো ফেরায়, ডেটা নয়।'
+    more: |
+      তাই নিরাপদ নিয়ম: migration শুধু যোগ করে (expand), মোছা (contract) পরের release-এ। রোলব্যাক plan-এ আরও থাকে: আগের artifact প্রস্তুত, feature flag, ট্রিগারের সীমা আর মহড়া।
+    ref: rollback-trap
+
+quiz:
+  - q: 'সাবিরের টিম একটা কলাম rename করে rolling deploy করল। ৫ মিনিট ধরে কিছু ব্যবহারকারী 500 পেল। সবচেয়ে সম্ভাব্য কারণ কী?'
+    hint: 'Deploy চলাকালে কোন কোন ভার্সন একসাথে চলে?'
+    options:
+      - text: 'পুরোনো সার্ভারগুলো তখনো পুরোনো নামে কলাম খুঁজছিল, যা ডেটাবেসে আর নেই'
+        correct: true
+        why: 'Rolling deploy-এ কিছুক্ষণ পুরোনো কোড চলে। migration আগে হয়ে গেলে ওই কোড ভেঙে পড়ে।'
+      - text: 'নতুন কোডে বাগ ছিল, তাই সব সার্ভার ব্যর্থ'
+        correct: false
+        why: 'সব সার্ভার ব্যর্থ হলে সমস্যা ৫ মিনিটে শেষ হত না; এখানে ব্যর্থতা শুধু পুরোনো সার্ভারে, deploy শেষ হলে থামে।'
+      - text: 'ডেটাবেস ধীর হয়ে গিয়েছিল'
+        correct: false
+        why: 'ধীর হলে timeout আসত, "কলাম নেই" error নয়।'
+      - text: 'load balancer ভুল কনফিগ ছিল'
+        correct: false
+        why: 'load balancer ঠিকই কাজ করছিল: সে পুরোনো সার্ভারে ট্রাফিক পাঠাচ্ছিল যেগুলো তখনো রানিং।'
+    ref: deploy-breaks-live-users
+  - q: 'কোন পরিস্থিতিতে blue/green বেছে নেওয়া সবচেয়ে যুক্তিসংগত?'
+    hint: 'রোলব্যাকের গতি কখন সবচেয়ে বেশি জরুরি?'
+    options:
+      - text: 'বড় ও ঝুঁকিপূর্ণ বদল, যেখানে ভুল হলে এক মিনিটের মধ্যে ফিরতে হবে'
+        correct: true
+        why: 'পুরোনো পরিবেশ প্রস্তুত থাকে, সুইচ ঘোরালেই ফেরা যায়।'
+      - text: 'সার্ভার ভাড়া খুবই সীমিত, বাড়তি সার্ভার রাখা যাবে না'
+        correct: false
+        why: 'blue/green সাময়িকভাবে দুই পরিবেশ চালায়, তাই বাড়তি ক্ষমতা লাগে। সীমিত সম্পদে rolling ভালো।'
+      - text: 'ব্যবহারকারীদের ৫% এ আগে নতুন ফিচার পরীক্ষা করতে চাও'
+        correct: false
+        why: 'এটা canary-র কাজ: ট্রাফিকের ছোট অংশে আগে পরীক্ষা।'
+      - text: 'প্রতিদিন কয়েকটা ছোট বদল, সবচেয়ে কম খরচে'
+        correct: false
+        why: 'ছোট নিয়মিত বদলের জন্য rolling সবচেয়ে সহজ ও সস্তা।'
+    ref: rolling-bluegreen-canary
+  - q: 'Expand-contract-এ phone কলামকে mobile করা হচ্ছে। কোন ক্রমটা ঠিক?'
+    hint: 'পুরোনো কোড কখনই কোনো ভাঙা অবস্থা না দেখে।'
+    options:
+      - text: 'mobile যোগ, দুটোতেই লেখা ও backfill, mobile থেকে পড়া, পরের release-এ phone মোছা'
+        correct: true
+        why: 'প্রতিটা ধাপে পুরোনো ও নতুন কোড দুটোই কাজ করে। মোছা আসে সবশেষে, সবাই সরে যাওয়ার পর।'
+      - text: 'phone-কে mobile নামে rename, তারপর কোড deploy'
+        correct: false
+        why: 'এতে পুরোনো সার্ভার ভাঙে, কারণ তারা এখনো phone খুঁজছে।'
+      - text: 'phone মুছে mobile যোগ, একই release-এ'
+        correct: false
+        why: 'ডেটা হারায় এবং রোলব্যাকে পুরোনো কোড phone খুঁজে পাবে না।'
+      - text: 'কোড deploy, তারপর mobile যোগ'
+        correct: false
+        why: 'নতুন কোড এমন কলামে লিখতে যাবে যা এখনো নেই, অর্থাৎ error।'
+    ref: expand-contract
+  - q: 'নিচের কোন কোন কাজ graceful shutdown-এর অংশ?'
+    hint: 'চলমান কাজ আর নতুন কাজ আলাদা করে ভাবো।'
+    options:
+      - text: 'বন্ধের আগে readiness ব্যর্থ করে নতুন request পাঠানো থামানো'
+        correct: true
+        why: 'নতুন request আর না এলে বাকি চলমান কাজ শেষ করা সহজ।'
+      - text: 'Messenger worker SIGTERM পেলে current message শেষ করে থামা'
+        correct: true
+        why: 'এভাবে message মাঝপথে কাটা পড়ে না। আর যদি পড়েও, সেটা queue-তে ফিরে আসে।'
+      - text: 'সরাসরি SIGKILL পাঠানো, কারণ সেটা দ্রুত'
+        correct: false
+        why: 'SIGKILL চলমান কাজ মাঝপথে কেটে দেয়। এটা শেষ উপায়, প্রথম নয়।'
+      - text: 'terminationGracePeriodSeconds কম রাখা, যাতে সার্ভার তাড়াতাড়ি যায়'
+        correct: false
+        why: 'সময় সবচেয়ে লম্বা request-এর চেয়ে কম হলে চলমান কাজ কাটা পড়ে।'
+    ref: graceful-shutdown
+  - q: 'একটা release-এ নতুন কোড ও "ALTER TABLE user DROP phone" একসাথে গেছে। ১০ মিনিট পরে error rate বেড়ে গেল। সবচেয়ে ভালো পদক্ষেপ কী হত, আর এখন কী?'
+    hint: 'কোড ফেরানো যায়, কিন্তু কী ফেরানো যায় না?'
+    options:
+      - text: 'ভুলটা ছিল contract-কে একই release-এ রাখা। এখন কলামটা backup থেকে ফেরাতে হবে, আর ভবিষ্যতে contract আলাদা release-এ'
+        correct: true
+        why: 'কোড রোলব্যাকে পুরোনো কোড phone চাইবে, কিন্তু কলাম নেই। ডেটা ফেরাতে backup লাগে। ভবিষ্যতে মোছা আলাদা, পরের release-এ।'
+      - text: 'শুধু আগের ভার্সনে কোড ফিরিয়ে দিলেই সব ঠিক হবে'
+        correct: false
+        why: 'পুরোনো কোড phone কলাম চাইবে, যা আর নেই। সে-ও ভাঙবে।'
+      - text: 'down() migration চালালেই ডেটা ফিরবে'
+        correct: false
+        why: 'down() শুধু খালি কলাম আবার বানায়। ভেতরের নম্বর ফেরে না।'
+      - text: 'নতুন hotfix লিখে অপেক্ষা করা, রোলব্যাক ছাড়া'
+        correct: false
+        why: 'hotfix-এ ঘণ্টা লাগতে পারে, আর ততক্ষণ ব্যবহারকারী error পাবে। আগে থেকে রোলব্যাক plan থাকা দরকার।'
+    ref: rollback-trap

@@ -1,0 +1,480 @@
+slides:
+  - slug: negative-latency
+    title: 'কুরিয়ার API উত্তর দিল −২.৭ সেকেন্ডে'
+    kind: story
+    tldr: 'সার্ভারের ঘড়ি মাঝপথে পিছিয়ে গেলে "শেষ − শুরু" ঋণাত্মক হয়। ঘড়ি সবসময় সামনে এগোয় — এই ধারণাটাই ভুল।'
+    keywords: ['clock', 'negative duration', 'NTP', 'microtime', 'ঘড়ি', 'সময় মাপা']
+    blocks:
+      - type: text
+        body: |
+          তানিয়ার ড্যাশবোর্ডে কুরিয়ার API-র response time দেখায়। এক সকালে একটা সারিতে লেখা: **−২.৭ সেকেন্ড**। কোডে সে শুধু শুরুর আর শেষের সময় নিয়ে বিয়োগ করেছে। কিন্তু ওই দুই লাইনের মাঝখানে সার্ভারের ঘড়িটাকে কেউ পেছনে ঘুরিয়ে ঠিক করে দিয়েছে।
+      - type: code
+        lang: php
+        file: 'src/Courier/CourierClient.php'
+        variant: bad
+        code: |
+          $start = microtime(true);                    // দেয়ালঘড়ি দেখে নিলাম
+
+          $response = $this->courier->request('POST', '/parcels', ['json' => $parcel]);
+          $status = $response->getStatusCode();        // উত্তর আসা পর্যন্ত অপেক্ষা
+
+          $elapsed = microtime(true) - $start;         // আবার দেয়ালঘড়ি দেখলাম
+          $this->logger->info('courier call', ['seconds' => round($elapsed, 3)]);
+
+          // একই ভুল, আরও বিপজ্জনক রূপে
+          $deadline = time() + 5;
+          while (time() < $deadline && !$this->parcelIsReady($id)) {
+              usleep(200_000);
+          }
+        marks:
+          - {line: 1, tip: 'microtime() সার্ভারের দেয়ালঘড়ি পড়ে — যে ঘড়ি যেকোনো মুহূর্তে সামনে বা পেছনে লাফ দিতে পারে।'}
+          - {line: 6, tip: 'মাঝখানে ঘড়ি ৩ সেকেন্ড পিছালে এখানে ০.৩ − ৩ = −২.৭ আসে।'}
+          - {line: 10, tip: 'deadline দেয়ালঘড়ির সাথে বাঁধা। ঘড়ি ১ ঘণ্টা পিছালে এই ৫ সেকেন্ডের loop ১ ঘণ্টা ঘুরবে; এগোলে সাথে সাথে থেমে যাবে।'}
+      - type: visual
+        kind: sequence
+        caption: 'আসল কাজ ০.৩ সেকেন্ডের, অথচ হিসাবে −২.৭ সেকেন্ড'
+        actors:
+          - {id: code, label: 'তানিয়ার কোড', icon: code, tip: 'কাজের আগে ও পরে ঘড়ি দেখে, তারপর বিয়োগ করে।'}
+          - {id: wall, label: 'সার্ভারের ঘড়ি', icon: clock, tip: 'সার্ভারের দেয়ালঘড়ি — এই মুহূর্তে আসল সময়ের চেয়ে ৩ সেকেন্ড এগিয়ে আছে।'}
+          - {id: ntp, label: 'NTP', icon: globe, tip: 'ইন্টারনেটের নিখুঁত ঘড়ির সাথে মিলিয়ে সার্ভারের ঘড়ি ঠিক করে দেয়।'}
+        messages:
+          - {from: code, to: wall, label: 'শুরু: কয়টা বাজে?'}
+          - {from: wall, to: code, label: '১০:০০:০৩.০', dashed: true}
+          - {from: ntp, to: wall, label: 'তুমি ৩ সেকেন্ড এগিয়ে — পিছাও', tip: 'ভুলটা বড় হলে NTP ধীরে ধীরে নয়, এক লাফে ঠিক করে।'}
+          - {at: wall, note: 'ঘড়ি এক লাফে ৩ সেকেন্ড পিছাল', tone: warn}
+          - {from: code, to: wall, label: 'শেষ: কয়টা বাজে?'}
+          - {from: wall, to: code, label: '১০:০০:০০.৩', dashed: true, tip: 'আসলে ০.৩ সেকেন্ড পার হয়েছে, কিন্তু ঘড়ির পাঠ আগের চেয়ে ছোট।'}
+          - {at: code, note: 'শেষ − শুরু = −২.৭ সেকেন্ড', tone: bad, tip: 'ড্যাশবোর্ডে ভুল সংখ্যা তো ছোট ক্ষতি। এই সংখ্যা দিয়ে কেউ sleep বা timeout হিসাব করলে প্রোগ্রাম crash করে বা ঝুলে থাকে।'}
+      - type: quote
+        body: 'দেয়ালঘড়ি সময় বলার জন্য, সময় মাপার জন্য নয়।'
+    aside:
+      - type: story
+        title: 'নববর্ষের রাতে Cloudflare'
+        body: |
+          ২০১৭ সালের ১ জানুয়ারি রাত ১২টায় (UTC) পৃথিবীর ঘড়িতে একটা বাড়তি সেকেন্ড যোগ হয়। Cloudflare-এর DNS সফটওয়্যার ধরে নিয়েছিল, দুইটা সময়ের বিয়োগফল কখনো শূন্যের নিচে নামবে না। সেই রাতে সংখ্যাটা ঋণাত্মক হলো, কোড crash করল, আর তাদের কিছু গ্রাহকের সাইট কয়েক ঘণ্টা ঠিকমতো খোলেনি।
+      - type: terms
+        items:
+          - {term: 'Wall clock', meaning: 'সার্ভারের দেয়ালঘড়ি: তারিখ ও সময় বলে, কিন্তু ঠিক করার সময় লাফ দিতে পারে।'}
+          - {term: 'NTP', meaning: 'Network Time Protocol — যে ব্যবস্থায় সার্ভার নিখুঁত ঘড়ির সাথে নিজের ঘড়ি মিলিয়ে নেয়।'}
+    check:
+      q: 'আসল কাজ ০.৩ সেকেন্ডে শেষ হলেও হিসাবে −২.৭ সেকেন্ড এল কীভাবে?'
+      a: 'দুই পাঠের মাঝখানে সার্ভারের দেয়ালঘড়ি ৩ সেকেন্ড পিছিয়ে ঠিক করা হয়েছে। তাই শেষের পাঠ শুরুর পাঠের চেয়ে ছোট, আর বিয়োগফল ০.৩ − ৩ = −২.৭।'
+
+  - slug: four-lies
+    title: 'ঘড়ি চারভাবে মিথ্যা বলে'
+    kind: concept
+    tldr: 'Skew, drift, NTP-র লাফ আর leap second — এই চার কারণে দুই মেশিনের ঘড়ি কখনো হুবহু মেলে না, আর একই ঘড়িও সোজা পথে চলে না।'
+    keywords: ['clock skew', 'clock drift', 'NTP', 'leap second', 'ঘড়ির ফারাক', 'সময় মেলানো']
+    blocks:
+      - type: metaphor
+        icon: school
+        title: 'স্কুলের ক্লাসরুমের ঘড়ি'
+        body: |
+          একটা স্কুলের প্রতিটা ক্লাসরুমে আলাদা দেয়ালঘড়ি। কোনোটা দুই মিনিট এগিয়ে, কোনোটা এক মিনিট পিছিয়ে — কারণ প্রতিটা ঘড়ি একটু দ্রুত বা একটু ধীরে চলে। দপ্তরি মাঝে মাঝে রেডিওর সময় শুনে কাঁটা ঘুরিয়ে মিলিয়ে দেন, তখন ঘড়িটা হঠাৎ লাফ দেয়। তোমার প্রতিটা সার্ভার এ রকম একেকটা ক্লাসরুমের ঘড়ি।
+      - type: visual
+        kind: table
+        caption: 'ঘড়ির চার রকম ভুল — স্কুলে আর সার্ভারে'
+        headers: ['ভুল', 'স্কুলের ঘড়িতে', 'সার্ভারে']
+        rows:
+          - cells: ['Skew (ফারাক)', 'দুই রুমের ঘড়িতে দুই রকম সময়', 'দুই সার্ভারে কয়েক ms থেকে কয়েক সেকেন্ড তফাত']
+            tip: 'একই মুহূর্তে দুই মেশিনের পাঠের তফাত। NTP ভালো চললে কয়েক মিলিসেকেন্ড; NTP বন্ধ থাকলে মিনিটও হতে পারে।'
+          - cells: ['Drift (সরে যাওয়া)', 'ঘড়িটা রোজ একটু করে এগিয়ে যায়', 'ঠিক না করলে দিনে কয়েক সেকেন্ড সরে যায়']
+            tip: 'কম্পিউটারের ঘড়ি quartz crystal-এর কম্পন গুনে চলে। তাপমাত্রা আর বয়সের সাথে কম্পন বদলায়, তাই প্রতিটা মেশিন নিজের গতিতে চলে।'
+          - cells: ['NTP-র লাফ', 'দপ্তরি কাঁটা ঘুরিয়ে মিলিয়ে দিলেন', 'ঘড়ি হঠাৎ সামনে বা পেছনে লাফ দেয়']
+            tip: 'ছোট ভুল NTP ঘড়ির গতি একটু বাড়িয়ে-কমিয়ে শোধরায় (slew)। বড় ভুল হলে এক লাফে ঠিক করে (step) — তখন সময় পেছনেও যেতে পারে।'
+          - cells: ['Leap second', 'বছরের শেষ মিনিটে ৬১ সেকেন্ড', '23:59:60 আসে, বা একই সেকেন্ড দুইবার']
+            tip: 'পৃথিবীর ঘূর্ণনের সাথে মেলাতে UTC-তে মাঝে মাঝে বাড়তি এক সেকেন্ড যোগ হয়। শেষবার হয়েছে ২০১৬-র শেষে; ২০৩৫ সালের মধ্যে এটা তুলে দেওয়ার সিদ্ধান্ত হয়েছে।'
+      - type: points
+        title: 'এর মানে দাঁড়ায়'
+        items:
+          - 'দুই সার্ভারের timestamp মিলিয়ে "কে আগে" বলা নিরাপদ নয়।'
+          - 'একই সার্ভারে পরের পাঠ আগের পাঠের চেয়ে ছোট হতে পারে।'
+          - 'ব্যবহারকারীর ফোন বা ল্যাপটপের ঘড়ি ঘণ্টার পর ঘণ্টা ভুল থাকতে পারে।'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Skew', meaning: 'একই মুহূর্তে দুই মেশিনের ঘড়ির পাঠের তফাত।'}
+          - {term: 'Drift', meaning: 'একটা ঘড়ির ধীরে ধীরে আসল সময় থেকে এগিয়ে বা পিছিয়ে যাওয়া।'}
+          - {term: 'Slew ও step', meaning: 'NTP ছোট ভুল ধীরে ধীরে শোধরায় (slew), বড় ভুল এক লাফে (step)।'}
+          - {term: 'Leap smear', meaning: 'বাড়তি সেকেন্ডটা এক লাফে না দিয়ে সারা দিনে একটু একটু করে ছড়িয়ে দেওয়া — বড় cloud-গুলো তাই করে।'}
+      - type: commands
+        title: 'সার্ভারের ঘড়ি ঠিক আছে তো?'
+        items:
+          - {cmd: 'timedatectl status', desc: 'ঘড়ি NTP-র সাথে sync হচ্ছে কি না দেখো'}
+          - {cmd: 'chronyc tracking', desc: 'আসল সময় থেকে এই সার্ভার কত দূরে, তা দেখো'}
+      - type: tips
+        items:
+          - 'প্রতিটা সার্ভারে NTP (chrony) চালু রাখো আর ঘড়ির offset-এ alert বসাও। এতে ভুল কমে, কিন্তু শূন্য হয় না।'
+          - 'VM কিছুক্ষণ থেমে থাকলে (pause বা live migration) জেগে উঠে ঘড়ি বড় লাফ দিতে পারে।'
+    check:
+      q: 'Skew আর drift-এর পার্থক্য কী?'
+      a: 'Skew হলো একই মুহূর্তে দুই ঘড়ির পাঠের তফাত। Drift হলো একটা ঘড়ির ধীরে ধীরে আসল সময় থেকে সরে যাওয়া। Drift জমে জমেই skew তৈরি হয়, আর NTP সেটা শোধরাতে গিয়ে ঘড়িকে লাফ দেওয়ায়।'
+
+  - slug: wall-vs-monotonic
+    title: 'দেয়ালঘড়ি বনাম স্টপওয়াচ'
+    kind: concept
+    tldr: 'Wall clock বলে এখন কয়টা বাজে, আর লাফ দিতে পারে। Monotonic clock শুধু সামনে চলে আর বলে কতক্ষণ গেল। সময় মাপতে সবসময় দ্বিতীয়টা।'
+    keywords: ['monotonic clock', 'wall clock', 'hrtime', 'duration', 'স্টপওয়াচ', 'সময় মাপা']
+    blocks:
+      - type: metaphor
+        icon: stopwatch
+        title: 'স্কুলের দৌড় প্রতিযোগিতা'
+        body: |
+          ১০০ মিটার দৌড়ে স্যার দেয়ালঘড়ি দেখে সময় লেখেন না — হাতে স্টপওয়াচ রাখেন। দৌড়ের মাঝখানে দপ্তরি দেয়ালঘড়ির কাঁটা ঘুরিয়ে দিলেও স্টপওয়াচের কিছু যায় আসে না। তবে স্টপওয়াচ বলতে পারে না এখন কয়টা বাজে; সে শুধু বলে কতক্ষণ গেল। কম্পিউটারেও ঠিক এই দুই রকম ঘড়ি আছে।
+      - type: visual
+        kind: compare
+        caption: 'দুই ঘড়ি, দুই কাজ'
+        columns:
+          - title: 'Wall clock (দেয়ালঘড়ি)'
+            tone: warn
+            icon: clock
+            tip: 'তারিখ-সময় জানার ঘড়ি। NTP এটাকে যখন খুশি ঠিক করে, তাই এর দুই পাঠের বিয়োগফলে ভরসা নেই।'
+            items:
+              - 'প্রশ্ন: এখন কয়টা বাজে?'
+              - 'PHP: time(), microtime(), new DateTimeImmutable()'
+              - 'সামনে বা পেছনে লাফ দিতে পারে'
+              - 'কাজ: created_at, log, মানুষকে দেখানো'
+          - title: 'Monotonic (স্টপওয়াচ)'
+            tone: good
+            icon: stopwatch
+            tip: 'মেশিনের ঠিক করা কোনো এক বিন্দু থেকে গোনা সময়। কখনো পিছায় না, তাই দুই পাঠের বিয়োগফল সবসময় সঠিক।'
+            items:
+              - 'প্রশ্ন: কতক্ষণ গেল?'
+              - 'PHP: hrtime(true) — ন্যানোসেকেন্ডে'
+              - 'শুধু সামনে চলে, কখনো পিছায় না'
+              - 'কাজ: latency, timeout, retry-র অপেক্ষা'
+      - type: code
+        lang: php
+        file: 'src/Courier/CourierClient.php'
+        variant: good
+        code: |
+          $start = hrtime(true);                       // স্টপওয়াচ চালু (ন্যানোসেকেন্ড)
+
+          $response = $this->courier->request('POST', '/parcels', ['json' => $parcel]);
+          $status = $response->getStatusCode();
+
+          $elapsedMs = (hrtime(true) - $start) / 1_000_000;
+          $this->logger->info('courier call', ['ms' => round($elapsedMs, 1)]);
+
+          // deadline-ও স্টপওয়াচের সাথে বাঁধো
+          $deadline = hrtime(true) + 5 * 1_000_000_000;
+          while (hrtime(true) < $deadline && !$this->parcelIsReady($id)) {
+              usleep(200_000);
+          }
+        marks:
+          - {line: 1, tip: 'hrtime(true) একটা পূর্ণসংখ্যা দেয়: কোনো এক বিন্দু থেকে কত ন্যানোসেকেন্ড গেছে। সংখ্যাটা নিজে কোনো তারিখ নয়।'}
+          - {line: 6, tip: 'দুই পাঠের বিয়োগফল কখনো ঋণাত্মক হবে না — NTP ঘড়ি ঘোরালেও না।'}
+          - {line: 10, tip: 'এই loop এখন ঠিক ৫ সেকেন্ডই চলবে, দেয়ালঘড়িতে যা-ই ঘটুক।'}
+      - type: quote
+        body: 'কখন ঘটল — দেয়ালঘড়িকে জিজ্ঞেস করো। কতক্ষণ লাগল — স্টপওয়াচকে।'
+    aside:
+      - type: remember
+        body: 'দুইটা সময়ের পাঠ বিয়োগ করতে যাচ্ছ? তাহলে দুটোই hrtime() থেকে আসা চাই।'
+      - type: pitfalls
+        items:
+          - 'hrtime()-এর মান ডেটাবেসে রেখো না, অন্য সার্ভারেও পাঠিয়ো না। সংখ্যাটার মানে আছে শুধু ওই এক মেশিনে, ওই একবার চালু থাকা অবস্থায়।'
+          - 'ব্রাউজারেও একই ভাগ: `Date.now()` দেয়ালঘড়ি, `performance.now()` স্টপওয়াচ।'
+      - type: terms
+        items:
+          - {term: 'Monotonic', meaning: 'যা শুধু এক দিকে চলে — এখানে, যে ঘড়ির পাঠ কখনো কমে না।'}
+    check:
+      q: 'hrtime(true)-এর মান দিয়ে created_at ভরা যায় না কেন?'
+      a: 'সংখ্যাটা কোনো তারিখ নয় — মেশিনের ঠিক করা এক বিন্দু থেকে গোনা ন্যানোসেকেন্ড। এর দুই পাঠের বিয়োগফলই শুধু অর্থপূর্ণ। তারিখ-সময়ের জন্য দেয়ালঘড়িই লাগে।'
+
+  - slug: symfony-clock
+    title: 'Symfony Clock: সময়কে টেস্টের হাতে দেওয়া'
+    kind: howto
+    tldr: 'কোডে সরাসরি new DateTimeImmutable() না ডেকে ClockInterface inject করো; টেস্টে MockClock দিয়ে সময় থামাও আর ইচ্ছামতো এগিয়ে দাও।'
+    keywords: ['Symfony Clock', 'ClockInterface', 'MockClock', 'testable time', 'DatePoint', 'সময়ের টেস্ট']
+    blocks:
+      - type: text
+        body: |
+          OTP-র মেয়াদ ৫ মিনিট — এটা টেস্ট করতে কি টেস্টের ভেতরে ৫ মিনিট বসে থাকবে? কোড যদি নিজেই `new DateTimeImmutable()` ডাকে, তাহলে সময়টা তোমার নিয়ন্ত্রণের বাইরে। সমাধান: ঘড়িটাকে একটা service বানাও আর বাইরে থেকে ঢুকিয়ে দাও। আসল অ্যাপে Symfony সত্যিকারের ঘড়ি দেয়, টেস্টে তুমি দাও নকল ঘড়ি।
+      - type: code
+        lang: php
+        file: 'src/Security/OtpVerifier.php'
+        variant: good
+        code: |
+          use Psr\Clock\ClockInterface;
+
+          final class OtpVerifier
+          {
+              private const TTL_SECONDS = 300;
+
+              public function __construct(private readonly ClockInterface $clock)
+              {
+              }
+
+              public function issue(string $phone): Otp
+              {
+                  $now = $this->clock->now();          // new DateTimeImmutable() নয়
+
+                  return new Otp(
+                      phone: $phone,
+                      code: (string) random_int(100_000, 999_999),
+                      expiresAt: $now->modify('+'.self::TTL_SECONDS.' seconds'),
+                  );
+              }
+
+              public function isExpired(Otp $otp): bool
+              {
+                  return $this->clock->now() >= $otp->expiresAt;
+              }
+          }
+        marks:
+          - {line: 7, tip: 'Symfony নিজেই এখানে আসল ঘড়ি autowire করে দেয় — কোনো config লিখতে হয় না।'}
+          - {line: 13, tip: 'সময় জানার একটাই রাস্তা: inject করা ঘড়ি। তাই টেস্টে ঘড়ি বদলালে পুরো class-এর সময় বদলে যায়।'}
+      - type: code
+        lang: php
+        file: 'tests/Security/OtpVerifierTest.php'
+        variant: good
+        code: |
+          use Symfony\Component\Clock\MockClock;
+
+          public function testOtpExpiresAfterFiveMinutes(): void
+          {
+              $clock = new MockClock('2027-03-01 10:00:00', 'UTC');
+              $verifier = new OtpVerifier($clock);
+              $otp = $verifier->issue('01700000000');
+
+              $clock->sleep(299);                  // সত্যি ঘুমায় না — ঘড়ি ২৯৯ সেকেন্ড এগোয়
+              self::assertFalse($verifier->isExpired($otp));
+
+              $clock->sleep(1);                    // ঠিক ৩০০ সেকেন্ড পূর্ণ হলো
+              self::assertTrue($verifier->isExpired($otp));
+          }
+        marks:
+          - {line: 5, tip: 'MockClock একটা থেমে থাকা ঘড়ি। তুমি না বললে এর সময় এক মাইক্রোসেকেন্ডও এগোয় না, তাই টেস্ট প্রতিবার একই ফল দেয়।'}
+          - {line: 9, tip: 'sleep() আর modify() শুধু ভেতরের সময় বদলায়। ৫ মিনিটের মেয়াদ কয়েক মিলিসেকেন্ডে টেস্ট হয়ে যায়।'}
+      - type: quote
+        body: 'যে কোড নিজে ঘড়ি দেখে, তাকে টেস্ট করা যায় না। ঘড়িটা বাইরে থেকে দাও।'
+    aside:
+      - type: commands
+        title: 'শুরু করতে'
+        items:
+          - {cmd: 'composer require symfony/clock', desc: 'Clock component যোগ করো'}
+          - {cmd: 'php bin/console debug:autowiring Clock', desc: 'কোন ClockInterface autowire হবে, দেখো'}
+      - type: tips
+        items:
+          - 'WebTestCase বা KernelTestCase-এ `ClockSensitiveTrait` নিয়ে `static::mockTime()` ডাকলে পুরো অ্যাপের ঘড়ি নকল হয়ে যায়।'
+          - 'Entity-র constructor-এ `new DateTimeImmutable()` লিখো না; service থেকে `$clock->now()` পাঠিয়ে দাও।'
+          - 'Symfony-র `MonotonicClock` ভেতরে `hrtime()` দিয়ে চলে — একই process-এ তার `now()` কখনো পিছায় না।'
+      - type: terms
+        items:
+          - {term: 'DatePoint', meaning: 'Symfony-র নিজের DateTimeImmutable; `$clock->now()` এটাই ফেরত দেয়।'}
+    check:
+      q: 'MockClock-এর sleep(299) ডাকলে টেস্ট কি ২৯৯ সেকেন্ড থেমে থাকে?'
+      a: 'না। MockClock শুধু নিজের ভেতরের সময় ২৯৯ সেকেন্ড এগিয়ে দেয়। তাই ৫ মিনিটের মেয়াদ কয়েক মিলিসেকেন্ডে টেস্ট হয়ে যায়।'
+
+  - slug: two-servers-one-timeline
+    title: 'দুই সার্ভারের timestamp মিলিয়ে ক্রম ঠিক করা'
+    kind: pitfall
+    tldr: 'সার্ভার A-র ঘড়ি ৮০ms এগিয়ে থাকলে পরে ঘটা cancel-এর timestamp আগে ঘটা create-এর চেয়ে ছোট হয়। ক্রমের জন্য timestamp নয়, নম্বর লাগে।'
+    keywords: ['clock skew', 'event ordering', 'timestamp', 'created_at', 'client clock', 'ঘটনার ক্রম']
+    blocks:
+      - type: text
+        body: |
+          অর্ডারটা তৈরি হলো সার্ভার A-তে, ৫০ মিলিসেকেন্ড পরে বাতিল হলো সার্ভার B-তে। A-র ঘড়ি ৮০ms এগিয়ে। রিপোর্টে timestamp ধরে সাজালে দেখাবে: অর্ডারটা **তৈরি হওয়ার আগেই বাতিল** হয়েছে। দুই ক্লাসরুমের ঘড়ি মিলিয়ে বলা যায় না কে আগে ঢুকেছে — দুই সার্ভারের ঘড়ি মিলিয়েও না।
+      - type: visual
+        kind: sequence
+        caption: 'আসলে আগে create, পরে cancel — timestamp বলছে উল্টো'
+        actors:
+          - {id: a, label: 'সার্ভার A', icon: server, tone: warn, tip: 'এর ঘড়ি আসল সময়ের চেয়ে ৮০ms এগিয়ে।'}
+          - {id: events, label: 'ইভেন্ট টেবিল', icon: db, tip: 'দুই সার্ভারই নিজের ঘড়ির সময় বসিয়ে এখানে সারি লেখে।'}
+          - {id: b, label: 'সার্ভার B', icon: server, tip: 'এর ঘড়ি ঠিক আছে।'}
+        messages:
+          - {from: a, to: events, label: 'created — ১০:০০:০০.০৮০', tip: 'আসল সময় ১০:০০:০০.০০০। A নিজের এগিয়ে থাকা ঘড়ির সময় লিখেছে।'}
+          - {from: b, to: events, label: 'cancelled — ১০:০০:০০.০৫০', tip: 'আসল সময় ১০:০০:০০.০৫০ — create-এর ৫০ms পরে।'}
+          - {at: events, note: 'সাজালে: আগে cancel, পরে create', tone: bad, tip: 'cancel-এর timestamp create-এর চেয়ে ৩০ms ছোট। যে কোড এই ক্রম বিশ্বাস করবে, সে ভুল সিদ্ধান্ত নেবে।'}
+      - type: points
+        title: 'কোন কাজে কোন ঘড়ি'
+        style: check
+        items:
+          - 'কতক্ষণ লাগল (latency, timeout): `hrtime()` — স্টপওয়াচ।'
+          - 'কখন ঘটল (created_at, log): `ClockInterface` থেকে নেওয়া UTC সময়।'
+          - 'কোনটা আগে ঘটল: version বা sequence নম্বর — timestamp নয়।'
+          - 'মেয়াদ শেষ কি না: শুধু সার্ভারের ঘড়ি, কখনো ব্যবহারকারীর ফোনের নয়।'
+    aside:
+      - type: pitfalls
+        items:
+          - 'মোবাইল অ্যাপ থেকে আসা `createdAt` বিশ্বাস করে সিদ্ধান্ত নিও না — ফোনের ঘড়ি ব্যবহারকারী নিজেই বদলাতে পারে।'
+          - 'একই সার্ভারেও দুই সারির `created_at` হুবহু এক হতে পারে। সাজানোর সময় সাথে `id` রাখো।'
+      - type: refs
+        items:
+          - {to: 'time/ordering-events', label: 'কোনটা আগে ঘটেছে — সঠিক উপায়'}
+          - {to: 'time/expiry-timeouts', label: 'মেয়াদ ও timeout নিরাপদে'}
+    check:
+      q: 'A-র ঘড়ি ৮০ms এগিয়ে। A-তে একটা ঘটনার ৫০ms পরে B-তে আরেকটা ঘটল। timestamp ধরে সাজালে কোনটা আগে দেখাবে?'
+      a: 'B-র ঘটনা। A-র ঘটনার গায়ে লেখা সময় আসলের চেয়ে ৮০ms বেশি, তাই ৫০ms পরে ঘটা B-র ঘটনার timestamp তার চেয়ে ৩০ms ছোট।'
+
+flashcards:
+  - q: 'Clock skew কী?'
+    a: 'একই মুহূর্তে দুই মেশিনের ঘড়ির পাঠের তফাত।'
+    more: |
+      NTP ভালোভাবে চললে এই তফাত সাধারণত কয়েক মিলিসেকেন্ড, কিন্তু কখনো শূন্য নয়। NTP বন্ধ থাকলে বা VM থেমে গেলে তফাত সেকেন্ড বা মিনিটেও পৌঁছায়। তাই দুই সার্ভারের timestamp তুলনা করে সূক্ষ্ম সিদ্ধান্ত নেওয়া যায় না।
+    ref: four-lies
+  - q: 'Clock drift কী?'
+    a: 'একটা ঘড়ির ধীরে ধীরে আসল সময় থেকে এগিয়ে বা পিছিয়ে যাওয়া।'
+    more: |
+      কম্পিউটারের ঘড়ি একটা quartz crystal-এর কম্পন গুনে চলে, আর তাপমাত্রা ও বয়সের সাথে সেই কম্পন একটু বদলায়। ফলে ঠিক না করলে একটা সার্ভার দিনে কয়েক সেকেন্ড পর্যন্ত সরে যেতে পারে। Drift জমে জমেই দুই মেশিনের মধ্যে skew তৈরি হয়।
+    ref: four-lies
+  - q: 'NTP ঘড়ি ঠিক করার সময় কোডের জন্য কী বিপদ তৈরি করে?'
+    a: 'ঘড়ি হঠাৎ সামনে বা পেছনে লাফ দিতে পারে; তখন দেয়ালঘড়ির দুই পাঠের বিয়োগফল ভুল, এমনকি ঋণাত্মক হয়।'
+    more: |
+      ছোট ভুল NTP ঘড়ির গতি সামান্য বাড়িয়ে-কমিয়ে শোধরায়, একে বলে slew। ভুল বড় হলে এক লাফে ঠিক করে, একে বলে step। Step পেছন দিকে হলে একই সময় দুইবার আসে, আর যে কোড "সময় শুধু সামনে যায়" ধরে নিয়েছে সে ভাঙে।
+    ref: negative-latency
+  - q: 'Wall clock আর monotonic clock-এর পার্থক্য কী?'
+    a: 'Wall clock তারিখ-সময় বলে আর লাফ দিতে পারে। Monotonic clock শুধু সামনে চলে আর কতক্ষণ গেল তা মাপে।'
+    more: |
+      Wall clock হলো দেয়ালঘড়ি: মানুষকে সময় দেখানো আর রেকর্ডে তারিখ বসানোর জন্য। Monotonic clock হলো স্টপওয়াচ: এর পাঠ নিজে কোনো তারিখ নয়, কিন্তু দুই পাঠের বিয়োগফল সবসময় সঠিক। Latency, timeout আর retry-র অপেক্ষা মাপতে তাই monotonic clock লাগে।
+    ref: wall-vs-monotonic
+  - q: 'PHP-তে একটা কাজ কতক্ষণ নিল, তা মাপার সঠিক function কোনটা?'
+    a: '`hrtime(true)` — monotonic, ন্যানোসেকেন্ডে পাঠ দেয়। `time()` বা `microtime()` নয়।'
+    more: |
+      `time()`, `microtime()` আর `new DateTimeImmutable()` সবই দেয়ালঘড়ি পড়ে, তাই NTP ঘড়ি ঠিক করলে এদের বিয়োগফল ভুল হয়। `hrtime(true)` কখনো পিছায় না। মিলিসেকেন্ড পেতে দুই পাঠের বিয়োগফলকে ১০ লক্ষ দিয়ে ভাগ করো।
+    ref: wall-vs-monotonic
+  - q: 'Leap second কী, আর এতে কোডের কী সমস্যা হয়?'
+    a: 'পৃথিবীর ঘূর্ণনের সাথে মেলাতে UTC-তে মাঝে মাঝে যোগ হওয়া বাড়তি এক সেকেন্ড। তখন ঘড়িতে একই সেকেন্ড দুইবার আসতে পারে।'
+    more: |
+      বাড়তি সেকেন্ডটা লেখা হয় 23:59:60 হিসেবে, কিন্তু বেশিরভাগ সিস্টেম এই সময়টা রাখতেই পারে না — তারা এক সেকেন্ড পিছিয়ে যায়। ২০১৭-র নববর্ষে ঠিক এ কারণেই Cloudflare-এর DNS-এ ঋণাত্মক সময় এসে crash হয়েছিল। বড় cloud-গুলো এখন সেকেন্ডটা সারা দিনে ছড়িয়ে দেয়, একে বলে leap smear।
+    ref: four-lies
+  - q: 'Symfony-তে "এখন সময় কত" জানার সঠিক উপায় কী?'
+    a: '`ClockInterface` inject করে `$clock->now()` ডাকা — সরাসরি `new DateTimeImmutable()` নয়।'
+    more: |
+      সরাসরি `new DateTimeImmutable()` ডাকলে কোডটা সিস্টেমের ঘড়ির সাথে শক্ত করে বাঁধা পড়ে, টেস্টে সময় বদলানো যায় না। `ClockInterface` থাকলে আসল অ্যাপে Symfony আসল ঘড়ি দেয়, আর টেস্টে তুমি `MockClock` বসিয়ে দাও।
+    ref: symfony-clock
+  - q: 'MockClock কী কাজে লাগে?'
+    a: 'টেস্টে সময় থামিয়ে রাখতে, আর `sleep()` বা `modify()` দিয়ে সত্যি অপেক্ষা না করেই সময় এগিয়ে দিতে।'
+    more: |
+      MockClock একটা থেমে থাকা ঘড়ি — তুমি না বললে এর সময় এগোয় না। তাই "৩০ দিন পরে মেয়াদ শেষ" ধরনের নিয়ম কয়েক মিলিসেকেন্ডে টেস্ট করা যায়, আর টেস্ট প্রতিবার একই ফল দেয়।
+    ref: symfony-clock
+  - q: 'দুই সার্ভারের created_at তুলনা করে কোন ঘটনা আগে ঘটেছে বলা যায় না কেন?'
+    a: 'দুই সার্ভারের ঘড়িতে skew থাকে। ঘটনা দুটোর ব্যবধান skew-এর চেয়ে কম হলে timestamp-এর ক্রম উল্টে যেতে পারে।'
+    more: |
+      যেমন A-র ঘড়ি ৮০ms এগিয়ে থাকলে A-তে ঘটা ঘটনার ৫০ms পরে B-তে ঘটা ঘটনার timestamp ছোট দেখায়। ক্রম ঠিক রাখতে একটাই কর্তৃপক্ষের দেওয়া নম্বর লাগে — version বা sequence। বিস্তারিত: [[time/ordering-events|কোনটা আগে ঘটেছে?]]
+    ref: two-servers-one-timeline
+
+quiz:
+  - q: 'নিচের কোডে সমস্যাটা কোথায়?'
+    lang: php
+    code: |
+      $start = new \DateTimeImmutable();
+      $this->importer->run($file);
+      $end = new \DateTimeImmutable();
+
+      $seconds = $end->getTimestamp() - $start->getTimestamp();
+      $this->metrics->timing('import.seconds', $seconds);
+    hint: 'দুই পাঠের মাঝখানে NTP ঘড়ি ঘুরিয়ে দিলে কী হবে?'
+    options:
+      - text: 'DateTimeImmutable ধীর; এর বদলে DateTime ব্যবহার করা উচিত'
+        correct: false
+        why: 'গতি এখানে বিষয় নয়। দুটো class-ই একই দেয়ালঘড়ি পড়ে, তাই সমস্যা একই থাকে।'
+      - text: 'দেয়ালঘড়ির দুই পাঠ বিয়োগ হচ্ছে; মাঝখানে ঘড়ি ঠিক হলে ফল ভুল বা ঋণাত্মক হবে — hrtime(true) লাগবে'
+        correct: true
+        why: 'কতক্ষণ লাগল তা মাপার কাজ monotonic clock-এর। hrtime(true) কখনো পিছায় না।'
+      - text: 'getTimestamp() শুধু সেকেন্ড দেয়; microtime(true) নিলেই সমস্যা মিটে যাবে'
+        correct: false
+        why: 'microtime() আরও সূক্ষ্ম পাঠ দেয় ঠিকই, কিন্তু সেটাও দেয়ালঘড়ি। লাফের সমস্যা যেমন ছিল তেমনই থাকে।'
+      - text: 'কোনো সমস্যা নেই; NTP চালু থাকলে ঘড়ি সবসময় ঠিক থাকে'
+        correct: false
+        why: 'NTP-ই তো ঘড়িকে লাফ দেওয়ায়। ঘড়ি ঠিক করা মানেই পাঠ হঠাৎ বদলে যাওয়া।'
+    ref: wall-vs-monotonic
+  - q: 'রিপোর্টে দেখা গেল একটা অর্ডার তৈরি হওয়ার ৩০ms আগেই বাতিল হয়েছে। তৈরি আর বাতিল হয়েছে দুই আলাদা সার্ভারে। সবচেয়ে সম্ভাব্য কারণ কী?'
+    hint: 'দুই ক্লাসরুমের দেয়ালঘড়ি কি হুবহু এক সময় দেখায়?'
+    options:
+      - text: 'ক্রেতা সত্যিই অর্ডার করার আগে বাতিল করেছে'
+        correct: false
+        why: 'যে অর্ডার এখনো নেই, তাকে বাতিল করা যায় না। ক্রমটা আসলে ঠিকই ছিল; ভুল শুধু timestamp-এ।'
+      - text: 'দুই সার্ভারের ঘড়িতে skew আছে, তাই timestamp-এর ক্রম উল্টে গেছে'
+        correct: true
+        why: 'যে সার্ভারে তৈরি হয়েছে তার ঘড়ি এগিয়ে থাকলে পরে ঘটা বাতিলের timestamp ছোট দেখায়।'
+      - text: 'দুই সার্ভারে দুই রকম time zone সেট করা'
+        correct: false
+        why: 'Time zone-এর ভুলে তফাত হতো পুরো ঘণ্টা বা আধা ঘণ্টার গুণিতকে, ৩০ মিলিসেকেন্ড নয়।'
+      - text: 'ডেটাবেস সারিগুলো উল্টো ক্রমে লিখেছে'
+        correct: false
+        why: 'সারি লেখার ক্রম timestamp-এর মান বদলায় না। সময়টা প্রতিটা সার্ভার নিজের ঘড়ি থেকে বসিয়েছে।'
+    ref: two-servers-one-timeline
+  - q: 'নিচের কোন কাজগুলোতে monotonic clock (hrtime) ব্যবহার করা উচিত?'
+    hint: 'কোনগুলোতে প্রশ্নটা "কতক্ষণ", আর কোনগুলোতে "কখন"?'
+    options:
+      - text: 'একটা API call কত মিলিসেকেন্ড নিল, তা মাপা'
+        correct: true
+        why: 'এটা "কতক্ষণ" প্রশ্ন — স্টপওয়াচের কাজ।'
+      - text: 'অর্ডারের created_at কলাম ভরা'
+        correct: false
+        why: 'এটা "কখন" প্রশ্ন। hrtime()-এর মান কোনো তারিখ নয়; এখানে দেয়ালঘড়ির UTC সময় লাগে।'
+      - text: 'একটা polling loop সর্বোচ্চ ৫ সেকেন্ড চালানো'
+        correct: true
+        why: 'দেয়ালঘড়ি দিয়ে করলে ঘড়ির লাফে loop অনেকক্ষণ চলতে বা সাথে সাথে থেমে যেতে পারে।'
+      - text: 'ইনভয়েসে তারিখ ছাপানো'
+        correct: false
+        why: 'মানুষকে দেখানোর তারিখ দেয়ালঘড়ি থেকেই আসে।'
+      - text: 'শেষ retry-র পরে ২ সেকেন্ড পার হয়েছে কি না দেখা'
+        correct: true
+        why: 'দুই মুহূর্তের ব্যবধান মাপা হচ্ছে, তাই monotonic clock।'
+    ref: wall-vs-monotonic
+  - q: 'সাবস্ক্রিপশনের মেয়াদ ৩০ দিন পরে শেষ হয় — রিনা এটা টেস্ট করতে চায়। সবচেয়ে ভালো উপায় কোনটা?'
+    hint: 'টেস্টের ভেতরে "এখন" কে ঠিক করে দিচ্ছে?'
+    options:
+      - text: 'টেস্টে sleep() দিয়ে অপেক্ষা করা'
+        correct: false
+        why: '৩০ দিন অপেক্ষা করা অসম্ভব। ছোট মেয়াদেও sleep টেস্টকে ধীর আর অনির্ভরযোগ্য করে।'
+      - text: 'ডেটাবেসে হাতে করে expires_at-এ পুরনো তারিখ বসিয়ে দেওয়া'
+        correct: false
+        why: 'এতে মেয়াদ হিসাব করার কোডটা টেস্টই হয় না, আর "এখন" তখনো তোমার নিয়ন্ত্রণের বাইরে থাকে।'
+      - text: 'ClockInterface inject করে টেস্টে MockClock দিয়ে সময় ৩০ দিন এগিয়ে দেওয়া'
+        correct: true
+        why: 'ঘড়িটা নিজের হাতে থাকলে সীমার ঠিক আগে ও পরে — দুই অবস্থাই মুহূর্তে যাচাই করা যায়।'
+      - text: 'টেস্ট চালানোর আগে সার্ভারের ঘড়ি বদলে দেওয়া'
+        correct: false
+        why: 'এতে মেশিনের বাকি সব কিছু এলোমেলো হয়, আর CI সার্ভারে এটা করাও যায় না।'
+    ref: symfony-clock
+  - q: 'সব সার্ভারে NTP চালু আছে। তাহলে কি ধরে নেওয়া যায় দুই সার্ভারের ঘড়ি হুবহু এক?'
+    hint: 'দপ্তরি দিনে একবার ঘড়ি মেলান। মাঝের সময়টায় ঘড়িগুলো কী করে?'
+    options:
+      - text: 'হ্যাঁ — NTP-র কাজই তো সব ঘড়ি এক করে দেওয়া'
+        correct: false
+        why: 'NTP ফারাক কমায়, মুছে ফেলে না। network-এর দেরি আর drift-এর কারণে কিছু ফারাক সবসময় থাকে।'
+      - text: 'না — NTP ফারাক কমায় কিন্তু শূন্য করে না, আর ঠিক করতে গিয়ে ঘড়িকে লাফও দেওয়ায়'
+        correct: true
+        why: 'ভালো অবস্থায় ফারাক কয়েক মিলিসেকেন্ড থাকে। তাই কাছাকাছি সময়ের ঘটনার ক্রম timestamp দিয়ে বলা যায় না।'
+      - text: 'হ্যাঁ, যদি দুই সার্ভার একই data center-এ থাকে'
+        correct: false
+        why: 'একই জায়গায় থাকলে ফারাক ছোট হয়, তবু শূন্য হয় না; প্রতিটা মেশিনের crystal আলাদা গতিতে চলে।'
+      - text: 'না, তাই NTP বন্ধ করে দেওয়াই ভালো'
+        correct: false
+        why: 'NTP ছাড়া drift জমতে জমতে ফারাক সেকেন্ড থেকে মিনিটে পৌঁছায়। NTP দরকার; শুধু তার ওপর অন্ধ ভরসা নয়।'
+    ref: four-lies
+  - q: 'মোবাইল অ্যাপ প্রতিটা request-এর সাথে ফোনের সময় (clientTime) পাঠায়। নিচের কোন ব্যবহারগুলো নিরাপদ?'
+    hint: 'ফোনের ঘড়ি কে ঠিক করে, আর সে কি সেটা বদলাতে পারে?'
+    options:
+      - text: 'debugging-এর জন্য log-এ রেখে দেওয়া'
+        correct: true
+        why: 'তথ্য হিসেবে রাখায় ক্ষতি নেই; বরং ফোনের ঘড়ি কতটা ভুল তা ধরা পড়ে।'
+      - text: 'কুপনের মেয়াদ শেষ কি না, তা এই সময় দিয়ে ঠিক করা'
+        correct: false
+        why: 'ব্যবহারকারী ফোনের তারিখ পিছিয়ে দিলেই মেয়াদ-পেরোনো কুপন চালিয়ে দিতে পারবে। মেয়াদ ঠিক করে সার্ভারের ঘড়ি।'
+      - text: 'দুইজনের edit-এর মধ্যে কোনটা পরে হয়েছে, তা এই সময় দিয়ে ঠিক করা'
+        correct: false
+        why: 'দুই ফোনের ঘড়িতে মিনিটের ফারাক থাকতে পারে; যার ঘড়ি এগিয়ে, তার পুরনো edit-ই জিতে যাবে।'
+      - text: 'সার্ভারের সময়ের সাথে তুলনা করে ফোনের ঘড়ি কতটা ভুল, তা মাপা'
+        correct: true
+        why: 'এখানে ফোনের সময়কে বিশ্বাস করা হচ্ছে না, বরং যাচাই করা হচ্ছে।'
+    ref: two-servers-one-timeline
+  - q: 'একটা loop লেখা হয়েছে: `$deadline = time() + 5; while (time() < $deadline) { ... }`। loop চলার সময় NTP সার্ভারের ঘড়ি ১ ঘণ্টা পিছিয়ে দিল। কী হবে?'
+    hint: 'ঘড়ির পাঠ হঠাৎ ছোট হয়ে গেলে $deadline-এ পৌঁছাতে কত সময় লাগবে?'
+    options:
+      - text: 'loop সাথে সাথে থেমে যাবে'
+        correct: false
+        why: 'সাথে সাথে থামত যদি ঘড়ি সামনে লাফ দিত। পিছালে time()-এর মান $deadline থেকে আরও দূরে সরে যায়।'
+      - text: 'কিছুই বদলাবে না; PHP নিজের ভেতরের ঘড়ি ব্যবহার করে'
+        correct: false
+        why: 'time() প্রতিবার সিস্টেমের দেয়ালঘড়িই পড়ে; PHP-র আলাদা কোনো ঘড়ি নেই।'
+      - text: 'loop প্রায় ১ ঘণ্টা ধরে চলতে থাকবে'
+        correct: true
+        why: 'time()-এর মান ১ ঘণ্টা কমে গেছে, তাই $deadline-এ পৌঁছাতে আবার ১ ঘণ্টার বেশি লাগবে। hrtime() দিয়ে লিখলে এটা হতো না।'
+      - text: 'PHP একটা exception ছুড়বে'
+        correct: false
+        why: 'ঘড়ি বদলানো PHP-র কাছে কোনো error নয় — সে টেরই পায় না। তাই এই ধরনের bug চুপচাপ ঘটে।'
+    ref: negative-latency

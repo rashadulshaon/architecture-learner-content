@@ -1,0 +1,452 @@
+slides:
+  - slug: whole-page-dies
+    title: 'সুপারিশ নষ্ট, তাই পুরো পণ্যের পেজ 500'
+    kind: story
+    tldr: 'একটা গৌণ অংশ ব্যর্থ হলে পুরো পেজ নষ্ট করা ভুল। মূল কাজ চালু রাখো, গৌণ অংশ বাদ দাও, ব্যবহারকারী প্রায় কিছুই টের পাবে না।'
+    keywords: ['graceful degradation', 'fallback', 'core vs optional', 'recommendation', 'সুপারিশ', 'আংশিক সেবা']
+    blocks:
+      - type: metaphor
+        icon: bolt
+        title: 'লোডশেডিংয়ে বাসার IPS'
+        body: |
+          বিদ্যুৎ গেলে বাসার IPS পুরো বাড়ি চালায় না। সে আগে থেকে ঠিক করা জিনিসগুলো চালায়: কয়েকটা বাতি, ফ্যান, ফ্রিজ। এসি, ওয়াটার হিটার আর ওভেন বন্ধ থাকে। এভাবে খুঁড়িয়ে হলেও বাড়ি চলে। সফটওয়্যারে একে বলে **graceful degradation**: সব কিছু না পারলেও যা সবচেয়ে জরুরি, সেটা চালু রাখা।
+      - type: visual
+        kind: compare
+        caption: 'সুপারিশ সার্ভিস নষ্ট: একই ভুল ঘটনা, দুই ধরনের উত্তর'
+        columns:
+          - title: 'আগে: সব বা কিছুই না'
+            tone: bad
+            icon: cross
+            tip: 'কোড ধরে নেয় প্রতিটা অংশ সফল হবেই। একটা exception পুরো request-কে মেরে ফেলে।'
+            items:
+              - 'সুপারিশ সার্ভিস timeout করে'
+              - 'exception controller পর্যন্ত যায়'
+              - 'পুরো পেজ 500: দাম, ছবি, "কার্টে দিন" সব গায়েব'
+              - 'বিক্রি বন্ধ, অথচ নষ্ট ছিল শুধু সাজসজ্জা'
+          - title: 'পরে: মূল অংশ বেঁচে'
+            tone: good
+            icon: check
+            tip: 'কোড জানে কোন অংশ জরুরি আর কোনটা নয়। গৌণ অংশ ব্যর্থ হলে সে চুপচাপ বাদ পড়ে।'
+            items:
+              - 'সুপারিশ সার্ভিস timeout করে'
+              - 'কোড ধরে ফেলে, পুরোনো তালিকা বা ফাঁকা দেয়'
+              - 'পেজ খোলে: দাম, ছবি, "কার্টে দিন" আছে'
+              - 'ব্যবহারকারী কেনাকাটা চালিয়ে যায়'
+      - type: quote
+        body: 'গৌণ অংশ ব্যর্থ হলে শুধু সেই অংশ বাদ যাবে, পুরো পেজ নয়।'
+    aside:
+      - type: story
+        title: 'যে সাইট শুধু "কার্টে দিন" চালু রেখেছিল'
+        body: |
+          একটা ই-কমার্স সাইটে রিভিউ ও সুপারিশের সার্ভিস ঘণ্টাখানেক বন্ধ ছিল। কোড আগেই এই অংশগুলো "ঐচ্ছিক" ধরে রেখেছিল, তাই পণ্যের পেজ রিভিউ ছাড়াই খুলত। ক্রেতারা কিনতে পারল। বিক্রির গ্রাফে সেদিন সামান্য কমই দেখা গেল।
+      - type: terms
+        items:
+          - {term: 'Graceful degradation', meaning: 'কিছু অংশ ভাঙলেও সিস্টেম কম সুবিধা নিয়ে চালু থাকা, পুরো বসে যাওয়ার বদলে।'}
+          - {term: 'Fallback', meaning: 'মূল উপায় ব্যর্থ হলে বিকল্প উত্তর: পুরোনো তথ্য, ডিফল্ট মান বা ফাঁকা।'}
+    check:
+      q: 'পণ্যের পেজের কোন অংশগুলো মূল (core), আর কোনগুলো গৌণ (optional) ধরবে? কেন?'
+      a: 'মূল: দাম, ছবি, "কার্টে দিন" — এগুলো ছাড়া কেনা যায় না। গৌণ: সুপারিশ, রিভিউ, "কতজন দেখছে" — না থাকলেও কেনা যায়।'
+
+  - slug: fallback-ladder
+    title: 'বিকল্পের সিঁড়ি: একটা ব্যর্থ হলে পরেরটা'
+    kind: concept
+    tldr: 'প্রতিটা ডাকের জন্য আগে থেকে সিঁড়ি ঠিক করো: লাইভ ডেটা, না পেলে পুরোনো (stale) কপি, না পেলে ডিফল্ট, শেষে ফিচার বন্ধ। কিন্তু টাকা-সংক্রান্ত তথ্য বানিয়ে দিয়ো না।'
+    keywords: ['fallback', 'stale data', 'cached data', 'default value', 'feature shut-off', 'kill switch']
+    blocks:
+      - type: text
+        body: |
+          IPS-এর মতো প্রতিটা নির্ভরতার জন্য আগে থেকে একটা সিঁড়ি ঠিক করো। প্রথম ধাপে লাইভ ডেটা। সেটা না পেলে **stale data**: শেষবার যে ভালো কপি পেয়েছিলে, সেটা। তাও না থাকলে নিরাপদ **ডিফল্ট**, যেমন ফাঁকা তালিকা। সবশেষে পুরো ফিচার বন্ধ করে ব্যবহারকারীকে জানানো। সিঁড়ি যত নিচে নামে, উত্তর তত কম নিখুঁত, কিন্তু সাইট তত ভেঙে পড়ে না।
+      - type: visual
+        kind: layers
+        caption: 'বিকল্পের সিঁড়ি: ওপর থেকে নিচে নামো, সবচেয়ে ভালোটা আগে'
+        layers:
+          - {label: '১. লাইভ ডেটা', sub: 'নির্ভরতা সুস্থ', tone: good, tip: 'সবচেয়ে ভালো ও নতুন উত্তর। এখানে থাকাই লক্ষ্য।'}
+          - {label: '২. Stale কপি', sub: 'শেষ ভালো উত্তর, কয়েক ঘণ্টার পুরোনো', tone: default, tip: 'cache-এ রাখা শেষ সফল উত্তর। সুপারিশ বা ক্যাটালগের জন্য এটা প্রায় ততটাই ভালো।'}
+          - {label: '৩. ডিফল্ট মান', sub: 'ফাঁকা, জনপ্রিয় তালিকা, আগে থেকে ঠিক করা হার', tone: warn, tip: 'ব্যবসা আগে থেকে অনুমোদন করেছে এমন নিরাপদ উত্তর। যা-খুশি বানানো নয়।'}
+          - {label: '৪. ফিচার বন্ধ', sub: 'অংশটা লুকাও বা "এখন নেই" লেখো', tone: bad, tip: 'kill switch। ফিচার যত বিপজ্জনক, এই ধাপ তত আগে আসে।'}
+      - type: points
+        title: 'কোথায় সিঁড়ি নামানো চলবে না'
+        style: cross
+        items:
+          - 'ব্যালেন্স, স্টক বা দামের মতো টাকার তথ্য আন্দাজে বানানো'
+          - 'পেমেন্ট সফল হয়েছে কি না না জেনে "সফল" বলা'
+          - 'অনুমতি যাচাই ব্যর্থ হলে "ঠিক আছে, ঢোকো" বলা'
+      - type: quote
+        body: 'ব্যর্থতায় পুরোনো বা ফাঁকা উত্তর দেওয়া যায়, কিন্তু টাকা ও অনুমতির বেলায় ভুল উত্তর নয়।'
+    aside:
+      - type: remember
+        body: 'লাইভ, stale, ডিফল্ট, বন্ধ — এই চার ধাপ প্রতিটা নির্ভরতার জন্য আগে থেকে লিখে রাখো।'
+      - type: when
+        use: ['সুপারিশ, রিভিউ, কাউন্টার, ছবির থাম্বনেইল', 'ক্যাটালগ বা কনফিগের মতো ধীরে বদলানো তথ্য']
+        avoid: ['ব্যালেন্স, স্টক, দাম, পেমেন্টের অবস্থা', 'লগইন বা অনুমতি যাচাই']
+      - type: refs
+        items:
+          - {to: 'config/feature-flags', label: 'Feature flag ও kill switch'}
+          - {to: 'resilience/circuit-breakers', label: 'কখন সিঁড়ি নামবে তা breaker ঠিক করে'}
+    check:
+      q: 'ক্রেতার ব্যালেন্স দেখাতে ব্যালেন্স সার্ভিস ব্যর্থ। stale কপি দেখানো ঠিক হবে, নাকি ফিচার বন্ধ?'
+      a: 'ফিচার বন্ধ বা স্পষ্ট "এখন দেখানো যাচ্ছে না"। টাকার তথ্য পুরোনো হলে ক্রেতা ভুল সিদ্ধান্ত নিতে পারে। stale কপি শুধু ধীরে বদলানো তথ্যের জন্য।'
+
+  - slug: fallback-in-symfony
+    title: 'Symfony-তে stale কপি ও kill switch'
+    kind: howto
+    tldr: 'সফল উত্তর cache-এ শেষ ভালো কপি হিসেবে রাখো। ব্যর্থ হলে সেটা দাও, নইলে ফাঁকা, আর উত্তরে degraded: true জানাও। মূল তথ্য ও গৌণ অংশ আলাদা রাখো।'
+    keywords: ['stale-if-error', 'CacheItemPoolInterface', 'kill switch', 'degraded', 'Symfony Cache', 'fallback']
+    blocks:
+      - type: text
+        body: |
+          নিয়ম: যখনই সফল উত্তর আসে, তা এক দিনের জন্য cache-এ "শেষ ভালো কপি" হিসেবে রাখো। ব্যর্থ হলে সেই কপি দাও, না থাকলে ফাঁকা। আর উত্তরের সাথে `degraded` পতাকা পাঠাও, যাতে ফ্রন্টএন্ড জানে কী দেখাতে হবে।
+      - type: code
+        lang: php
+        file: 'src/Recommendation/RecommendationProvider.php'
+        variant: good
+        code: |
+          public function forProduct(int $id): array
+          {
+              $key = 'recs.last_good.'.$id;
+
+              try {
+                  $items = $this->api->recommend($id);   // নিজের timeout ও breaker সহ
+                  $this->cache->save(
+                      $this->cache->getItem($key)->set($items)->expiresAfter(86400),
+                  );
+
+                  return ['items' => $items, 'degraded' => false];
+              } catch (ExceptionInterface $e) {
+                  $this->logger->warning('Recommendations down', ['exception' => $e]);
+                  $stale = $this->cache->getItem($key);
+
+                  return [
+                      'items' => $stale->isHit() ? $stale->get() : [],   // না থাকলে ফাঁকা
+                      'degraded' => true,
+                  ];
+              }
+          }
+        marks:
+          - {line: 5, tip: 'try-তে শুধু ভরসাহীন ডাকটা। সফল হলে কপি নতুন করে লেখা হয়।'}
+          - {line: 8, tip: 'expiresAfter(86400): এক দিন। এর বেশি পুরোনো সুপারিশের কোনো মূল্য নেই, তাই cache নিজে মুছে ফেলবে।'}
+          - {line: 13, tip: 'ব্যর্থতা log করা জরুরি: নইলে সুপারিশ মাসখানেক পুরোনো দেখাচ্ছে, কেউ জানবে না।'}
+          - {line: 18, tip: 'degraded: true ব্যবহারকারীকে মিথ্যা বলে না। ফ্রন্টএন্ড ছোট একটা নোট দেখাতে পারে।'}
+      - type: code
+        lang: php
+        file: 'src/Controller/ProductController.php'
+        variant: good
+        code: |
+          #[Route('/api/products/{id}', methods: ['GET'])]
+          public function show(Product $product, RecommendationProvider $recs): JsonResponse
+          {
+              // মূল অংশ: ব্যর্থ হলে পুরো request ব্যর্থ হবে, এটাই সঠিক
+              $payload = ['product' => $this->normalizer->normalize($product)];
+
+              // কিল সুইচ: অপারেশন টিম cache-এ এই key বসালে ফিচার সাথে সাথে বন্ধ
+              $off = $this->cache->getItem('kill.recommendations')->isHit();
+
+              $payload['recommendations'] = $off
+                  ? ['items' => [], 'degraded' => true]
+                  : $recs->forProduct($product->getId());
+
+              return $this->json($payload);
+          }
+        marks:
+          - {line: 4, tip: 'মূল তথ্য এখানে try/catch-এ নেই। দামই না পেলে 500 দেওয়াই ঠিক, ভুল দাম দেখানো নয়।'}
+          - {line: 7, tip: 'kill switch এখানে একটা cache key। সার্ভিস ভয়ংকর ধীর হলে ডাকও না করে সাথে সাথে বন্ধ করা যায়। deploy লাগে না।'}
+      - type: quote
+        body: 'গৌণ অংশের ডাক সবসময় try/catch-এ, মূল অংশের ডাক নয়।'
+    aside:
+      - type: tips
+        items:
+          - 'kill switch বসাতে পারে এমন একটা command বা অ্যাডমিন বাটন রাখো, আগে থেকে। সংকটে নতুন কোড লেখার সময় থাকে না।'
+          - 'stale কপির জন্য আলাদা cache key রাখো। যে key-তে TTL ছোট, সেটা মেয়াদ শেষে মুছে গেলে শেষ ভালো কপিও হারাবে।'
+      - type: pitfalls
+        items:
+          - 'catch (\Throwable) দিয়ে সব ধরে ফেললে নিজের কোডের বাগও চুপচাপ চাপা পড়ে। নির্দিষ্ট ExceptionInterface ধরো।'
+      - type: refs
+        items:
+          - {to: 'caching/cache-strategies', label: 'Cache strategy'}
+    check:
+      q: 'Controller-এ product-এর ডাক try/catch-এ নেই, কিন্তু recommendations-এর ডাক আছে। কেন এই অসমতা?'
+      a: 'পণ্যের তথ্য মূল: না পেলে কেনা সম্ভব নয়, তাই স্পষ্ট ব্যর্থতাই সৎ। সুপারিশ গৌণ: না থাকলেও পেজ কাজ করে, তাই বাদ দেওয়া যায়।'
+
+  - slug: degraded-ui-vue
+    title: 'Vue-তে degraded UI: ব্যবহারকারীকে সৎভাবে জানাও'
+    kind: howto
+    tldr: 'মূল ও গৌণ ডাক আলাদা করে করো (Promise.allSettled)। গৌণটা ব্যর্থ হলে পেজ চলে, আর ছোট সৎ বার্তা বা বিকল্প লিংক দেখাও। মূলটা ব্যর্থ হলে retry বাটনসহ error।'
+    keywords: ['Vue 3', 'Promise.allSettled', 'degraded UI', 'composable', 'error state', 'ফ্রন্টএন্ড']
+    blocks:
+      - type: text
+        body: |
+          ফ্রন্টএন্ডে সবচেয়ে সাধারণ ভুল হলো দুইটা ডাক `await Promise.all` দিয়ে একসাথে করা: একটা ব্যর্থ হলে দুইটাই ব্যর্থ। `Promise.allSettled` প্রতিটার ফল আলাদা জানায়, ফলে তুমি ঠিক করতে পারো কোনটা পেজ নষ্ট করবে আর কোনটা শুধু একটা অংশ।
+      - type: code
+        lang: ts
+        file: 'src/composables/useProductPage.ts'
+        variant: good
+        code: |
+          export function useProductPage(id: number) {
+            const product = ref<Product | null>(null)
+            const recs = ref<Recs>({ items: [], degraded: false })
+            const failed = ref(false)
+
+            async function load() {
+              const [p, r] = await Promise.allSettled([
+                api.product(id),
+                api.recommendations(id),
+              ])
+
+              if (p.status === 'rejected') {
+                failed.value = true          // মূল অংশ গেছে: সত্যিকারের error
+                return
+              }
+              product.value = p.value
+              recs.value = r.status === 'fulfilled' ? r.value : { items: [], degraded: true }
+            }
+
+            return { product, recs, failed, load }
+          }
+        marks:
+          - {line: 7, tip: 'allSettled কখনো reject করে না। প্রতিটা ফল { status, value | reason } হিসেবে আসে।'}
+          - {line: 13, tip: 'শুধু মূল ডাক ব্যর্থ হলে পুরো পেজ error। এটা আগে থেকে ঠিক করা সিদ্ধান্ত।'}
+          - {line: 17, tip: 'সুপারিশ ব্যর্থ হলে ফাঁকা তালিকা আর degraded: true। পেজ চলতে থাকে।'}
+      - type: code
+        lang: vue
+        file: 'src/components/RecommendationList.vue'
+        variant: good
+        code: |
+          <script setup lang="ts">
+          defineProps<{ items: Product[]; degraded: boolean }>()
+          </script>
+
+          <template>
+            <section v-if="items.length || degraded" aria-labelledby="recs-title">
+              <h2 id="recs-title">আপনার জন্য সুপারিশ</h2>
+
+              <template v-if="items.length">
+                <p v-if="degraded" class="note">তথ্য কিছুটা পুরোনো হতে পারে</p>
+                <ProductCard v-for="p in items" :key="p.id" :product="p" />
+              </template>
+
+              <p v-else>
+                সুপারিশ এখন দেখানো যাচ্ছে না।
+                <RouterLink to="/popular">জনপ্রিয় পণ্য দেখুন</RouterLink>
+              </p>
+            </section>
+          </template>
+        marks:
+          - {line: 10, tip: 'stale কপি দেখালে সৎ নোট: ব্যবহারকারী জানে তথ্য একটু পুরোনো হতে পারে।'}
+          - {line: 14, tip: 'কিছুই না থাকলে ফাঁকা জায়গা না রেখে বিকল্প রাস্তা দেখাও: জনপ্রিয় পণ্যের লিংক।'}
+      - type: visual
+        kind: table
+        caption: 'চারটা অবস্থা, প্রতিটার জন্য ব্যবহারকারী কী দেখে'
+        headers: ['অবস্থা', 'ব্যবহারকারী কী দেখে']
+        rows:
+          - cells: ['সব সুস্থ', 'সুপারিশ, কোনো নোট নেই']
+            tip: 'স্বাভাবিক অবস্থা। degraded: false।'
+          - cells: ['stale কপি', 'সুপারিশ + "কিছুটা পুরোনো হতে পারে"']
+            tip: 'কাজ চলে, আর ব্যবহারকারীকে সত্যি কথাটাও বলা হয়।'
+          - cells: ['কিছুই নেই', '"এখন নেই" + জনপ্রিয় পণ্যের লিংক']
+            tip: 'অংশটা বাদ গেছে, কিন্তু ব্যবহারকারী আটকে যায়নি: সামনে যাওয়ার পথ আছে।'
+          - cells: ['মূল পণ্য ব্যর্থ', 'error পেজ + "আবার চেষ্টা করুন" বাটন']
+            tip: 'এটাই একমাত্র অবস্থা যেখানে পুরো পেজ ব্যর্থ। retry বাটন দিলে ব্যবহারকারী নিজে আবার চেষ্টা করতে পারে।'
+    aside:
+      - type: tips
+        items:
+          - 'degraded UI নিজেও দেখে নাও: devtools-এ নেটওয়ার্ক ব্লক করে বা mock দিয়ে প্রতিটা অবস্থা একবার চালিয়ে দেখো।'
+          - 'ব্যর্থতার বার্তা কাজের ভাষায় লেখো: "ত্রুটি ৫০৩" নয়, "সুপারিশ এখন দেখানো যাচ্ছে না"।'
+      - type: remember
+        body: 'ব্যবহারকারীকে অন্ধকারে রেখো না: কী পাচ্ছে না, আর এখন কী করতে পারে, দুটোই বলো।'
+    check:
+      q: 'Promise.all-এর বদলে Promise.allSettled কেন, আর কোন ডাকের ব্যর্থতায় পুরো পেজ error হবে?'
+      a: 'Promise.all একটা ব্যর্থ হলেই সব ফেলে দেয়। allSettled প্রতিটার ফল আলাদা দেয়, তাই শুধু মূল (পণ্যের) ডাক ব্যর্থ হলেই error, সুপারিশের ব্যর্থতায় পেজ চলে।'
+
+  - slug: lying-fallback
+    title: 'ফাঁদ: যে fallback চুপচাপ মিথ্যা বলে'
+    kind: pitfall
+    tldr: 'টাকা-সংক্রান্ত ডাকে `catch → return 0` সবচেয়ে ভয়ংকর fallback। বিকল্প হবে আগে থেকে অনুমোদিত মান, লগসহ, আর নিজেই ব্যর্থ নির্ভরতার ওপর দাঁড়ানো নয়।'
+    keywords: ['silent failure', 'swallow exception', 'fallback pitfall', 'shipping charge', 'catch Throwable', 'চুপচাপ ব্যর্থতা']
+    blocks:
+      - type: text
+        body: |
+          সব ব্যর্থতা ঢেকে ফেলাই degradation নয়। ডেলিভারি চার্জ আনতে কুরিয়ার ব্যর্থ হলে নিচের কোড চুপচাপ ০ ফেরত দেয়। পুরো দিন সব অর্ডার বিনা ডেলিভারি চার্জে হলো, আর কেউ টের পেল না। ঠিক fallback কেউ আগে থেকে ঠিক করে, লগ রাখে, এবং ব্যবহারকারীকে সৎ থাকে।
+      - type: code
+        lang: php
+        file: 'src/Shipping/ShippingCalculator.php'
+        variant: bad
+        code: |
+          public function chargeFor(Order $order): int
+          {
+              try {
+                  return $this->courier->chargeFor($order->district(), $order->weight());
+              } catch (\Throwable) {
+                  return 0;   // চুপচাপ ফ্রি ডেলিভারি!
+              }
+          }
+        marks:
+          - {line: 5, tip: '\Throwable সব ধরে, নিজের কোডের বাগও। কিছু log হয় না, কোনো metric বাড়ে না।'}
+          - {line: 6, tip: '০ এখানে "জানি না"-এর জায়গায় বসা মিথ্যা। টাকা সরাসরি কোম্পানির পকেট থেকে যাচ্ছে।'}
+      - type: code
+        lang: php
+        file: 'src/Shipping/ShippingCalculator.php'
+        variant: good
+        code: |
+          public function chargeFor(Order $order): int
+          {
+              try {
+                  return $this->courier->chargeFor($order->district(), $order->weight());
+              } catch (ExceptionInterface $e) {
+                  $this->logger->warning('Courier down, using zone rate', [
+                      'order' => $order->id(),
+                      'exception' => $e,
+                  ]);
+
+                  // ব্যবসা আগে থেকে অনুমোদন করা, জেলাভিত্তিক সর্বোচ্চ হার
+                  return $this->zoneRates->maxFor($order->district());
+              }
+          }
+        marks:
+          - {line: 5, tip: 'শুধু HttpClient-এর ত্রুটি ধরা হচ্ছে। TypeError জাতীয় বাগ আগের মতোই উপরে উঠে লগে আসবে।'}
+          - {line: 6, tip: 'log থাকলে বলা যায় কতবার fallback চলল। একটা alert বসালে সমস্যা ঘণ্টায় নয়, মিনিটে ধরা পড়ে।'}
+          - {line: 12, tip: 'আগে থেকে ঠিক করা সংখ্যা: কেউ ভেবে দেখেছে, অনুমোদন করেছে। ক্রেতাকে "আনুমানিক চার্জ" বলে দেখানো যায়।'}
+      - type: points
+        title: 'ভালো fallback-এর তিন শর্ত'
+        style: check
+        items:
+          - 'আগে থেকে ঠিক করা: ব্যবসা জানে ও মেনেছে, কোড আন্দাজে বানায়নি'
+          - 'দেখা যায়: log, metric ও alert আছে, চুপচাপ নয়'
+          - 'স্বাধীন: যে নির্ভরতা ব্যর্থ হয়েছে, fallback তার ওপর দাঁড়ায় না'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Fallback কখনো পরীক্ষা না করলে সংকটের দিনই প্রথম চলবে, আর তখন সে-ই ভাঙবে। নির্দিষ্ট ব্যবধানে ইচ্ছা করে নির্ভরতা বন্ধ করে দেখো।'
+          - 'Fallback যদি একই ডেটাবেস বা একই cache-এ যায়, যা ব্যর্থ হয়েছে, সেটা fallback নয়, একই ফাঁদ।'
+      - type: refs
+        items:
+          - {to: 'resilience/disaster-recovery', label: 'ব্যর্থতা ইচ্ছা করে পরীক্ষা (game day)'}
+    check:
+      q: 'কুরিয়ারের fallback হিসেবে `return 0`-এর বদলে জেলাভিত্তিক সর্বোচ্চ হার কেন ভালো?'
+      a: 'এই হার ব্যবসা আগে থেকে অনুমোদন করেছে, তাই কোম্পানি ক্ষতিতে পড়ে না। ০ আসলে "জানি না"-কে "ফ্রি" বলে চালানো, যা চুপচাপ টাকা হারায়।'
+
+flashcards:
+  - q: 'Graceful degradation কী?'
+    a: 'কোনো অংশ ভাঙলে পুরো সিস্টেম বন্ধ না করে কম সুবিধা নিয়ে চালু রাখা, যাতে সবচেয়ে জরুরি কাজটা চলতে থাকে।'
+    more: |
+      বাসার IPS যেমন বিদ্যুৎ গেলে ফ্যান ও বাতি চালায়, এসি বন্ধ রাখে, তেমনি। প্রথমে ঠিক করো কোন অংশ মূল (দাম, কার্ট, পেমেন্ট) আর কোনটা গৌণ (সুপারিশ, রিভিউ)। গৌণ অংশ ব্যর্থ হলে শুধু সেটাই বাদ যায়।
+    ref: whole-page-dies
+  - q: 'মূল (core) আর গৌণ (optional) অংশ আলাদা করার নিয়ম কী?'
+    a: 'যার অভাবে কাজটাই সম্ভব নয় সে মূল (দাম, কার্টে দিন)। যার অভাবে কাজ চলে, সে গৌণ (সুপারিশ, রিভিউ)।'
+    more: |
+      গৌণ অংশের ডাক সবসময় try/catch-এ, আর মূল অংশের ডাক নয়: মূল অংশ না পেলে স্পষ্ট ব্যর্থতাই সৎ। এই ভাগ কোড লেখার সময় ঠিক করো, সংকটের মধ্যে নয়।
+    ref: whole-page-dies
+  - q: 'Fallback-এর সিঁড়ির চার ধাপ কী কী?'
+    a: 'লাইভ ডেটা, stale কপি, ডিফল্ট মান, শেষে ফিচার বন্ধ (kill switch)। ওপরেরটা না পেলে নিচেরটা।'
+    more: |
+      stale কপি হলো শেষবার পাওয়া ভালো উত্তর, যা cache-এ রাখা আছে। ডিফল্ট মান ব্যবসা আগে থেকে অনুমোদন করা নিরাপদ উত্তর, যেমন ফাঁকা তালিকা। ফিচার বন্ধ করলে ব্যবহারকারীকে জানাতে হয় এবং সামনে যাওয়ার পথ দিতে হয়।
+    ref: fallback-ladder
+  - q: 'কোন ধরনের তথ্যে stale বা বানানো fallback দেওয়া চলে না?'
+    a: 'ব্যালেন্স, স্টক, দাম, পেমেন্টের অবস্থা ও অনুমতি যাচাইয়ে। ভুল উত্তর এখানে টাকা বা নিরাপত্তার ক্ষতি করে।'
+    more: |
+      সুপারিশ, রিভিউ বা ক্যাটালগ পুরোনো হলে ক্ষতি নেই। কিন্তু পুরোনো ব্যালেন্স দেখে কেউ ভুল খরচ করতে পারে, আর "অনুমতি যাচাই ব্যর্থ, ঢোকো" বললে নিরাপত্তা ভাঙে। এসব ক্ষেত্রে স্পষ্ট "এখন সম্ভব নয়" বলাই ঠিক।
+    ref: fallback-ladder
+  - q: 'Symfony Cache দিয়ে "শেষ ভালো কপি" কীভাবে রাখো?'
+    a: 'প্রতিটা সফল উত্তর আলাদা key-তে ২৪ ঘণ্টার TTL-এ save করো। ব্যর্থ হলে ওই key পড়ো, না থাকলে ফাঁকা দাও।'
+    more: |
+      ছোট TTL-এর fresh cache মুছে গেলেও যেন শেষ ভালো কপি না হারায়, তাই তার আলাদা key। উত্তরের সাথে `degraded: true` পাঠালে ফ্রন্টএন্ড জানে সৎ নোট দেখাতে হবে। ব্যর্থতা log করো, নইলে পুরোনো তথ্য মাসের পর মাস চলতে পারে।
+    ref: fallback-in-symfony
+  - q: 'Kill switch কী, আর কেন deploy ছাড়া বদলানো যায় এমন হওয়া উচিত?'
+    a: 'চালু থাকা কোনো ফিচারকে সাথে সাথে বন্ধ করার সুইচ। সংকটে নতুন কোড লেখা বা deploy করার সময় থাকে না।'
+    more: |
+      সাধারণত এটা cache, ডেটাবেস বা feature flag সিস্টেমের একটা মান। সার্ভিস ভয়ংকর ধীর হলে ডাকই না করে ফিচার বন্ধ করা যায়। কে এটা বদলাতে পারবে এবং কীভাবে, তা আগে থেকে ঠিক রাখো।
+    ref: fallback-in-symfony
+  - q: 'Vue-তে Promise.all-এর বদলে Promise.allSettled কখন ব্যবহার করবে?'
+    a: 'যখন কয়েকটা ডাক স্বাধীন, আর একটা ব্যর্থ হলে বাকিগুলোর ফল তবু দরকার। allSettled প্রতিটার ফল আলাদা দেয়।'
+    more: |
+      Promise.all প্রথম ব্যর্থতাতেই সব ফেলে দেয়। allSettled-এ তুমি দেখো কোনটা fulfilled, কোনটা rejected। শুধু মূল ডাক rejected হলে পুরো পেজ error দেখাও, গৌণটা rejected হলে ওই অংশ বাদ দাও এবং ছোট বার্তা দেখাও।
+    ref: degraded-ui-vue
+
+quiz:
+  - q: 'নাহিদের সাইটে পণ্যের পেজ একসাথে দাম (ডেটাবেস) আর রিভিউ (বাইরের সার্ভিস) আনে। রিভিউ সার্ভিস ব্যর্থ। কোন আচরণটা সঠিক?'
+    hint: 'কোনটা ছাড়া কেনা যায় না, আর কোনটা ছাড়া যায়?'
+    options:
+      - text: 'রিভিউ অংশ বাদ বা "এখন নেই" দেখিয়ে পেজ খোলা, দাম ঠিকঠাক'
+        correct: true
+        why: 'রিভিউ গৌণ, দাম মূল। গৌণ অংশ বাদ গেলে ক্রেতা তবু কিনতে পারে।'
+      - text: 'পুরো পেজে 500 দেওয়া, কারণ ডেটা অসম্পূর্ণ'
+        correct: false
+        why: 'এতে বিক্রি বন্ধ হয়, অথচ সমস্যা ছিল শুধু একটা সাজসজ্জায়।'
+      - text: 'রিভিউ আসা পর্যন্ত পেজ আটকে রাখা'
+        correct: false
+        why: 'অপেক্ষায় worker আটকে থাকে, আর timeout ছাড়া পুরো সাইট ধীর হতে পারে।'
+      - text: 'দামও বাদ দেওয়া, সব ঠিক না হলে কিছুই না দেখানো'
+        correct: false
+        why: 'এটা degradation-এর উল্টো: মূল অংশও হারানো।'
+    ref: whole-page-dies
+  - q: 'নিচের কোন কোন ক্ষেত্রে stale বা ডিফল্ট fallback দেওয়া নিরাপদ?'
+    hint: 'পুরোনো বা ফাঁকা উত্তরে কার ক্ষতি হয়?'
+    options:
+      - text: 'পণ্যের "আপনার জন্য সুপারিশ" তালিকা'
+        correct: true
+        why: 'কয়েক ঘণ্টার পুরোনো সুপারিশে কোনো ক্ষতি নেই, বরং পেজ সম্পূর্ণ দেখায়।'
+      - text: 'ক্যাটালগের পণ্যের বিবরণ, যা মাসে একবার বদলায়'
+        correct: true
+        why: 'ধীরে বদলানো তথ্য, তাই cache-এর পুরোনো কপি প্রায় সবসময় ঠিক।'
+      - text: 'ক্রেতার ওয়ালেট ব্যালেন্স'
+        correct: false
+        why: 'ভুল ব্যালেন্স দেখে ক্রেতা ভুল সিদ্ধান্ত নিতে পারে। এখানে "এখন দেখানো যাচ্ছে না" বলাই ঠিক।'
+      - text: 'পেমেন্ট সফল হয়েছে কি না'
+        correct: false
+        why: 'অজানা অবস্থাকে "সফল" বা "ব্যর্থ" বললে টাকা হারানো বা দ্বিগুণ কাটা ঘটতে পারে।'
+    ref: fallback-ladder
+  - q: 'নিচের কোডটা সুপারিশের জন্য কী ভুল করছে?'
+    lang: php
+    code: |
+      try {
+          $items = $this->api->recommend($id);
+      } catch (\Throwable) {
+          $items = [];
+      }
+      return ['items' => $items];
+    hint: 'ব্যর্থ হলে কে জানবে? আর কোন ধরনের ত্রুটি ধরা হচ্ছে?'
+    options:
+      - text: 'কিছু log হয় না, degraded জানানো হয় না, আর \Throwable নিজের বাগও চাপা দেয়'
+        correct: true
+        why: 'সুপারিশ মাসখানেক ফাঁকা থাকলেও কেউ জানবে না। log, degraded পতাকা আর নির্দিষ্ট ExceptionInterface ধরা দরকার।'
+      - text: 'ফাঁকা তালিকা দেওয়া কখনোই ঠিক নয়'
+        correct: false
+        why: 'সুপারিশের মতো গৌণ অংশে ফাঁকা বা stale দেওয়া একদম ঠিক। সমস্যা নীরবতায়।'
+      - text: 'ডাকটা try/catch-এ রাখা ভুল, exception উপরে যেতে দেওয়া উচিত'
+        correct: false
+        why: 'গৌণ অংশের ব্যর্থতায় পুরো পেজ নষ্ট করা ঠিক নয়।'
+      - text: 'কিছুই ভুল নেই'
+        correct: false
+        why: 'দেখা না যাওয়াই সবচেয়ে বড় ঝুঁকি: ব্যর্থতা মাসের পর মাস অলক্ষ্যে চলতে পারে।'
+    ref: fallback-in-symfony
+  - q: 'Vue পেজ দুইটা API ডাকে: পণ্য (মূল) আর সুপারিশ (গৌণ)। এখন `await Promise.all([...])` ব্যবহার করা। সুপারিশ API ব্যর্থ হলে কী হয়, আর ঠিক করার উপায় কী?'
+    hint: 'Promise.all প্রথম ব্যর্থতায় কী করে?'
+    options:
+      - text: 'পুরো promise reject করে, পণ্যের তথ্যও পাওয়া যায় না; allSettled দিয়ে আলাদা সামলাও'
+        correct: true
+        why: 'Promise.all যেকোনো একটা ব্যর্থ হলেই reject হয়। allSettled দুটোর ফল আলাদা দেয়, তাই শুধু মূলটা ব্যর্থ হলেই error।'
+      - text: 'শুধু সুপারিশ ফাঁকা হয়, পণ্য ঠিক থাকে'
+        correct: false
+        why: 'Promise.all-এ তা হয় না: ব্যর্থতায় পুরো ফল বাতিল।'
+      - text: 'পণ্য আর সুপারিশ দুটোই retry হয়'
+        correct: false
+        why: 'Promise.all নিজে retry করে না।'
+      - text: 'কিছুই হয় না, ব্রাউজার নিজে সামলায়'
+        correct: false
+        why: 'ব্রাউজার জানে না কোনটা মূল আর কোনটা গৌণ। সে সিদ্ধান্ত তোমার কোডের।'
+    ref: degraded-ui-vue
+  - q: 'কুরিয়ার ব্যর্থ হলে ডেলিভারি চার্জ কী হবে? কোন কোন সিদ্ধান্ত ঠিক?'
+    hint: 'ভুলের দাম কে দেয়, আর কে জানতে পারে?'
+    options:
+      - text: 'আগে থেকে অনুমোদিত জেলাভিত্তিক সর্বোচ্চ হার ব্যবহার করা'
+        correct: true
+        why: 'ব্যবসা জানে ও মেনেছে, তাই কোম্পানি ক্ষতিতে পড়ে না এবং ক্রেতাকে "আনুমানিক" বলা যায়।'
+      - text: 'fallback চললে log ও alert রাখা'
+        correct: true
+        why: 'নইলে fallback কতক্ষণ ধরে চলছে কেউ জানবে না। alert সমস্যা মিনিটে ধরায়।'
+      - text: 'চুপচাপ ০ ফেরত দেওয়া, যাতে অর্ডার আটকে না যায়'
+        correct: false
+        why: 'এতে প্রতিটা অর্ডারে বিনা ডেলিভারি চার্জ, আর কেউ টের পায় না। এটা চুপচাপ টাকা হারানো।'
+      - text: 'যে ডেটাবেসে কুরিয়ারের হার রাখা, সেটাই fallback হিসেবে ডাকা, যা নিজেই এখন ধীর'
+        correct: false
+        why: 'ব্যর্থ নির্ভরতার ওপর দাঁড়ানো fallback ব্যর্থ হবে। fallback স্বাধীন হতে হবে।'
+    ref: lying-fallback

@@ -1,0 +1,464 @@
+slides:
+  - slug: two-reads-two-answers
+    title: 'এক transaction, দুই query, দুই রকম সত্য'
+    kind: story
+    tldr: 'এক transaction-এর দুই query-র মাঝেও অন্যের commit ঢুকে পড়ে; কতটা ঢুকবে তা isolation level ঠিক করে।'
+    keywords: ['isolation level', 'read committed', 'non-repeatable read', 'রিপোর্ট মেলে না', 'আইসোলেশন']
+    blocks:
+      - type: text
+        body: |
+          হাসান স্টোরের মাসিক রিপোর্টে প্রথম পাতায় লেখা “মোট বাকি ৫০০০ টাকা”, অথচ নিচের তালিকা যোগ করলে হয় ৪০০০। দুইটা query একই transaction-এর ভেতরে ছিল। তবু দুই query-র মাঝের ফাঁকে করিমের ১০০০ টাকার পেমেন্ট commit হয়ে গেছে, আর দ্বিতীয় query সেটা দেখে ফেলেছে। ACID-এর I তাহলে কোথায় গেল? উত্তর: isolation একটা সুইচ নয়, চার ধাপের একটা নব — আর ডিফল্ট ধাপটা বেশ ঢিলা।
+      - type: code
+        lang: php
+        file: 'src/Report/DueReport.php'
+        variant: bad
+        code: |
+          // এক transaction, ডিফল্ট READ COMMITTED level
+          $report = $conn->transactional(function (Connection $c): array {
+              $total = (int) $c->fetchOne('SELECT SUM(due) FROM customer');       // ৫০০০
+
+              // ঠিক এই ফাঁকে অন্য request-এ করিম ১০০০ টাকা শোধ করল — commit হলো
+
+              $rows = $c->fetchAllAssociative('SELECT name, due FROM customer');  // যোগফল ৪০০০
+
+              return ['total' => $total, 'rows' => $rows];
+          });
+        marks:
+          - {line: 3, tip: 'এই query চলার মুহূর্তে যা commit-হওয়া ছিল, তা-ই দেখল: মোট বাকি ৫০০০।'}
+          - {line: 7, tip: 'এই query নতুন করে ডেটাবেসে তাকাল। করিমের পেমেন্ট ততক্ষণে commit হয়ে গেছে, তাই সারিগুলোর যোগফল ৪০০০।'}
+      - type: visual
+        kind: sequence
+        caption: 'রিপোর্টের দুই query-র মাঝখানে একটা পেমেন্ট ঢুকে পড়ল'
+        actors:
+          - {id: report, label: 'রিপোর্ট', icon: chart, tip: 'একটা transaction-এর ভেতরে দুইটা query চালায়: আগে মোট, পরে তালিকা।'}
+          - {id: db, label: 'ডেটাবেস', icon: db, tip: 'READ COMMITTED level-এ প্রতিটা query-কে সেই মুহূর্তের commit-হওয়া ডেটা দেখায়।'}
+          - {id: pay, label: 'করিমের পেমেন্ট', icon: money, tip: 'সম্পূর্ণ আলাদা একটা request, নিজের transaction-এ করিমের বাকি ১০০০ টাকা কমায়।'}
+        messages:
+          - {from: report, to: db, label: 'মোট বাকি কত?'}
+          - {from: db, to: report, label: '৫০০০ টাকা', dashed: true}
+          - {from: pay, to: db, label: 'করিমের বাকি −১০০০, commit', tip: 'রিপোর্টের transaction এখনো খোলা, তবু এই commit-এ কোনো বাধা নেই।'}
+          - {from: report, to: db, label: 'প্রতিজনের বাকি দাও'}
+          - {from: db, to: report, label: 'তালিকা — যোগফল ৪০০০', dashed: true, tone: bad, tip: 'দ্বিতীয় query নতুন অবস্থা দেখল। একই transaction-এর দুই query দুই সময়ের ছবি পেল।'}
+          - {at: report, note: 'মোট ৫০০০, তালিকায় ৪০০০', tone: bad, tip: 'রিপোর্ট নিজের সাথেই মেলে না। কোনো error নেই, কোনো log নেই — শুধু একটা ভুল কাগজ।'}
+    aside:
+      - type: terms
+        items:
+          - {term: 'Isolation level', meaning: 'একসাথে চলা transaction-গুলো একে অন্যের পরিবর্তন কতটা দেখতে পাবে, তার মাত্রা।'}
+          - {term: 'Anomaly', meaning: 'isolation ঢিলা থাকায় যে অদ্ভুত, ভুল ফল দেখা দেয়।'}
+      - type: remember
+        body: 'Transaction-এর ভেতরে আছ মানেই তুমি একা নও। কতটা একা, তা isolation level ঠিক করে।'
+      - type: refs
+        items:
+          - {to: 'concurrency/acid', label: 'ACID-এর চার প্রতিশ্রুতি'}
+    check:
+      q: 'রিপোর্টের দুই query একই transaction-এ ছিল, তবু সংখ্যা মিলল না কেন?'
+      a: 'ডিফল্ট READ COMMITTED level-এ প্রতিটা query নিজের চলার মুহূর্তের commit-হওয়া ডেটা দেখে। দুই query-র মাঝে করিমের পেমেন্ট commit হওয়ায় দ্বিতীয়টা নতুন অবস্থা দেখেছে।'
+
+  - slug: read-anomalies
+    title: 'পড়ার তিন গোলমাল: dirty, non-repeatable, phantom'
+    kind: concept
+    tldr: 'Dirty read = পাকা-না-হওয়া লেখা পড়া; non-repeatable = পড়া সারি বদলে যাওয়া; phantom = নতুন সারি গজানো।'
+    keywords: ['dirty read', 'non-repeatable read', 'phantom read', 'anomaly', 'পড়ার গোলমাল']
+    blocks:
+      - type: metaphor
+        icon: book
+        title: 'বাকির খাতা: পেন্সিল আর কলম'
+        body: |
+          হাসান স্টোরের বাকির খাতায় কর্মচারী আগে পেন্সিলে লেখে (এখনো commit হয়নি)। হিসাব মিললে কলমে পাকা করে (commit), না মিললে মুছে ফেলে (rollback)। তুমি পাশে দাঁড়িয়ে খাতাটা পড়ছ। কোন লেখা তুমি দেখতে পাবে, আর দুইবার তাকালে একই জিনিস দেখবে কি না — সেটাই isolation।
+      - type: visual
+        kind: table
+        caption: 'পড়ার তিন anomaly — খাতার ভাষায়'
+        headers: ['Anomaly', 'খাতায় কী ঘটে', 'ফল']
+        rows:
+          - cells: ['Dirty read', 'পেন্সিলের লেখা পড়লে, পরে সেটা মুছে গেল', 'যা কখনো ছিলই না, তার ওপর কাজ করলে']
+            tip: 'অন্য transaction-এর commit-না-হওয়া পরিবর্তন পড়া। সে rollback করলে তুমি এমন ডেটার ওপর সিদ্ধান্ত নিয়েছ, যা কখনো সত্যি ছিল না।'
+          - cells: ['Non-repeatable read', 'একই লাইন দুইবার পড়লে; মাঝে কেউ কলমে বদলাল', 'একই সারির দুই রকম মান']
+            tip: 'একই transaction-এ একই সারি দুইবার পড়ে দুই রকম মান পাওয়া, কারণ মাঝখানে অন্য transaction সেটা বদলে commit করেছে।'
+          - cells: ['Phantom read', 'একই শর্তে দুইবার গুনলে; মাঝে নতুন লাইন উঠল', 'হঠাৎ বাড়তি সারি হাজির']
+            tip: 'একই WHERE শর্তে দুইবার query করে দ্বিতীয়বার বাড়তি সারি পাওয়া (বা সারি উধাও হওয়া), কারণ মাঝে কেউ INSERT বা DELETE করে commit করেছে।'
+      - type: text
+        body: |
+          তিনটাই **পড়ার** গোলমাল: তুমি কিছু নষ্ট করোনি, শুধু ভুল বা বদলে-যাওয়া ছবি দেখেছ। রিপোর্ট, হিসাব মেলানো আর “আগে গুনে নিই, তারপর সিদ্ধান্ত নিই” ধরনের কোডে এগুলো কামড়ায়।
+    aside:
+      - type: remember
+        body: 'Dirty = পেন্সিলের লেখা পড়া। Non-repeatable = পুরনো লাইন বদলে যাওয়া। Phantom = নতুন লাইন গজানো।'
+      - type: tips
+        items:
+          - 'PostgreSQL-এ dirty read কখনোই হয় না: READ UNCOMMITTED চাইলেও সে READ COMMITTED-এর মতো আচরণ করে।'
+          - 'আগের স্লাইডের রিপোর্টের সমস্যাটা non-repeatable read-এরই বড় ভাই: দুই query দুই সময়ের ছবি দেখেছে।'
+    check:
+      q: 'Non-repeatable read আর phantom read-এর পার্থক্য কী?'
+      a: 'Non-repeatable read-এ আগে পড়া একই সারির মান বদলে যায়। Phantom-এ একই শর্তে আবার query করলে নতুন সারি দেখা দেয়, বা আগের সারি উধাও হয়।'
+
+  - slug: write-anomalies
+    title: 'লেখার দুই গোলমাল: lost update আর write skew'
+    kind: concept
+    tldr: 'Lost update-এ একই সারির একটা লেখা হারায়; write skew-এ আলাদা সারির দুই বৈধ লেখা মিলে নিয়ম ভাঙে।'
+    keywords: ['lost update', 'write skew', 'anomaly', 'লেখার গোলমাল', 'নিয়ম ভাঙা']
+    blocks:
+      - type: text
+        body: |
+          পড়ার গোলমালে রিপোর্ট ভুল হয়; লেখার গোলমালে ডেটাই নষ্ট হয়। **Lost update**: দুই কর্মচারী একই লাইন পড়ে, যে যার মতো হিসাব করে লেখে — পরের জন আগের জনের লেখা মুছে ফেলে। **Write skew** আরও সূক্ষ্ম। দোকানের নিয়ম: অন্তত একজন ডিউটিতে থাকবে। জামাল আর কামাল দুজনই খাতায় দেখল “২ জন আছে”, তারপর যে যার **নিজের** লাইনে ছুটি লিখল।
+      - type: visual
+        kind: sequence
+        caption: 'Write skew: দুজনই ঠিক দেখেছিল, দুজনই বৈধ লিখেছে, তবু দোকান ফাঁকা'
+        actors:
+          - {id: jamal, label: 'জামাল', icon: user, tip: 'ছুটি চায়। নিয়ম মেনে আগে দেখে নেয় ডিউটিতে আর কেউ আছে কি না।'}
+          - {id: db, label: 'ডিউটি খাতা', icon: db, tip: 'shift টেবিল: প্রতি কর্মচারীর একটা সারি, on_duty সত্য বা মিথ্যা।'}
+          - {id: kamal, label: 'কামাল', icon: user, tip: 'ঠিক একই মুহূর্তে একই যাচাই করে একই সিদ্ধান্ত নেয়।'}
+        messages:
+          - {from: jamal, to: db, label: 'ডিউটিতে কয়জন?'}
+          - {from: kamal, to: db, label: 'ডিউটিতে কয়জন?'}
+          - {from: db, to: jamal, label: '২ জন', dashed: true}
+          - {from: db, to: kamal, label: '২ জন', dashed: true, tip: 'জামাল এখনো কিছু লেখেনি, তাই কামালও ২ জন দেখছে।'}
+          - {from: jamal, to: db, label: 'আমার লাইনে: ছুটি', tip: 'শুধু নিজের সারি বদলাল। একা দেখলে এটা পুরোপুরি বৈধ।'}
+          - {from: kamal, to: db, label: 'আমার লাইনে: ছুটি', tone: bad, tip: 'অন্য একটা সারি, তাই জামালের লেখার সাথে কোনো সংঘর্ষ নেই — সারির lock বা version কলাম কিছুই টের পায় না।'}
+          - {at: db, note: 'ডিউটিতে ০ জন — নিয়ম ভাঙল', tone: bad, tip: 'কোনো লেখা হারায়নি, কোনো error আসেনি। নষ্ট হয়েছে সেই নিয়মটা, যা দুজনই শুরুতে যাচাই করেছিল।'}
+      - type: visual
+        kind: compare
+        caption: 'দুই গোলমাল পাশাপাশি'
+        columns:
+          - title: 'Lost update'
+            tone: warn
+            icon: pencil
+            tip: 'read-modify-write ধরনের কোডে হয়: পড়ো, PHP-তে হিসাব করো, লেখো। চেনা আর ঠেকানো তুলনামূলক সহজ।'
+            items:
+              - 'দুজন একই সারি পড়ে, একই সারি লেখে'
+              - 'বাকি ৫০০; দুজনই +১০০ লিখল → ৬০০, হওয়ার কথা ৭০০'
+              - 'ঠেকায়: atomic UPDATE, FOR UPDATE lock, version কলাম'
+          - title: 'Write skew'
+            tone: bad
+            icon: shuffle
+            tip: 'নিয়মটা যখন একাধিক সারি জুড়ে (“অন্তত একজন”, “মোট সর্বোচ্চ ১০”), তখন হয়। ধরা সবচেয়ে কঠিন।'
+            items:
+              - 'দুজন একই তথ্য পড়ে, আলাদা সারি লেখে'
+              - 'দুজনই ছুটি নিল → ডিউটিতে কেউ নেই'
+              - 'ঠেকায়: SERIALIZABLE level, অথবা যা পড়ে সিদ্ধান্ত নিচ্ছ তাতে lock'
+    aside:
+      - type: problem
+        body: 'Lost update ঠেকানোর সরঞ্জাম অনেক। Write skew ধরা কঠিন, কারণ দুই transaction আলাদা সারি ছোঁয় — তাই সাধারণ সারি-lock বা optimistic version কিছুই আপত্তি তোলে না।'
+      - type: refs
+        items:
+          - {to: 'concurrency/race-conditions', label: 'Read-modify-write কোডে চেনা'}
+          - {to: 'concurrency/atomic-operations', label: 'Atomic UPDATE দিয়ে lost update বন্ধ'}
+    check:
+      q: 'Write skew-কে lost update থেকে আলাদা করে কোন বৈশিষ্ট্য?'
+      a: 'Lost update-এ দুই transaction একই সারি লেখে, একটা অন্যটাকে মুছে দেয়। Write skew-এ তারা আলাদা সারি লেখে; কোনো লেখা হারায় না, কিন্তু দুটো মিলে এমন নিয়ম ভাঙে যা দুজনই শুরুতে যাচাই করেছিল।'
+
+  - slug: four-levels
+    title: 'চার level: কোনটা কোন গোলমাল ঠেকায়'
+    kind: compare
+    tldr: 'Read uncommitted → read committed → repeatable read → serializable: যত ওপরে, তত কম anomaly, তত বেশি অপেক্ষা আর বাতিল।'
+    keywords: ['read uncommitted', 'read committed', 'repeatable read', 'serializable', 'snapshot', 'চার level']
+    blocks:
+      - type: metaphor
+        icon: book
+        title: 'খাতা পড়ার চার নিয়ম'
+        body: |
+          চার level মানে বাকির খাতা পড়ার চার রকম নিয়ম। নিয়ম যত কড়া, গোলমাল তত কম — কিন্তু অপেক্ষা আর “আবার করো” তত বেশি।
+      - type: points
+        style: number
+        items:
+          - '**Read uncommitted** — পেন্সিলের লেখাও পড়ো।'
+          - '**Read committed** — শুধু কলমের লেখা; তবে প্রতিটা query নতুন করে খাতায় তাকায়।'
+          - '**Repeatable read** — শুরুতেই খাতার ফটোকপি (snapshot) নাও; পুরো transaction সেটা দেখেই চলে।'
+          - '**Serializable** — ফল এমন হবে, যেন সবাই একজন একজন করে খাতা ধরেছিল।'
+      - type: visual
+        kind: table
+        caption: 'কোন level-এ কোন anomaly হয়, কোনটা ঠেকে'
+        headers: ['Anomaly', 'Read uncommitted', 'Read committed', 'Repeatable read', 'Serializable']
+        rows:
+          - cells: ['Dirty read', 'হয়', 'ঠেকে', 'ঠেকে', 'ঠেকে']
+            tip: 'শুধু সবচেয়ে নিচের level-এ হয়। PostgreSQL-এ সেটাও হয় না: READ UNCOMMITTED চাইলেও সে READ COMMITTED-এর মতো আচরণ করে।'
+          - cells: ['Non-repeatable read', 'হয়', 'হয়', 'ঠেকে', 'ঠেকে']
+            tip: 'REPEATABLE READ থেকে পুরো transaction একটাই snapshot দেখে, তাই একই সারি আবার পড়লে একই মান আসে।'
+          - cells: ['Phantom read', 'হয়', 'হয়', 'standard মতে হয়', 'ঠেকে']
+            tip: 'SQL standard REPEATABLE READ-এ phantom-এর অনুমতি দেয়। বাস্তবে PostgreSQL-এর snapshot phantom দেখায় না; MySQL InnoDB-ও সাধারণ SELECT-এ দেখায় না।'
+          - cells: ['Lost update', 'হয়', 'হয়', 'ডেটাবেসভেদে', 'ঠেকে']
+            tip: 'PostgreSQL-এর REPEATABLE READ দ্বিতীয় লেখককে error দিয়ে বাতিল করে, তাই লেখা হারায় না। MySQL InnoDB-র REPEATABLE READ-এ পরের UPDATE চুপচাপ আগেরটা মুছে দেয়।'
+          - cells: ['Write skew', 'হয়', 'হয়', 'হয়', 'ঠেকে']
+            tip: 'দুই transaction আলাদা সারি লেখে বলে snapshot কিছুই টের পায় না। শুধু SERIALIZABLE দুজনের পড়া-লেখার সম্পর্ক মিলিয়ে একজনকে বাতিল করে।'
+      - type: quote
+        body: 'ডিফল্ট level SERIALIZABLE নয়। তুমি আলাদা ব্যবস্থা না নিলে lost update আর write skew ঠেকানো হচ্ছে না।'
+    aside:
+      - type: tips
+        items:
+          - 'ডিফল্ট: PostgreSQL = READ COMMITTED, MySQL (InnoDB) = REPEATABLE READ। কোনোটাই SERIALIZABLE নয়।'
+          - 'নামে এক হলেও আচরণ ডেটাবেসভেদে আলাদা। নিজের ডেটাবেসের ডকুমেন্টেশন একবার পড়ে নাও।'
+      - type: terms
+        items:
+          - {term: 'Snapshot', meaning: 'transaction শুরুর মুহূর্তের ডেটার স্থির ছবি; পরে অন্যরা যা-ই commit করুক, তুমি ওই ছবিই দেখো।'}
+          - {term: 'Serialization failure', meaning: 'ডেটাবেস বুঝেছে ফল “একজন একজন করে”-র মতো হবে না, তাই transaction বাতিল করেছে (SQLSTATE 40001)।'}
+      - type: commands
+        title: 'বর্তমান level দেখা'
+        items:
+          - {cmd: 'SHOW transaction_isolation;', desc: 'PostgreSQL'}
+          - {cmd: 'SELECT @@transaction_isolation;', desc: 'MySQL 8'}
+    check:
+      q: 'PostgreSQL-এর ডিফল্ট level-এ পাঁচটা anomaly-র কোনটা কখনো ঘটে না, আর কোনগুলো ঘটতে পারে?'
+      a: 'ডিফল্ট READ COMMITTED-এ শুধু dirty read ঠেকে। Non-repeatable read, phantom, lost update আর write skew — চারটাই ঘটতে পারে।'
+
+  - slug: choose-and-retry
+    title: 'কখন level বাড়াবে, আর retry কেন লাগবেই'
+    kind: howto
+    tldr: 'ডিফল্ট level রাখো; একাধিক সারি জুড়ে নিয়ম থাকলে শুধু সেই transaction-টা SERIALIZABLE করো আর serialization failure-এ retry করো।'
+    keywords: ['serializable', 'retry', 'serialization failure', 'RetryableException', 'SET TRANSACTION', 'level বাছাই']
+    blocks:
+      - type: text
+        body: |
+          বেশিরভাগ কাজে ডিফল্ট level-ই থাকবে, আর নির্দিষ্ট সমস্যা মিটবে নির্দিষ্ট অস্ত্রে। যেখানে নিয়মটা **একাধিক সারি জুড়ে** — যেমন “অন্তত একজন ডিউটিতে” — সেখানে শুধু ওই transaction-টাকে SERIALIZABLE করো। এর দাম আছে: ডেটাবেস সংঘর্ষ টের পেলে একটা transaction বাতিল করে দেয়। এটা bug নয়, স্বাভাবিক আচরণ; পুরো transaction আবার চালালেই সাধারণত সফল হয়।
+      - type: code
+        lang: php
+        file: 'src/Database/SerializableRunner.php'
+        variant: good
+        code: |
+          final readonly class SerializableRunner
+          {
+              public function __construct(private Connection $connection)
+              {
+              }
+
+              /** @param \Closure(Connection): mixed $work */
+              public function run(\Closure $work, int $maxAttempts = 3): mixed
+              {
+                  for ($attempt = 1; ; ++$attempt) {
+                      try {
+                          return $this->connection->transactional(function (Connection $c) use ($work) {
+                              // PostgreSQL: শুধু এই transaction-এর জন্য, প্রথম query-র আগে
+                              $c->executeStatement('SET TRANSACTION ISOLATION LEVEL SERIALIZABLE');
+
+                              return $work($c);
+                          });
+                      } catch (RetryableException $e) {   // serialization failure বা deadlock
+                          if ($attempt >= $maxAttempts) {
+                              throw $e;
+                          }
+                          usleep(random_int(5_000, 30_000) * $attempt);   // একটু থেমে আবার
+                      }
+                  }
+              }
+          }
+        marks:
+          - {line: 14, tip: 'level বদলায় শুধু এই একটা transaction-এর জন্য; বাকি অ্যাপ ডিফল্ট level-এই চলে। transaction-এর প্রথম query-র আগেই চালাতে হয়।'}
+          - {line: 18, tip: 'Doctrine DBAL serialization failure (40001) আর deadlock — দুটোকেই DeadlockException বানায়, যা RetryableException। অন্য exception ধরা হয় না, সেগুলো সত্যিকারের ভুল।'}
+          - {line: 22, tip: 'এলোমেলো ছোট বিরতি (jitter), যাতে সংঘর্ষে পড়া দুই transaction আবার ঠিক একই মুহূর্তে না ছোটে।'}
+      - type: code
+        lang: php
+        file: 'src/Service/LeaveService.php'
+        variant: good
+        code: |
+          $this->serializable->run(function (Connection $c) use ($staffId): void {
+              $onDuty = (int) $c->fetchOne('SELECT COUNT(*) FROM shift WHERE on_duty = true');
+              if ($onDuty < 2) {
+                  throw new CannotTakeLeave('অন্তত একজনকে ডিউটিতে থাকতে হবে');
+              }
+
+              $c->executeStatement(
+                  'UPDATE shift SET on_duty = false WHERE staff_id = :id',
+                  ['id' => $staffId],
+              );
+          });
+        marks:
+          - {line: 2, tip: 'জামাল আর কামাল একসাথে এখানে ২ পড়লেও সমস্যা নেই: commit-এর সময় ডেটাবেস একজনকে বাতিল করবে, সে retry-তে ১ পড়ে থেমে যাবে।'}
+      - type: points
+        title: 'কোন সমস্যায় কোন অস্ত্র'
+        style: check
+        items:
+          - 'এক সারির হিসাব (stock, balance): atomic UPDATE বা lock — level বদলানোর দরকার নেই।'
+          - 'লম্বা রিপোর্টে সব query-র এক ছবি চাই: REPEATABLE READ।'
+          - 'একাধিক সারি জুড়ে নিয়ম (write skew): SERIALIZABLE + retry।'
+      - type: quote
+        body: 'SERIALIZABLE কথা দেয় “ভুল ফল হবে না” — “বাতিল হবে না” নয়। Retry ছাড়া এটা অসম্পূর্ণ।'
+    aside:
+      - type: pitfalls
+        items:
+          - 'পুরো অ্যাপের ডিফল্ট SERIALIZABLE করে দিও না: বাতিল আর retry বেড়ে গতি পড়ে যায়।'
+          - 'retry-র closure-এ ইমেইল, HTTP call বা queue dispatch রাখবে না — closure-টা কয়েকবার চলতে পারে।'
+          - 'বাইরে আগে থেকে transaction খোলা থাকলে SET TRANSACTION ব্যর্থ হয়; runner-টা সবচেয়ে বাইরের স্তর থেকে ডাকো।'
+      - type: tips
+        items:
+          - 'MySQL-এ `SET TRANSACTION ISOLATION LEVEL …` চালাতে হয় transaction শুরুর আগে; তখন সেটা শুধু পরের transaction-এ খাটে।'
+      - type: refs
+        items:
+          - {to: 'concurrency/locking', label: 'Lock দিয়ে একই সমস্যা মেটানো'}
+          - {to: 'concurrency/atomic-operations', label: 'এক সারির হিসাবে atomic UPDATE'}
+    check:
+      q: 'SERIALIZABLE level ব্যবহার করলে কোডে কোন বাড়তি জিনিসটা অবশ্যই লাগবে, আর কেন?'
+      a: 'Retry। ডেটাবেস সংঘর্ষ টের পেলে একটা transaction-কে serialization failure দিয়ে বাতিল করে। সেটা bug নয়, স্বাভাবিক আচরণ — পুরো transaction আবার চালালে সাধারণত সফল হয়।'
+
+flashcards:
+  - q: 'Isolation level কী?'
+    a: 'একসাথে চলা transaction-গুলো একে অন্যের পরিবর্তন কতটা দেখতে পাবে, তার মাত্রা। যত কড়া, গোলমাল তত কম, কিন্তু অপেক্ষা ও বাতিল তত বেশি।'
+    more: |
+      SQL standard-এ চারটা level: read uncommitted, read committed, repeatable read, serializable। ACID-এর I তাই হ্যাঁ/না নয়, একটা নব। ডিফল্ট ধাপে transaction-এর ভেতরেও দুই query-র মাঝে অন্যের commit ঢুকে পড়তে পারে।
+    ref: two-reads-two-answers
+  - q: 'Dirty read কী?'
+    a: 'অন্য transaction-এর commit-না-হওয়া পরিবর্তন পড়ে ফেলা। সে rollback করলে তুমি এমন ডেটায় কাজ করেছ, যা কখনো ছিলই না।'
+    more: |
+      খাতার ভাষায়: পেন্সিলে লেখা একটা হিসাব পড়ে তুমি সিদ্ধান্ত নিলে, তারপর কর্মচারী সেটা মুছে ফেলল। এটা শুধু READ UNCOMMITTED level-এ হয়। PostgreSQL-এ কখনোই হয় না, কারণ সে ওই level চাইলেও READ COMMITTED-এর মতো আচরণ করে।
+    ref: read-anomalies
+  - q: 'Non-repeatable read কী?'
+    a: 'একই transaction-এ একই সারি দুইবার পড়ে দুই রকম মান পাওয়া, কারণ মাঝখানে অন্য কেউ সেটা বদলে commit করেছে।'
+    more: |
+      READ COMMITTED level-এ প্রতিটা query নিজের চলার মুহূর্তের commit-হওয়া ডেটা দেখে, তাই এটা ঘটে। রিপোর্টে “মোট” আর “তালিকার যোগফল” না মেলা এরই একটা রূপ। REPEATABLE READ থেকে পুরো transaction এক snapshot দেখে, তাই ঠেকে যায়।
+    ref: read-anomalies
+  - q: 'Phantom read কী?'
+    a: 'একই শর্তে দুইবার query করে দ্বিতীয়বার নতুন সারি পাওয়া বা সারি উধাও হওয়া, কারণ মাঝে অন্য কেউ INSERT বা DELETE commit করেছে।'
+    more: |
+      Non-repeatable read-এ আগে পড়া সারির মান বদলায়; phantom-এ সারির সংখ্যাই বদলায়। “আগে গুনি, তারপর সিদ্ধান্ত নিই” ধরনের কোডে এটা বিপজ্জনক। SQL standard REPEATABLE READ-এ এর অনুমতি দেয়, তবে PostgreSQL-এর snapshot বাস্তবে phantom দেখায় না।
+    ref: read-anomalies
+  - q: 'Lost update কী?'
+    a: 'দুই transaction একই সারি পড়ে, যে যার মতো হিসাব করে লেখে; পরের লেখাটা আগেরটাকে মুছে দেয়।'
+    more: |
+      উদাহরণ: বাকি ৫০০ টাকা। দুজনই ৫০০ পড়ে ১০০ যোগ করে ৬০০ লিখল, অথচ হওয়ার কথা ৭০০। READ COMMITTED-এ এটা অবাধে ঘটে; MySQL InnoDB-র REPEATABLE READ-এও ঘটে। ঠেকানোর উপায়: atomic UPDATE, SELECT … FOR UPDATE, অথবা version কলাম।
+    ref: write-anomalies
+  - q: 'Write skew কী?'
+    a: 'দুই transaction একই তথ্য পড়ে সিদ্ধান্ত নেয়, কিন্তু আলাদা সারিতে লেখে। আলাদাভাবে দুটোই বৈধ, একসাথে একটা নিয়ম ভাঙে।'
+    more: |
+      উদাহরণ: নিয়ম হলো অন্তত একজন ডিউটিতে থাকবে। দুজনই দেখল “২ জন আছে”, দুজনই নিজের সারিতে ছুটি লিখল — এখন কেউ নেই। কোনো লেখা হারায়নি, তাই সারি-lock বা version কলাম টের পায় না। ঠেকায় SERIALIZABLE level, অথবা যে সারিগুলো পড়ে সিদ্ধান্ত নিচ্ছ সেগুলোতে lock।
+    ref: write-anomalies
+  - q: 'PostgreSQL আর MySQL-এর ডিফল্ট isolation level কী?'
+    a: 'PostgreSQL: READ COMMITTED। MySQL (InnoDB): REPEATABLE READ। কোনোটাই SERIALIZABLE নয়।'
+    more: |
+      তাই দুই ডেটাবেসেই ডিফল্ট অবস্থায় write skew ঘটতে পারে, আর read-modify-write কোডে lost update-ও। “transaction দিয়েছি” মানে এই গোলমালগুলো ঠেকানো হয়েছে — এমন নয়। বর্তমান level দেখতে: PostgreSQL-এ `SHOW transaction_isolation;`।
+    ref: four-levels
+  - q: 'READ COMMITTED আর REPEATABLE READ-এর মূল পার্থক্য কী?'
+    a: 'READ COMMITTED-এ প্রতিটা query নিজের মুহূর্তের commit-হওয়া ডেটা দেখে। REPEATABLE READ-এ পুরো transaction শুরুর একটাই snapshot দেখে।'
+    more: |
+      খাতার ভাষায়: READ COMMITTED মানে প্রতিবার খাতায় নতুন করে তাকানো, তাই মাঝে কেউ কলমে কিছু লিখলে সেটা চোখে পড়ে। REPEATABLE READ মানে শুরুতে একটা ফটোকপি নিয়ে পুরো কাজ সেটা দেখে করা। লম্বা রিপোর্টে সব query-র এক ছবি দরকার হলে REPEATABLE READ কাজের।
+    ref: four-levels
+  - q: 'Write skew কোন level ঠেকায়, আর তার দাম কী?'
+    a: 'শুধু SERIALIZABLE। দাম: সংঘর্ষ টের পেলে ডেটাবেস একটা transaction বাতিল করে, তাই retry লিখতেই হয়।'
+    more: |
+      SERIALIZABLE-এ ফল এমন হয়, যেন transaction-গুলো একটার পর একটা চলেছে। PostgreSQL এটা করে সংঘর্ষ ধরে একজনকে serialization failure (SQLSTATE 40001) দিয়ে। Doctrine DBAL এটাকে RetryableException হিসেবে দেয়; সেটা ধরে পুরো transaction আবার চালাতে হয়, আর closure-এ বাইরের কোনো side effect রাখা যায় না।
+    ref: choose-and-retry
+
+quiz:
+  - q: 'একটা রিপোর্ট transaction-এ প্রথম query-তে মোট বাকি এল ৫০০০, পরের query-তে তালিকার যোগফল ৪০০০। ডেটাবেস PostgreSQL, ডিফল্ট সেটিং। সবচেয়ে সরল সমাধান কোনটা?'
+    hint: 'দুই query যেন একই মুহূর্তের ছবি দেখে — কোন level সেটা দেয়?'
+    options:
+      - text: 'দুই query-র মাঝখানে flush() ডাকা'
+        correct: false
+        why: 'flush() Doctrine-এর জমানো পরিবর্তন পাঠায়; অন্য transaction-এর commit তোমার query কীভাবে দেখবে, তাতে এর কোনো প্রভাব নেই।'
+      - text: 'রিপোর্টের transaction-টা REPEATABLE READ-এ চালানো'
+        correct: true
+        why: 'তখন পুরো transaction শুরুর একটাই snapshot দেখে, তাই মোট আর তালিকা সবসময় মেলে।'
+      - text: 'query দুটো transaction-এর বাইরে চালানো'
+        correct: false
+        why: 'তাতে প্রতিটা query আলাদা transaction হয় — একই সমস্যা, কোনো উন্নতি নেই।'
+      - text: 'রিপোর্ট চলাকালে customer টেবিলে সব লেখা বন্ধ রাখা'
+        correct: false
+        why: 'কাজ করবে, কিন্তু রিপোর্ট যতক্ষণ চলে ততক্ষণ দোকানের সব পেমেন্ট আটকে থাকবে। snapshot একই ফল দেয় কাউকে না আটকে।'
+    ref: two-reads-two-answers
+  - q: 'Transaction A একটা অর্ডারের status “paid” করল, কিন্তু commit করেনি। Transaction B সেটা “paid” দেখে পণ্য পাঠিয়ে দিল। তারপর A rollback করল। B কোন anomaly-র শিকার?'
+    hint: 'B যে মানটা পড়েছিল, সেটা কি কখনো পাকা হয়েছিল?'
+    options:
+      - text: 'Dirty read'
+        correct: true
+        why: 'B অন্য transaction-এর commit-না-হওয়া পরিবর্তন পড়েছে, যা পরে rollback হয়ে গেছে।'
+      - text: 'Non-repeatable read'
+        correct: false
+        why: 'সেখানে একই সারি দুইবার পড়ে দুই রকম commit-হওয়া মান পাওয়া যায়। এখানে পড়া মানটা কখনো commit-ই হয়নি।'
+      - text: 'Phantom read'
+        correct: false
+        why: 'Phantom মানে একই শর্তে নতুন সারি দেখা দেওয়া; এখানে নতুন সারির ব্যাপার নেই।'
+      - text: 'Lost update'
+        correct: false
+        why: 'Lost update-এ একটা লেখা আরেকটাকে মুছে দেয়। এখানে সমস্যা ভুল জিনিস পড়া, লেখা হারানো নয়।'
+    ref: read-anomalies
+  - q: 'একটা ক্লিনিকের নিয়ম: অন্তত একজন ডাক্তার on-call থাকবে। দুই ডাক্তার একই মুহূর্তে দেখল ২ জন on-call, তারপর যে যার নিজের সারিতে on_call = false লিখল। এখন কেউ নেই। এটা কোন anomaly?'
+    hint: 'দুজন কি একই সারি লিখেছে, নাকি আলাদা সারি?'
+    options:
+      - text: 'Lost update'
+        correct: false
+        why: 'কোনো লেখা হারায়নি; দুজনের লেখাই জমা আছে, কারণ তারা আলাদা সারি বদলেছে।'
+      - text: 'Dirty read'
+        correct: false
+        why: 'দুজনই commit-হওয়া সঠিক তথ্য পড়েছিল (২ জন)। সমস্যা পড়ায় নয়, পড়ার ভিত্তিতে একসাথে লেখায়।'
+      - text: 'Write skew'
+        correct: true
+        why: 'একই তথ্য দেখে নেওয়া দুই সিদ্ধান্ত আলাদা সারিতে লেখা হয়েছে; আলাদাভাবে বৈধ, একসাথে নিয়ম ভেঙেছে।'
+      - text: 'Non-repeatable read'
+        correct: false
+        why: 'কেউ একই সারি দুইবার পড়েনি। এটা লেখার গোলমাল, পড়ার নয়।'
+    ref: write-anomalies
+  - q: 'PostgreSQL-এর ডিফল্ট level (READ COMMITTED)-এ নিচের কোনগুলো ঘটতে পারে?'
+    hint: 'এই level শুধু একটা জিনিস নিশ্চিত করে: তুমি পাকা-না-হওয়া লেখা দেখবে না।'
+    options:
+      - text: 'Dirty read'
+        correct: false
+        why: 'READ COMMITTED-এর নামই বলে: শুধু commit-হওয়া ডেটা পড়া যায়।'
+      - text: 'Non-repeatable read'
+        correct: true
+        why: 'প্রতিটা query নতুন করে তাকায়, তাই একই সারি আবার পড়লে বদলে-যাওয়া মান আসতে পারে।'
+      - text: 'Lost update'
+        correct: true
+        why: 'দুই transaction একই পুরনো মান পড়ে হিসাব করে লিখলে পরেরটা আগেরটাকে মুছে দেয়; এই level তাতে বাধা দেয় না।'
+      - text: 'Write skew'
+        correct: true
+        why: 'Write skew শুধু SERIALIZABLE ঠেকায়; তার নিচের সব level-এ ঘটতে পারে।'
+      - text: 'Phantom read'
+        correct: true
+        why: 'দুই query-র মাঝে অন্য কেউ সারি যোগ করে commit করলে দ্বিতীয় query সেটা দেখে।'
+    ref: four-levels
+  - q: 'এই কোডে SERIALIZABLE level ঠিকই বসানো হয়েছে। তবু চাপের সময় মাঝে মাঝে ব্যবহারকারী 500 error পায়। কী বাদ পড়েছে?'
+    lang: php
+    code: |
+      $conn->transactional(function (Connection $c) use ($staffId): void {
+          $c->executeStatement('SET TRANSACTION ISOLATION LEVEL SERIALIZABLE');
+
+          $onDuty = (int) $c->fetchOne('SELECT COUNT(*) FROM shift WHERE on_duty = true');
+          if ($onDuty >= 2) {
+              $c->executeStatement(
+                  'UPDATE shift SET on_duty = false WHERE staff_id = :id',
+                  ['id' => $staffId],
+              );
+          }
+      });
+    hint: 'SERIALIZABLE সংঘর্ষ টের পেলে কী করে?'
+    options:
+      - text: 'UPDATE-এর পরে হাতে COMMIT লেখা'
+        correct: false
+        why: 'transactional() closure শেষে নিজেই COMMIT করে; সেটা বাদ পড়েনি।'
+      - text: 'serialization failure ধরে পুরো transaction আবার চালানোর ব্যবস্থা'
+        correct: true
+        why: 'সংঘর্ষে ডেটাবেস একটা transaction বাতিল করে। RetryableException ধরে আবার না চালালে সেই বাতিলটাই ব্যবহারকারীর কাছে 500 হয়ে পৌঁছায়।'
+      - text: 'level কমিয়ে READ UNCOMMITTED করা, যাতে সংঘর্ষ না হয়'
+        correct: false
+        why: 'তাতে error যাবে, কিন্তু write skew ফিরে আসবে — দুজনই ছুটি নিয়ে নেবে।'
+      - text: 'SELECT-টা transaction-এর বাইরে সরানো'
+        correct: false
+        why: 'তাহলে পড়া আর লেখার সম্পর্ক ডেটাবেস দেখতেই পাবে না, আর write skew ধরার সুযোগও থাকবে না।'
+    ref: choose-and-retry
+  - q: 'REPEATABLE READ-এ চলা একটা transaction শুরুতে একটা সারিতে due = ৫০০ পড়ল। এরপর অন্য transaction সেটা ৩০০ করে commit করল। প্রথম transaction আবার একই সারি পড়লে কী দেখবে?'
+    hint: 'ফটোকপি নেওয়ার পরে আসল খাতায় কিছু লিখলে ফটোকপি বদলায় কি?'
+    options:
+      - text: '৩০০, কারণ ওটা commit হয়ে গেছে'
+        correct: false
+        why: 'এটা READ COMMITTED-এর আচরণ, যেখানে প্রতিটা query নতুন করে তাকায়।'
+      - text: '৫০০, কারণ সে transaction শুরুর snapshot দেখে'
+        correct: true
+        why: 'REPEATABLE READ-এ পুরো transaction একটাই স্থির ছবি দেখে; পরে অন্যরা যা commit করে তা চোখে পড়ে না।'
+      - text: 'একটা error, কারণ সারিটা বদলে গেছে'
+        correct: false
+        why: 'শুধু পড়লে error আসে না। PostgreSQL error দেয় তখন, যখন এই transaction ওই বদলে-যাওয়া সারিটা লিখতে যায়।'
+      - text: 'NULL, কারণ সারিটা lock হয়ে আছে'
+        correct: false
+        why: 'অন্য transaction commit করে ফেলেছে, তাই কোনো lock নেই; আর lock থাকলেও ফল NULL হয় না।'
+    ref: four-levels
+  - q: 'SERIALIZABLE level সম্পর্কে কোনগুলো সত্যি?'
+    hint: 'সবচেয়ে কড়া level-এর সুবিধা আর দাম — দুটোই ভাবো।'
+    options:
+      - text: 'write skew সহ সব anomaly ঠেকায়'
+        correct: true
+        why: 'ফল এমন হয়, যেন transaction-গুলো একটার পর একটা চলেছে; তাই কোনো anomaly-র জায়গা থাকে না।'
+      - text: 'transaction বাতিল হতে পারে, তাই retry লাগে'
+        correct: true
+        why: 'ডেটাবেস সংঘর্ষ ধরলে একজনকে serialization failure দেয়; সেটা সামলানো অ্যাপের দায়িত্ব।'
+      - text: 'PostgreSQL আর MySQL-এ এটাই ডিফল্ট'
+        correct: false
+        why: 'PostgreSQL-এর ডিফল্ট READ COMMITTED, MySQL InnoDB-র REPEATABLE READ।'
+      - text: 'পুরো অ্যাপের ডিফল্ট করে দিলে কোনো খরচ নেই'
+        correct: false
+        why: 'বাতিল আর retry বেড়ে গতি কমে। তাই শুধু সেই transaction-এ ব্যবহার করো, যেখানে নিয়মটা একাধিক সারি জুড়ে।'
+    ref: choose-and-retry

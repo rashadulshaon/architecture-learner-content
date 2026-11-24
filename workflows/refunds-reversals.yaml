@@ -1,0 +1,371 @@
+slides:
+  - slug: edited-the-amount
+    title: 'অঙ্কটা বদলে দিলাম, হিসাব আর মেলে না'
+    kind: story
+    tldr: 'আংশিক refund-এ আসল payment-এর অঙ্ক বদলে দিলে ইতিহাস হারায়; মাস শেষে gateway-র খাতার সাথে আমাদের হিসাব মেলে না আর কেউ বলতে পারে না কেন।'
+    keywords: ['refund', 'mutate original', 'partial refund', 'audit trail', 'হিসাব মেলে না', 'ফেরত']
+    blocks:
+      - type: text
+        body: |
+          রিনা ১২০০ টাকার অর্ডার থেকে ৩০০ টাকার একটা জিনিস ফেরত দিল। রহিমের সাপোর্ট কর্মী সহজ পথ নিল: `payment.amount` ১২০০ থেকে বদলে ৯০০ করে দিল। মাস শেষে হিসাবরক্ষক gateway-র খাতা আর ডেটাবেস মেলাতে বসে দেখে, gateway বলছে ১২০০ আদায়, ডেটাবেস বলছে ৯০০। ৩০০ টাকা ফেরত গেছে, কিন্তু কখন, কেন, কে করল — কিছুই লেখা নেই।
+      - type: visual
+        kind: sequence
+        caption: 'অঙ্ক বদলে ফেললে আসল তথ্য হারায়'
+        actors:
+          - {id: agent, label: 'সাপোর্ট কর্মী', icon: user, tip: 'refund-এর অনুরোধ সামলায়। সরল পথ ভেবে সরাসরি অঙ্কটাই বদলায়।'}
+          - {id: db, label: 'ডেটাবেস', icon: db, tip: 'যা লেখা হয়, তা-ই সত্য ধরে। আগের মান ফিরে পাওয়ার কোনো উপায় রাখে না।'}
+          - {id: acc, label: 'হিসাবরক্ষক', icon: receipt, tip: 'মাস শেষে gateway-র খাতার সাথে আমাদের খাতা মেলায়।'}
+        messages:
+          - {from: agent, to: db, label: 'payment.amount: ১২০০ → ৯০০', tone: bad}
+          - {at: db, note: 'আসল অঙ্ক আর রইল না', tone: bad, tip: 'এখন আর বলার উপায় নেই যে আদায় আসলে কত হয়েছিল, বা কত ফেরত গেছে।'}
+          - {from: acc, to: db, label: 'এই মাসে মোট আদায় কত?'}
+          - {from: db, to: acc, label: '৯০০ টাকা', dashed: true}
+          - {at: acc, note: 'gateway বলছে ১২০০ — মিলছে না', tone: bad}
+      - type: quote
+        body: 'টাকার রেকর্ড কখনো বদলাবে না। যা ঘটল, তা নতুন একটা রেকর্ড হয়ে আগেরটার সাথে জোড়া লাগবে।'
+    aside:
+      - type: problem
+        body: 'আসল রেকর্ড বদলালে "কী হয়েছিল" প্রশ্নের উত্তর হারায়। অডিট, বিরোধ নিষ্পত্তি আর gateway-র সাথে হিসাব মেলানো — সবই ইতিহাসের ওপর দাঁড়ানো।'
+      - type: refs
+        items:
+          - {to: 'ledgers/double-entry', label: 'Immutable entry আর double-entry'}
+    check:
+      q: 'অঙ্ক ১২০০ থেকে ৯০০ করে দিলে ঠিক কোন তথ্যগুলো হারিয়ে যায়?'
+      a: 'আসল আদায় ১২০০ ছিল, ৩০০ ফেরত গেছে, কখন গেছে, কেন গেছে আর কে করেছে। শুধু একটা সংখ্যা বাকি থাকে, আর সেটা দিয়ে এগুলোর কিছুই আর বোঝা যায় না।'
+
+  - slug: return-memo
+    title: 'ফেরত মেমো: আসল মেমো ছেঁড়ে না, নতুন মেমো কাটে'
+    kind: concept
+    tldr: 'আসল payment অপরিবর্তিত থাকে; প্রতিটা ফেরত একটা নতুন Refund রেকর্ড, যা payment-এর সাথে জোড়া; ফেরতযোগ্য বাকি টাকা হিসাব করে বের হয়।'
+    keywords: ['linked records', 'refund record', 'credit note', 'immutable', 'remaining refundable', 'ক্রেডিট নোট']
+    blocks:
+      - type: metaphor
+        icon: receipt
+        title: 'দোকানের ক্যাশ মেমো ও ফেরত মেমো'
+        body: |
+          ক্যাশ মেমো একবার কাটা হলে তা ছেঁড়া বা কাটাকুটি করা যায় না। জিনিস ফেরত এলে দোকানদার নতুন একটা ফেরত মেমো কাটে, যাতে লেখা থাকে "মূল মেমো নম্বর ৫৫২-এর বিপরীতে ৩০০ টাকা ফেরত"। দুটো মেমো পাশাপাশি রাখলে পুরো ইতিহাস বোঝা যায়। বাকি টাকা মনে মনে নয়, দুই মেমোর যোগবিয়োগ থেকে বের হয়।
+      - type: visual
+        kind: table
+        caption: 'এক payment-এর বিপরীতে দুটো ফেরত, আসলটা অপরিবর্তিত'
+        headers: ['রেকর্ড', 'ধরন', 'অঙ্ক', 'কার সাথে জোড়া']
+        rows:
+          - cells: ['P-১', 'Payment', '+১২০০', '—']
+            tip: 'আসল আদায়। এই রেকর্ড আর কখনো বদলায় না।'
+          - cells: ['R-১', 'Refund', '−৩০০', 'P-১']
+            tip: 'প্রথম ফেরত। P-১-এর সাথে জোড়া, নিজের কারণ আর সময় নিয়ে।'
+          - cells: ['R-২', 'Refund', '−২০০', 'P-১']
+            tip: 'দ্বিতীয় আংশিক ফেরত, আলাদা রেকর্ড হিসেবে।'
+          - cells: ['বাকি', 'ফেরতযোগ্য', '৭০০', 'হিসাব করা']
+            tip: '১২০০ − ৩০০ − ২০০ = ৭০০। এই মান সংরক্ষিত নয়, প্রতিবার যোগবিয়োগ করে বের হয়।'
+      - type: points
+        title: 'এই গঠনের সুবিধা'
+        style: check
+        items:
+          - 'পুরো ইতিহাস থাকে: কে, কখন, কেন, কত।'
+          - 'Gateway-র সাথে মেলানো সহজ: প্রতিটা Refund একটা gateway refund-এর সমান।'
+          - 'একই payment-এ একাধিক আংশিক ফেরত স্বাভাবিকভাবে সামলানো যায়।'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Reversal / void', meaning: 'টাকা সরার আগেই অনুমোদন বাতিল করা। টাকা তখনো ক্রেতার কাছেই থাকে।'}
+          - {term: 'Refund', meaning: 'টাকা আদায় হয়ে যাওয়ার পর ক্রেতাকে নতুন লেনদেনে ফেরত দেওয়া।'}
+          - {term: 'Chargeback', meaning: 'ক্রেতার ব্যাংক বিরোধ তুলে জোর করে টাকা ফেরত নেয়।'}
+    check:
+      q: 'ফেরতযোগ্য বাকি টাকা payment-এর একটা কলামে না রেখে প্রতিবার হিসাব করে বের করা হয় কেন?'
+      a: 'কলামটা আলাদাভাবে বদলাতে হলে payment আর refund কখনো অমিলে পড়তে পারে, আর কে কখন বদলাল তা হারায়। যোগবিয়োগ করলে সত্যের উৎস শুধু রেকর্ডগুলো।'
+
+  - slug: refund-service
+    title: 'Refund রেকর্ড বানানো: সীমা, lock আর idempotency'
+    kind: howto
+    tldr: 'Payment-কে PESSIMISTIC_WRITE দিয়ে lock করে বাকি ফেরতযোগ্য টাকা গুনে নতুন Refund persist করো; একই idempotency key এলে আগেরটাই ফেরত দাও।'
+    keywords: ['Refund entity', 'Doctrine', 'PESSIMISTIC_WRITE', 'over-refund', 'idempotency', 'ফেরতের সীমা']
+    blocks:
+      - type: code
+        lang: php
+        file: 'src/Refund/RefundService.php (ভুল)'
+        variant: bad
+        code: |
+          public function refund(Payment $payment, int $amount): void
+          {
+              $payment->setAmount($payment->getAmount() - $amount);   // আসলটাই বদলে ফেলা
+              $this->em->flush();
+              $this->gateway->refund($payment->getGatewayId(), $amount);
+          }
+        marks:
+          - {line: 3, tip: 'আসল অঙ্ক বদলে গেল, আর দুইজন একসাথে ফেরত দিলে সীমার চেয়ে বেশি টাকাও চলে যেতে পারে।'}
+      - type: code
+        lang: php
+        file: 'src/Refund/RefundService.php'
+        variant: good
+        code: |
+          public function refund(Uuid $paymentId, int $amount, string $reason, string $key): Refund
+          {
+              return $this->em->wrapInTransaction(function () use ($paymentId, $amount, $reason, $key) {
+                  $payment = $this->em->find(Payment::class, $paymentId, LockMode::PESSIMISTIC_WRITE);
+
+                  $same = $this->refunds->findOneBy(['payment' => $payment, 'idemKey' => $key]);
+                  if (null !== $same) {
+                      return $same;                       // একই অনুরোধ আবার
+                  }
+                  $remaining = $payment->getAmount() - $this->refunds->totalFor($payment);
+                  if ($amount <= 0 || $amount > $remaining) {
+                      throw new RefundExceedsPayment($remaining);
+                  }
+                  $refund = new Refund($payment, $amount, $reason, $key);
+                  $this->em->persist($refund);
+                  $this->outbox->add(new RefundRequested($refund->getId()));   // gateway কল পরে
+
+                  return $refund;
+              });
+          }
+        marks:
+          - {line: 4, tip: 'payment সারি lock। একই payment-এ আরেকটা refund এই transaction শেষ হওয়ার অপেক্ষা করবে।'}
+          - {line: 6, tip: 'client retry করলে একই key-র আগের Refund-ই ফেরত যায়; দ্বিতীয়বার টাকা যায় না।'}
+          - {line: 10, tip: 'বাকি = আসল − আগের সব ফেরতের যোগফল। lock-এর ভেতরে হিসাব, তাই এই সংখ্যা এই মুহূর্তে সত্য।'}
+          - {line: 16, tip: 'gateway কল transaction-এর বাইরে, outbox দিয়ে। কলের অজানা ফল সামলানো আলাদা বিষয়।'}
+    aside:
+      - type: tips
+        items:
+          - 'টাকা সবসময় পূর্ণসংখ্যা (পয়সা/মাইনর ইউনিট), কখনো float নয়। Refund-এর অঙ্ক সবসময় ধনাত্মক রাখো; "ফেরত" হওয়াটা ধরনেই (Refund) বলা আছে।'
+          - '`(payment_id, idem_key)`-তে unique constraint রাখো, যাতে lock ফসকালেও ডেটাবেস duplicate ঠেকায়।'
+      - type: refs
+        items:
+          - {to: 'payments/idempotency-keys', label: 'Idempotency key'}
+          - {to: 'ledgers/modeling-money', label: 'টাকা মডেল করা'}
+    check:
+      q: 'দুইজন সাপোর্ট কর্মী একই সাথে ১২০০ টাকার payment-এ ৮০০ করে refund চাইলে lock না থাকলে কী ঘটতে পারে?'
+      a: 'দুজনেই দেখবে বাকি ১২০০, তাই দুজনের ৮০০-ই পাশ হবে আর ১৬০০ টাকা ফেরত যাবে। lock থাকলে দ্বিতীয়জন বাকি ৪০০ দেখে ৮০০ প্রত্যাখ্যান করবে।'
+
+  - slug: partial-capture-shipment
+    title: 'আংশিক capture ও আংশিক চালান'
+    kind: howto
+    tldr: 'Authorization একবার আটকে রাখে; প্রতিটা চালানে ঠিক সেই অংশের capture আলাদা রেকর্ডে হয়, আর যে অংশ আর যাবে না তার void (reversal) হয়।'
+    keywords: ['partial capture', 'authorization', 'void', 'partial shipment', 'reversal', 'আংশিক চালান']
+    blocks:
+      - type: text
+        body: |
+          অনলাইন কেনাকাটায় আগে টাকা **আটকানো** (authorize) হয়, মাল রওনা দিলে তবে আসলে **নেওয়া** (capture) হয়। রিনার ৩টা জিনিস (প্রতিটা ৪০০) থাকলে ১২০০ আটকানো হলো। দুটো আগে রওনা হলে ৮০০ নেওয়া হয়, তৃতীয়টা আটকে থাকলে বাকি ৪০০ পরের চালানে নেওয়া হবে, নয়তো ছেড়ে দেওয়া (void) হবে। প্রতিটাই নতুন রেকর্ড।
+      - type: visual
+        kind: table
+        caption: 'এক authorization, কয়েকটা capture আর একটা void'
+        headers: ['ধাপ', 'রেকর্ড', 'অঙ্ক', 'বাকি আটকানো']
+        rows:
+          - cells: ['অনুমোদন', 'Authorize A-১', '১২০০', '১২০০']
+            tip: 'ক্রেতার কার্ডে ১২০০ আটকে রাখা হয়েছে, কিন্তু টাকা এখনো নেওয়া হয়নি।'
+          - cells: ['১ম চালান (২টা)', 'Capture C-১ → A-১', '৮০০', '৪০০']
+            tip: 'দুটো জিনিস রওনা হলো, তাই ৮০০ নেওয়া হলো। A-১ বদলায়নি; নতুন রেকর্ড C-১।'
+          - cells: ['২য় চালান (১টা)', 'Capture C-২ → A-১', '৪০০', '০']
+            tip: 'তৃতীয় জিনিস রওনা হলে বাকি ৪০০ নেওয়া হয়। এখন কিছু আটকানো নেই।'
+          - cells: ['তৃতীয়টা বাতিল হলে', 'Void V-১ → A-১', '৪০০', '০']
+            tip: 'C-২-এর বদলে এটা হয়: বাকি ৪০০ টাকা ছেড়ে দেওয়া। টাকা সরেইনি, তাই এটা reversal; refund নয়।'
+      - type: points
+        title: 'নিয়ম'
+        style: check
+        items:
+          - 'সব capture আর void-এর যোগফল authorization-এর বেশি হবে না।'
+          - 'প্রতিটা capture একটা চালানের সাথে জোড়া, যাতে কোন টাকা কোন মালের জন্য তা জানা যায়।'
+          - 'Capture-এর পরে ফেরত দিতে হলে সেটা refund, void নয়।'
+    aside:
+      - type: remember
+        body: 'আটকানো টাকা ছাড়ালে void। নেওয়া টাকা ফেরালে refund।'
+      - type: tips
+        items:
+          - 'Authorization সাধারণত কয়েক দিনেই মেয়াদোত্তীর্ণ হয়। দেরির চালানে নতুন authorization লাগতে পারে — gateway-র নিয়ম দেখো।'
+    check:
+      q: 'রিনা তৃতীয় জিনিসটা বাতিল করলে বাকি ৪০০ টাকার জন্য কী রেকর্ড হবে: refund নাকি void? কেন?'
+      a: 'Void। ওই ৪০০ টাকা কখনো নেওয়াই হয়নি, শুধু আটকানো ছিল। refund তখনই হয় যখন টাকা আদায় হয়ে গেছে।'
+
+  - slug: hardcoded-fee
+    title: 'Fee কোডে গেঁথে দিও না: নিয়ম থেকে হিসাব'
+    kind: pitfall
+    tldr: 'Refund fee কোডে `if`-এ গেঁথে দিলে নিয়ম বদলাতে deploy লাগে আর float-এ ভুল হয়; নিয়ম আলাদা রেখে পূর্ণসংখ্যায় হিসাব করো, আর fee-ও আলাদা রেকর্ড করো।'
+    keywords: ['refund fee', 'rule-driven', 'ExpressionLanguage', 'basis points', 'restocking fee', 'নিয়মভিত্তিক ফি']
+    blocks:
+      - type: text
+        body: |
+          "৭ দিন পরে ফেরত দিলে ১০% কাটা যাবে" — এমন নিয়ম বছরে কয়েকবার বদলায়। কোডে `if ($days > 7) $fee = $amount * 0.1;` লিখলে প্রতিবার deploy লাগে, আর float-এর কারণে পয়সার হিসাবে গরমিল হয়। নিয়মগুলো কনফিগে রাখো, আর হিসাব করো পূর্ণসংখ্যায় (বেসিস পয়েন্ট, ১০% = ১০০০)।
+      - type: code
+        lang: php
+        file: 'src/Refund/RefundFeePolicy.php'
+        variant: good
+        code: |
+          final readonly class RefundFeePolicy
+          {
+              public function __construct(
+                  #[Autowire('%refund.fee_rules%')] private array $rules,
+                  private ExpressionLanguage $expr,
+              ) {}
+
+              /** @param array<string, mixed> $facts যেমন ['days' => 9, 'reason' => 'changed_mind'] */
+              public function feeFor(int $amount, array $facts): int
+              {
+                  foreach ($this->rules as $rule) {
+                      if ($this->expr->evaluate($rule['when'], $facts)) {
+                          return intdiv($amount * $rule['bp'], 10_000);   // পূর্ণসংখ্যায়
+                      }
+                  }
+
+                  return 0;
+              }
+          }
+        marks:
+          - {line: 4, tip: 'নিয়মের তালিকা কনফিগ থেকে আসে, কোড থেকে নয়। নিয়ম বদলাতে শুধু কনফিগ বদলাও।'}
+          - {line: 12, tip: 'when হলো একটা expression string, যেমন "days > 7"। facts-এর ওপর চালিয়ে মেলে কি না দেখা হয়।'}
+          - {line: 13, tip: 'basis point: ১০০০ মানে ১০%। পূর্ণসংখ্যার ভাগ, তাই কোনো float-এর গোলমাল নেই।'}
+      - type: code
+        lang: yaml
+        file: 'config/services.yaml'
+        variant: good
+        code: |
+          parameters:
+              refund.fee_rules:                     # প্রথম মিললেই সেটা প্রযোজ্য
+                  - {when: 'reason == "defective"', bp: 0}
+                  - {when: 'days > 7',              bp: 1000}
+                  - {when: 'reason == "changed_mind"', bp: 500}
+        marks:
+          - {line: 3, tip: 'ত্রুটিপূর্ণ জিনিসে কোনো ফি নেই। এই নিয়ম সবার আগে বলে ওপরেরটা নিচের নিয়মকে হারায়।'}
+      - type: quote
+        body: 'Fee কখনো মূল অঙ্ক বদলায় না। Refund রেকর্ড পুরো অঙ্ক বলে, আর fee একটা আলাদা, জোড়া রেকর্ড।'
+    aside:
+      - type: tips
+        items:
+          - 'ব্যবহারকারীকে আগে দেখাও: "ফেরত ১০০০, ফি ১০০, আপনি পাবেন ৯০০"।'
+          - 'কোন নিয়ম কখন প্রযোজ্য ছিল, তা fee রেকর্ডে নিয়মের নামসহ লিখে রাখো, পরে বিরোধে কাজে লাগবে।'
+      - type: refs
+        items:
+          - {to: 'config/rules-engines', label: 'Rules engine আর ExpressionLanguage'}
+    check:
+      q: 'Fee-র নিয়ম কনফিগে রাখলে আর পূর্ণসংখ্যায় (bp) হিসাব করলে কী কী সুবিধা?'
+      a: 'নিয়ম বদলাতে deploy লাগে না, আর float-এর গোলমাল থাকে না। সাথে fee আলাদা রেকর্ড হওয়ায় কোন নিয়মে কত কাটা হলো তা ইতিহাসে থেকে যায়।'
+
+flashcards:
+  - q: 'Refund-এ আসল payment-এর অঙ্ক বদলানো কেন ভুল?'
+    a: 'আসল তথ্য আর ইতিহাস হারায়: কত আদায় হয়েছিল, কত ফেরত গেল, কখন, কেন। gateway-র সাথে হিসাবও মেলে না।'
+    more: |
+      টাকার রেকর্ড অডিটের ভিত্তি। আসল অঙ্ক বদলে ফেললে gateway বলে ১২০০, ডেটাবেস বলে ৯০০ — কেউ বলতে পারে না ৩০০ কোথায় গেল। তাই ঘটনা নতুন রেকর্ডে লিখি, পুরনোটা অক্ষত রাখি।
+    ref: edited-the-amount
+  - q: 'টাকার ক্ষেত্রে "never mutate the original" নিয়মটা কী?'
+    a: 'আসল payment রেকর্ড কখনো বদলায় না। কোনো পরিবর্তন ঘটলে নতুন একটা রেকর্ড (Refund, Capture) বানিয়ে আসলের সাথে জোড়া হয়।'
+    more: |
+      দোকানের ক্যাশ মেমোর মতো: ভুল হলে ছেঁড়া বা কাটাকুটি নয়, নতুন একটা ফেরত মেমো কাটা হয় যাতে মূল মেমো নম্বর লেখা থাকে। ইতিহাস অক্ষত, আর যেকোনো সময় পুরো গল্প পড়া যায়।
+    ref: return-memo
+  - q: 'এক payment-এর ফেরতযোগ্য বাকি টাকা কীভাবে বের হয়?'
+    a: 'আসল অঙ্ক থেকে ওই payment-এর সব Refund-এর যোগফল বাদ দিয়ে। প্রতিবার হিসাব করে, আলাদা কলামে সংরক্ষণ না করে।'
+    more: |
+      আলাদা কলামে বাকি টাকা রাখলে সেটা Refund রেকর্ডের সাথে অমিলে পড়তে পারে। যোগফল থেকে বের করলে সত্যের একটাই উৎস থাকে: রেকর্ডগুলো।
+    ref: return-memo
+  - q: 'Reversal (void) আর refund-এর পার্থক্য কী?'
+    a: 'Void: টাকা সরার আগেই অনুমোদন বাতিল। Refund: টাকা আদায় হয়ে যাওয়ার পর নতুন লেনদেনে ফেরত দেওয়া।'
+    more: |
+      Void-এ ক্রেতার টাকা কখনো যায়ইনি, শুধু কার্ডে আটকানো ছিল, তাই ঝামেলা কম আর ফি সাধারণত নেই। Refund-এ টাকা সরেছে, ফেরত আসতে কয়েক দিন লাগে, আর gateway ফি ফেরত নাও দিতে পারে।
+    ref: return-memo
+  - q: 'একসাথে দুইজন একই payment-এ refund চাইলে over-refund কীভাবে ঠেকানো হয়?'
+    a: 'Transaction-এর ভেতরে payment সারি `PESSIMISTIC_WRITE` দিয়ে lock করে বাকি টাকা গুনে refund বানাতে হয়।'
+    more: |
+      Lock ছাড়া দুজনেই একই "বাকি টাকা" দেখে, আর দুজনের refund-ই পাশ হয়। Lock থাকলে দ্বিতীয়জন অপেক্ষা করে, পরে নতুন বাকি দেখে ঠিকমতো প্রত্যাখ্যাত হয়।
+    ref: refund-service
+  - q: 'Refund অনুরোধ retry হলে একই refund দুইবার হওয়া কীভাবে আটকানো হয়?'
+    a: 'Idempotency key দিয়ে। একই (payment, key) আবার এলে আগের Refund রেকর্ডটাই ফেরত দেওয়া হয়, নতুন কিছু বানানো হয় না।'
+    more: |
+      `(payment_id, idem_key)`-তে unique constraint রাখলে lock ফসকালেও ডেটাবেস duplicate ঠেকায়। gateway কলেও একই key পাঠাও, যাতে gateway-র দিকেও দ্বিতীয়বার ফেরত না হয়।
+    ref: refund-service
+  - q: 'Authorize, capture আর void কী?'
+    a: 'Authorize: কার্ডে টাকা আটকানো। Capture: আটকানো টাকা আসলে নেওয়া। Void: আটকানো টাকা না নিয়েই ছেড়ে দেওয়া।'
+    more: |
+      অনলাইন কেনায় মাল রওনা দেওয়ার আগে authorize, রওনা দিলে capture। আংশিক চালানে প্রতি চালানে ঠিক সেই অংশের capture হয়, আর যে অংশ আর যাবে না তার void হয়। সব capture আর void মিলে authorization-এর বেশি হতে পারে না।
+    ref: partial-capture-shipment
+  - q: 'Refund fee-র নিয়ম কোডে `if` দিয়ে না লিখে কনফিগে রাখা হয় কেন?'
+    a: 'নিয়ম প্রায়ই বদলায়; কনফিগে রাখলে deploy ছাড়া বদলানো যায়। হিসাব পূর্ণসংখ্যায় (basis point) করলে float-এর ভুলও থাকে না।'
+    more: |
+      Symfony ExpressionLanguage দিয়ে `days > 7` ধরনের শর্ত কনফিগে লেখা যায়, আর প্রথম মিলে যাওয়া নিয়ম প্রযোজ্য হয়। Fee-ও একটা আলাদা রেকর্ড, যাতে মূল অঙ্ক অক্ষত থাকে।
+    ref: hardcoded-fee
+
+quiz:
+  - q: 'রিনা ১২০০ টাকার payment-এর ৩০০ টাকা ফেরত পাবে। কোন নকশাটা সঠিক?'
+    hint: 'ইতিহাস যেন না হারায়, আর gateway-র সাথে যেন মেলে।'
+    options:
+      - text: '`payment.amount`-কে ৯০০ করে দেওয়া'
+        correct: false
+        why: 'আসল অঙ্ক হারিয়ে যায়, gateway-র সাথে মেলে না, কেউ বলতে পারে না ৩০০ কেন গেল।'
+      - text: 'Payment অপরিবর্তিত রেখে ৩০০ টাকার নতুন Refund রেকর্ড বানিয়ে payment-এর সাথে জোড়া'
+        correct: true
+        why: 'ইতিহাস অটুট থাকে, আর বাকি টাকা রেকর্ড যোগ করে বের হয়।'
+      - text: 'Payment মুছে নতুন ৯০০ টাকার payment বানানো'
+        correct: false
+        why: 'মোছা আরও খারাপ: মূল লেনদেনের প্রমাণই হারায়।'
+      - text: 'status কলামে "partially_refunded" লিখে রাখা, আর কিছু নয়'
+        correct: false
+        why: 'কত ফেরত, কখন, কেন — কিছুই থাকে না। status একা যথেষ্ট নয়।'
+    ref: edited-the-amount
+  - q: 'নিচের table অনুযায়ী ফেরতযোগ্য বাকি টাকা কত? P-১: +১২০০, R-১: −৩০০ (P-১), R-২: −২০০ (P-১)।'
+    hint: 'আসল থেকে সব Refund বাদ।'
+    options:
+      - text: '১২০০'
+        correct: false
+        why: 'এটা আসল অঙ্ক; আগের ফেরতগুলো এখানে গোনা হয়নি।'
+      - text: '৯০০'
+        correct: false
+        why: 'শুধু প্রথম ফেরত বাদ দিয়েছ; দ্বিতীয়টাও আছে।'
+      - text: '৭০০'
+        correct: true
+        why: '১২০০ − ৩০০ − ২০০ = ৭০০।'
+      - text: '৫০০'
+        correct: false
+        why: 'ফেরত দুটোর যোগফল ৫০০; সেটা বাকি নয়, ফেরত যাওয়া টাকা।'
+    ref: return-memo
+  - q: 'নিচের কোডে refund-এ কী কী সমস্যা?'
+    lang: php
+    code: |
+      $payment = $em->find(Payment::class, $id);
+      $remaining = $payment->getAmount() - $refunds->totalFor($payment);
+      if ($amount <= $remaining) {
+          $em->persist(new Refund($payment, $amount));
+          $em->flush();
+      }
+    hint: 'দুই কর্মী একসাথে ঢুকলে? আর retry হলে?'
+    options:
+      - text: 'Lock নেই: দুই কর্মী একসাথে একই বাকি টাকা দেখে দুজনেই পাশ করাতে পারে'
+        correct: true
+        why: 'পড়া আর লেখার মাঝে ফাঁক আছে। PESSIMISTIC_WRITE বা unique constraint ছাড়া over-refund সম্ভব।'
+      - text: 'Idempotency key নেই: retry হলে একই ফেরত দুইবার তৈরি হবে'
+        correct: true
+        why: 'প্রতিবার নতুন Refund বানায়, কারণ আগের অনুরোধ চেনার উপায় নেই।'
+      - text: 'Refund নতুন রেকর্ড বানানো ভুল, payment-এর কলাম বদলানোই উচিত'
+        correct: false
+        why: 'নতুন রেকর্ড বানানোটাই ঠিক পথ। সমস্যা lock আর key-র অভাবে।'
+      - text: 'persist করা উচিত নয়, শুধু flush যথেষ্ট'
+        correct: false
+        why: 'নতুন entity মানেই persist লাগবে; এটা সমস্যা নয়।'
+    ref: refund-service
+  - q: 'রিনার ১২০০ টাকার authorization থেকে প্রথম চালানে ৮০০ capture হলো। তৃতীয় জিনিসটা বাতিল হলো। বাকি ৪০০ টাকার জন্য সঠিক রেকর্ড কোনটা?'
+    hint: 'ওই ৪০০ টাকা কি কখনো ক্রেতার কার্ড থেকে নেওয়া হয়েছে?'
+    options:
+      - text: '৪০০ টাকার Refund'
+        correct: false
+        why: 'Refund তখনই, যখন টাকা নেওয়া হয়ে গেছে। এখানে ৪০০ শুধু আটকানো ছিল।'
+      - text: '৪০০ টাকার Void, authorization-এর বিপরীতে'
+        correct: true
+        why: 'আটকানো কিন্তু না-নেওয়া টাকা ছাড়ার নাম void (reversal)।'
+      - text: 'authorization-এর অঙ্ক ৮০০ করে দেওয়া'
+        correct: false
+        why: 'আসল রেকর্ড বদলানো যাবে না। বাকি অংশের জন্য নতুন Void রেকর্ড।'
+      - text: 'কিছুই না করা, মেয়াদ শেষ হলে আপনা-আপনি ছাড়বে'
+        correct: false
+        why: 'মেয়াদোত্তীর্ণ হওয়া পর্যন্ত ক্রেতার টাকা আটকে থাকবে। সরাসরি void-ই ঠিক।'
+    ref: partial-capture-shipment
+  - q: 'কোন কোন ব্যবস্থা fee-র নিয়মকে নিরাপদ ও বদলযোগ্য রাখে?'
+    hint: 'নিয়ম বদলালে কোড আর হিসাব কতটা নাড়াতে হবে?'
+    options:
+      - text: 'নিয়মের তালিকা কনফিগে রাখা, যেমন `days > 7` শর্ত আর bp মান'
+        correct: true
+        why: 'deploy ছাড়া নিয়ম বদলানো যায়।'
+      - text: 'হিসাব পূর্ণসংখ্যায়: `intdiv($amount * $bp, 10_000)`'
+        correct: true
+        why: 'float-এর গোলমাল থাকে না, প্রতিবার একই ফল পাওয়া যায়।'
+      - text: 'Fee বাদ দিয়ে refund-এর মূল অঙ্কটাই কমিয়ে লেখা'
+        correct: false
+        why: 'তাহলে Refund রেকর্ড gateway-র সাথে মিলবে না, আর কত fee কাটা হলো তা হারাবে। fee আলাদা রেকর্ড।'
+      - text: '`$fee = $amount * 0.1` কোডে লিখে রাখা'
+        correct: false
+        why: 'float-এ পয়সার গরমিল হয়, আর নিয়ম বদলাতে কোড বদলাতে হয়।'
+    ref: hardcoded-fee

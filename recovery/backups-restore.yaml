@@ -1,0 +1,373 @@
+slides:
+  - slug: backup-that-never-restored
+    title: 'Backup ছিল, কিন্তু restore হলো না'
+    kind: story
+    tldr: 'Backup কাজ করছে ভাবাটা আর backup restore করে দেখা এক জিনিস নয়; না দেখা backup বিপদের দিনে প্রায়ই খালি বা নষ্ট বেরোয়।'
+    keywords: ['backup', 'restore', 'tested backup', 'disaster', 'ব্যাকআপ', 'রিস্টোর']
+    blocks:
+      - type: text
+        body: |
+          শুক্রবার বিকেল ৩টা ২ মিনিটে এক ডেভেলপার production-এ ভুলে `DELETE FROM orders` চালাল, `WHERE` ছাড়া। দশ মিনিটে ধরা পড়ল। "ভয় নেই, রোজ রাতে backup হয়" — কিন্তু restore করতে গিয়ে দেখা গেল ৩ সপ্তাহ ধরে ডিস্ক ভরা থাকায় backup ফাইলগুলো ০ বাইট। কেউ কখনো ফাইলটা খুলে দেখেনি।
+      - type: visual
+        kind: sequence
+        caption: 'রোজ রাতে backup হতো — তিন সপ্তাহ ধরে খালি'
+        actors:
+          - {id: dev, label: 'ডেভেলপার', icon: user, tip: 'ভুল করেছে, কিন্তু আসল দোষ ব্যবস্থার: production-এ এত সহজে ডেটা মোছা যায়।'}
+          - {id: db, label: 'Production DB', icon: db, tip: 'যা বলা হয় তা-ই করে। ভুল আদেশও।'}
+          - {id: bk, label: 'Backup সার্ভার', icon: archive, tip: 'রোজ রাতে ফাইল রাখে। কিন্তু ফাইল ঠিক আছে কি না কেউ দেখে না।'}
+        messages:
+          - {from: dev, to: db, label: '৩:০২ — DELETE FROM orders (WHERE নেই)'}
+          - {at: db, note: '১২ লাখ অর্ডার উধাও', tone: bad}
+          - {from: dev, to: bk, label: '৩:১২ — গতরাতের backup restore করো'}
+          - {from: bk, to: dev, label: 'ফাইল ০ বাইট — ৩ সপ্তাহ ধরে খালি', dashed: true, tone: bad, tip: 'ডিস্ক ভরা ছিল, backup job চুপচাপ ব্যর্থ হয়েছিল। কেউ alert সাজায়নি।'}
+          - {at: bk, note: 'কেউ কখনো restore করে দেখেনি', tone: warn}
+      - type: quote
+        body: 'যে backup restore করে দেখা হয়নি, সেটা backup নয়, আশা।'
+    aside:
+      - type: story
+        title: 'আসল গল্প, বহুবার'
+        body: |
+          ছোট বড় বহু কোম্পানির ঘটনা এমন: backup job সবুজ দেখাচ্ছিল, কিন্তু ভুল ডিরেক্টরি, ভরা ডিস্ক বা হারানো পাসওয়ার্ডে ফাইল অকেজো। জানা গেছে সেই দিনই, যেদিন লাগে।
+      - type: terms
+        items:
+          - {term: 'RPO', meaning: 'Recovery Point Objective: সর্বোচ্চ কতক্ষণের ডেটা হারানো সহ্য করা যায়।'}
+          - {term: 'RTO', meaning: 'Recovery Time Objective: কত সময়ের মধ্যে আবার চালু হতে হবে।'}
+    check:
+      q: 'Backup job প্রতি রাতে "সফল" বার্তা দিলেও কেন নিশ্চিত হওয়া যায় না যে backup ঠিক আছে?'
+      a: 'job-এর সফলতা মানে শুধু কমান্ড শেষ হয়েছে। ফাইল পূর্ণ, অক্ষত আর restore-যোগ্য কি না তা প্রমাণ হয় কেবল restore করে দেখলে।'
+
+  - slug: three-two-one
+    title: 'দলিলের ফটোকপি: ৩-২-১ নিয়ম'
+    kind: concept
+    tldr: 'ডেটার ৩টা কপি, ২ ধরনের জায়গায়, ১টা অন্য ঠিকানায়। আর replica backup নয়, কারণ ভুল DELETE তাতেও সাথে সাথে পৌঁছায়।'
+    keywords: ['3-2-1 rule', 'offsite', 'immutable backup', 'replica vs backup', 'ransomware', 'ফটোকপি']
+    blocks:
+      - type: metaphor
+        icon: building
+        title: 'জমির দলিল'
+        body: |
+          দলিলের আসল কপি ঘরের সিন্দুকে। সেটা পুড়লে বা চুরি হলে? তাই ফটোকপি ব্যাংকের লকারে, আরেকটা গ্রামের বাড়িতে। ঘরে আগুন লাগলে লকারেরটা বাঁচে, শহরে বন্যা এলে গ্রামেরটা। সব কপি একই সিন্দুকে রাখলে সেটা একটাই কপি।
+      - type: visual
+        kind: flow
+        caption: '৩-২-১: তিনটা কপি, দুই ধরনের জায়গা, একটা দূরে'
+        nodes:
+          - {id: prod, label: 'Production DB', sub: 'কপি ১ (আসল)', icon: db, tone: accent, col: 0, row: 1, tip: 'চালু ডেটাবেস। এটাও গোনা হয়, কিন্তু একা যথেষ্ট নয়।'}
+          - {id: local, label: 'আলাদা ডিস্ক', sub: 'কপি ২ (একই অঞ্চল)', icon: archive, col: 2, row: 0, tip: 'আলাদা মেশিন বা ডিস্কে নিয়মিত backup আর WAL। দ্রুত restore-এর জন্য।'}
+          - {id: remote, label: 'অন্য অঞ্চলের bucket', sub: 'কপি ৩ (offsite)', icon: cloud, tone: good, col: 4, row: 1, tip: 'অন্য শহর বা region-এ object storage। এখানে immutability (মোছা-নিষেধ) চালু রাখো।'}
+        edges:
+          - {from: prod, to: local, label: 'রোজ full-incremental backup আর WAL আলাদা ডিস্কে যায়'}
+          - {from: local, to: remote, label: 'সেই কপি অন্য অঞ্চলের bucket-এ যায়, immutable করে'}
+          - {from: prod, to: remote, label: 'WAL সরাসরিও যায়, যাতে সর্বশেষ মুহূর্ত পর্যন্ত ফেরা যায়', dashed: true}
+      - type: quote
+        body: 'Replica backup নয়। ভুল DELETE আর ransomware replica-তেও সাথে সাথে পৌঁছায়।'
+    aside:
+      - type: problem
+        body: 'একটাই কপি থাকলে আগুন, ডিস্ক ক্ষয়, ভুল আদেশ বা হ্যাকার — যেকোনো একটাতেই সব শেষ।'
+      - type: tips
+        items:
+          - 'Offsite bucket-এ object lock (immutability) চালু করো, যাতে হ্যাকার বা ভুলে মোছা না যায়।'
+          - 'Backup-এর encryption key আলাদা জায়গায় রাখো, নইলে ফাইল থাকলেও খোলা যাবে না।'
+    check:
+      q: 'Primary-র একটা replica আছে। তাহলে আলাদা backup লাগে কেন?'
+      a: 'Replica primary-র সব বদল সাথে সাথে নকল করে, ভুল DELETE-ও। Backup পুরনো একটা মুহূর্তে ফেরার সুযোগ দেয়, replica দেয় না।'
+
+  - slug: point-in-time-recovery
+    title: 'Point-in-time recovery: ভুলের এক মিনিট আগে ফেরা'
+    kind: howto
+    tldr: 'Base backup আর ক্রমাগত archive করা WAL মিলে যেকোনো মুহূর্তে ফেরা যায়; restore হয় নতুন সার্ভারে, চালু DB-র ওপর নয়।'
+    keywords: ['PITR', 'WAL archive', 'pgBackRest', 'recovery target time', 'point in time recovery', 'base backup']
+    blocks:
+      - type: text
+        body: |
+          রাতের backup শুধু রাত ২টার ছবি; ৩টা ২ মিনিটের ভুলের জন্য ১ ঘণ্টার ডেটা হারায়। **PITR** এটা মেটায়: PostgreSQL প্রতিটা লেনদেনের লগ (**WAL**) আলাদা জায়গায় জমায়। Restore-এ আগে রাতের ছবি বসে, তারপর WAL চালিয়ে ঠিক ৩:০১-এ থামা হয়। MySQL-এ একই কাজ করে binary log।
+      - type: code
+        lang: ini
+        file: 'postgresql.conf'
+        variant: good
+        code: |
+          wal_level = replica
+          archive_mode = on
+          archive_command = 'pgbackrest --stanza=main archive-push %p'
+          archive_timeout = 60        # অন্তত প্রতি ৬০ সেকেন্ডে WAL ফাইল পাঠাও
+        marks:
+          - {line: 3, tip: 'প্রতিটা সম্পূর্ণ WAL ফাইল backup repository-তে (আদর্শে offsite) চলে যায়। এটাই "মাঝের সব লেখা"-র সংরক্ষণ।'}
+          - {line: 4, tip: 'WAL ফাইল পূর্ণ না হলেও জোর করে পাঠায়। RPO তাই প্রায় ১ মিনিট।'}
+      - type: code
+        lang: bash
+        file: 'restore (নতুন সার্ভারে)'
+        variant: good
+        code: |
+          # চালু DB-র ওপর কখনো নয়; নতুন বা scratch সার্ভারে
+          sudo systemctl stop postgresql
+          pgbackrest --stanza=main restore \
+            --type=time --target='2026-11-20 15:01:00+06' \
+            --target-action=promote
+          sudo systemctl start postgresql
+
+          psql -c 'SELECT count(*), max(created_at) FROM orders'   # ঠিক আছে কি দেখো
+        marks:
+          - {line: 4, tip: 'ভুলের ঠিক এক মিনিট আগের সময়। সময়ের সাথে timezone (+06) লিখতে ভুলো না।'}
+          - {line: 5, tip: 'লক্ষ্যে পৌঁছে DB চালু (promote) হয়; নইলে read-only অপেক্ষায় থাকে।'}
+          - {line: 8, tip: 'শেষে নিজে গুনে দেখো: অর্ডার ফিরেছে কি না, সর্বশেষ সময় ঠিক কি না। চালু করার আগে এই যাচাই।'}
+    aside:
+      - type: tips
+        items:
+          - 'আগে scratch সার্ভারে PITR করে যাচাই করো, তারপর ঠিক ডেটা production-এ ফেরত নাও। পুরো DB উল্টে দিলে ভুল মুহূর্তের পরের সব বৈধ লেনদেনও হারায়।'
+          - 'pgBackRest ছাড়া নিজের হাতে করলে `restore_command`, `recovery_target_time` আর `recovery.signal` ফাইল লাগে।'
+      - type: pitfalls
+        items:
+          - 'Backup সার্ভারের ঘড়ি আর DB সার্ভারের সময় না মিললে target time ভুল জায়গায় যায়।'
+    check:
+      q: 'রাত ২টার backup থাকতেও PITR লাগে কেন?'
+      a: 'রাতের backup শুধু ২টার অবস্থা ফেরায়, ফলে ভুলের আগ পর্যন্ত ঘণ্টাখানেকের ডেটা হারায়। WAL চালিয়ে ঠিক ভুলের এক মিনিট আগে ফেরা যায়।'
+
+  - slug: restore-drill
+    title: 'Restore drill: নিজে ভেঙে দেখো'
+    kind: howto
+    tldr: 'সপ্তাহে একবার সর্বশেষ backup scratch DB-তে restore করে সময় মাপো আর ডেটা যাচাই করো; ব্যর্থ হলে সাথে সাথে alert।'
+    keywords: ['restore drill', 'backup verification', 'scratch database', 'Symfony Scheduler', 'RTO', 'AsCronTask']
+    blocks:
+      - type: text
+        body: |
+          Backup তখনই বিশ্বাসযোগ্য, যখন সপ্তাহে একবার মেশিন নিজে সেটা restore করে দেখে। এই command সর্বশেষ backup scratch DB-তে ঢালে, কত সময় লাগল মাপে (এটাই আপনার আসল **RTO**), আর কয়েকটা সুস্থতা পরীক্ষা চালায়: অর্ডার সংখ্যা যথেষ্ট কি না, সর্বশেষ ডেটা নতুন কি না।
+      - type: code
+        lang: php
+        file: 'src/Command/BackupVerifyCommand.php'
+        variant: good
+        code: |
+          #[AsCommand(name: 'app:backup:verify', description: 'সর্বশেষ backup restore করে যাচাই')]
+          #[AsCronTask('0 5 * * 0')]
+          final class BackupVerifyCommand extends Command
+          {
+              protected function execute(InputInterface $in, OutputInterface $out): int
+              {
+                  $start = microtime(true);
+                  (new Process(['pg_restore', '--clean', '--if-exists', '--no-owner',
+                      '-d', $this->scratchDsn, $this->latestDump()]))->setTimeout(3600)->mustRun();
+                  $secs = (int) (microtime(true) - $start);
+
+                  $orders = (int) $this->scratch->fetchOne('SELECT count(*) FROM orders');
+                  $raw = $this->scratch->fetchOne('SELECT max(created_at) FROM orders');
+                  $latest = new \DateTimeImmutable($raw);
+                  if ($orders < $this->minOrders || $latest < new \DateTimeImmutable('-26 hours')) {
+                      $out->writeln('<error>restore হলো, কিন্তু ডেটা কম বা পুরনো</error>');
+
+                      return Command::FAILURE;     // alert এখানে থেকেই যায়
+                  }
+                  $out->writeln("restore ঠিক, সময় {$secs}s");   // এটাই আসল RTO
+
+                  return Command::SUCCESS;
+              }
+          }
+        marks:
+          - {line: 2, tip: 'সপ্তাহে একবার রবিবার ভোর ৫টায় নিজে চলে। কারো মনে রাখার দরকার নেই।'}
+          - {line: 9, tip: '`mustRun()` ব্যর্থ হলে exception ওঠে; scheduler ব্যর্থতা লগ করে, তাই alert পাওয়া যায়।'}
+          - {line: 15, tip: 'শুধু "restore হয়েছে" যথেষ্ট নয়। ডেটা পূর্ণ ও সাম্প্রতিক কি না, এই দুটো পরীক্ষা খালি backup ধরে ফেলে।'}
+          - {line: 20, tip: 'মাপা সময়টা চার্টে রাখো। ডেটা বাড়লে restore ধীর হয়, আর RTO নীরবে বেড়ে যায়।'}
+      - type: visual
+        kind: bars
+        caption: 'Restore সময় (মিনিট) ডেটা বাড়ার সাথে কীভাবে বাড়ে'
+        items:
+          - {label: 'গত বছর', value: 20, display: '২০ মিনিট', tone: good, tip: 'ছোট ডেটাবেসে restore দ্রুত ছিল, তাই RTO-র কোনো চিন্তা ছিল না।'}
+          - {label: 'এখন', value: 70, display: '৭০ মিনিট', tone: warn, tip: 'ডেটা বেড়েছে, restore ধীর হয়েছে। কেউ খেয়াল করেনি।'}
+          - {label: 'লক্ষ্য RTO', value: 60, display: '৬০ মিনিট', tone: bad, tip: 'ব্যবসা সর্বোচ্চ এক ঘণ্টা বন্ধ সইবে। এখনকার ৭০ মিনিট তা ছাড়িয়ে গেছে।'}
+    aside:
+      - type: tips
+        items:
+          - 'Drill চলার সময় যে মাপ বেরোয়, সেটাই runbook-এ "আনুমানিক সময়" হিসেবে লেখো।'
+          - 'Scratch DB-তে ব্যক্তিগত ডেটা থাকে; সেটা production-এর মতোই সুরক্ষিত রাখো, কাজ শেষে মুছে দাও।'
+      - type: refs
+        items:
+          - {to: 'resilience/disaster-recovery', label: 'Disaster recovery'}
+    check:
+      q: 'Restore drill-এ "ফাইল restore হয়েছে" ছাড়াও ডেটার কোন দুটো পরীক্ষা জরুরি, আর কেন?'
+      a: 'অর্ডার সংখ্যা যথেষ্ট কি না আর সর্বশেষ ডেটা সাম্প্রতিক কি না। এই দুটোই ধরে খালি বা পুরনো backup, যা restore ঠিকই হয়।'
+
+  - slug: runbook
+    title: 'Runbook: ভয়ের মধ্যে পড়ার মতো কাগজ'
+    kind: howto
+    tldr: 'Runbook হলো ঘুম-চোখে পড়ার উপযোগী ধাপে ধাপে লেখা নির্দেশ: কে কী করবে, কোন কমান্ড, কীভাবে যাচাই। আর প্রতিটা drill-এ তা হালনাগাদ হয়।'
+    keywords: ['runbook', 'incident', 'checklist', 'on-call', 'restore procedure', 'রানবুক']
+    blocks:
+      - type: text
+        body: |
+          রাত ৩টায় বিপদে মাথা কাজ করে না। তখন দরকার একটা কাগজ, যার প্রতিটা ধাপ এত সহজ যে আধা-ঘুমের মানুষও পারে। **Runbook** ঠিক তা-ই: কে ডাকবে, কোন কমান্ড, কী দেখলে বুঝবে ঠিক হয়েছে, কী দেখলে থামবে। বিপদে পরিকল্পনা বানানো নয়, লেখা পরিকল্পনা অনুসরণ করা।
+      - type: code
+        lang: text
+        file: 'runbooks/restore-production-db.md'
+        variant: good
+        code: |
+          RUNBOOK: Production DB restore (PITR)
+          মালিক: ডেটা-টিম · শেষ drill: ২০২৬-১১-১৫ (৭০ মিনিট)
+
+          কখন: ভুল DELETE/UPDATE, ডিস্ক নষ্ট, ransomware সন্দেহ
+
+          ১. incident channel খোলো, incident commander ঠিক করো
+          ২. লেখা বন্ধ: `php bin/console app:maintenance on`
+          ৩. ভুলের সঠিক সময় লিখে রাখো (logs থেকে) → T
+          ৪. নতুন সার্ভারে restore: T-র ১ মিনিট আগের target
+             pgbackrest --stanza=main restore --type=time \
+               --target='T' --target-action=promote
+          ৫. যাচাই: `psql -c 'SELECT count(*), max(created_at) FROM orders'`
+             প্রত্যাশা: অর্ডার সংখ্যা ≈ গতকালের, max(created_at) ≈ T
+          ৬. মোছা ডেটা বের করে production-এ ফেরত নাও
+             (পুরো DB বদলে দিও না; ভুলের পর বৈধ লেনদেন আছে)
+          ৭. maintenance off, ১ ঘণ্টা নজর রাখো, post-mortem লেখো
+
+          থামো যদি: restore ১২০ মিনিট পেরোয় → ডেটা-লিডকে ফোন
+        marks:
+          - {line: 2, tip: 'শেষ drill-এর তারিখ আর সময় লেখা থাকলে বোঝা যায় কাগজ কত পুরনো আর কতক্ষণ লাগবে।'}
+          - {line: 9, tip: 'কমান্ড হুবহু লেখা, কপি-পেস্ট করার মতো। বিপদে কেউ মনে করে টাইপ করে না।'}
+          - {line: 12, tip: 'প্রতিটা ধাপের পাশে "কী দেখলে ঠিক" লেখা। ভুল পথে এগোনো ঠেকায়।'}
+          - {line: 15, tip: 'পুরো DB উল্টে দেওয়া নয়; ভুলের পর আসা বৈধ লেনদেনও হারাবে।'}
+      - type: points
+        title: 'ভালো runbook-এর পাঁচ গুণ'
+        style: check
+        items:
+          - 'প্রতিটা ধাপ ছোট, ক্রমিক আর কপি-পেস্টযোগ্য।'
+          - 'প্রতিটা ধাপের পাশে "কী দেখলে ঠিক" লেখা।'
+          - 'কে মালিক, শেষ কবে drill হয়েছে লেখা।'
+          - 'কখন থামবে আর কাকে ডাকবে, তা স্পষ্ট।'
+          - 'প্রতিটা drill বা ঘটনার পর হালনাগাদ হয়।'
+      - type: quote
+        body: 'রাত ৩টায় পরিকল্পনা বানানো যায় না। লেখা পরিকল্পনা অনুসরণ করা যায়।'
+    aside:
+      - type: refs
+        items:
+          - {to: 'observability/incident-response', label: 'Incident response'}
+          - {to: 'recovery/corrective-actions', label: 'ভুল ডেটা শুধরানো'}
+      - type: remember
+        body: 'Runbook পুরনো হলে ভুল। প্রতিটা drill-এ পড়ো, পুরনো ধাপ বদলাও।'
+    check:
+      q: 'Runbook-এ "ধাপের পাশে কী দেখলে ঠিক" লেখা কেন জরুরি?'
+      a: 'ভয়ের মধ্যে ধাপ ভুল হলেও টের পাওয়া যায় না। প্রত্যাশিত ফল লেখা থাকলে সাথে সাথে বোঝা যায় ঠিক পথে আছি কি না।'
+
+flashcards:
+  - q: 'Backup restore করে না দেখলে ঠিক কী ঝুঁকি?'
+    a: 'বিপদের দিনে জানা যেতে পারে ফাইল খালি, নষ্ট বা key ছাড়া অকেজো। job "সফল" বললেও restore-যোগ্য কি না জানা যায় না।'
+    more: |
+      Job সফল মানে শুধু কমান্ড শেষ হয়েছে। ভরা ডিস্ক, ভুল ডিরেক্টরি বা হারানো key-তে ফাইল অকেজো হয়ে যায়। একমাত্র restore করে ডেটা যাচাই করলেই প্রমাণ মেলে।
+    ref: backup-that-never-restored
+  - q: 'RPO আর RTO কী?'
+    a: 'RPO: সর্বোচ্চ কতক্ষণের ডেটা হারানো সহ্য। RTO: কত সময়ের মধ্যে আবার চালু হতে হবে।'
+    more: |
+      RPO ১ মিনিট মানে প্রায় সব ডেটা বাঁচাতে হবে (PITR লাগবে)। RTO ১ ঘণ্টা মানে restore ১ ঘণ্টার মধ্যে শেষ হতে হবে। এই দুই সংখ্যা ব্যবসা ঠিক করে, তারপর backup নকশা সেটা মেটায়।
+    ref: backup-that-never-restored
+  - q: 'Backup-এর ৩-২-১ নিয়ম কী?'
+    a: 'ডেটার ৩টা কপি, ২ ধরনের জায়গায়, তার ১টা অন্য ঠিকানায় (offsite)।'
+    more: |
+      একই সিন্দুকের তিনটা কপি আসলে একটাই কপি। আগুন, বন্যা বা হ্যাকার সব একসাথে শেষ করে দেয়। আলাদা জায়গার সাথে immutability (মোছা-নিষেধ) যোগ করলে ransomware থেকেও বাঁচা যায়।
+    ref: three-two-one
+  - q: 'Replica কি backup-এর বিকল্প?'
+    a: 'না। Replica সব বদল সাথে সাথে নকল করে, ভুল DELETE আর ransomware-ও।'
+    more: |
+      Replica চালু থাকার জন্য (availability), আগের মুহূর্তে ফেরার জন্য নয়। আগের মুহূর্তে ফিরতে লাগে backup আর WAL।
+    ref: three-two-one
+  - q: 'Point-in-time recovery (PITR) কীভাবে কাজ করে?'
+    a: 'Base backup বসানো হয়, তারপর archive করা WAL লগ চালিয়ে নির্বাচিত মুহূর্তে (যেমন ভুলের ১ মিনিট আগে) থামা হয়।'
+    more: |
+      রাতের backup শুধু একটা ছবি; WAL মাঝের প্রতিটা লেনদেন জমা রাখে। দুটো মিলে যেকোনো মুহূর্তে ফেরা যায়। `archive_timeout` ছোট রাখলে RPO কয়েক সেকেন্ড-মিনিটে নামে।
+    ref: point-in-time-recovery
+  - q: 'PITR restore কেন নতুন বা scratch সার্ভারে করা হয়?'
+    a: 'চালু DB-র ওপর restore করলে বর্তমান সব ডেটা মুছে যায়। আলাদা সার্ভারে করলে যাচাই করে শুধু দরকারি ডেটা ফেরত আনা যায়।'
+    more: |
+      ভুলের পরে আসা বৈধ লেনদেনও থাকে। পুরো DB উল্টে দিলে সেগুলো হারায়। তাই আগে আলাদা জায়গায় ফিরে, মোছা ডেটা বের করে production-এ বসানো নিরাপদ।
+    ref: point-in-time-recovery
+  - q: 'Restore drill কী, আর কতবার চালানো উচিত?'
+    a: 'সর্বশেষ backup scratch DB-তে ঢেলে সময় মাপা আর ডেটা যাচাই করা। অন্তত সপ্তাহে একবার, স্বয়ংক্রিয়ভাবে।'
+    more: |
+      Drill-এ মাপা সময়টাই আপনার আসল RTO। ডেটা বাড়লে restore ধীর হয় আর RTO নীরবে বাড়ে। নিয়মিত মাপলে তা ধরা পড়ে।
+    ref: restore-drill
+  - q: 'Runbook কী, আর ভালো runbook-এর বৈশিষ্ট্য কী?'
+    a: 'বিপদে অনুসরণের লেখা নির্দেশ: ছোট ক্রমিক ধাপ, কপি-পেস্ট কমান্ড, প্রত্যাশিত ফল, কখন থামবে, আর মালিক।'
+    more: |
+      রাত ৩টায় কেউ পরিকল্পনা বানাতে পারে না; অনুসরণ করতে পারে। প্রতিটা drill বা ঘটনার পর runbook হালনাগাদ না হলে কয়েক মাসে সেটা ভুল হয়ে যায়।
+    ref: runbook
+
+quiz:
+  - q: 'রাত ২টার backup আছে, WAL archive নেই। ৩:০২-এ ভুল DELETE হলো। সর্বোচ্চ কী ফেরানো যাবে?'
+    hint: 'ঐ ২টা থেকে ৩:০২ পর্যন্ত কোন লেনদেন কোথাও লেখা নেই।'
+    options:
+      - text: 'রাত ২টার অবস্থা; তারপরের প্রায় ১ ঘণ্টার ডেটা হারাবে'
+        correct: true
+        why: 'WAL ছাড়া শুধু backup-এর মুহূর্ত পর্যন্তই ফেরা যায়; মাঝের লেখাগুলো কোথাও জমা নেই।'
+      - text: 'ঠিক ৩:০১-এর অবস্থা'
+        correct: false
+        why: 'এর জন্য WAL archive লাগে, যা এখানে নেই।'
+      - text: 'কিছুই না, DELETE পূর্বাবস্থায় ফেরানো যায় না'
+        correct: false
+        why: 'রাত ২টার backup থেকে অন্তত সেই মুহূর্ত পর্যন্ত ফেরা যায়।'
+      - text: 'Replica থেকে মোছা অর্ডার ফেরত আনা যাবে'
+        correct: false
+        why: 'Replica-তেও DELETE সাথে সাথে পৌঁছেছে।'
+    ref: point-in-time-recovery
+  - q: 'কোনগুলো ৩-২-১ নিয়মের অংশ?'
+    hint: 'সংখ্যা তিনটার প্রতিটার মানে ভাবো।'
+    options:
+      - text: 'মোট তিনটা কপি (আসলসহ)'
+        correct: true
+        why: 'একটা আসল আর দুটো backup কপি, যাতে একটা হারালেও বাকি থাকে।'
+      - text: 'দুই ধরনের মাধ্যম বা জায়গা (যেমন ডিস্ক ও object storage)'
+        correct: true
+        why: 'এক ধরনের ব্যর্থতায় সব কপি যেন একসাথে না যায়।'
+      - text: 'একটা কপি অন্য ঠিকানায় বা অঞ্চলে'
+        correct: true
+        why: 'আগুন, বন্যা বা পুরো region নষ্ট হলে সেটা বাঁচে।'
+      - text: 'তিনটা কপিই একই সার্ভারের তিন ডিরেক্টরিতে'
+        correct: false
+        why: 'সার্ভার নষ্ট হলে তিনটাই যায়, এটা আসলে একটা কপি।'
+    ref: three-two-one
+  - q: 'নিচের restore কমান্ডে কী ভুল?'
+    lang: bash
+    code: |
+      # production সার্ভারে, DB চালু অবস্থায়
+      pgbackrest --stanza=main restore \
+        --type=time --target='2026-11-20 15:01:00' \
+        --target-action=promote
+    hint: 'কোন সার্ভারে, আর সময়ের সাথে কী লেখা হয়নি?'
+    options:
+      - text: 'চালু production DB-র ওপর restore, আর target time-এ timezone নেই'
+        correct: true
+        why: 'চালু DB-র ওপর restore বর্তমান সব ডেটা মুছে দেয়; আর timezone ছাড়া সময় ভুল মুহূর্তে যেতে পারে।'
+      - text: '`--target-action=promote` ব্যবহার করা ভুল'
+        correct: false
+        why: 'promote ঠিক; লক্ষ্যে পৌঁছে DB চালু করে।'
+      - text: 'pgBackRest PITR সমর্থন করে না'
+        correct: false
+        why: 'সমর্থন করে; `--type=time` ঠিক এই কাজেই।'
+      - text: 'কোনো ভুল নেই'
+        correct: false
+        why: 'ভুল আছে: চালু DB আর timezone।'
+    ref: point-in-time-recovery
+  - q: 'Weekly restore drill সফল হলো, কিন্তু restore-এ ১১০ মিনিট লাগল। ব্যবসার RTO ৬০ মিনিট। কী করা উচিত?'
+    hint: 'drill-এর আসল ফল কী?'
+    options:
+      - text: 'সময়ের ফাঁকটাকে সমস্যা ধরে restore দ্রুত করার উপায় খোঁজা (incremental backup, দ্রুত ডিস্ক, ছোট DB ভাগ)'
+        correct: true
+        why: 'drill-এর মূল্য এটাই: বিপদের আগে জানা যে লক্ষ্য মিলছে না।'
+      - text: '"restore হয়েছে", তাই সব ঠিক'
+        correct: false
+        why: 'RTO লক্ষ্য মেলেনি। ঘটনার দিন ব্যবসা ১১০ মিনিট বন্ধ থাকবে।'
+      - text: 'RTO-র সংখ্যাটা ১২০ মিনিট করে কাগজে বদলে দেওয়া'
+        correct: false
+        why: 'ব্যবসার প্রয়োজন কাগজে বদলায় না; ব্যবস্থাই বদলাতে হয়।'
+      - text: 'drill বন্ধ করে দেওয়া, যাতে খারাপ সংখ্যা না আসে'
+        correct: false
+        why: 'সংখ্যা লুকালে বিপদের দিনই প্রথম জানা যায়।'
+    ref: restore-drill
+  - q: 'Runbook-এর কোন লক্ষণগুলো বিপজ্জনক?'
+    hint: 'রাত ৩টায় আধা-ঘুমে একজন সেটা পড়ছে।'
+    options:
+      - text: 'শেষ drill-এর তারিখ ছয় মাস আগের, আর কমান্ডের নাম বদলে গেছে'
+        correct: true
+        why: 'পুরনো runbook ভুল কমান্ড চালাতে বলে, আর সময়ও অনুমান ভুল।'
+      - text: 'ধাপগুলো লম্বা অনুচ্ছেদে, কোনো কমান্ড নেই, "ঠিকমতো restore করুন"'
+        correct: true
+        why: 'ভয়ের মধ্যে অস্পষ্ট নির্দেশ অনুসরণ করা যায় না।'
+      - text: 'কখন থেমে কাকে ডাকতে হবে, তা লেখা নেই'
+        correct: true
+        why: 'আটকে গেলে কী করবে জানা না থাকলে সময় নষ্ট হয়।'
+      - text: 'প্রতিটা ধাপের পাশে প্রত্যাশিত ফল লেখা'
+        correct: false
+        why: 'এটা ভালো গুণ; ভুল পথে এগোনো ঠেকায়।'
+    ref: runbook

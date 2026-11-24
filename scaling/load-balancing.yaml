@@ -1,0 +1,390 @@
+slides:
+  - slug: single-point-of-failure
+    title: 'একটা বাক্স মরলে সবাই মরে'
+    kind: story
+    tldr: 'Single point of failure (SPOF) মানে এমন একটা অংশ, যা মরলে পুরো সিস্টেম বন্ধ। অ্যাপ সার্ভার দুটো করলেই হয় না — load balancer নিজেও একটা SPOF হতে পারে।'
+    keywords: ['SPOF', 'single point of failure', 'high availability', 'redundancy', 'keepalived', 'নির্ভরযোগ্যতা']
+    blocks:
+      - type: metaphor
+        icon: ticket
+        title: 'বাসস্ট্যান্ডের একটাই টিকিট কাউন্টার'
+        body: |
+          স্ট্যান্ডে বাস আছে ১০টা, কিন্তু টিকিট কাটার কাউন্টার একটাই। কাউন্টারের লোক চা খেতে গেলে বা অসুস্থ হলে বাস থাকা সত্ত্বেও কেউ টিকিট পায় না। বাসগুলো ছিল তোমার app সার্ভার, কাউন্টারটা load balancer। শুধু বাস বাড়ালে সমস্যা মেটে না।
+      - type: visual
+        kind: table
+        caption: 'রাতুলের শপের প্রতিটা অংশ মরলে কী হয়'
+        headers: ['অংশ', 'কয়টা আছে', 'মরলে কী হয়']
+        rows:
+          - cells: ['App সার্ভার', '২টা', 'বাকিটা চালায়, ধীর হয়']
+            tip: 'অনেকগুলো কপি আছে বলে একটা মরলে অন্যটা কাজ চালায়। এটাই redundancy।'
+          - cells: ['Load balancer (nginx)', '১টা', 'পুরো সাইট বন্ধ']
+            tip: 'সব request এর ভেতর দিয়ে যায়, অথচ কপি মাত্র একটা। এটাই সবচেয়ে বড় ভুল।'
+          - cells: ['ডেটাবেস primary', '১টা', 'লেখা বন্ধ, সাইট আধমরা']
+            tip: 'replica থাকলেও primary মরলে নতুন primary বানানো পর্যন্ত লেখা চলে না। failover লাগবে।'
+          - cells: ['একটাই data center', '১টা', 'বিদ্যুৎ গেলে সবই বন্ধ']
+            tip: 'সার্ভার, LB, ডেটাবেস সব এক জায়গায় থাকলে এক ঘটনাতেই সব যায়। multiple availability zone লাগে।'
+      - type: quote
+        body: 'প্রতিটা বাক্সকে জিজ্ঞেস করো: তুমি মরলে কী হবে? উত্তর "সবাই বন্ধ" হলে সেটাই SPOF।'
+    aside:
+      - type: story
+        title: 'দুই সার্ভার, তবু ডাউন'
+        body: 'একটা ছোট অনলাইন দোকান ভাবল দুই app সার্ভার বসালেই নিরাপদ। এক রাতে একমাত্র nginx সার্ভারের ডিস্ক ভরে গেল। দুটো app সার্ভার সুস্থ থাকা সত্ত্বেও সাইট ৪০ মিনিট বন্ধ ছিল।'
+      - type: tips
+        items:
+          - 'LB-কে দুটো করো। একটা মরলে অন্যটা একই IP নিয়ে নেয় (keepalived/VRRP), অথবা cloud-এর managed LB ব্যবহার করো।'
+          - 'নতুন সিস্টেম আঁকার সময় প্রতিটা বাক্সের পাশে "কয়টা কপি?" লিখে ফেলো।'
+      - type: refs
+        items:
+          - {to: 'resilience/disaster-recovery', label: 'Multi-region ও failover'}
+    check:
+      q: 'দুটো app সার্ভার আর একটা nginx থাকলে SPOF কোনটা, কীভাবে সরাবে?'
+      a: 'nginx। সেটাকেও দুটো করতে হবে — keepalived-এর মতো floating IP দিয়ে, অথবা cloud-এর managed load balancer দিয়ে, যেটা নিজেই একাধিক জায়গায় চলে।'
+
+  - slug: balancing-algorithms
+    title: 'ভিড় ভাগ করার তিন নিয়ম'
+    kind: concept
+    tldr: 'Round robin পালা করে দেয়, least connections যার কাজ কম তাকে দেয়, weighted বড় মেশিনকে বেশি দেয়। কোনটা ভালো, তা নির্ভর করে request কত অসম।'
+    keywords: ['round robin', 'least connections', 'weighted', 'load balancing algorithm', 'লোড ব্যালান্সিং']
+    blocks:
+      - type: metaphor
+        icon: users
+        title: 'বিয়েবাড়ির ওয়েটারদের মধ্যে অতিথি ভাগ'
+        body: |
+          ম্যানেজার নতুন অতিথি এলে কোন ওয়েটারের টেবিলে বসাবেন? **Round robin**: ১, ২, ৩ করে পালা করে। **Least connections**: যার হাতে এখন সবচেয়ে কম টেবিল, তার কাছে। **Weighted**: সবচেয়ে অভিজ্ঞ ওয়েটারকে তিন টেবিল, নতুনকে এক টেবিল। সব টেবিল এক রকম হলে পালা করাই যথেষ্ট; কিছু টেবিল সারা রাত বসে থাকলে হিসাব রাখতে হয়।
+      - type: visual
+        kind: table
+        caption: 'তিন নিয়মের তুলনা'
+        headers: ['নিয়ম', 'কীভাবে বাছে', 'ভালো যখন', 'খারাপ যখন']
+        rows:
+          - cells: ['Round robin', 'পালা করে এক এক করে', 'request সব প্রায় সমান', 'কিছু request অনেক লম্বা']
+            tip: 'সবচেয়ে সরল ও ডিফল্ট। request গোনে, কিন্তু কে কত ভারী কাজ পেল তা দেখে না।'
+          - cells: ['Least connections', 'এই মুহূর্তে কম ব্যস্তকে', 'request-এর সময় অসম (আপলোড, report)', 'request অতি ক্ষুদ্র হলে হিসাবের খরচই বেশি']
+            tip: 'চলমান connection গোনে, তাই ধীর সার্ভারে আপনা-আপনি কম request যায়।'
+          - cells: ['Weighted', 'ক্ষমতা অনুযায়ী ভাগে', 'সার্ভার সমান নয় (পুরনো ২ core, নতুন ৮ core)', 'ওজন ভুল বসালে একজন ডুবে যায়']
+            tip: 'weight আসলে ক্ষমতার অনুপাত। কেউ round robin বা least connections-এর সাথে এটা জুড়েও ব্যবহার করে।'
+      - type: points
+        title: 'বাছাইয়ের সহজ নিয়ম'
+        style: check
+        items:
+          - 'কোনো কারণ না থাকলে round robin দিয়ে শুরু করো।'
+          - 'কিছু request সেকেন্ড ধরে চলে (আপলোড, export)? least connections নাও।'
+          - 'সার্ভার অসমান? weight বসাও।'
+    aside:
+      - type: remember
+        body: 'সমান কাজে পালা, অসমান কাজে কম-ব্যস্ত, অসমান মেশিনে ওজন।'
+      - type: terms
+        items:
+          - {term: 'Upstream', meaning: 'nginx-এর পেছনের যে সার্ভারগুলোতে request পাঠানো হয়।'}
+          - {term: 'Weight', meaning: 'কোন সার্ভার অন্যের তুলনায় কতগুণ বেশি request পাবে।'}
+    check:
+      q: 'কিছু request ২০ সেকেন্ড ধরে চলে, বাকিগুলো ১০ms-এ শেষ। কোন নিয়মে একটা সার্ভার জমে যাওয়া কম হবে, কেন?'
+      a: 'Least connections। round robin ধীর request-ওয়ালা সার্ভারেও সমান সংখ্যা দিয়ে যায়, আর least connections ব্যস্ত সার্ভারকে এড়িয়ে ফাঁকা সার্ভারে পাঠায়।'
+
+  - slug: nginx-upstream
+    title: 'nginx upstream আর health check'
+    kind: howto
+    tldr: 'nginx upstream-এ নিয়ম, ওজন, ব্যর্থতার সীমা আর backup সার্ভার লেখো। অ্যাপে একটা সস্তা /healthz বসাও, যা LB-কে বলে এই সার্ভার request নিতে পারবে কি না।'
+    keywords: ['nginx upstream', 'least_conn', 'max_fails', 'health check', 'healthz', 'drain', 'backup server']
+    blocks:
+      - type: text
+        body: |
+          পাঁচ লাইনের কনফিগেই load balancer দাঁড়িয়ে যায়। এখানে `max_fails` আর `fail_timeout` হলো **passive health check**: সত্যিকারের request ব্যর্থ হলে nginx সার্ভারটাকে কিছুক্ষণ বাদ দেয়। আগে থেকে সার্ভারে খোঁচা মেরে দেখা, মানে **active health check**, nginx-এর বিনামূল্যের সংস্করণে নেই; সেটা HAProxy, nginx Plus বা cloud LB-তে পাবে।
+      - type: code
+        lang: nginx
+        file: '/etc/nginx/conf.d/shop.conf'
+        variant: good
+        code: |
+          upstream shop_app {
+              least_conn;                       # যার কাজ কম, তাকে দাও
+              server 10.0.1.11:8080 weight=3 max_fails=3 fail_timeout=10s;
+              server 10.0.1.12:8080 weight=3 max_fails=3 fail_timeout=10s;
+              server 10.0.1.13:8080 weight=1 max_fails=3 fail_timeout=10s;  # পুরনো, ছোট
+              server 10.0.1.20:8080 backup;     # সবাই মরলে তবেই
+              keepalive 32;
+          }
+
+          server {
+              listen 80;
+              location / {
+                  proxy_pass http://shop_app;
+                  proxy_http_version 1.1;
+                  proxy_set_header Connection '';
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_next_upstream error timeout http_502 http_503;
+                  proxy_next_upstream_tries 2;
+              }
+          }
+        marks:
+          - {line: 3, tip: '৩ বার ব্যর্থ হলে সার্ভারটা ১০ সেকেন্ড বাদ। weight=3 মানে সেটা ছোট সার্ভারের তিনগুণ request পায়।'}
+          - {line: 6, tip: 'backup সার্ভার সাধারণ সময়ে request পায় না; বাকিরা সবাই মরলে তবেই কাজে নামে।'}
+          - {line: 18, tip: 'একটা সার্ভার ব্যর্থ হলে nginx একই request আরেকটাতে চেষ্টা করে। ডিফল্টে POST-এ এটা করে না, যাতে অর্ডার দুইবার না হয়।'}
+      - type: code
+        lang: php
+        file: 'src/Controller/HealthController.php'
+        variant: good
+        code: |
+          final class HealthController
+          {
+              public function __construct(
+                  #[Autowire('%kernel.project_dir%/var/drain')] private readonly string $drainFile,
+              ) {
+              }
+
+              #[Route('/healthz', methods: ['GET'])]
+              public function __invoke(): JsonResponse
+              {
+                  // deploy-এর সময় `touch var/drain` করলে LB এই সার্ভারকে আর request দেয় না
+                  if (is_file($this->drainFile)) {
+                      return new JsonResponse(['status' => 'draining'], 503);
+                  }
+
+                  return new JsonResponse(['status' => 'ok']);   // ডেটাবেস পরীক্ষা ইচ্ছা করেই নেই
+              }
+          }
+        marks:
+          - {line: 12, tip: 'drain ফাইল থাকলে ৫০৩ ফেরে, ফলে LB নতুন request পাঠানো বন্ধ করে। চলমান request শেষ হওয়ার সুযোগ পায়।'}
+          - {line: 16, tip: 'ডেটাবেসে একটু ঝামেলা হলে সব সার্ভারের এই check একসাথে ব্যর্থ হতো, আর LB সবাইকে বাদ দিত — তখন সামান্য সমস্যা পুরো outage।'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'Health check-এ ডেটাবেস বা বাইরের API ডাকলে সেটা ধীর হওয়ামাত্র সব সার্ভার একসাথে "অসুস্থ" হয়ে পুরো সাইট বন্ধ হয়।'
+          - 'Symfony-র পেছনে proxy থাকলে `framework.trusted_proxies` সেট করো, নইলে ব্যবহারকারীর IP সবসময় LB-র IP দেখাবে।'
+      - type: refs
+        items:
+          - {to: 'observability/health-alerts', label: 'Liveness, readiness ও deep check'}
+          - {to: 'resilience/zero-downtime-deploys', label: 'Deploy-এর সময় সার্ভার drain'}
+    check:
+      q: 'nginx-এ max_fails=3 fail_timeout=10s মানে কী?'
+      a: 'প্রকৃত request ১০ সেকেন্ডের মধ্যে ৩ বার ব্যর্থ হলে সার্ভারটাকে পরবর্তী ১০ সেকেন্ড বাদ রাখা হয়। এরপর আবার একটু চেষ্টা করে দেখা হয়।'
+
+  - slug: l4-vs-l7
+    title: 'L4 বনাম L7: খামের ঠিকানা, না ভেতরের চিঠি?'
+    kind: compare
+    tldr: 'L4 load balancer শুধু IP আর port দেখে TCP পাঠায়, দ্রুত আর সব protocol-এ চলে। L7 HTTP পড়ে, তাই path, header আর cookie দিয়ে বুদ্ধিমান সিদ্ধান্ত নিতে পারে।'
+    keywords: ['L4', 'L7', 'layer 4', 'layer 7', 'TLS termination', 'path routing', 'HAProxy', 'nginx stream']
+    blocks:
+      - type: metaphor
+        icon: mail
+        title: 'ডাকঘরের দুই রকম কর্মী'
+        body: |
+          এক কর্মী শুধু খামের ঠিকানা দেখে বস্তায় ফেলেন — ভেতরে কী আছে জানেন না, তাই খুব দ্রুত। অন্যজন চিঠি খুলে পড়েন, তারপর "জরুরি" হলে আলাদা বস্তায় রাখেন — বেশি কাজ, কিন্তু বুদ্ধিমান। প্রথমজন **L4**, দ্বিতীয়জন **L7**।
+      - type: visual
+        kind: compare
+        caption: 'কোন স্তরে ভিড় ভাগ হচ্ছে'
+        columns:
+          - title: 'L4 (TCP)'
+            tone: muted
+            icon: lb
+            tip: 'শুধু IP আর port দেখে connection এগিয়ে দেয়। ভেতরের বার্তা পড়ে না বলে অতি দ্রুত।'
+            items:
+              - 'যেকোনো TCP: PostgreSQL, Redis, MQTT'
+              - 'অতি দ্রুত, কম CPU'
+              - 'path বা cookie বোঝে না'
+              - 'TLS সাধারণত পেছনের সার্ভারেই খোলে'
+          - title: 'L7 (HTTP)'
+            tone: accent
+            icon: api
+            tip: 'HTTP খুলে পড়ে, তাই পথ, header আর cookie দেখে সিদ্ধান্ত নিতে পারে। তবে বেশি CPU লাগে।'
+            items:
+              - '/api এক দলে, /images অন্য দলে'
+              - 'TLS এখানেই খুলে নেয় (termination)'
+              - 'retry, rate limit, header যোগ'
+              - 'শুধু HTTP/gRPC-র জন্য'
+      - type: code
+        lang: nginx
+        file: 'nginx.conf'
+        code: |
+          # L7: path দেখে আলাদা দলে
+          location /api/    { proxy_pass http://shop_api; }
+          location /images/ { proxy_pass http://image_cache; }
+
+          # L4: শুধু TCP, ভেতরে কী আছে দেখে না
+          stream {
+              upstream pg_replicas { server 10.0.2.11:5432; server 10.0.2.12:5432; }
+              server { listen 5433; proxy_pass pg_replicas; }
+          }
+        marks:
+          - {line: 2, tip: 'nginx HTTP request-এর URL পড়ে বলে /api আর /images আলাদা সার্ভারে যেতে পারে।'}
+          - {line: 6, tip: 'stream block-এ nginx শুধু বাইটের পাইপ — ডেটাবেসের protocol বোঝে না। তাই replica-র মধ্যে read ভাগ হতে পারে।'}
+    aside:
+      - type: when
+        use:
+          - 'L7: ওয়েব অ্যাপ, API, path বা host ধরে রাউটিং, TLS এক জায়গায়'
+          - 'L4: ডেটাবেস, Redis, গেম বা অন্য non-HTTP protocol'
+        avoid:
+          - 'L7: যে protocol HTTP নয়, সেখানে'
+          - 'L4: যখন path বা cookie দেখে ভাগ করতে হবে'
+      - type: terms
+        items:
+          - {term: 'TLS termination', meaning: 'HTTPS-এর এনক্রিপশন load balancer-এ খুলে নেওয়া; পেছনে সার্ভারগুলো সাধারণ HTTP পায়।'}
+    check:
+      q: 'এক ডোমেইনে /api চলবে ৩টা সার্ভারে, /admin চলবে আলাদা ১টায়। L4 না L7?'
+      a: 'L7। পথ (path) দেখতে হলে HTTP request খুলে পড়তে হয়, আর L4 শুধু IP আর port দেখে।'
+
+  - slug: sticky-sessions-trap
+    title: 'Sticky session: সাময়িক আরাম, স্থায়ী ঝামেলা'
+    kind: pitfall
+    tldr: 'Sticky session একই ব্যবহারকারীকে সবসময় একই সার্ভারে পাঠায়। এতে ভিড় অসমান হয় আর সার্ভার মরলে session হারায়। আসল সমাধান session-কে সার্ভারের বাইরে রাখা।'
+    keywords: ['sticky session', 'session affinity', 'ip_hash', 'NAT', 'cookie affinity', 'স্টিকি']
+    blocks:
+      - type: metaphor
+        icon: ticket
+        title: 'সবসময় একই ওয়েটার'
+        body: |
+          একটা পরিবার এলে ম্যানেজার বললেন, "এরা সবসময় রহিমের টেবিলেই বসবে।" কারণ শুধু রহিমের খাতায় তাদের অর্ডার লেখা। এক বড় অফিসের ৫০০ জন একসাথে এলে সবাই রহিমের ঘাড়ে, বাকিরা ফাঁকা। রহিম অসুস্থ হলে অর্ডারের খাতাও হারাল।
+      - type: code
+        lang: nginx
+        file: 'upstream — ip_hash'
+        variant: bad
+        code: |
+          upstream shop_app {
+              ip_hash;                  # একই IP সবসময় একই সার্ভারে
+              server 10.0.1.11:8080;
+              server 10.0.1.12:8080;
+              server 10.0.1.13:8080;
+          }
+        marks:
+          - {line: 2, tip: 'অফিস বা মোবাইল ক্যারিয়ারের NAT-এর পেছনে হাজার ব্যবহারকারী একই IP নিয়ে আসে। সবাই একই সার্ভারে পড়ে।'}
+      - type: visual
+        kind: bars
+        caption: 'ip_hash চালানোর পর তিন সার্ভারের চলমান connection (একই মুহূর্তে)'
+        items:
+          - {label: 'সার্ভার ১ (অফিস NAT)', value: 520, display: '520', tone: bad, tip: 'একটা কোম্পানির ৫০০ জন এক IP থেকে আসে, সবাই এই এক সার্ভারে আটকে।'}
+          - {label: 'সার্ভার ২', value: 90, display: '90', tone: muted, tip: 'প্রায় ফাঁকা। ক্ষমতা অপচয় হচ্ছে।'}
+          - {label: 'সার্ভার ৩', value: 85, display: '85', tone: muted, tip: 'এটাও প্রায় ফাঁকা, অথচ সার্ভার ১ ভেঙে পড়ার মুখে।'}
+      - type: quote
+        body: 'Sticky session লক্ষণ চাপা দেয়, রোগ সারায় না। রোগ হলো সার্ভারের ভেতরে জমানো state।'
+    aside:
+      - type: pitfalls
+        items:
+          - 'সার্ভার মরলে বা deploy হলে ওই সার্ভারের সব ব্যবহারকারী session হারায়।'
+          - 'autoscaling-এ নতুন সার্ভার যোগ হলেও পুরনো ব্যবহারকারীরা পুরনো সার্ভারেই আটকে থাকে, তাই নতুন সার্ভার প্রায় বেকার।'
+      - type: tips
+        items:
+          - 'এখনই state সরাতে না পারলে ইচ্ছাকৃতভাবে, সাময়িক হিসেবে cookie-ভিত্তিক stickiness রাখো — ip_hash নয়। সঙ্গে session সরানোর কাজ ধরো।'
+      - type: refs
+        items:
+          - {to: 'scaling/horizontal-vertical', label: 'Session Redis-এ সরানোর পদ্ধতি'}
+    check:
+      q: 'ip_hash দিয়ে sticky করলে কেন একটা সার্ভার অতিরিক্ত বোঝা পেতে পারে?'
+      a: 'অফিস বা ক্যারিয়ারের NAT-এর পেছনের অনেক ব্যবহারকারী একই IP নিয়ে আসে, আর ip_hash সেই IP-কে সবসময় একই সার্ভারে পাঠায়।'
+
+flashcards:
+  - q: 'Single point of failure (SPOF) কী?'
+    a: 'এমন একটা অংশ, যা মরলে পুরো সিস্টেম বন্ধ হয়ে যায় — কারণ তার কোনো বিকল্প কপি নেই।'
+    more: |
+      অনেক সময় app সার্ভার বাড়িয়ে ভাবা হয় সব নিরাপদ, কিন্তু একমাত্র load balancer, একমাত্র ডেটাবেস primary বা একটাই data center SPOF থেকে যায়। প্রতিটা অংশকে জিজ্ঞেস করো "তুমি মরলে কী হবে?" আর যার উত্তর "সব বন্ধ", তার দ্বিতীয় কপি বসাও।
+    ref: single-point-of-failure
+  - q: 'Load balancer নিজে SPOF হলে কীভাবে ঠেকাবে?'
+    a: 'দুটো LB রাখো, একটা মরলে অন্যটা একই IP নেয় (keepalived/VRRP), অথবা cloud-এর managed load balancer ব্যবহার করো।'
+    more: |
+      Active-passive জোড়ায় একটা LB কাজ করে, অন্যটা পাহারা দেয়। প্রধানটা সাড়া না দিলে দ্বিতীয়টা floating IP টেনে নেয়। Cloud-এর managed LB ভেতরে একাধিক জায়গায় চলে, তাই সেটা সাধারণত সহজ পথ।
+    ref: single-point-of-failure
+  - q: 'Round robin, least connections ও weighted — কোনটা কখন?'
+    a: 'Round robin পালা করে দেয়, তাই লম্বা request-এ জমে। Least connections অসম সময়ের request-এ ভালো, weighted অসমান সার্ভারে।'
+    more: |
+      সব request প্রায় সমান ছোট হলে round robin সবচেয়ে সরল আর যথেষ্ট ভালো। আপলোড বা report export-এর মতো কিছু request সেকেন্ডের পর সেকেন্ড চললে least connections ভালো। সার্ভার অসমান হলে (২ core বনাম ৮ core) `weight=3`-এর মতো ওজন বসাও; nginx-এ দুটো একসাথেও চলে।
+    ref: balancing-algorithms
+  - q: 'Passive আর active health check-এর পার্থক্য কী?'
+    a: 'Passive: আসল request ব্যর্থ হলে সার্ভার বাদ। Active: LB নিজে নিয়মিত /healthz ডেকে সার্ভার পরীক্ষা করে, আসল request-এর অপেক্ষা না করেই।'
+    more: |
+      nginx-এর বিনামূল্যের সংস্করণে `max_fails` আর `fail_timeout` দিয়ে passive check হয়; active check HAProxy, nginx Plus বা cloud LB-তে পাবে। Active check-এ প্রথম ব্যবহারকারী আর ব্যর্থ request-এর শিকার হয় না।
+    ref: nginx-upstream
+  - q: 'Health check-এ ডেটাবেস ডাকলে কী বিপদ?'
+    a: 'ডেটাবেসে ঝামেলা হলে সব সার্ভার একসাথে "অসুস্থ" দেখায়, LB সবাইকে বাদ দেয় — ছোট সমস্যা পুরো outage হয়ে যায়।'
+    more: |
+      LB-র health check ঠিক করবে "এই সার্ভার কি request নিতে পারবে?" — সাধারণত সেটা সস্তা আর শুধু সার্ভারের নিজের অবস্থা। ডেটাবেসের অবস্থা আলাদা metric আর alert-এ দেখাই ভালো। বিস্তারিত: [[observability/health-alerts|health check ও alert]]।
+    ref: nginx-upstream
+  - q: 'L4 আর L7 load balancer-এর মূল পার্থক্য কী?'
+    a: 'L4 শুধু IP আর port দেখে TCP পাঠায়। L7 HTTP খুলে পড়ে, তাই path, header, cookie দেখে সিদ্ধান্ত নিতে পারে।'
+    more: |
+      L4 দ্রুত আর যেকোনো TCP protocol-এ চলে (ডেটাবেস, Redis)। L7 বেশি CPU খায়, কিন্তু TLS termination, path routing আর header যোগ করতে পারে। ওয়েব অ্যাপের সামনে সাধারণত L7 বসে।
+    ref: l4-vs-l7
+  - q: 'Sticky session কী, আর কেন এড়ানো ভালো?'
+    a: 'একই ব্যবহারকারীকে সবসময় একই সার্ভারে পাঠানো। এতে ভিড় অসমান হয় আর সার্ভার মরলে session হারায়।'
+    more: |
+      Sticky session আসলে সার্ভারের ভেতরে জমানো state-এর লক্ষণ চাপা দেয়। session Redis-এ সরিয়ে দিলে stickiness লাগেই না, আর LB সত্যিকারের সমান ভাগ করতে পারে। ip_hash-এ NAT-এর পেছনের হাজার ব্যবহারকারী একই সার্ভারে পড়ার ঝুঁকিও আছে।
+    ref: sticky-sessions-trap
+
+quiz:
+  - q: 'রাতুলের সিস্টেমে ২টা app সার্ভার, ১টা nginx LB, ১টা Postgres primary আর ১টা replica আছে। কোনগুলো SPOF?'
+    hint: 'যেটা মরলে বাকিগুলো সুস্থ থেকেও সাইট বা লেখা আটকে যায়।'
+    options:
+      - text: 'একমাত্র nginx LB'
+        correct: true
+        why: 'সব request এর ভেতর দিয়ে যায়, আর বিকল্প কপি নেই। এটা মরলে app সার্ভার সুস্থ থাকলেও সাইট বন্ধ।'
+      - text: 'Postgres primary (automatic failover ছাড়া)'
+        correct: true
+        why: 'replica থাকলেও failover না থাকলে primary মরামাত্র লেখা বন্ধ; কেউ হাতে replica-কে promote না করা পর্যন্ত।'
+      - text: 'দুটো app সার্ভারের যেকোনো একটা'
+        correct: false
+        why: 'অন্যটা বাকি request চালায়। ধীর হবে, কিন্তু বন্ধ হবে না — ঠিক যে কারণে একাধিক কপি রাখা হয়।'
+      - text: 'Postgres replica'
+        correct: false
+        why: 'replica মরলে পড়ার ক্ষমতা কমে, কিন্তু primary-তে লেখা আর পড়া চলতে থাকে।'
+    ref: single-point-of-failure
+  - q: 'একটা API-তে বেশিরভাগ request ১০ms-এর, কিন্তু কিছু "রিপোর্ট ডাউনলোড" request ৩০ সেকেন্ড চলে। round robin-এ কিছু সার্ভার প্রায়ই জমে যায়। কী করবে?'
+    hint: 'পালা করে গুনলে ভারী আর হালকা কাজ কি আলাদা হয়?'
+    options:
+      - text: 'least_conn চালু করা'
+        correct: true
+        why: 'দীর্ঘ request যার হাতে বেশি, তার connection সংখ্যা বেশি দেখাবে। LB তখন অন্য সার্ভারে পাঠাবে।'
+      - text: 'সার্ভার সংখ্যা দ্বিগুণ করা'
+        correct: false
+        why: 'সমস্যা সংখ্যায় নয়, ভাগ করার নিয়মে। round robin-এ বেশি সার্ভারেও দুর্ভাগা সার্ভারে ভারী request জমতে পারে।'
+      - text: 'ip_hash চালু করা'
+        correct: false
+        why: 'এতে ভাগ আরও অসম হয় — IP অনুযায়ী ঠিক হয়, কার কাজ কেমন তা দেখে না।'
+      - text: 'সব সার্ভারের weight=1 রাখা'
+        correct: false
+        why: 'সমান weight মানে সমান সংখ্যা; লম্বা কাজের ওজন তাতে ধরা পড়ে না।'
+    ref: balancing-algorithms
+  - q: 'ডেটাবেস রেপ্লিকাগুলোতে (PostgreSQL, port 5432) read ভাগ করতে চাও। কোন ধরনের load balancer লাগবে?'
+    hint: 'ডেটাবেস কথা বলে HTTP-তে নাকি অন্য protocol-এ?'
+    options:
+      - text: 'L4 (TCP) — যেমন nginx stream বা HAProxy tcp mode'
+        correct: true
+        why: 'PostgreSQL HTTP নয়। L4 শুধু TCP connection ভাগ করে, protocol না বুঝেই।'
+      - text: 'L7 (HTTP) — path দেখে ভাগ করা'
+        correct: false
+        why: 'PostgreSQL-এ কোনো URL path নেই; HTTP LB এটা বুঝতেই পারবে না।'
+      - text: 'কোনোটাই না, ডেটাবেসে load balancing সম্ভব নয়'
+        correct: false
+        why: 'read replica-র মধ্যে read ভাগ করা খুব প্রচলিত।'
+      - text: 'DNS round robin ছাড়া উপায় নেই'
+        correct: false
+        why: 'DNS cache-এর কারণে ভাগ অসম ও ধীর, আর সার্ভার মরলেও ঠিকানা থাকে; L4 LB অনেক ভালো।'
+    ref: l4-vs-l7
+  - q: 'টিম LB-র health check endpoint-এ বানাল "SELECT 1 চালিয়ে ডেটাবেস ঠিক আছে কি না দেখো"। এক রাতে ডেটাবেস ২০ সেকেন্ড ধীর হলো। কী ঘটতে পারে?'
+    hint: 'সব app সার্ভার একই ডেটাবেস দেখছে — check ব্যর্থ হলে কয়টা সার্ভার বাদ পড়ে?'
+    options:
+      - text: 'সব app সার্ভারের check একসাথে ব্যর্থ, LB সবাইকে বাদ দেয় — ছোট ধীরতা পুরো সাইট বন্ধ'
+        correct: true
+        why: 'ডেটাবেস সবার ভাগ করা নির্ভরতা, তাই তার সমস্যায় সব সার্ভার একসাথে অসুস্থ দেখায়। LB সার্ভার সরালে ডেটাবেসের সমস্যা আরও বাড়ে না, কিন্তু সাইট একদম বন্ধ।'
+      - text: 'LB শুধু ধীর সার্ভারটা সরাবে, বাকি সব ঠিক থাকবে'
+        correct: false
+        why: 'সমস্যা একটা সার্ভারে নয়, ভাগ করা ডেটাবেসে — সব সার্ভার একই কারণে ব্যর্থ হবে।'
+      - text: 'কিছুই হবে না, কারণ SELECT 1 খুব ছোট query'
+        correct: false
+        why: 'ডেটাবেস ধীর বা connection ভরা থাকলে সবচেয়ে ছোট query-ও আটকে যায় বা timeout হয়।'
+      - text: 'ডেটাবেস দ্রুত হয়ে যাবে কারণ LB চাপ কমায়'
+        correct: false
+        why: 'LB ডেটাবেসের চাপ কমায় না; সব সার্ভার বাদ পড়লে ব্যবহারকারী আসলে সাইটই পায় না।'
+    ref: nginx-upstream
+  - q: 'অফিসের ৩০০ জন কর্মী ip_hash-করা সাইটে ঢুকলে একটা সার্ভার ভেঙে পড়ার কাছে, বাকিরা ফাঁকা। কোনগুলো সঠিক সমাধান?'
+    hint: 'সমস্যার মূল কারণ কী — IP, নাকি সার্ভারের ভেতরের state?'
+    options:
+      - text: 'session Redis-এ সরিয়ে ip_hash তুলে least_conn ব্যবহার'
+        correct: true
+        why: 'state বাইরে গেলে stickiness লাগে না, আর LB সত্যিকারভাবে সমান করে ভাগ করতে পারে।'
+      - text: 'cookie-ভিত্তিক stickiness (IP নয়), অস্থায়ীভাবে'
+        correct: true
+        why: 'cookie প্রতিটা ব্যবহারকারীকে আলাদা চেনে, NAT-এর পেছনের সবাই এক নয়। তবে এটা সাময়িক উপশম।'
+      - text: 'ip_hash রেখে ঐ সার্ভারটা আরও বড় করা'
+        correct: false
+        why: 'আরও বড় অফিস এলেই আবার একই সমস্যা, আর সার্ভার মরলে ওই সব ব্যবহারকারীর session যাবে।'
+      - text: 'বাকি সার্ভারগুলোর weight কমিয়ে দেওয়া'
+        correct: false
+        why: 'এতে আরও বেশি ভিড় ঐ এক সার্ভারেই যায়; সমস্যাটা ঠিক উল্টো দিকে ঘুরে যায়।'
+    ref: sticky-sessions-trap

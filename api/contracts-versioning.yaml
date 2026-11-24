@@ -1,0 +1,391 @@
+slides:
+  - slug: renamed-field
+    title: 'এক ফিল্ডের নাম বদলে ৩০ হাজার ফোন ফাঁকা'
+    kind: story
+    tldr: 'API-র response যারা পড়ে, তারা তোমার জানা-অজানা সবাই; একটা field-এর নাম বদলালেই পুরনো client নীরবে ভেঙে যায়।'
+    keywords: ['API contract', 'breaking change', 'field rename', 'mobile app', 'কন্ট্রাক্ট', 'পুরনো ভার্সন']
+    blocks:
+      - type: text
+        body: |
+          রহিম API-র `name` ফিল্ডের নাম বদলে `fullName` করল, কারণ নামটা তার কাছে আরও পরিষ্কার মনে হয়েছিল। Vue ওয়েব অ্যাপ সে একই দিনে ঠিক করে deploy করল, সব ঠিকঠাক। কিন্তু ৩০ হাজার মানুষের ফোনে মোবাইল অ্যাপের পুরনো সংস্করণ রয়ে গেছে, আর সেটা এখনো `name` খোঁজে। পরদিন সকালে সবার প্রোফাইলে নামের জায়গা ফাঁকা, অথচ সার্ভারে কোনো error নেই।
+      - type: visual
+        kind: sequence
+        caption: 'নাম বদলের পর পুরনো মোবাইল অ্যাপ কী পায়'
+        actors:
+          - {id: mobile, label: 'মোবাইল অ্যাপ v1.2', icon: mobile, tip: 'ব্যবহারকারী এখনো আপডেট করেনি। এই অ্যাপ জানে response-এ name নামে একটা field থাকবে।'}
+          - {id: api, label: 'API', icon: api, tip: 'রহিমের Symfony অ্যাপ। সে ভেবেছিল শুধু নিজের Vue অ্যাপই তার response পড়ে।'}
+        messages:
+          - {from: mobile, to: api, label: 'GET /api/profile'}
+          - {at: api, note: 'আজ সকালে name বদলে fullName হয়েছে', tone: warn, tip: 'কোডে একটা property-র নাম বদলানো মনে হলেও আসলে এটা সবার সাথে করা প্রতিশ্রুতি ভাঙা।'}
+          - {from: api, to: mobile, label: '200 OK  {"fullName": "রহিম"}', dashed: true, tip: 'status 200, তাই কেউ কোনো error দেখে না।'}
+          - {at: mobile, note: 'user.name = undefined, নাম ফাঁকা', tone: bad, tip: 'অ্যাপ crash না-ও করতে পারে; ভুল জিনিস দেখানোই বেশি বিপজ্জনক, কারণ কেউ টের পায় না।'}
+      - type: quote
+        body: 'API একটা প্রতিশ্রুতি। যারা তার ওপর দাঁড়িয়ে আছে, তাদের না জানিয়ে আকার বদলানো যায় না।'
+        by: 'API contract-এর প্রথম নিয়ম'
+    aside:
+      - type: story
+        title: 'আপডেট না করা ফোন'
+        body: |
+          ওয়েবে তুমি এক মিনিটে সবার কাছে নতুন কোড পৌঁছে দিতে পারো। মোবাইল অ্যাপে পারো না: কেউ মাসের পর মাস আপডেট দেয় না, আর স্টোরে রিলিজ আটকে থাকে রিভিউয়ে। তাই পুরনো সংস্করণ বছরখানেক ধরেই তোমার API ডাকে।
+      - type: terms
+        items:
+          - {term: 'Contract', meaning: 'API আর তার ব্যবহারকারীদের মধ্যে অলিখিত বা লিখিত চুক্তি: কোন URL, কী পাঠাবে, কী ফেরত পাবে।'}
+          - {term: 'Breaking change', meaning: 'এমন পরিবর্তন, যার পর আগে ঠিকঠাক চলা client ভুল করে বা ভেঙে যায়।'}
+    check:
+      q: 'রহিম কেবল নিজের কোডের একটা property-র নাম বদলেছিল। এটা কেন বড় সমস্যা হলো?'
+      a: 'কারণ সেই নাম ছিল API-র contract-এর অংশ। যেসব client আপডেট হয়নি, তারা পুরনো নামেই ডেটা খুঁজে ফাঁকা পেল।'
+
+  - slug: compatible-changes
+    title: 'কোন বদল নিরাপদ, কোনটা ভাঙে'
+    kind: concept
+    tldr: 'নতুন কিছু যোগ করা নিরাপদ; নাম বদল, মুছে ফেলা বা type বদল ভাঙে। পাঠক অচেনা field উপেক্ষা করলে দুই পক্ষই নিশ্চিন্তে বাড়তে পারে।'
+    keywords: ['backward compatibility', 'forward compatibility', 'additive change', 'tolerant reader', 'সামঞ্জস্য', 'নিরাপদ বদল']
+    blocks:
+      - type: metaphor
+        icon: plug
+        title: 'দেয়ালের সকেট আর প্লাগ'
+        body: |
+          ঘরের সকেটে বছরের পর বছর যেকোনো যন্ত্রের প্লাগ লাগে। তুমি পাশে নতুন একটা সকেট বসাতে পারো, কারো কিছু হবে না। কিন্তু পুরনো সকেটের গর্তের মাপ বদলালে ঘরের প্রতিটা যন্ত্র অচল।
+      - type: text
+        body: |
+          নতুন সার্ভার পুরনো client-কে সামলালে একে বলে **backward compatibility**। পুরনো সার্ভার নতুন client-এর অচেনা field উপেক্ষা করে চলতে পারলে বলে **forward compatibility**। client-এর দিকে এর রূপ হলো tolerant reader: যে field দরকার শুধু সেটা পড়ো, বাকিগুলো দেখেও না-দেখার ভান করো।
+      - type: visual
+        kind: table
+        caption: 'কোন পরিবর্তনে পুরনো client-এর কী হয়'
+        headers: ['পরিবর্তন', 'পুরনো client', 'ধরন']
+        rows:
+          - cells: ['response-এ নতুন field যোগ', 'অচেনা field উপেক্ষা করে', 'নিরাপদ']
+            tip: 'সকেটের পাশে নতুন সকেট। পুরনো client নতুন field দেখেই না, তাই তার কিছু বদলায় না।'
+          - cells: ['নতুন optional query parameter', 'দেয়ই না, তাই আগের মতো চলে', 'নিরাপদ']
+            tip: 'default মান আগের আচরণ বজায় রাখলে পুরনো request হুবহু আগের মতোই কাজ করে।'
+          - cells: ['নতুন endpoint যোগ', 'চেনেই না, কোনো প্রভাব নেই', 'নিরাপদ']
+            tip: 'কেউ ডাকছে না এমন জিনিস ভাঙার উপায় নেই।'
+          - cells: ['field-এর নাম বদল', 'পুরনো নামে ফাঁকা পায়', 'ভাঙে']
+            tip: 'নতুন নাম যোগ করে পুরনোটাও কিছুদিন রাখলে এটাকে নিরাপদ ধাপে ভাঙা যায়।'
+          - cells: ['field মুছে ফেলা', 'যা খুঁজছিল তা নেই', 'ভাঙে']
+            tip: 'কেউ ব্যবহার করে না মনে হলেও নিশ্চিত হওয়ার আগে মোছা যায় না।'
+          - cells: ['type বদল, যেমন "12" থেকে 12', 'parse বা তুলনা ভুল করে', 'ভাঙে']
+            tip: 'দেখতে ছোট বদল, কিন্তু typed ভাষায় (TypeScript, Kotlin) পুরো response parse-ই ব্যর্থ হতে পারে।'
+          - cells: ['request-এ নতুন বাধ্যতামূলক field', 'পাঠায় না, 422 পায়', 'ভাঙে']
+            tip: 'পুরনো client জানেই না নতুন field-টা আছে। নতুন field সবসময় optional আর default-সহ দাও।'
+      - type: quote
+        body: 'যোগ করা নিরাপদ। নাম বদল, মোছা আর type বদল: তিনটাই ভাঙে।'
+    aside:
+      - type: remember
+        body: 'পাঠানোর সময় কঠোর থাকো, পড়ার সময় উদার: যা দরকার শুধু সেটুকু পড়ো, বাকি অচেনা জিনিস উপেক্ষা করো।'
+      - type: pitfalls
+        items:
+          - 'enum-এ নতুন মান যোগ করাও ঝুঁকির: পুরনো client অচেনা মান পেয়ে switch-এ ভেঙে যেতে পারে। client-কে বলে রাখো অচেনা মানের জন্য default শাখা রাখতে।'
+      - type: refs
+        items:
+          - {to: 'data/zero-downtime-migrations', label: 'ডেটাবেসেও একই নিয়ম: expand, তারপর contract'}
+    check:
+      q: 'API response-এ `phone` নামে নতুন একটা field যোগ করলে পুরনো client ভাঙে না কেন?'
+      a: 'পুরনো client শুধু নিজের চেনা field পড়ে। অচেনা field সে দেখেও না, তাই তার আচরণ আগের মতোই থাকে।'
+
+  - slug: versioning-strategies
+    title: 'ভাঙতেই হলে নতুন version: কোন পদ্ধতিতে'
+    kind: compare
+    tldr: 'ভাঙা এড়ানো না গেলে নতুন version দাও। সবচেয়ে সোজা ও সবচেয়ে প্রচলিত পদ্ধতি URL-এ /v1, /v2; আসল কাজ দুই version-এর নিচে একই লজিক রাখা।'
+    keywords: ['API versioning', 'URL versioning', 'header versioning', 'v1 v2', 'ভার্সনিং', 'Accept header']
+    blocks:
+      - type: text
+        body: |
+          সব বদল যোগ করে করা যায় না, মাঝে মাঝে সত্যিই আকার বদলাতে হয়। তখন পুরনো সকেট রেখেই নতুন গর্তওয়ালা আরেকটা সকেট বসাও। কোন সকেট কোনটা, তা বোঝানোর চারটা প্রচলিত উপায় আছে।
+      - type: visual
+        kind: table
+        caption: 'চার ধরনের versioning পদ্ধতি'
+        headers: ['পদ্ধতি', 'উদাহরণ', 'ভালো দিক', 'খারাপ দিক']
+        rows:
+          - cells: ['URL path', '/api/v2/orders', 'সোজা, দেখা যায়, cache-বান্ধব', 'URL বদলে যায়']
+            tip: 'বেশিরভাগ দলের ডিফল্ট। log, curl আর ব্রাউজারে এক নজরে বোঝা যায় কোন version, আর routing ও cache সহজ।'
+          - cells: ['Header', 'Accept: application/vnd.shop.v2+json', 'URL সুন্দর থাকে', 'দেখা কঠিন, cache-এ Vary লাগে']
+            tip: 'শুদ্ধ REST-এর দিক থেকে সুন্দর, কিন্তু ব্রাউজারে সরাসরি খুলে দেখা যায় না আর টেস্ট করা ঝামেলার।'
+          - cells: ['Query parameter', '/api/orders?version=2', 'সহজ বদল', 'ভুলে বাদ পড়ে, cache key গোলমাল']
+            tip: 'parameter বাদ গেলে কোন version পাবে তা নিয়ে ধাঁধা তৈরি হয়। তাই এটা কম পছন্দের।'
+          - cells: ['তারিখ-ভিত্তিক', 'Stripe-Version: 2024-06-20', 'ছোট ছোট বদল সামলানো সহজ', 'সার্ভারে অনেক কাজ']
+            tip: 'প্রতিটা client নিজের তারিখে আটকে থাকে। Stripe এভাবে করে, কিন্তু প্রতিটা তারিখের বদল সার্ভারকে মনে রাখতে হয়।'
+      - type: code
+        lang: yaml
+        file: 'config/routes.yaml'
+        variant: good
+        code: |
+          api_v1:
+              resource: ../src/Controller/Api/V1/
+              type: attribute
+              prefix: /api/v1
+
+          api_v2:
+              resource: ../src/Controller/Api/V2/
+              type: attribute
+              prefix: /api/v2
+        marks:
+          - {line: 4, tip: 'V1 ফোল্ডারের প্রতিটা controller route পাবে /api/v1 দিয়ে শুরু। controller-এ আলাদা করে prefix লিখতে হয় না।'}
+          - {line: 9, tip: 'V2 পাশেই বসে। দুটো controller একই application service ডাকে; তফাত শুধু response-এর আকারে।'}
+      - type: quote
+        body: 'নতুন version মানে নতুন বাড়ি নয়। দুই version-এর নিচের লজিক এক থাকবে, শুধু বাইরের চেহারা আলাদা।'
+    aside:
+      - type: when
+        use:
+          - 'URL version: public API, মোবাইল অ্যাপ, পার্টনার, যেখানে client তোমার নিয়ন্ত্রণে নেই'
+          - 'কোনো version ছাড়া: শুধু নিজের Vue অ্যাপ ডাকে আর দুই জায়গা একসাথে deploy হয়'
+        avoid:
+          - 'প্রতিটা ছোট বদলে নতুন version: তখন দশটা version একসাথে চালাতে হয়'
+      - type: tips
+        items:
+          - 'version-এর সংখ্যা কম রাখো। একসাথে দুইটার বেশি চালু রাখা সাধারণত দলের জন্য বোঝা।'
+          - 'major version (v1, v2) শুধু সত্যিকারের ভাঙনে বাড়াও। যোগ করা বদল যেকোনো version-এ চুপচাপ দিয়ে দাও।'
+    check:
+      q: 'দুই version পাশাপাশি চালালে বাড়তি রক্ষণাবেক্ষণ কমানোর সবচেয়ে বড় কৌশল কোনটা?'
+      a: 'দুই version-এর controller আলাদা, কিন্তু নিচের application service এক। তাহলে বিজনেস নিয়ম একটাই থাকে, শুধু response-এর আকার দুই রকম।'
+
+  - slug: deprecation-howto
+    title: 'পুরনো version সরানোর নিরাপদ পথ'
+    kind: howto
+    tldr: 'হঠাৎ বন্ধ নয়: ঘোষণা দাও, Deprecation ও Sunset header পাঠাও, কে এখনো ব্যবহার করছে মাপো, তারিখে পৌঁছে তবেই বন্ধ করো।'
+    keywords: ['deprecation', 'sunset header', 'Deprecation header', 'API retirement', 'বন্ধ করা', 'পুরনো API']
+    blocks:
+      - type: text
+        body: |
+          ট্রেনের সময়সূচি বদলালে স্টেশনে আগে থেকে নোটিস টাঙানো হয়, হঠাৎ করে গাড়ি বন্ধ হয় না। পুরনো API version সরানোও একই রকম। প্রতিটা response-এই header দিয়ে জানাও যে এটা পুরনো হয়ে গেছে আর কবে বন্ধ হবে, তারপর দেখো কেউ এখনো ডাকছে কি না।
+      - type: visual
+        kind: steps
+        caption: 'একটা পুরনো version সরানোর পাঁচ ধাপ'
+        steps:
+          - {title: '১. ঘোষণা', body: 'নতুন version তৈরি, বন্ধের তারিখ আগে থেকে জানাও', tip: 'ইমেইল, changelog আর ডকুমেন্টেশনে একসাথে জানাও। তারিখ এমন দাও যাতে মোবাইল client-রা আপডেট করার সময় পায়, সাধারণত কয়েক মাস।'}
+          - {title: '২. Header পাঠাও', body: 'প্রতিটা পুরনো response-এ Deprecation ও Sunset', tip: 'যে client-এর কোড এই header পড়ে সে নিজেই warning দেখাতে পারে। এটা মানুষ-ছাড়া ঘোষণা।'}
+          - {title: '৩. ব্যবহার মাপো', body: 'কোন client এখনো v1 ডাকছে তার log রাখো', tip: 'client-এর নাম বা app version header থেকে গোনো। তারিখ যত কাছে আসে, সংখ্যা ততই শূন্যের দিকে যাওয়া উচিত।'}
+          - {title: '৪. সরাসরি বলো', body: 'যারা এখনো ডাকছে তাদের আলাদা করে জানাও', tip: 'বড় পার্টনারদের ফোন বা ইমেইল করো। সবাই changelog পড়ে না।'}
+          - {title: '৫. বন্ধ করো', body: 'তারিখ পার হলে 410 Gone দাও', tip: '410 বলে "এটা ছিল, আর নেই"। 404-এর চেয়ে স্পষ্ট, কারণ client বোঝে এটা ভুল URL নয়।'}
+      - type: code
+        lang: php
+        file: 'src/EventListener/DeprecatedApiListener.php'
+        variant: good
+        code: |
+          #[AsEventListener]
+          final class DeprecatedApiListener
+          {
+              public function __invoke(ResponseEvent $event): void
+              {
+                  if (!str_starts_with($event->getRequest()->getPathInfo(), '/api/v1/')) {
+                      return;
+                  }
+
+                  $headers = $event->getResponse()->headers;
+                  $headers->set('Deprecation', '@1795478400');
+                  $headers->set('Sunset', 'Wed, 30 Jun 2027 23:59:59 GMT');
+                  $headers->set('Link', '</docs/api/v2>; rel="successor-version"');
+              }
+          }
+        marks:
+          - {line: 6, tip: 'শুধু v1 URL-এ চলবে। v2 response অক্ষত থাকবে।'}
+          - {line: 11, tip: 'Deprecation header-এ পুরনো ঘোষণার তারিখ unix timestamp হিসেবে লেখা হয়, শুরুতে @ দিয়ে।'}
+          - {line: 12, tip: 'Sunset হলো বন্ধ হওয়ার তারিখ, HTTP তারিখের ফরম্যাটে। এর পরে v1 আর থাকবে না।'}
+    aside:
+      - type: commands
+        title: 'header দেখো'
+        items:
+          - {cmd: 'curl -sI https://shop.example/api/v1/orders', desc: 'response header-এ Deprecation ও Sunset আছে কি না'}
+      - type: tips
+        items:
+          - 'বন্ধ করার আগে দুই-এক সপ্তাহ "ব্রাউনআউট" করা যায়: নির্দিষ্ট কিছু ঘণ্টায় v1 ইচ্ছে করে 410 দিলে যারা এখনো ডাকছে তারা হঠাৎ টের পায়।'
+      - type: refs
+        items:
+          - {to: 'api/request-path', label: 'request পথের কোন ধাপে header বদলায়'}
+    check:
+      q: 'v1 বন্ধের তারিখ জানানোর পরও কেন শুধু ইমেইলের ভরসায় না থেকে header আর ব্যবহার-মাপা দরকার?'
+      a: 'সবাই ইমেইল পড়ে না। header client-কে কোডে জানিয়ে দেয়, আর মাপলে জানা যায় বন্ধ করলে কারা ভাঙবে।'
+
+  - slug: contract-tests
+    title: 'যে টেস্ট নিজেই বদলে যায়'
+    kind: pitfall
+    tldr: 'যে ডেভেলপার field বদলায় সে টেস্টও বদলে ফেলে, তাই ভাঙন ধরা পড়ে না। Contract test পুরনো client যা ভরসা করে তা আলাদা করে পাহারা দেয়।'
+    keywords: ['contract testing', 'consumer-driven contract', 'Pact', 'OpenAPI diff', 'oasdiff', 'কন্ট্রাক্ট টেস্ট']
+    blocks:
+      - type: text
+        body: |
+          রহিম `name` বদলে `fullName` করল, আর টেস্টের `assertSame('রহিম', $data['name'])` লাইনটাও একসাথে বদলে দিল। সব সবুজ। এখানে টেস্ট চালানো হচ্ছে ভাঙনের পক্ষ থেকে, ভরসাকারী client-এর পক্ষ থেকে নয়। Contract test হলো এমন টেস্ট, যা পুরনো client যা যা আশা করে সেটুকু আলাদা করে জমিয়ে রাখে, আর সেই টেস্ট বদলাতে গেলে সবাইকে প্রশ্ন করতে বাধ্য করে।
+      - type: code
+        lang: php
+        file: 'tests/Contract/ProfileV1ContractTest.php'
+        variant: good
+        code: |
+          final class ProfileV1ContractTest extends WebTestCase
+          {
+              // মোবাইল অ্যাপ v1.2 যা যা ভরসা করে। এই টেস্ট শুধু v1 সরানোর সময় মোছা যাবে।
+              public function testProfileKeepsPromisedShape(): void
+              {
+                  $client = static::createClient();
+                  $client->request('GET', '/api/v1/profile/42');
+
+                  self::assertResponseIsSuccessful();
+                  $data = json_decode(
+                      $client->getResponse()->getContent(),
+                      true,
+                      flags: JSON_THROW_ON_ERROR,
+                  );
+
+                  self::assertIsInt($data['id']);
+                  self::assertIsString($data['name']);
+                  self::assertArrayHasKey('email', $data);
+              }
+          }
+        marks:
+          - {line: 3, tip: 'এই comment-এ কে ভরসা করছে লেখা থাকে। টেস্ট বদলাতে চাইলে আগে সেই client-এর সাথে কথা বলতে হবে।'}
+          - {line: 17, tip: 'শুধু key আছে কি না আর type মেলে কি না দেখা হচ্ছে। পুরো response-এর হুবহু মান মেলানো লাগে না, ওটা ভঙ্গুর।'}
+      - type: visual
+        kind: flow
+        caption: 'consumer-driven contract: client-এর আশা থেকে API-র CI পর্যন্ত'
+        nodes:
+          - {id: client, label: 'Client দল', sub: 'মোবাইল অ্যাপ', icon: mobile, col: 0, row: 1, tip: 'যারা response ব্যবহার করে। তারাই জানে কোন field সত্যিই লাগে।'}
+          - {id: pact, label: 'Contract ফাইল', sub: 'আশার তালিকা', icon: file, col: 1.5, row: 1, tone: accent, tip: 'client-এর আশা একটা ফাইলে লেখা: কোন URL ডাকবে, কোন field পাবে। Pact এই কাজ করে।'}
+          - {id: ci, label: 'API-র CI', sub: 'যাচাই চালায়', icon: gear, col: 3, row: 1, tip: 'প্রতিটা বদলে এই ফাইলের বিরুদ্ধে আসল API চালিয়ে দেখে।'}
+          - {id: deploy, label: 'Deploy', sub: 'পাস হলে যায়', icon: rocket, col: 4, row: 1, tone: good, tip: 'যাচাই ব্যর্থ হলে এখানে পৌঁছানোই বন্ধ। ভাঙন production-এ যাওয়ার আগে ধরা পড়ে।'}
+        edges:
+          - {from: client, to: pact, label: 'client দল নিজের আশাগুলো ফাইলে লেখে'}
+          - {from: pact, to: ci, label: 'API-র CI সেই ফাইল নিয়ে আসে'}
+          - {from: ci, to: deploy, label: 'আশা মিললে তবেই deploy এগোয়', tone: good}
+    aside:
+      - type: commands
+        title: 'schema বদল ধরার টুল'
+        items:
+          - {cmd: 'oasdiff breaking openapi-old.yaml openapi-new.yaml', desc: 'দুই OpenAPI ফাইল মিলিয়ে ভাঙা বদল খোঁজে'}
+      - type: terms
+        items:
+          - {term: 'Consumer-driven contract', meaning: 'যে client ব্যবহার করে সে লিখে দেয় API-র কাছে কী আশা করে; API সেটাই যাচাই করে।'}
+          - {term: 'Pact', meaning: 'consumer-driven contract টেস্টের জনপ্রিয় টুল, PHP আর JS দুইটাতেই চলে।'}
+      - type: remember
+        body: 'নিজের বদল যাচাই করো নিজের টেস্টে, কিন্তু অন্যের ভরসা যাচাই করো অন্যের লেখা আশা দিয়ে।'
+    check:
+      q: 'ডেভেলপারই যদি response বদলায় আর টেস্টও বদলে ফেলে, তাহলে contract test কীভাবে ভিন্ন হয়?'
+      a: 'Contract test পুরনো client-এর আশা আলাদা জায়গায় আটকে রাখে। বদলাতে গেলে টেস্ট লাল হয়, আর বিষয়টা সবার চোখে পড়ে।'
+
+flashcards:
+  - q: 'API contract কী?'
+    a: 'API আর তার ব্যবহারকারীদের মধ্যে চুক্তি: কোন URL, কী পাঠাবে, কোন আকারে কী ফেরত পাবে।'
+    more: |
+      response-এর প্রতিটা field, তার নাম আর type contract-এর অংশ। কেউ ব্যবহার করছে বলেই এটা প্রতিশ্রুতি হয়ে যায়, লিখিত থাকুক বা না থাকুক। তাই কোডের ভেতরের নাম বদলানো সহজ, কিন্তু response-এর নাম বদলানো সহজ নয়।
+    ref: renamed-field
+  - q: 'Breaking change কাকে বলে?'
+    a: 'যে বদলের পর আগে ঠিকঠাক চলা client ভুল করে বা ভেঙে যায়। যেমন field-এর নাম বদল, মুছে ফেলা, type বদল।'
+    more: |
+      সবচেয়ে বিপজ্জনক ভাঙন হলো যেটা error ছাড়াই ঘটে: সার্ভার 200 দেয়, কিন্তু client-এর screen-এ ফাঁকা বা ভুল ডেটা। তাই নাম বদলও breaking, যদিও কোডে দেখতে ছোট।
+    ref: compatible-changes
+  - q: 'Additive change কী, আর কেন নিরাপদ?'
+    a: 'শুধু নতুন কিছু যোগ করা: নতুন field, নতুন optional parameter, নতুন endpoint। পুরনো client এগুলো দেখেই না।'
+    more: |
+      পুরনো client নিজের চেনা field-ই পড়ে, অচেনাগুলো উপেক্ষা করে। তাই যোগ করলে তার কিছু বদলায় না। শর্ত হলো নতুন request parameter যেন optional হয় আর default আগের আচরণই বজায় রাখে।
+    ref: compatible-changes
+  - q: 'Backward আর forward compatibility-র পার্থক্য কী?'
+    a: 'Backward: নতুন সার্ভার পুরনো client-কে সামলায়। Forward: পুরনো পক্ষ নতুন পক্ষের অচেনা field উপেক্ষা করে চলতে পারে।'
+    more: |
+      API বদলের সময় প্রধানত backward compatibility লাগে। Forward compatibility আসে tolerant reader নীতি থেকে: client শুধু যা দরকার তাই পড়ে, অচেনা field দেখে ভেঙে পড়ে না। দুটো মিললে সার্ভার আর client আলাদা সময়ে deploy করা যায়।
+    ref: compatible-changes
+  - q: 'API versioning-এর সবচেয়ে প্রচলিত পদ্ধতি কোনটা, কেন?'
+    a: 'URL path-এ version, যেমন /api/v1/orders। এটা সোজা, দেখা যায়, আর cache ও routing সহজ।'
+    more: |
+      header বা তারিখ-ভিত্তিক পদ্ধতিও আছে, কিন্তু সেগুলোয় দেখা আর টেস্ট করা কঠিন। বেশিরভাগ দলের জন্য URL path-ই ডিফল্ট। শুধু নিজের Vue অ্যাপ ডাকলে আর দুই দিক একসাথে deploy হলে version নাও লাগতে পারে।
+    ref: versioning-strategies
+  - q: 'Deprecation আর Sunset header কী বলে?'
+    a: 'Deprecation: এই API পুরনো ঘোষিত। Sunset: ঠিক কবে বন্ধ হবে, তার তারিখ।'
+    more: |
+      দুটো header প্রতিটা পুরনো response-এ পাঠালে client-এর কোড বা monitoring নিজেই warning তুলতে পারে। সাথে `Link` header-এ `rel="successor-version"` দিয়ে নতুন version-এর ঠিকানা দেওয়া যায়। বন্ধের তারিখের পর 410 Gone দেওয়া হয়।
+    ref: deprecation-howto
+  - q: 'Contract test সাধারণ টেস্ট থেকে আলাদা কোথায়?'
+    a: 'এটা client যা আশা করে সেটুকু আলাদা করে পাহারা দেয়, তাই ডেভেলপার নিজের বদলের সাথে টেস্ট বদলে ভাঙন লুকাতে পারে না।'
+    more: |
+      সাধারণ টেস্ট সার্ভারের বর্তমান আচরণ যাচাই করে, আর সেটা বদলালে টেস্টও বদলে যায়। Contract test client-এর আশার তালিকা, যা বদলাতে গেলে client-এর সাথে কথা বলতে হয়। Pact বা OpenAPI diff এই কাজে ব্যবহার হয়।
+    ref: contract-tests
+
+quiz:
+  - q: 'নিচের কোন পরিবর্তনগুলো পুরনো client ভাঙার ঝুঁকি তৈরি করে?'
+    hint: 'পুরনো client কোন জিনিস খুঁজবে, আর সেটা কি এখনো ঠিক সেই জায়গায় আছে?'
+    options:
+      - text: 'response-এর `price` field-এর type string থেকে number করা'
+        correct: true
+        why: 'type বদলালে client-এর parse বা তুলনা ভুল করে। দেখতে ছোট, কিন্তু breaking।'
+      - text: 'response-এ `avatarUrl` নামে নতুন একটা field যোগ করা'
+        correct: false
+        why: 'পুরনো client অচেনা field উপেক্ষা করে, তাই এটা নিরাপদ additive change।'
+      - text: 'request-এ নতুন বাধ্যতামূলক `couponCode` field চাওয়া'
+        correct: true
+        why: 'পুরনো client এই field পাঠায় না, তাই তার প্রতিটা request এখন 422 পাবে।'
+      - text: 'নতুন একটা `GET /api/v1/offers` endpoint বানানো'
+        correct: false
+        why: 'আগে কেউ এটা ডাকেনি, তাই কারো কিছু ভাঙে না।'
+    ref: compatible-changes
+  - q: 'রহিমের অ্যাপে দুটো client আছে: একসাথে deploy হওয়া Vue ওয়েব, আর ছয় মাস পুরনো সংস্করণ পর্যন্ত চলা মোবাইল অ্যাপ। `name` ফিল্ডের নাম বদলাতে চাইলে সবচেয়ে নিরাপদ পথ কোনটা?'
+    hint: 'মোবাইল অ্যাপ কবে আপডেট হবে তার ওপর তোমার হাত আছে কি?'
+    options:
+      - text: 'এক deploy-তেই name বদলে fullName করা, কারণ ওয়েব তো ঠিক আছে'
+        correct: false
+        why: 'মোবাইল অ্যাপের পুরনো সংস্করণ name খুঁজে ফাঁকা পাবে। ওয়েব ঠিক থাকাই যথেষ্ট নয়।'
+      - text: 'কিছুদিন দুই field-ই পাঠানো, client-দের সরানোর পর পুরনোটা deprecation-সহ বন্ধ করা'
+        correct: true
+        why: 'name আর fullName দুটোই থাকলে পুরনো আর নতুন client দুই-ই চলে। তারপর ধীরে ধীরে সরানো যায়।'
+      - text: 'মোবাইল ব্যবহারকারীদের ইমেইল করে আপডেট করতে বলা, তারপর নাম বদলানো'
+        correct: false
+        why: 'সবাই আপডেট করবে এমন নিশ্চয়তা নেই। কিছু মানুষ মাসের পর মাস পুরনো অ্যাপেই থাকে।'
+      - text: 'নাম বদলে নতুন version নম্বর না দিয়ে শুধু changelog লেখা'
+        correct: false
+        why: 'changelog কেউ পড়ে না, আর পুরনো অ্যাপের কোড তো changelog পড়ে না।'
+    ref: compatible-changes
+  - q: 'নিচের routes কনফিগারেশনে v2 ডাকলে কোন controller চলবে?'
+    lang: yaml
+    code: |
+      api_v1:
+          resource: ../src/Controller/Api/V1/
+          type: attribute
+          prefix: /api/v1
+
+      api_v2:
+          resource: ../src/Controller/Api/V2/
+          type: attribute
+          prefix: /api/v2
+    hint: 'প্রতিটা ফোল্ডারের পাশে prefix কী দেওয়া আছে?'
+    options:
+      - text: '`src/Controller/Api/V2/`-এর controller, route শুরু হবে /api/v2 দিয়ে'
+        correct: true
+        why: 'resource ফোল্ডার আর prefix মিলে v2 route তৈরি করে। v1 আলাদা থেকে যায়।'
+      - text: '`src/Controller/Api/V1/`-এর controller, কারণ v1 আগে লেখা'
+        correct: false
+        why: 'ক্রম নয়, prefix দিয়ে route মেলে। /api/v2/... শুধু V2 ফোল্ডারের route-এর সাথে মেলে।'
+      - text: 'কোনোটাই নয়, কারণ attribute type শুধু controller-এ prefix চায়'
+        correct: false
+        why: 'routes.yaml-এ ফোল্ডার ধরে attribute route লোড করে prefix দেওয়া বৈধ ও প্রচলিত।'
+      - text: 'দুটো controller-ই একসাথে চলবে'
+        correct: false
+        why: 'প্রতিটা request একটা route-এর সাথেই মেলে, আর prefix আলাদা বলে দুটো কখনো একই URL ধরে না।'
+    ref: versioning-strategies
+  - q: 'v1 বন্ধ করার আগে নিচের কোন ধাপগুলো নেওয়া উচিত?'
+    hint: 'বন্ধ করলে কারা ভাঙবে, তা জানার উপায় কী?'
+    options:
+      - text: 'v1 response-এ Deprecation আর Sunset header পাঠানো'
+        correct: true
+        why: 'client-কে কোডেই জানিয়ে দেয় কবে বন্ধ হবে, যাতে তারা সময় থাকতে সরে আসতে পারে।'
+      - text: 'কোন client এখনো v1 ডাকছে তার log থেকে গুনে দেখা'
+        correct: true
+        why: 'সংখ্যা শূন্যের কাছাকাছি না হলে বন্ধ করা মানে ইচ্ছে করে কিছু মানুষকে ভাঙা।'
+      - text: 'কোনো ঘোষণা ছাড়াই এক রাতে route মুছে দেওয়া'
+        correct: false
+        why: 'এতে যারা এখনো ব্যবহার করছে তাদের কিছু জানার সুযোগ থাকে না, সবাই এক সকালে ভেঙে যায়।'
+      - text: 'বন্ধের তারিখের পর 404 দেওয়ার বদলে 410 Gone দেওয়া'
+        correct: true
+        why: '410 স্পষ্ট বলে resource ছিল কিন্তু ইচ্ছে করেই সরানো হয়েছে; 404 শুনে মনে হয় URL ভুল।'
+    ref: deprecation-howto
+  - q: 'রহিম field-এর নাম বদলাল আর একই commit-এ সংশ্লিষ্ট টেস্টের `name` লাইনটাও বদলে দিল। CI সবুজ। সমস্যা কোথায়?'
+    hint: 'টেস্ট কার আশা যাচাই করছিল, আর সেই আশা কে বদলাল?'
+    options:
+      - text: 'CI ধীর ছিল, আরও টেস্ট লাগবে'
+        correct: false
+        why: 'টেস্টের সংখ্যা নয়; যে টেস্ট ভাঙন পাহারা দেওয়ার কথা, সেটাই বদলে ফেলা হয়েছে।'
+      - text: 'টেস্ট বদলানোর সাথে সাথে পুরনো client-এর আশাটাই মুছে গেল, তাই ভাঙন ধরা পড়ল না'
+        correct: true
+        why: 'কোড ও টেস্ট একই হাতে বদলালে টেস্ট শুধু নতুন আচরণই যাচাই করে। তাই client-এর আশা আলাদা contract test-এ রাখা হয়।'
+      - text: 'নাম বদলের জন্য PHPUnit নয়, Behat ব্যবহার করা উচিত ছিল'
+        correct: false
+        why: 'টুল বদলালে সমস্যা মেটে না; সমস্যা হলো আশার তালিকা কোডের সাথেই বদলে যাচ্ছে।'
+      - text: 'কোনো সমস্যা নেই, কারণ নতুন নামটাই বেশি পরিষ্কার'
+        correct: false
+        why: 'নামটা পরিষ্কার হলেও পুরনো client সেটা চেনে না, আর সে জন্যই contract আছে।'
+    ref: contract-tests

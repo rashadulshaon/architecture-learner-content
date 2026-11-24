@@ -1,0 +1,360 @@
+slides:
+  - slug: logged-out-randomly
+    title: 'দ্বিতীয় সার্ভার বসাতেই ব্যবহারকারী লগআউট'
+    kind: story
+    tldr: 'session আর আপলোড করা ফাইল এক সার্ভারের ডিস্কে থাকলে, দ্বিতীয় সার্ভার বসাতেই ব্যবহারকারী কখনো লগইন, কখনো লগআউট দেখে।'
+    keywords: ['stateless', 'session', 'sticky session', 'load balancer', 'স্টেটলেস', 'লগআউট সমস্যা']
+    blocks:
+      - type: text
+        body: |
+          রহিমের অ্যাপ এক সার্ভারে দিব্যি চলছিল। চাপ বাড়ায় সে দ্বিতীয় সার্ভার বসাল, সামনে load balancer। এরপর থেকে ব্যবহারকারীরা অভিযোগ করতে লাগল: "কখনো লগইন থাকে, কখনো থাকে না", আর "ছবি আপলোড করলাম, একটু পরে দেখি নেই।" কারণ session ফাইল আর আপলোড করা ছবি ছিল শুধু প্রথম সার্ভারের ডিস্কে।
+      - type: visual
+        kind: sequence
+        caption: 'এক সার্ভারে লগইন, আরেক সার্ভারে request'
+        actors:
+          - {id: user, label: 'ব্যবহারকারী', icon: user, tip: 'একই ব্রাউজারে দুইটা request পাঠায়, কিন্তু load balancer তাদের আলাদা সার্ভারে পাঠিয়ে দেয়।'}
+          - {id: a, label: 'সার্ভার A', icon: server, tip: 'এর ডিস্কেই লগইনের session ফাইল তৈরি হলো।'}
+          - {id: b, label: 'সার্ভার B', icon: server, tip: 'এর ডিস্কে সেই session ফাইল নেই, তাই সে ব্যবহারকারীকে চেনে না।'}
+        messages:
+          - {from: user, to: a, label: 'লগইন করে'}
+          - {at: a, note: 'session ফাইল A-র ডিস্কে', tone: warn}
+          - {from: a, to: user, label: 'লগইন সফল', dashed: true}
+          - {from: user, to: b, label: 'প্রোফাইল দেখতে চায়', tip: 'load balancer এবার অন্য সার্ভারটা বেছে নিয়েছে।'}
+          - {at: b, note: 'এই ব্যবহারকারীর session নেই', tone: bad}
+          - {from: b, to: user, label: 'আবার লগইন করুন', dashed: true, tone: bad}
+      - type: quote
+        body: 'সার্ভার কখনো ব্যবহারকারীর কিছু নিজের কাছে মনে রাখবে না।'
+    aside:
+      - type: story
+        title: 'মামার মাথার বাকির হিসাব'
+        body: |
+          চায়ের দোকানে বাকির হিসাব শুধু মামার মাথায় থাকলে, মামা ছুটিতে গেলে সব হারিয়ে যায়, আর ভাগ্নে কাউন্টারে বসলেও কিছু বলতে পারে না। হিসাব খাতায় লেখা থাকলে যে-ই কাউন্টারে বসুক, ঠিক হিসাব দেখতে পারে।
+      - type: refs
+        items:
+          - {to: 'scaling/horizontal-vertical', label: 'Horizontal scaling'}
+    check:
+      q: 'দ্বিতীয় সার্ভার বসানোর পর লগইন হারিয়ে যাওয়ার মূল কারণ কী?'
+      a: 'session ফাইল এক সার্ভারের ডিস্কে থাকে। load balancer অন্য সার্ভারে request পাঠালে সেই সার্ভার ব্যবহারকারীকে চেনে না।'
+
+  - slug: state-goes-outside
+    title: 'স্টেটলেস মানে: স্মৃতি সার্ভারের বাইরে'
+    kind: concept
+    tldr: 'Stateless সার্ভার কিছুই নিজের কাছে মনে রাখে না, তাই যেকোনো সার্ভার যেকোনো request সামলাতে পারে; স্মৃতি থাকে ডেটাবেস, Redis বা object storage-এ।'
+    keywords: ['stateless', 'Redis session', 'object storage', 'shared state', 'horizontal scaling', 'স্টেটলেস সার্ভার']
+    blocks:
+      - type: metaphor
+        icon: shop
+        title: 'খাতায় লেখা বাকির হিসাব'
+        body: |
+          দোকানের তিনটা কাউন্টারে তিনজন বসে, কিন্তু কেউ গ্রাহকের নাম বা বাকি মনে রাখে না। সব লেখা থাকে একটা কেন্দ্রীয় খাতায়, আর যে-ই বসুক সে খাতা খুলে দেখে নেয়। তাই যেকোনো কাউন্টার যেকোনো গ্রাহককে সামলাতে পারে, আর ভিড় বাড়লে নতুন কাউন্টার বসানো সহজ।
+      - type: visual
+        kind: table
+        caption: 'সার্ভারের ডিস্কের জিনিস কোথায় সরবে'
+        headers: ['যা সার্ভারে ছিল', 'সমস্যা', 'এখন থাকবে']
+        rows:
+          - cells: ['Session ফাইল', 'অন্য সার্ভার দেখে না', 'Redis বা ডেটাবেস']
+            tip: 'সব সার্ভার একই Redis থেকে session পড়ে, তাই যেকোনো সার্ভারে request গেলে লগইন ঠিক থাকে।'
+          - cells: ['আপলোড করা ছবি/ফাইল', 'অন্য সার্ভারে নেই', 'Object storage (S3-ধরনের)']
+            tip: 'ফাইল সার্ভারের ডিস্কে নয়, একটা শেয়ার্ড storage-এ। সার্ভার মরলেও ফাইল থাকে।'
+          - cells: ['Cache (APCu, ফাইল)', 'প্রতি সার্ভারের আলাদা, বাসি হয়', 'Redis বা Memcached']
+            tip: 'নিজের RAM-এর cache একেক সার্ভারে একেক মান দেখায়। শেয়ার্ড cache সবাইকে এক উত্তর দেয়।'
+          - cells: ['Lock ও counter', 'সার্ভারের মধ্যে মেলে না', 'Redis বা ডেটাবেস']
+            tip: 'দুই সার্ভারের দুটো আলাদা lock মানে আসলে কোনো lock নেই; lock সবার একই জায়গায় থাকতে হবে।'
+          - cells: ['Log ফাইল', 'সার্ভার মরলে হারায়', 'stdout থেকে কেন্দ্রীয় log']
+            tip: 'প্রোগ্রাম log stdout-এ লিখলে প্ল্যাটফর্ম সেটা একসাথে জড়ো করে দিতে পারে।'
+      - type: points
+        title: 'এতে কী পাওয়া যায়'
+        style: check
+        items:
+          - 'যেকোনো সার্ভার যেকোনো request সামলায়, তাই সংখ্যা বাড়ালে ক্ষমতা বাড়ে।'
+          - 'সার্ভার মরলে ডেটা হারায় না, নতুন সার্ভার সাথে সাথে কাজ ধরে।'
+          - 'নতুন কোড deploy-র সময় সার্ভার একটা একটা করে বদলানো যায়।'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Sticky session', meaning: 'load balancer একই ব্যবহারকারীকে সবসময় একই সার্ভারে পাঠায়। সমাধান নয়, লুকানো দুর্বলতা।'}
+          - {term: 'Object storage', meaning: 'ফাইল রাখার আলাদা সার্ভিস (S3, MinIO), যেখানে ফাইল key দিয়ে রাখা ও আনা হয়।'}
+    check:
+      q: 'Sticky session দিয়ে লগইন-সমস্যা সারানো কেন ভালো সমাধান নয়?'
+      a: 'ওই সার্ভার মরলে বা deploy-র সময় বদলালে সেই ব্যবহারকারীদের session হারায়, আর লোড সমানভাবে ভাগ হয় না। আসল সমাধান session বাইরে রাখা।'
+
+  - slug: stateless-symfony
+    title: 'Symfony-কে স্টেটলেস করার দুই কাজ'
+    kind: howto
+    tldr: 'session-কে Redis-এ পাঠাও এক লাইনের কনফিগে, আর আপলোড ফাইল Flysystem দিয়ে object storage-এ রাখো, লোকাল ডিস্কে নয়।'
+    keywords: ['framework.session handler_id', 'Redis', 'Flysystem', 'S3 upload', 'FilesystemOperator', 'আপলোড']
+    blocks:
+      - type: code
+        lang: yaml
+        file: 'config/packages/framework.yaml'
+        variant: good
+        code: |
+          framework:
+              session:
+                  # সব সার্ভার একই Redis-এ session রাখে
+                  handler_id: '%env(REDIS_URL)%'
+                  cookie_secure: auto
+                  cookie_samesite: lax
+        marks:
+          - {line: 4, tip: 'Redis-এর DSN দিলেই Symfony Redis-এ session লেখে। কোড বদলাতে হয় না, শুধু কনফিগ।'}
+      - type: code
+        lang: php
+        file: 'src/Profile/AvatarUploader.php'
+        variant: good
+        code: |
+          final readonly class AvatarUploader
+          {
+              public function __construct(private FilesystemOperator $uploadsStorage)
+              {
+              }
+
+              public function store(UploadedFile $file): string
+              {
+                  $key = sprintf('avatars/%s.%s', Uuid::v7(), $file->guessExtension());
+
+                  $stream = fopen($file->getPathname(), 'r');
+                  $this->uploadsStorage->writeStream($key, $stream);
+                  fclose($stream);
+
+                  return $key; // ডেটাবেসে শুধু এই key রাখো
+              }
+          }
+        marks:
+          - {line: 3, tip: '`FilesystemOperator $uploadsStorage` নামের storage-টাই autowire হয়। আসল storage (S3 বা লোকাল) কনফিগে ঠিক হয়।'}
+          - {line: 15, tip: 'ডেটাবেসে ফাইল নয়, শুধু ফাইলের key রাখো। URL পরে বানানো যায়।'}
+    aside:
+      - type: commands
+        items:
+          - {cmd: 'composer require league/flysystem-bundle league/flysystem-aws-s3-v3', desc: 'Flysystem ও S3 adapter'}
+          - {cmd: 'composer require symfony/uid', desc: 'Uuid::v7() ব্যবহারের জন্য'}
+      - type: tips
+        items:
+          - 'লোকাল ডেভেলপমেন্টে একই code-এ লোকাল adapter বসাও; production-এ S3 adapter। শুধু কনফিগ বদলাবে।'
+          - 'অস্থায়ী কাজের ফাইল (zip বানানো) লোকাল ডিস্কে চলতে পারে, যদি সেই request-এই শেষ হয়।'
+      - type: refs
+        items:
+          - {to: 'data/files-blobs', label: 'ফাইল ও blob ঠিকভাবে রাখা'}
+    check:
+      q: 'আপলোড করা ছবির জন্য ডেটাবেসে ফাইল না রেখে শুধু key রাখা হলো কেন?'
+      a: 'ফাইল থাকে object storage-এ যা সব সার্ভার দেখে, আর ডেটাবেসে ছোট key থাকে। তাতে ডেটাবেস হালকা থাকে, আর storage বদলালেও কোড ঠিক থাকে।'
+
+  - slug: serverless-what
+    title: 'সার্ভারলেস: ট্যাক্সির মতো, যতটা চড়ো ততটা ভাড়া'
+    kind: concept
+    tldr: 'Serverless-এ সার্ভার চালানোর ঝামেলা প্ল্যাটফর্মের, তুমি ব্যবহারের হিসাবে দাম দাও; বদলে cold start ও সীমাবদ্ধতা মানতে হয়।'
+    keywords: ['serverless', 'cold start', 'AWS Lambda', 'Bref', 'FaaS', 'pay per use', 'সার্ভারলেস']
+    blocks:
+      - type: metaphor
+        icon: truck
+        title: 'নিজের গাড়ি আর রাইড-শেয়ার'
+        body: |
+          নিজের গাড়ি থাকলে চলুক বা না চলুক ড্রাইভার, তেল আর গ্যারেজের খরচ আছে। রাইড-শেয়ারে শুধু যতটুকু চড়ো ততটুকু ভাড়া, কিন্তু ডাকার পর গাড়ি আসতে সময় লাগে। Serverless-এ কোড চলে request এলে, আর না এলে খরচ প্রায় শূন্য। গাড়ি আসার সেই অপেক্ষাই cold start।
+      - type: visual
+        kind: sequence
+        caption: 'দীর্ঘ বিরতির পর প্রথম request: cold start'
+        actors:
+          - {id: user, label: 'ব্যবহারকারী', icon: user, tip: 'যে request পাঠায়। প্রথম request-এ অপেক্ষা বেশি, পরেরগুলোয় কম।'}
+          - {id: platform, label: 'প্ল্যাটফর্ম', icon: cloud, tip: 'Lambda বা Cloud Run-এর মতো সেবা, যে কোড চালানোর জায়গা বানায় আর বন্ধ করে।'}
+          - {id: fn, label: 'তোমার কোড', icon: code, tip: 'container-এ চলা তোমার ফাংশন বা Symfony অ্যাপ।'}
+        messages:
+          - {from: user, to: platform, label: 'request আসে'}
+          - {at: platform, note: 'চালু instance নেই', tone: warn}
+          - {from: platform, to: fn, label: 'নতুন instance চালু করো (cold start)', tone: warn, tip: 'কোড নামানো, runtime ও framework চালু করা: এই সময়টাই দেরি।'}
+          - {from: platform, to: fn, label: 'এবার request দাও'}
+          - {from: fn, to: user, label: 'উত্তর, একটু দেরিতে', dashed: true}
+          - {from: user, to: fn, label: 'পরের request: instance চালু, দ্রুত', tone: good}
+      - type: points
+        title: 'মনে রাখার তিনটা সত্য'
+        items:
+          - 'তোমার কোড অবশ্যই stateless, কারণ instance যেকোনো সময় বন্ধ বা নতুন বানানো হয়।'
+          - 'প্রতিটা call-এর সময়সীমা আছে (যেমন Lambda-য় সর্বোচ্চ ১৫ মিনিট)।'
+          - 'অনেক instance একসাথে চললে ডেটাবেসের connection সংখ্যাও একসাথে বাড়ে।'
+    aside:
+      - type: tips
+        items:
+          - 'PHP/Symfony অ্যাপ AWS Lambda-য় Bref দিয়ে চালানো যায়। Cloud Run-এর মতো সেবায় container-ই চলে।'
+          - 'cold start কমাতে framework-এর cache আগেই গরম করে deploy করো, আর অকারণ বড় library বাদ দাও।'
+    check:
+      q: 'Serverless-এ cold start মানে কী, আর কখন এটা বেশি ঝামেলা করে?'
+      a: 'বিরতির পর প্রথম request-এ নতুন instance চালু করার অপেক্ষা। যেখানে প্রতিটা response খুব দ্রুত পেতেই হবে আর traffic কম-বেশি হয়, সেখানে এটা বেশি কষ্ট দেয়।'
+
+  - slug: serverless-fit
+    title: 'সার্ভারলেস কখন মানায়, কখন নয়'
+    kind: compare
+    tldr: 'ঝড়ের মতো আসা-যাওয়া বা অনিয়মিত কাজে serverless সস্তা ও সহজ; সারাক্ষণ চলা ভারী বা দীর্ঘ কাজে নিজস্ব সার্ভার বা container ভালো।'
+    keywords: ['serverless fit', 'event driven', 'cost', 'long running', 'WebSocket', 'কখন serverless']
+    blocks:
+      - type: visual
+        kind: compare
+        caption: 'Serverless কোন কাজে ভালো, কোন কাজে ঝামেলা'
+        columns:
+          - title: 'মানায়'
+            tone: good
+            icon: check
+            tip: 'কাজ ছোট, ঘটনা-নির্ভর বা অনিয়মিত হলে প্রতি-ব্যবহার হিসাব সবচেয়ে সস্তা পড়ে।'
+            items:
+              - 'ছবি আপলোডের পর thumbnail বানানো'
+              - 'রাতে একবার চলা রিপোর্ট বা cron কাজ'
+              - 'webhook সামলানো, যেখানে traffic অনিয়মিত'
+              - 'নতুন ও অজানা traffic-এর প্রোটোটাইপ'
+          - title: 'মানায় না'
+            tone: bad
+            icon: cross
+            tip: 'সারাক্ষণ চলা বা ধারাবাহিক কাজে প্রতি-ব্যবহার হিসাব ব্যয়বহুল, আর সীমা বাধা হয়।'
+            items:
+              - 'সারাক্ষণ ব্যস্ত API, যেখানে ধারাবাহিক ভারী traffic'
+              - 'ঘণ্টাব্যাপী চলা কাজ (সময়সীমা পেরোয়)'
+              - 'WebSocket বা দীর্ঘ সংযোগ'
+              - 'কঠোর latency, যেখানে cold start সহ্য হয় না'
+      - type: points
+        title: 'সিদ্ধান্তের আগে তিনটা প্রশ্ন'
+        style: number
+        items:
+          - 'Traffic কি অনিয়মিত, না সারাক্ষণ স্থির? স্থির হলে সার্ভার সস্তা।'
+          - 'কাজ কি সময়সীমার মধ্যে শেষ হয়, আর cold start-এর দেরি কি সহ্য হয়?'
+          - 'তোমার টিম কি প্ল্যাটফর্মের সীমা, log আর debug-এর নতুন পদ্ধতি শিখতে রাজি?'
+      - type: quote
+        body: 'Serverless যন্ত্রপাতির ঝামেলা কমায়, কিন্তু সীমাবদ্ধতা বাড়ায়। বদলটা বুঝে নাও।'
+    aside:
+      - type: when
+        use:
+          - 'অনিয়মিত বা ঘটনা-নির্ভর কাজ, যেমন webhook ও ফাইল প্রক্রিয়া।'
+          - 'ছোট টিম, যারা সার্ভার চালানোর ঝামেলা এড়াতে চায়।'
+        avoid:
+          - 'সারাক্ষণ ভারী traffic, দীর্ঘ কাজ বা কঠোর latency।'
+      - type: refs
+        items:
+          - {to: 'infra/cloud-primitives', label: 'Cloud-এর মূল উপাদান'}
+          - {to: 'infra/finops', label: 'খরচ হিসাব করা'}
+    check:
+      q: 'সারাক্ষণ ব্যস্ত একটা API-র জন্য serverless কেন প্রায়ই ব্যয়বহুল?'
+      a: 'প্রতি-ব্যবহারের দাম ছোট কাজে সস্তা, কিন্তু সারাক্ষণ চললে সার্ভারের নির্দিষ্ট মাসিক খরচের চেয়ে বেশি পড়ে। cold start আর সীমাও থাকে।'
+
+flashcards:
+  - q: 'Stateless সার্ভার কী?'
+    a: 'যে সার্ভার request-এর মাঝে ব্যবহারকারীর কিছুই নিজের কাছে মনে রাখে না। সব স্মৃতি থাকে বাইরে।'
+    more: |
+      তাই যেকোনো সার্ভার যেকোনো request সামলাতে পারে। এতে সংখ্যা বাড়ানো, সার্ভার বদলানো আর মরা সার্ভারের জায়গায় নতুন বসানো সহজ হয়।
+    ref: state-goes-outside
+  - q: 'Session ফাইল সার্ভারের ডিস্কে থাকলে একাধিক সার্ভারে কী ঘটে?'
+    a: 'ব্যবহারকারী অন্য সার্ভারে গেলে সেটা তার session খুঁজে পায় না, তাই সে হঠাৎ লগআউট হয়ে যায়।'
+    more: |
+      session ডিস্কে রাখা এক সার্ভারে ঠিক চলে, কিন্তু load balancer request ভাগ করে দিলে সমস্যা। সমাধান হলো Redis বা ডেটাবেসে session রাখা, যেখানে সব সার্ভার একই খাতা দেখে।
+    ref: logged-out-randomly
+  - q: 'Sticky session কেন ভালো সমাধান নয়?'
+    a: 'ওই সার্ভার মরলে বা deploy হলে সেই ব্যবহারকারীরা session হারায়, আর লোড সমানভাবে ভাগ হয় না।'
+    more: |
+      Sticky session সমস্যা লুকায়, সারায় না। আসল সমাধান হলো state বাইরে সরানো, যাতে কোন সার্ভারে request গেল সেটা আর গুরুত্বপূর্ণ না থাকে।
+    ref: state-goes-outside
+  - q: 'আপলোড করা ফাইল কোথায় রাখা উচিত, একাধিক সার্ভার থাকলে?'
+    a: 'Object storage-এ (S3-ধরনের), সার্ভারের লোকাল ডিস্কে নয়। ডেটাবেসে শুধু ফাইলের key থাকে।'
+    more: |
+      লোকাল ডিস্কের ফাইল অন্য সার্ভার দেখতে পায় না, আর সার্ভার মরলে হারায়। Symfony-তে Flysystem একটা interface দেয়, যেখানে লোকাল আর S3 adapter বদলানো যায় শুধু কনফিগে।
+    ref: stateless-symfony
+  - q: 'Symfony-তে session Redis-এ পাঠাতে কী লাগে?'
+    a: '`framework.session.handler_id`-তে Redis-এর DSN দিলেই চলে, যেমন `%env(REDIS_URL)%`।'
+    more: |
+      কোড বদলাতে হয় না, শুধু কনফিগ। সব সার্ভার একই Redis-এ session লেখে-পড়ে। Redis-ও একটা নির্ভরতা, তাই তার backup ও availability-ও ভাবতে হয়।
+    ref: stateless-symfony
+  - q: 'Serverless কী?'
+    a: 'যে মডেলে সার্ভার চালানোর ঝামেলা প্ল্যাটফর্মের, কোড চলে request এলে, আর দাম ব্যবহারের হিসাবে।'
+    more: |
+      সার্ভার আছেই, শুধু তুমি সেটা চালাও না। request না এলে instance বন্ধ থাকে, আর এলে নতুন চালু হয়। কোড অবশ্যই stateless হতে হয়, কারণ instance যেকোনো সময় বন্ধ বা নতুন বানানো হয়।
+    ref: serverless-what
+  - q: 'Cold start কী?'
+    a: 'বিরতির পর প্রথম request-এ নতুন instance চালু করার অপেক্ষা, যার ফলে সেই request ধীর হয়।'
+    more: |
+      কোড নামানো, runtime ও framework চালু করা এই সময়ে হয়। পরের request-গুলো চালু instance পায়, তাই দ্রুত। যেখানে প্রতিটা response কঠোরভাবে দ্রুত হতে হয়, সেখানে এটা সমস্যা।
+    ref: serverless-what
+  - q: 'কোন ধরনের কাজে serverless সবচেয়ে ভালো মানায়?'
+    a: 'অনিয়মিত বা ঘটনা-নির্ভর ছোট কাজ: webhook, ফাইল প্রক্রিয়া, রাতের কাজ। সারাক্ষণ ভারী traffic-এ নয়।'
+    more: |
+      যে কাজ বেশিরভাগ সময় বসে থাকে আর মাঝে মাঝে হঠাৎ আসে, সেখানে প্রতি-ব্যবহার হিসাব সস্তা। সারাক্ষণ ব্যস্ত সিস্টেমে নির্দিষ্ট খরচের সার্ভার বা container সাধারণত সস্তা ও পূর্বানুমেয়।
+    ref: serverless-fit
+quiz:
+  - q: 'নিচের কোন জিনিসগুলো সার্ভারের লোকাল ডিস্কে রাখলে একাধিক সার্ভারে সমস্যা হবে?'
+    hint: 'অন্য সার্ভার কি এই জিনিসটা দেখতে পাবে?'
+    options:
+      - text: 'ব্যবহারকারীর আপলোড করা প্রোফাইল ছবি'
+        correct: true
+        why: 'অন্য সার্ভারে request গেলে ছবি পাওয়া যাবে না। এটা object storage-এ রাখো।'
+      - text: 'PHP session ফাইল'
+        correct: true
+        why: 'অন্য সার্ভারে গেলে session চেনা যায় না, ব্যবহারকারী লগআউট হয়ে যায়।'
+      - text: 'একটা request-এর মধ্যেই তৈরি-করা-মোছা অস্থায়ী zip ফাইল'
+        correct: false
+        why: 'ফাইলটা একই request-এ শেষ হয়, তাই অন্য সার্ভারের কিছু দেখার দরকার পড়ে না।'
+      - text: 'deploy-র সময় কোড, যা সব সার্ভারে একই'
+        correct: false
+        why: 'কোড সব সার্ভারে একই deploy হয়; এটা state নয়।'
+    ref: state-goes-outside
+  - q: 'নিচের কনফিগে সমস্যা কী, যদি অ্যাপ দুইটা সার্ভারে চলে?'
+    lang: yaml
+    code: |
+      framework:
+          session:
+              handler_id: null
+              save_path: '%kernel.project_dir%/var/sessions'
+    hint: 'session ফাইল কোথায় লেখা হচ্ছে, আর অন্য সার্ভার সেটা পড়তে পারবে?'
+    options:
+      - text: 'session ফাইল প্রতিটা সার্ভারের নিজের ডিস্কে, তাই অন্য সার্ভার চেনে না'
+        correct: true
+        why: '`var/sessions` ফোল্ডার সার্ভারের লোকাল। সমাধান: Redis বা ডেটাবেসে session।'
+      - text: 'handler_id null দিলে session কাজই করে না'
+        correct: false
+        why: 'ফাইল-ভিত্তিক session ঠিকই চলে; সমস্যা হলো একাধিক সার্ভারে তা শেয়ার হয় না।'
+      - text: '%kernel.project_dir% ভুল সিনট্যাক্স'
+        correct: false
+        why: 'সিনট্যাক্স ঠিক আছে; সমস্যা ধারণাগত।'
+      - text: 'কোনো সমস্যা নেই, ফাইলও নিরাপদ'
+        correct: false
+        why: 'এক সার্ভারে নিরাপদ, কিন্তু load balancer থাকলে লগআউট-সমস্যা হবেই।'
+    ref: stateless-symfony
+  - q: 'আসিফের অ্যাপে প্রতিদিন রাত ২টায় একবার ২০ মিনিটের রিপোর্ট বানানোর কাজ হয়, বাকি সময় কিছু না। কোন বিকল্পটা সবচেয়ে মানানসই?'
+    hint: 'বেশিরভাগ সময় কাজ নেই, আর কাজ অল্প সময়ের।'
+    options:
+      - text: 'serverless বা scale-to-zero container, যেখানে কাজ চলার সময়ই খরচ'
+        correct: true
+        why: 'অনিয়মিত ও সীমিত সময়ের কাজে প্রতি-ব্যবহার হিসাব সস্তা।'
+      - text: 'সারাক্ষণ চালু একটা বড় সার্ভার শুধু এই কাজের জন্য'
+        correct: false
+        why: '২৩ ঘণ্টার বেশি সময় সার্ভার অলস বসে টাকা খরচ করে।'
+      - text: 'ব্যবহারকারীর request-এর ভেতরেই রিপোর্ট বানানো'
+        correct: false
+        why: '২০ মিনিট request ধরে রাখলে timeout হবে। এটা queue বা শিডিউল্ড কাজ।'
+      - text: 'রিপোর্ট বাদ দেওয়া'
+        correct: false
+        why: 'ব্যবসার দরকারি কাজ বাদ দেওয়া উপায় নয়।'
+    ref: serverless-fit
+  - q: 'একটা Lambda-ভিত্তিক Symfony অ্যাপে হঠাৎ ১০০০ ব্যবহারকারী এল। সাধারণত কী সমস্যা হতে পারে?'
+    hint: 'অনেক instance একসাথে ডেটাবেসে কী করে?'
+    options:
+      - text: 'অনেক instance একসাথে চালু হয়ে ডেটাবেসের connection সীমা পার করে ফেলে'
+        correct: true
+        why: 'প্রতিটা instance নিজের connection খোলে। connection pool বা proxy ছাড়া ডেটাবেস দমবন্ধ হয়।'
+      - text: 'সব request একটা instance-এই আটকে থাকে'
+        correct: false
+        why: 'Serverless প্ল্যাটফর্ম বরং নতুন নতুন instance বানায়।'
+      - text: 'কোড PHP থেকে অন্য ভাষায় বদলে যায়'
+        correct: false
+        why: 'ভাষা বদলায় না।'
+      - text: 'কোনো সমস্যা নেই, serverless মানে সীমাহীন ক্ষমতা'
+        correct: false
+        why: 'ডেটাবেস, বাইরের API ও প্ল্যাটফর্মের সীমা থাকেই।'
+    ref: serverless-what
+  - q: 'নিচের কোনটা Sticky session দিয়ে সমস্যা সমাধানের বদলে stateless করার পক্ষে সবচেয়ে জোরালো যুক্তি?'
+    hint: 'একটা সার্ভার মরলে বা deploy-র সময় কী হয়?'
+    options:
+      - text: 'সার্ভার মরলে বা বদলালে ব্যবহারকারী session হারায় না'
+        correct: true
+        why: 'state বাইরে থাকলে যেকোনো সার্ভার তা পড়তে পারে, তাই সার্ভার মরলেও কাজ চলে।'
+      - text: 'Sticky session-এ Redis লাগে না বলে খরচ বাড়ে'
+        correct: false
+        why: 'বিষয়টা খরচ নয়; sticky session-এ নির্ভরযোগ্যতা কম।'
+      - text: 'Stateless হলে কোড কম লিখতে হয়'
+        correct: false
+        why: 'কোডের পরিমাণ নয়, ভঙ্গুরতা কমানোই উদ্দেশ্য।'
+      - text: 'Stateless হলে ডেটাবেস দরকার হয় না'
+        correct: false
+        why: 'ডেটাবেস বরং আরও জরুরি, কারণ state সেখানেই যায়।'
+    ref: state-goes-outside

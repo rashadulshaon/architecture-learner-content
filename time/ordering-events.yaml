@@ -1,0 +1,375 @@
+slides:
+  - slug: newer-edit-lost
+    title: 'নতুন এডিটটাই হারিয়ে গেল'
+    kind: story
+    tldr: 'দুই মেশিনের ঘড়ির সময় তুলনা করে “কোনটা সর্বশেষ” বাছলে এগিয়ে-থাকা ঘড়ির পুরনো লেখা জিতে যায়, আর সত্যিকারের নতুন লেখা চুপচাপ হারায়।'
+    keywords: ['last write wins', 'LWW', 'timestamp', 'clock skew', 'ordering', 'কোনটা আগে']
+    blocks:
+      - type: metaphor
+        icon: building
+        title: 'দুই শাখার দুই দেয়ালঘড়ি'
+        body: |
+          ব্যাংকের দুই শাখায় দুটো দেয়ালঘড়ি, একটা ৫ মিনিট এগিয়ে। দুই শাখা একই গ্রাহকের ঠিকানা বদলাল, আর হেড অফিস বলল “যার সময় বেশি, সেটাই শেষ”। এগিয়ে-থাকা ঘড়ির পুরনো বদলই তখন জিতে যায়। আসলে কোনটা পরে ঘটেছে, তা ঘড়ি দেখে বলা যায় না।
+      - type: visual
+        kind: sequence
+        caption: 'ফোন A-র ঘড়ি ৫ মিনিট এগিয়ে: পুরনো এডিট জিতল'
+        actors:
+          - {id: a, label: 'ফোন A', icon: phone, tip: 'ঘড়ি ৫ মিনিট এগিয়ে। আসল সময় ১০:০০-তে নাম বদলায়।'}
+          - {id: b, label: 'ফোন B', icon: phone, tip: 'ঘড়ি ঠিক। আসল সময় ১০:০২-তে, মানে A-র পরে, নাম বদলায়।'}
+          - {id: db, label: 'ডেটাবেস', icon: db, tip: 'প্রতিটা লেখার সাথে আসা timestamp দেখে “সর্বশেষ” ঠিক করে।'}
+        messages:
+          - {from: a, to: db, label: 'নাম = রাহিম, সময় ১০:০৫', tip: 'আসল সময় ১০:০০, কিন্তু A-র ঘড়ি এগিয়ে বলে ১০:০৫ লিখেছে।'}
+          - {from: b, to: db, label: 'নাম = রহিম আহমেদ, সময় ১০:০২', tip: 'আসলে এটাই নতুন বদল, কিন্তু timestamp ছোট।'}
+          - {at: db, note: '১০:০৫ > ১০:০২, তাই “রাহিম” টেকে', tone: bad, tip: 'ডেটাবেস নতুন বদলটা ফেলে দিল, কোনো error ছাড়াই। কেউ জানতেই পারে না।'}
+    aside:
+      - type: story
+        title: 'সিঙ্ক হওয়া নোটের গল্প'
+        body: |
+          এক নোট-অ্যাপে ফোন আর ল্যাপটপ সিঙ্ক হতো ঘড়ির সময় দেখে। এক ব্যবহারকারীর ল্যাপটপের ঘড়ি ভুল থাকায় তার সদ্য লেখা নোট বারবার পুরনো সংস্করণ দিয়ে ঢাকা পড়ত।
+      - type: terms
+        items:
+          - {term: 'Last-write-wins (LWW)', meaning: 'দুটো বদলের মধ্যে timestamp বড়টা রাখা, ছোটটা ফেলে দেওয়া।'}
+          - {term: 'Happened-before', meaning: 'এক ঘটনা আরেকটার কারণ বা আগের, এটা জানার সম্পর্ক। ঘড়ির সময় নয়।'}
+    check:
+      q: 'ফোন A-র ঘড়ি ৫ মিনিট এগিয়ে। A আগে লিখেছে, B পরে। LWW কার লেখা রাখে, আর কেন সেটা ভুল?'
+      a: 'A-র লেখা রাখে, কারণ তার timestamp ১০:০৫ বড়। কিন্তু B-র লেখাই আসলে নতুন, আর সেটা কোনো error ছাড়া হারিয়ে যায়।'
+
+  - slug: lamport-clock
+    title: 'Logical clock: সময় নয়, কারণ-ফল গোনা'
+    kind: concept
+    tldr: 'প্রতিটা মেশিন নিজের একটা গণনা রাখে; বার্তা পাঠালে সেটা সাথে যায়, আর পাওয়ার সময় নিজেরটা max(নিজের, পাওয়া) + ১ করে। এতে কারণ আগে, ফল পরে।'
+    keywords: ['Lamport clock', 'logical clock', 'happened-before', 'counter', 'causality', 'ক্রম']
+    blocks:
+      - type: text
+        body: |
+          ঘড়ির সময় নির্ভরযোগ্য না হলে ক্রম কীভাবে ঠিক করবে? Lamport-এর উত্তর: ঘড়ি বাদ দিয়ে একটা সাধারণ **গণনা** রাখো। নিয়ম দুটো: নিজে কোনো ঘটনা ঘটালে গণনা ১ বাড়াও; অন্যের কাছ থেকে বার্তা পেলে গণনা হবে `max(নিজেরটা, বার্তারটা) + ১`। তাই যা আগে ঘটেছে বলে জানা, তার গণনা সবসময় ছোট থাকে।
+      - type: visual
+        kind: sequence
+        caption: 'Lamport clock: গণনা বার্তার সাথে ঘুরে অন্যজনকে এগিয়ে দেয়'
+        actors:
+          - {id: a, label: 'সার্ভার A', icon: server, tip: 'নিজের গণনা রাখে; শুরুতে ০।'}
+          - {id: b, label: 'সার্ভার B', icon: server, tip: 'নিজের আলাদা গণনা রাখে; শুরুতে ০।'}
+          - {id: c, label: 'সার্ভার C', icon: server, tip: 'তৃতীয় সার্ভার; শুরুতে ০।'}
+        messages:
+          - {at: a, note: 'ঘটনা ক: গণনা = ১', tone: accent, tip: 'নিজে ঘটনা ঘটালে গণনা ১ বাড়ে।'}
+          - {from: a, to: b, label: 'বার্তা, গণনা ১', tip: 'পাঠানোর সময় নিজের গণনা সাথে দিয়ে দেয়।'}
+          - {at: b, note: 'max(০, ১) + ১ = ২', tone: good, tip: 'গ্রহণ করে B-র গণনা ২। এখন ঘটনা ক-এর (১) চেয়ে বড়, তাই ক আগে, এটা প্রমাণ।'}
+          - {from: b, to: c, label: 'বার্তা, গণনা ২'}
+          - {at: c, note: 'max(০, ২) + ১ = ৩', tone: good, tip: 'C-র গণনা ৩, ক (১) আর B-র ঘটনা (২) দুটোরই পরে।'}
+      - type: quote
+        body: 'যদি ক ঘটে খ-এর আগে, তবে গণনা (ক) < গণনা (খ)। উল্টোটা সবসময় সত্য নয়।'
+        by: 'Lamport clock'
+    aside:
+      - type: problem
+        body: 'যে দুটো ঘটনার মধ্যে কোনো বার্তা-সম্পর্ক নেই (concurrent), তাদের গণনা ছোট-বড় যা-ই হোক, এর মানে “আগে-পরে” নয়। Lamport clock তাদের পার্থক্য করতে পারে না।'
+      - type: tips
+        items:
+          - 'সব ঘটনার একটাই মোট ক্রম চাইলে গণনা সমান হলে node id দিয়ে ভাঙো: (গণনা, node id)।'
+          - 'Concurrent ঘটনা ধরতে Vector clock লাগে। এটা আরও ভারী, DB-র conflict detection-এ ব্যবহৃত।'
+    check:
+      q: 'সার্ভার B-র গণনা ০, সে A-র কাছ থেকে গণনা ৫-এর বার্তা পেল। B-র নতুন গণনা কত, আর কেন?'
+      a: '৬। নিয়ম: max(নিজের ০, পাওয়া ৫) + ১ = ৬। এতে প্রমাণ থাকে যে বার্তা গ্রহণ বার্তা পাঠানোর পরের ঘটনা।'
+
+  - slug: version-numbers
+    title: 'কাজের ক্রম: version নম্বর আর sequence'
+    kind: howto
+    tldr: 'প্রতিটা entity-র নিজস্ব version নম্বর রাখো; বদলের সাথে atomic ভাবে বাড়াও, আর যে event-এর version ছোট, তাকে ফেলে দাও। ঘড়ি লাগে না।'
+    keywords: ['version number', 'sequence', 'stale event', 'out of order', 'UUIDv7', 'atomic increment']
+    blocks:
+      - type: text
+        body: |
+          বাস্তব সিস্টেমে সহজ উপায় হলো এক জায়গায় ক্রম বানানো: ডেটাবেস। প্রতিটা বদলে `version` এক করে বাড়ে, আর বদলের event-এ সেই নম্বর যায়। যে গ্রাহক event পায়, সে শুধু নিজের জানা সর্বশেষ version-এর চেয়ে বড় নম্বরই গ্রহণ করে। দেরিতে আসা পুরনো event কোনো ক্ষতি করে না।
+      - type: code
+        lang: sql
+        file: 'উৎস: ডেটাবেস'
+        code: |
+          -- বদল আর নতুন version একসাথে, atomic; PostgreSQL
+          UPDATE customer
+          SET name = :name, version = version + 1
+          WHERE id = :id
+          RETURNING version;
+        marks:
+          - {line: 3, tip: 'version বাড়ানো আর নাম বদলানো একই statement-এ। দুই request একসাথে এলে প্রত্যেকে আলাদা নম্বর পায়।'}
+          - {line: 5, tip: 'নতুন version ফেরত আসে। এটাই event-এ বসে।'}
+      - type: code
+        lang: php
+        file: 'src/MessageHandler/CustomerProjectionHandler.php'
+        code: |
+          #[AsMessageHandler]
+          final readonly class CustomerProjectionHandler
+          {
+              public function __invoke(CustomerRenamed $e): void
+              {
+                  $applied = $this->connection->executeStatement(
+                      'UPDATE customer_view SET name = :name, version = :v
+                       WHERE id = :id AND version < :v',
+                      ['name' => $e->name, 'v' => $e->version, 'id' => $e->customerId],
+                  );
+                  // ০ মানে আমি আরও নতুন কিছু জানি; এটা পুরনো event, ফেলে দাও
+              }
+          }
+        marks:
+          - {line: 8, tip: 'শুধু আরও বড় version হলেই লেখা যায়। উল্টো ক্রমে আসা event-ও শেষে ঠিক ফলই দেয়।'}
+          - {line: 11, tip: 'ফল ০ মানে event পুরনো, কিছু বদলায়নি। এটা error নয়, নিরাপদে বাদ।'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'PostgreSQL sequence-এর সংখ্যা transaction শুরুর ক্রমে বাড়ে, COMMIT-এর ক্রমে নয়। তাই “N-এর পরের সব event পড়ো” কার্সর দিয়ে বড় নম্বরের আগে ছোট নম্বর COMMIT হলে কিছু হারাতে পারে।'
+          - 'UUIDv7 বা ULID সময়-সাজানো, কিন্তু ভিন্ন মেশিনের বেলায় ঘড়ির ওপর নির্ভর করে। এটা একটা আনুমানিক ক্রম, কারণ-ফলের প্রমাণ নয়।'
+      - type: refs
+        items:
+          - {to: 'concurrency/locking', label: 'Optimistic lock-এর version কলাম'}
+          - {to: 'data/id-generation', label: 'ID বানানোর উপায়'}
+    check:
+      q: 'version ৭-এর event আগে এল, তারপর দেরিতে version ৬-এর event এল। কী ফল হওয়া উচিত, আর কীভাবে?'
+      a: 'ফল version ৭-এর অবস্থাই থাকবে। `WHERE version < 6` মেলে না (সারিতে ৭), তাই ০টা সারি বদলায় আর পুরনো event ফেলে দেওয়া হয়।'
+
+  - slug: choose-ordering
+    title: 'ক্রম ঠিক করার চার উপায়: কোনটা কখন'
+    kind: compare
+    tldr: 'ঘড়ি আনুমানিক; Lamport কারণ-ফল দেয়; version নম্বর এক জায়গায় ক্রম বানায়; Hybrid logical clock ঘড়ির মতো পড়া যায় আবার কারণ-ফলও মানে।'
+    keywords: ['hybrid logical clock', 'HLC', 'vector clock', 'wall clock', 'comparison']
+    blocks:
+      - type: text
+        body: |
+          চারটা উপায়ের প্রতিটা আলাদা প্রশ্নের উত্তর। **Hybrid logical clock (HLC)** ঘড়ির সময়কে ধরে রাখে, আবার একটা ছোট গণনা জুড়ে কারণ-ফলের ক্রমও রক্ষা করে: (ঘড়ির সময়, গণনা)। ঘড়ি পিছিয়ে গেলে গণনা বাড়িয়ে সামনে চলে। বেশিরভাগ অ্যাপ লেখে শুধু একটা ডেটাবেস, সেখানে version নম্বরই যথেষ্ট।
+      - type: visual
+        kind: table
+        caption: 'ক্রম নির্ধারণের চারটা উপায় পাশাপাশি'
+        headers: ['উপায়', 'কী দেয়', 'দুর্বলতা']
+        rows:
+          - cells: ['Wall-clock timestamp', 'মানুষের পড়ার সময়', 'ঘড়ি ভুল; ক্রম নিশ্চিত নয়']
+            tip: 'লগ বা রিপোর্টে সময় দেখানোর জন্য দারুণ। কে আগে, তা নির্ণয়ের জন্য নির্ভরযোগ্য নয়।'
+          - cells: ['Lamport clock', 'কারণ আগে, ফল পরে', 'concurrent ঘটনা আলাদা করা যায় না']
+            tip: 'শুধু গণনা, সস্তা আর সরল। কিন্তু গণনা দেখে আসল সময় বোঝা যায় না।'
+          - cells: ['Version নম্বর / sequence', 'এক entity-র নিখুঁত ক্রম', 'একটা কর্তৃপক্ষ লাগে']
+            tip: 'এক ডেটাবেস বা এক leader সংখ্যা বিলি করে। বেশিরভাগ অ্যাপের জন্য সবচেয়ে সোজা ও যথেষ্ট।'
+          - cells: ['Hybrid logical clock', 'ঘড়ির কাছাকাছি সময় + ক্রম', 'জটিল; লাইব্রেরি লাগে']
+            tip: 'বহু-region ডেটাবেস এটা ব্যবহার করে। অ্যাপ লেখক সাধারণত নিজে বানান না, ডেটাবেসের ভেতরে পান।'
+      - type: quote
+        body: 'কে আগে, সেটা ঘড়ির নয়, নম্বরের কাজ। ঘড়ি শুধু মানুষকে দেখানোর জন্য।'
+    aside:
+      - type: when
+        use: ['একটাই ডেটাবেস, এক entity-র ইতিহাস: version নম্বর', 'বহু region, স্থানীয় লেখা: HLC বা ডেটাবেসের বিল্ট-ইন সমর্থন']
+        avoid: ['ক্রম ঠিক করতে ক্লায়েন্টের পাঠানো সময়']
+      - type: refs
+        items:
+          - {to: 'data/consistency-models', label: 'Consistency model'}
+          - {to: 'time/clocks-lie', label: 'ঘড়ি কেন মিথ্যা বলে'}
+    check:
+      q: 'ঘড়ির সময়ের মতো পড়া যায়, আবার কারণ-ফলের ক্রমও মানে, এমন clock কোনটা?'
+      a: 'Hybrid logical clock (HLC)। সে (ঘড়ির সময়, গণনা) জোড়া রাখে; ঘড়ি পিছিয়ে গেলে গণনা বাড়িয়ে ক্রম বজায় রাখে।'
+
+  - slug: lww-danger
+    title: 'Last-write-wins সরানোর উপায়'
+    kind: pitfall
+    tldr: 'ক্লায়েন্টের updatedAt দেখে “নতুন” বেছে নিলে পুরনো লেখা নতুনকে ঢাকে। version মিলিয়ে conflict ধরো, আর অসমান ক্ষেত্র আলাদা আলাদা মেলাও।'
+    keywords: ['last write wins', 'updatedAt', 'sync', 'conflict detection', 'merge', 'ETag']
+    blocks:
+      - type: code
+        lang: php
+        file: 'src/Controller/ProfileSyncController.php'
+        variant: bad
+        code: |
+          #[Route('/api/profile/sync', methods: ['PUT'])]
+          public function sync(#[MapRequestPayload] ProfileDto $dto): JsonResponse
+          {
+              $profile = $this->profiles->find($dto->id);
+
+              // ক্লায়েন্টের ঘড়ি দেখে “নতুন” বাছা: ঝুঁকিপূর্ণ
+              if ($dto->updatedAt > $profile->getUpdatedAt()) {
+                  $profile->replaceWith($dto);        // পুরো সারি ঢেকে ফেলে
+                  $this->em->flush();
+              }
+
+              return $this->json(['ok' => true]);
+          }
+        marks:
+          - {line: 7, tip: 'ক্লায়েন্টের updatedAt ক্লায়েন্টের ঘড়ির সময়। ঘড়ি এগিয়ে থাকলে সবসময় জেতে।'}
+          - {line: 8, tip: 'পুরো সারি বদলে যায়, তাই অন্য ক্ষেত্রে অন্যজনের করা বদলও চুপচাপ মুছে যায়।'}
+      - type: code
+        lang: php
+        file: 'src/Controller/ProfileSyncController.php'
+        variant: good
+        code: |
+          #[Route('/api/profile/{id}', methods: ['PATCH'])]
+          public function update(int $id, #[MapRequestPayload] ProfilePatch $dto): JsonResponse
+          {
+              try {
+                  $this->em->wrapInTransaction(function () use ($id, $dto): void {
+                      $p = $this->em->find(Profile::class, $id, LockMode::OPTIMISTIC, $dto->version);
+                      $p->apply($dto->changedFields());   // শুধু যে ক্ষেত্র বদলেছে
+                  });
+              } catch (OptimisticLockException) {
+                  return $this->json(['error' => 'নতুন সংস্করণ এসেছে'], 409);
+              }
+
+              return $this->json(['ok' => true]);
+          }
+        marks:
+          - {line: 6, tip: 'ক্লায়েন্ট যে version দেখে বদলেছিল, সেটা এখনো সারির version-এর সমান কি না যাচাই। ঘড়ি লাগে না।'}
+          - {line: 7, tip: 'শুধু বদলানো ক্ষেত্র লেখো, বাকিগুলো যেমন আছে তেমন। এতে সম্পর্কহীন বদল একে অপরকে মোছে না।'}
+          - {line: 10, tip: 'conflict হলে ক্লায়েন্টকে জানাও। নতুন ডেটা এনে মেলাতে বা ব্যবহারকারীকে বেছে নিতে বলো।'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'LWW ঠিক আছে যেখানে হারালে ক্ষতি নেই: cache, “সর্বশেষ দেখার সময়”। টাকা, ঠিকানা, ডকুমেন্টে নয়।'
+          - 'ক্লায়েন্টের সময় কখনো সিদ্ধান্তের ভিত্তি নয়। দরকার হলে সার্ভারের সময় বা server-assigned version।'
+      - type: refs
+        items:
+          - {to: 'concurrency/locking', label: 'Optimistic lock বিস্তারিত'}
+          - {to: 'interaction/offline-sync', label: 'অফলাইন সিঙ্কে conflict'}
+    check:
+      q: 'ক্লায়েন্টের updatedAt দিয়ে “নতুন” বাছার বদলে কী দিয়ে conflict ধরবে, আর conflict হলে কী করবে?'
+      a: 'সার্ভার-দেওয়া version দিয়ে। না মিললে 409 ফেরত দাও, যাতে ক্লায়েন্ট নতুন ডেটা এনে মেলায় বা ব্যবহারকারী বেছে নেয়।'
+
+flashcards:
+  - q: 'কেন ঘড়ির timestamp দিয়ে দুই মেশিনের ঘটনার ক্রম ঠিক করা যায় না?'
+    a: 'প্রতিটা মেশিনের ঘড়ি আলাদা (skew, drift, NTP jump), তাই বড় timestamp মানেই পরে ঘটা নয়।'
+    more: |
+      দুই মেশিনের ঘড়ির পার্থক্য কয়েক মিলিসেকেন্ড থেকে কয়েক মিনিট হতে পারে। একটা ঘটনা অন্যটার কারণ হলেও timestamp উল্টো দেখাতে পারে। তাই কারণ-ফলের ক্রমের জন্য ঘড়ি ছাড়া অন্য উপায় লাগে।
+    ref: newer-edit-lost
+  - q: 'Last-write-wins (LWW) কী?'
+    a: 'দুটো বদলের মধ্যে timestamp বড়টা রাখা, ছোটটা ফেলে দেওয়া। ঘড়ি ভুল থাকলে নতুন বদল চুপচাপ হারায়।'
+    more: |
+      সহজ বলে অনেক ডেটাবেস ও সিঙ্ক সিস্টেম এটা ব্যবহার করে। কিন্তু এগিয়ে-থাকা ঘড়ি সবসময় জেতে আর হেরে-যাওয়া লেখা কোনো error ছাড়া হারায়। তাই সতর্কতা লাগে।
+    ref: newer-edit-lost
+  - q: 'Lamport clock কীভাবে কাজ করে?'
+    a: 'প্রতিটা মেশিন একটা গণনা রাখে। ঘটনায় ১ বাড়ে; বার্তা পেলে হয় max(নিজের, পাওয়া) + ১। বার্তার সাথে গণনা যায়।'
+    more: |
+      এতে যা আগে ঘটেছে বলে জানা, তার গণনা সবসময় ছোট। মোট ক্রম চাইলে সমান গণনায় node id দিয়ে ভাঙো। এটা আসল সময় দেয় না, শুধু কারণ-ফলের ক্রম রক্ষা করে।
+    ref: lamport-clock
+  - q: 'Lamport clock-এর সীমাবদ্ধতা কী?'
+    a: 'ক আগে খ হলে গণনা (ক) < গণনা (খ), কিন্তু গণনা ছোট হলেই আগে ঘটেছে এমন নয়। concurrent ঘটনা আলাদা করা যায় না।'
+    more: |
+      যে দুটো ঘটনার মধ্যে বার্তার সম্পর্ক নেই, তারা concurrent। এদের গণনা যেকোনো ক্রমে হতে পারে। Concurrent ধরতে Vector clock লাগে, যা বেশি জায়গা নেয়।
+    ref: lamport-clock
+  - q: 'কীভাবে version নম্বর দিয়ে ক্রম ঠিক রাখবে?'
+    a: 'বদলের সাথে atomic ভাবে `version = version + 1` করো। গ্রাহক শুধু নিজের জানা version-এর চেয়ে বড় নম্বর মানে, ছোট হলে ফেলে দেয়।'
+    more: |
+      ডেটাবেসের UPDATE … RETURNING version ক্রম দেয়। গ্রাহকের দিকে `UPDATE … WHERE version < :v`। উল্টো ক্রমে আসা event-ও শেষে সঠিক ফল দেয়, কারণ ছোট version ধরা পড়ে ফেলা হয়।
+    ref: version-numbers
+  - q: 'PostgreSQL sequence কি COMMIT-এর ক্রম দেয়?'
+    a: 'না। sequence-এর নম্বর পাওয়ার ক্রমে বাড়ে। বড় নম্বরের transaction আগে COMMIT করলে ছোট নম্বর পরে দেখা যেতে পারে।'
+    more: |
+      তাই “আমি ১০০ পর্যন্ত পড়েছি, এবার ১০১ থেকে” কার্সর দিয়ে event পড়লে কিছু হারাতে পারে। নিরাপদ উপায়: প্রতি entity-র version, অথবা outbox + আলাদা অগ্রগতি-চিহ্ন।
+    ref: version-numbers
+  - q: 'Hybrid logical clock (HLC) কী?'
+    a: 'ঘড়ির সময় আর একটা ছোট গণনা জোড়া: (সময়, গণনা)। ঘড়ির মতো পড়া যায়, আবার কারণ-ফলের ক্রমও রক্ষা পায়।'
+    more: |
+      ঘড়ি পিছিয়ে গেলে বা সমান থাকলে গণনা বাড়িয়ে ক্রম অক্ষুণ্ন রাখে। কিছু বহু-region ডেটাবেস ভেতরে এটা ব্যবহার করে। অ্যাপ লেখকদের সাধারণত নিজে বানাতে হয় না।
+    ref: choose-ordering
+  - q: 'UUIDv7 বা ULID কি নিখুঁত ঘটনা-ক্রম দেয়?'
+    a: 'না। এরা সময়-সাজানো, কিন্তু ভিন্ন মেশিনের ঘড়ির ওপর নির্ভর করে। আনুমানিক ক্রম; কারণ-ফলের প্রমাণ নয়।'
+    more: |
+      একই মেশিনে একই মিলিসেকেন্ডে বানানো ID সাধারণত বাড়ন্ত থাকে। কিন্তু দুই সার্ভারের ঘড়ি আলাদা হলে ক্রম মিলবে না। index-এর জন্য ভালো, ঘটনার সত্যিকারের ক্রমের জন্য নয়।
+    ref: version-numbers
+  - q: 'ক্লায়েন্টের updatedAt দিয়ে সিঙ্ক conflict ঠিক করলে কী সমস্যা?'
+    a: 'ক্লায়েন্টের ঘড়ি ভুল বা ইচ্ছাকৃতভাবে সামনে থাকলে সবসময় জেতে। পুরো সারি ঢাকলে অন্য ক্ষেত্রের বদলও হারায়।'
+    more: |
+      ক্লায়েন্টের সময় কখনো সিদ্ধান্তের ভিত্তি নয়। সার্ভারের দেওয়া version দিয়ে conflict ধরো, না মিললে 409 ফেরত দাও, আর যে ক্ষেত্র বদলেছে শুধু সেটাই লেখো।
+    ref: lww-danger
+
+quiz:
+  - q: 'নিচের কোডে কী সমস্যা?'
+    lang: php
+    code: |
+      if ($incoming->updatedAt > $row->updatedAt) {
+          $row->replaceWith($incoming);
+      }
+    hint: 'updatedAt কে বানায়, কার ঘড়ি থেকে?'
+    options:
+      - text: 'দুই মেশিনের ঘড়ি আলাদা বলে নতুন বদল হারিয়ে যেতে পারে'
+        correct: true
+        why: 'timestamp তুলনা কারণ-ফলের ক্রম দেয় না; এগিয়ে-থাকা ঘড়ির পুরনো লেখা জেতে।'
+      - text: 'replaceWith() অনেক ধীর'
+        correct: false
+        why: 'গতি এখানে সমস্যা নয়, শুদ্ধতা।'
+      - text: '`>` এর বদলে `>=` দেওয়া উচিত'
+        correct: false
+        why: 'চিহ্ন বদলালে মূল সমস্যা, ঘড়ির ভুল, যায় না।'
+      - text: 'কোনো সমস্যা নেই, ঘড়ি NTP দিয়ে মেলানো'
+        correct: false
+        why: 'NTP-ও মিলিসেকেন্ড-সেকেন্ডের ফারাক রাখে, আর ক্লায়েন্টের ঘড়ি নিয়ন্ত্রণের বাইরে।'
+    ref: newer-edit-lost
+  - q: 'সার্ভার A-র গণনা ৪। সে বার্তা পাঠাল। সার্ভার B-র গণনা ৯। B বার্তা পেলে তার নতুন গণনা কত?'
+    hint: 'max(নিজের, পাওয়া) + ১।'
+    options:
+      - text: '৫'
+        correct: false
+        why: 'এটা A-র গণনার পরের সংখ্যা। B নিজের ৯ উপেক্ষা করতে পারে না।'
+      - text: '১০'
+        correct: true
+        why: 'max(৯, ৪) + ১ = ১০। গণনা কখনো পিছিয়ে যায় না।'
+      - text: '১৩'
+        correct: false
+        why: 'দুটো গণনা যোগ করা নিয়ম নয়; নিয়ম হলো বড়টা + ১।'
+      - text: '৯'
+        correct: false
+        why: 'বার্তা গ্রহণও একটা ঘটনা, তাই গণনা অন্তত ১ বাড়ে।'
+    ref: lamport-clock
+  - q: 'Lamport clock সম্পর্কে কোনগুলো সত্যি?'
+    hint: 'কারণ-ফল আর concurrent-এর পার্থক্য ভাবো।'
+    options:
+      - text: 'ক যদি খ-এর কারণ হয়, গণনা (ক) < গণনা (খ)'
+        correct: true
+        why: 'বার্তার সাথে গণনা ঘোরে বলে প্রাপক সবসময় বড় নম্বর পায়।'
+      - text: 'গণনা ছোট মানেই ঘটনাটা আগে ঘটেছে'
+        correct: false
+        why: 'concurrent ঘটনার বেলায় গণনা যেকোনো দিকে হতে পারে; এর মানে আগে-পরে নয়।'
+      - text: 'সমান গণনায় node id দিয়ে মোট ক্রম বানানো যায়'
+        correct: true
+        why: '(গণনা, node id) জোড়া সবার কাছে একই মোট ক্রম দেয়, যদিও concurrent-দের ক্রমটা নিজস্ব।'
+      - text: 'এটা ঘড়ির আসল সময় সংরক্ষণ করে'
+        correct: false
+        why: 'এটা শুধু গণনা; সময় বোঝায় না।'
+    ref: lamport-clock
+  - q: 'version ৭ বসে গেছে। এখন দেরিতে version ৬-এর event এল। নিচের handler কী করবে?'
+    lang: sql
+    code: |
+      UPDATE customer_view SET name = :name, version = :v
+      WHERE id = :id AND version < :v;
+    hint: 'WHERE শর্ত মেলে কি?'
+    options:
+      - text: 'শর্ত মেলে না, ০টা সারি বদলায়; পুরনো event নিরাপদে ফেলা যায়'
+        correct: true
+        why: 'সারিতে version ৭, ৭ < ৬ মিথ্যা। অবস্থা ঠিক থাকে।'
+      - text: 'version ৬ লিখে সারিটা পুরনো অবস্থায় ফিরিয়ে দেয়'
+        correct: false
+        why: 'এটাই আটকানোর জন্য শর্ত লেখা হয়েছে; ছোট version লেখাই হয় না।'
+      - text: 'exception ছোড়ে আর message retry হয়'
+        correct: false
+        why: 'UPDATE-এ কোনো সারি না মিললে error হয় না, শুধু ০ ফেরত দেয়।'
+    ref: version-numbers
+  - q: 'বহু region জুড়ে চলা ডেটাবেসে ঘড়ির কাছাকাছি সময়ও লাগে, আবার কারণ-ফলের ক্রমও রাখতে হয়। কোন উপায়টা মানায়?'
+    hint: 'সময়ের সাথে একটা ছোট গণনা।'
+    options:
+      - text: 'শুধু wall-clock timestamp'
+        correct: false
+        why: 'ঘড়ির ভুলের কারণে ক্রম ভেঙে যায়।'
+      - text: 'Hybrid logical clock'
+        correct: true
+        why: '(ঘড়ির সময়, গণনা) দুটোর সুবিধা একসাথে দেয়।'
+      - text: 'প্রতিটা সার্ভারের নিজস্ব ক্রমিক সংখ্যা'
+        correct: false
+        why: 'সার্ভারের মধ্যে তুলনা করা যায় না; global ক্রম হয় না।'
+      - text: 'ক্লায়েন্টের পাঠানো সময়'
+        correct: false
+        why: 'ক্লায়েন্টের ঘড়ি নিয়ন্ত্রণের বাইরে ও অবিশ্বস্ত।'
+    ref: choose-ordering
+  - q: 'কোন ক্ষেত্রগুলোতে last-write-wins মেনে নেওয়া যায়?'
+    hint: 'হারালে ক্ষতি কতটুকু?'
+    options:
+      - text: '“সর্বশেষ দেখার সময়” (last seen) ফিল্ড'
+        correct: true
+        why: 'ভুল হলেও ক্ষতি নেই, পরের বার ঠিক হয়।'
+      - text: 'cache-এ রাখা সাময়িক মান'
+        correct: true
+        why: 'ভুল মান TTL-এ মুছে যায়, উৎস থেকে আবার আসে।'
+      - text: 'ব্যবহারকারীর সংরক্ষিত ঠিকানা'
+        correct: false
+        why: 'ঠিকানা হারালে ডেলিভারি ভুল জায়গায় যায়; conflict ধরতে হবে।'
+      - text: 'শেয়ার করা ডকুমেন্টের বিষয়বস্তু'
+        correct: false
+        why: 'একজনের কাজ চুপচাপ মুছে গেলে সরাসরি ক্ষতি, এখানে merge বা conflict লাগে।'
+    ref: lww-danger

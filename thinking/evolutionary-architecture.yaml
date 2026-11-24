@@ -1,0 +1,332 @@
+slides:
+  - slug: silent-drift
+    title: 'কাগজের নিয়ম আর নীরবে সরে যাওয়া কোড'
+    kind: story
+    tldr: 'আর্কিটেকচারের নিয়ম শুধু ডকুমেন্টে লেখা থাকলে কেউ লক্ষ না করেই কোড নিয়ম থেকে সরে যায় — যতক্ষণ না ভাঙনটা বড় হয়।'
+    keywords: ['architecture drift', 'erosion', 'rules', 'আর্কিটেকচার ক্ষয়', 'নিয়ম ভাঙা', 'code review']
+    blocks:
+      - type: metaphor
+        icon: heart
+        title: 'ডায়েট চার্ট বনাম রোজ ওজন মাপা'
+        body: |
+          ডাক্তার ডায়েট চার্ট দিলেন, রহিম সেটা ফ্রিজে সেঁটে রাখলেন। ওজন মাপার যন্ত্র নেই, তাই কেউ টের পায় না কবে কয় কেজি বেড়েছে। ছয় মাস পরে চেকআপে গিয়ে দেখা গেল ১৫ কেজি বেশি। আর্কিটেকচারের নিয়মও এমন চার্ট — মাপা না হলে কেউ জানে না কোড কত সরেছে।
+      - type: visual
+        kind: bars
+        caption: 'নিয়ম ভাঙা import-এর সংখ্যা, নয় মাসে (কেউ মাপেনি)'
+        items:
+          - {label: 'জানুয়ারি', value: 0, display: '০টা', tone: good, tip: 'শুরুতে সবাই নিয়ম মানে: Domain-এর ভেতরে Doctrine বা HTTP-র কিছু নেই।'}
+          - {label: 'মার্চ', value: 7, display: '৭টা', tip: 'তাড়ার ফিচারে কয়েকটা শর্টকাট। প্রতিটা আলাদা করে নিরীহ দেখায়।'}
+          - {label: 'জুন', value: 31, display: '৩১টা', tone: warn, tip: 'নতুন সদস্যরা পুরনো কোড দেখে শেখে। শর্টকাট দেখে তারাও শর্টকাট নেয়।'}
+          - {label: 'সেপ্টেম্বর', value: 96, display: '৯৬টা', tone: bad, tip: 'এখন Domain আর Doctrine আলাদা করা প্রায় অসম্ভব। ফেরানোর খরচ এখন মাসের হিসাবে।'}
+      - type: text
+        body: |
+          এই দলটা শুরুতে ঠিক করেছিল: Domain কোডে Doctrine বা HTTP আনা যাবে না। নিয়মটা wiki-তে লেখা ছিল, code review-তেও কেউ কেউ মনে রাখত। কিন্তু মানুষ ভোলে, ব্যস্ত থাকে, আর reviewer-ও প্রতিটা import খুঁটিয়ে দেখে না।
+    aside:
+      - type: story
+        title: 'ছোট শর্টকাট, বড় ক্ষয়'
+        body: |
+          একটা শর্টকাট দেখে কেউ আপত্তি তোলেনি, কারণ আলাদা করে সেটা ছোট। কিন্তু নয় মাসে ৯৬টা মিলে Domain কোডে Doctrine আটকে গেল। একবারে বিপদ আসেনি; এসেছে প্রতিদিনের অল্প অল্প সরে যাওয়ায়।
+      - type: remember
+        body: 'যা মাপা হয় না, তা ধীরে ধীরে সরে যায়।'
+    check:
+      q: 'নিয়ম wiki-তে লেখা থাকা সত্ত্বেও ৯৬টা ভাঙন জমল কেন?'
+      a: 'কেউ নিয়মটা স্বয়ংক্রিয়ভাবে মাপছিল না। মানুষের স্মরণ আর review-র ওপর ভরসা করলে ছোট ছোট ভাঙন চোখ এড়িয়ে জমতেই থাকে।'
+
+  - slug: fitness-functions
+    title: 'Fitness function: নিয়ম যখন নিজেই পরীক্ষা'
+    kind: concept
+    tldr: 'Fitness function হলো আর্কিটেকচারের কোনো গুণ বা নিয়মকে স্বয়ংক্রিয়ভাবে মাপা পরীক্ষা, যা CI-তে চলে — ভাঙলে build লাল।'
+    keywords: ['fitness function', 'evolutionary architecture', 'architecture test', 'ফিটনেস ফাংশন', 'স্বয়ংক্রিয় পরীক্ষা']
+    blocks:
+      - type: text
+        body: |
+          **Evolutionary architecture** মানে এমন আর্কিটেকচার, যা ছোট ছোট নিরাপদ ধাপে বদলাতে পারে আর বদলের সময়ও নিজের গুরুত্বপূর্ণ গুণ ধরে রাখে। এই "ধরে রাখা"র পাহারাদার হলো **fitness function** — ওজন মাপার যন্ত্রের মতো, যে প্রতিবার commit-এ নিজে থেকে মেপে বলে দেয় সব ঠিক আছে কি না।
+      - type: visual
+        kind: table
+        caption: 'কয়েকটা নিয়ম আর তাদের স্বয়ংক্রিয় পাহারাদার'
+        headers: ['নিয়ম', 'পাহারাদার', 'কখন চলে']
+        rows:
+          - cells: ['Domain-এ Doctrine ঢুকবে না', 'Deptrac বা PHPat', 'প্রতিটা pull request']
+            tip: 'কোড না চালিয়েই import আর class-এর নির্ভরতা পড়ে নিয়ম মেলায়। ভাঙলে CI লাল হয়।'
+          - cells: ['পণ্যের তালিকায় ১০টার বেশি query নয়', 'PHPUnit test + query count', 'প্রতিটা pull request']
+            tip: 'N+1 ঢুকলে query সংখ্যা বাড়ে, আর test সাথে সাথে ধরে ফেলে — কেউ ধীর হওয়ার অভিযোগ করার আগেই।'
+          - cells: ['p95 response ৩০০ms-এর নিচে', 'k6 threshold', 'প্রতিদিন রাতে']
+            tip: 'এটা performance budget। বাজেট পেরোলে pipeline fail করে, তাই ধীর হওয়াটা কেউ নীরবে মেনে নেয় না।'
+          - cells: ['পুরনো library-তে security hole নেই', 'composer audit', 'প্রতিটা build']
+            tip: 'এটাও একটা fitness function: নিরাপত্তা গুণটা মাপা হচ্ছে, কেউ মনে রাখার ওপর নির্ভর করছে না।'
+      - type: quote
+        body: 'যে নিয়ম স্বয়ংক্রিয়ভাবে মাপা হয় না, সেটা নিয়ম নয়, শুধু ইচ্ছা।'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Fitness function', meaning: 'আর্কিটেকচারের একটা গুণ (গতি, নির্ভরতার নিয়ম, নিরাপত্তা) মেপে পাশ বা ফেল বলা স্বয়ংক্রিয় পরীক্ষা।'}
+          - {term: 'Performance budget', meaning: 'গতির সীমা, যেমন p95 ৩০০ms; পেরোলে build ফেল।'}
+      - type: refs
+        items:
+          - {to: 'thinking/quality-attributes', label: 'মাপার মতো গুণগুলো কী কী'}
+    check:
+      q: 'Fitness function কী, আর সেটা শুধু code review-এর চেয়ে ভালো কেন?'
+      a: 'আর্কিটেকচারের গুণ স্বয়ংক্রিয়ভাবে মাপা পরীক্ষা। প্রতিটা commit-এ নিজে চলে, ক্লান্ত বা ব্যস্ত হয় না, তাই ছোট ভাঙনও ধরে ফেলে।'
+
+  - slug: write-fitness-functions
+    title: 'Deptrac আর query budget দিয়ে পাহারা'
+    kind: howto
+    tldr: 'deptrac.yaml-এ layer আর অনুমতি লেখো, PHPUnit-এ query সংখ্যার সীমা বসাও, তারপর দুটোই CI-তে চালাও — ভাঙলে merge বন্ধ।'
+    keywords: ['deptrac', 'PHPUnit', 'query count', 'CI pipeline', 'performance budget', 'architecture test']
+    blocks:
+      - type: text
+        body: |
+          প্রথমে নির্ভরতার নিয়ম: তিন layer, আর কে কাকে চিনবে তার তালিকা। **Domain** কাউকে চেনে না, **Application** শুধু Domain চেনে, **Infrastructure** দুটোই চেনে।
+      - type: code
+        lang: yaml
+        file: 'deptrac.yaml'
+        code: |
+          deptrac:
+            paths:
+              - ./src
+            layers:
+              - name: Domain
+                collectors:
+                  - {type: directory, value: src/Domain/.*}
+              - name: Application
+                collectors:
+                  - {type: directory, value: src/Application/.*}
+              - name: Infrastructure
+                collectors:
+                  - {type: directory, value: src/Infrastructure/.*}
+            ruleset:
+              Domain: ~
+              Application: [Domain]
+              Infrastructure: [Domain, Application]
+        marks:
+          - {line: 15, tip: '`~` মানে Domain-এর কোনো layer-কে চেনার অনুমতি নেই। এখানে Doctrine import করলেই deptrac ধরে ফেলে।'}
+          - {line: 17, tip: 'Infrastructure ভেতরের দুই layer-কে চেনে, কিন্তু উল্টোটা চলবে না। তীর শুধু ভেতরের দিকে।'}
+      - type: text
+        body: |
+          এবার গতির সীমা। N+1 বা বাড়তি query ঢুকলে এই test সাথে সাথে লাল হয়।
+      - type: code
+        lang: php
+        file: 'tests/Budget/ProductListBudgetTest.php'
+        code: |
+          final class ProductListBudgetTest extends WebTestCase
+          {
+              public function testProductListStaysWithinQueryBudget(): void
+              {
+                  $client = static::createClient();
+                  $client->enableProfiler();   // db collector চালু করে
+
+                  $client->request('GET', '/api/products?limit=50');
+
+                  self::assertResponseIsSuccessful();
+                  $db = $client->getProfile()->getCollector('db');
+                  self::assertLessThanOrEqual(
+                      10,
+                      $db->getQueryCount(),
+                      'পণ্যের তালিকায় ১০টার বেশি query: সম্ভবত N+1',
+                  );
+              }
+          }
+        marks:
+          - {line: 6, tip: 'প্রোফাইলার চালু না করলে query সংখ্যা জানার উপায় থাকে না।'}
+          - {line: 13, tip: 'সীমা ১০। ৫০টা পণ্যে প্রতিটার জন্য আলাদা query হলে সংখ্যা ৫০ ছাড়ায়, আর test ফেল করে।'}
+    aside:
+      - type: commands
+        title: 'CI-তে যা চালাবে'
+        items:
+          - {cmd: 'composer require --dev qossmic/deptrac', desc: 'Deptrac বসাও'}
+          - {cmd: 'vendor/bin/deptrac analyse', desc: 'নির্ভরতার নিয়ম মেলাও, ভাঙলে exit code ০ নয়'}
+          - {cmd: 'php bin/phpunit --testsuite budget', desc: 'query budget test চালাও'}
+          - {cmd: 'k6 run --quiet load/products.js', desc: 'রাতে p95 threshold-সহ load test'}
+      - type: tips
+        items:
+          - 'নতুন নিয়ম বসানোর দিন অনেক ভাঙন বেরোবে। baseline ফাইলে পুরনোগুলো লিখে রেখে শুধু নতুন ভাঙন আটকাও, তারপর ধীরে পুরনোগুলো কমাও।'
+          - 'সময় মাপা test flaky হয়। CI-তে query সংখ্যার মতো স্থির জিনিস মাপো, আর সময় মাপো আলাদা load test-এ।'
+    check:
+      q: 'ProductListBudgetTest-এ সময়ের বদলে query সংখ্যা মাপা হলো কেন?'
+      a: 'সময় মেশিনভেদে বদলায়, তাই test মাঝে মাঝে বিনা কারণে ফেল করে। query সংখ্যা স্থির, আর N+1-এর মতো আসল সমস্যা ধরতে তা-ই যথেষ্ট।'
+
+  - slug: last-responsible-moment
+    title: 'Last responsible moment: কখন সিদ্ধান্ত?'
+    kind: pitfall
+    tldr: 'কঠিন-বদলানো সিদ্ধান্ত ততদিন পিছিয়ে রাখো যতদিন পিছোলে ক্ষতি হয় না, কারণ তখন তথ্য সবচেয়ে বেশি; কিন্তু trigger ঠিক না করলে "পরে" কখনো আসে না।'
+    keywords: ['last responsible moment', 'deferring decisions', 'premature decision', 'সিদ্ধান্ত পিছানো', 'trigger']
+    blocks:
+      - type: text
+        body: |
+          পরিকল্পনা না থাকলেও সমস্যা, অতি-পরিকল্পনা হলেও। **Last responsible moment** হলো সেই শেষ সময়, যার পরে সিদ্ধান্ত না নিলে ক্ষতি শুরু হয়। তার আগে নিলে কম তথ্যে নেওয়া হয়, তার পরে নিলে দেরি হয়ে যায়। বিয়ের কার্ড ছাপার আগে হল ঠিক করতে হয়, কিন্তু মেনুর শেষ পদ ঠিক করা যায় বিয়ের কয়েক দিন আগেও।
+      - type: visual
+        kind: compare
+        caption: 'সিদ্ধান্ত নেওয়ার তিন সময়'
+        columns:
+          - title: 'খুব আগে'
+            tone: warn
+            icon: clock
+            tip: 'কম তথ্যে অনুমানের ওপর সিদ্ধান্ত। পরে ভুল প্রমাণিত হলে দামি জিনিস ফেলতে হয়।'
+            items:
+              - 'এখনো সমস্যাই নেই, Kafka বসানো'
+              - 'আন্দাজের ওপর ভর করা'
+          - title: 'ঠিক সময়ে'
+            tone: good
+            icon: check
+            tip: 'শেষ সময়ের ঠিক আগে নেওয়া সিদ্ধান্তে তথ্য সবচেয়ে বেশি আর ক্ষতি এখনো শুরু হয়নি।'
+            items:
+              - 'ছোট সমাধানে শুরু, মাপা চলছে'
+              - 'trigger ছুঁলে বদলানো'
+          - title: 'খুব দেরিতে'
+            tone: bad
+            icon: warning
+            tip: 'সমস্যা ইতিমধ্যে আগুন হয়ে গেছে, এখন তাড়াহুড়োয় সিদ্ধান্ত নিতে হচ্ছে।'
+            items:
+              - 'queue ফুলে গেছে, তবু "পরে দেখব"'
+              - 'আগুন নেভানোর মোডে সিদ্ধান্ত'
+      - type: code
+        lang: yaml
+        file: 'config/packages/messenger.yaml'
+        code: |
+          framework:
+            messenger:
+              transports:
+                # আজ: চালু ডেটাবেসই queue। trigger: ১০০০ message/মিনিট বা lag > ১ মিনিট
+                async: '%env(MESSENGER_TRANSPORT_DSN)%'
+              routing:
+                'App\Message\SendInvoiceEmail': async
+        marks:
+          - {line: 5, tip: 'DSN বদলালেই transport বদলায় (doctrine://default থেকে redis:// বা amqp://)। সিদ্ধান্তটা সস্তা, তাই পিছিয়ে রাখা নিরাপদ।'}
+      - type: quote
+        body: '"পরে দেখব" বলার আগে লিখে রাখো: কোন সংখ্যা ছুঁলে দেখব।'
+    aside:
+      - type: pitfalls
+        items:
+          - 'trigger ছাড়া সিদ্ধান্ত পিছিয়ে রাখা মানে সমস্যা এড়িয়ে যাওয়া।'
+          - 'বদলানো সস্তা নয় এমন সিদ্ধান্ত (ডেটা মডেল, পাবলিক API) এতটা পিছিয়ো না যে আটকে যাও।'
+      - type: refs
+        items:
+          - {to: 'thinking/reversible-decisions', label: 'কোন সিদ্ধান্ত ফেরানো যায়'}
+    check:
+      q: 'Messenger-এর transport আজ ডেটাবেস রেখে পরে বদলানো নিরাপদ কেন, আর "পরে"-র মুহূর্ত কীভাবে ঠিক করবে?'
+      a: 'DSN বদলালেই transport বদলায়, কোডে হাত লাগে না, তাই সিদ্ধান্তটা সস্তা। মুহূর্ত ঠিক করবে মাপা সংখ্যায় (যেমন message হার বা lag), অনুভূতিতে নয়।'
+
+flashcards:
+  - q: 'Evolutionary architecture কী?'
+    a: 'এমন আর্কিটেকচার, যা ছোট নিরাপদ ধাপে বদলাতে পারে এবং বদলের সময়ও নিজের গুরুত্বপূর্ণ গুণ ধরে রাখে।'
+    more: |
+      লক্ষ্য একবারে নিখুঁত ডিজাইন নয়; লক্ষ্য হলো বদলানো নিরাপদ রাখা। প্রতিটা ধাপে স্বয়ংক্রিয় পরীক্ষা চলে, যাতে বদলে নিয়ম বা গুণ ভেঙে না যায়।
+    ref: fitness-functions
+  - q: 'Fitness function কী?'
+    a: 'আর্কিটেকচারের কোনো গুণ বা নিয়ম স্বয়ংক্রিয়ভাবে মেপে পাশ বা ফেল বলা পরীক্ষা, যা CI-তে চলে।'
+    more: |
+      উদাহরণ: "Domain-এ Doctrine নেই" (Deptrac), "তালিকায় ১০টার বেশি query নয়" (PHPUnit), "p95 ৩০০ms" (k6)। ওজন মাপার যন্ত্রের মতো: নিয়ম ভাঙলে তখনই জানা যায়।
+    ref: fitness-functions
+  - q: 'Architecture drift কী?'
+    a: 'কোড ধীরে ধীরে, প্রায় নীরবে, আসল আর্কিটেকচারের নিয়ম থেকে সরে যাওয়া।'
+    more: |
+      একটা শর্টকাট আলাদা করে নিরীহ দেখায়, তাই review-তে কেউ আটকায় না। কিন্তু মাসের পর মাস জমে তা বড় ক্ষয় হয়। স্বয়ংক্রিয় পরীক্ষাই একমাত্র নির্ভরযোগ্য প্রতিষেধক।
+    ref: silent-drift
+  - q: 'Deptrac কী কাজে লাগে?'
+    a: 'কোডের layer-গুলোর মাঝে কে কাকে চিনবে তা লিখে রাখা যায়, আর নিয়ম ভাঙলে CI ফেল করে।'
+    more: |
+      deptrac.yaml-এ Domain, Application, Infrastructure-এর মতো layer আর অনুমতি লেখা হয়। `vendor/bin/deptrac analyse` কোড না চালিয়েই নির্ভরতা পড়ে নিয়ম মেলায়। PHPat বা PHPArkitect একই ধরনের বিকল্প।
+    ref: write-fitness-functions
+  - q: 'Performance budget কী?'
+    a: 'গতির একটা সীমা (যেমন p95 ৩০০ms বা ১০টা query) যা পেরোলে CI ফেল করে।'
+    more: |
+      গতি একবার ধীর হয়ে গেলে ফেরানো কঠিন, কারণ সবাই ধীর অবস্থায় অভ্যস্ত হয়ে যায়। বাজেট থাকলে প্রতিটা বদল সীমার সামনে জবাবদিহি করে। CI-তে সময়ের বদলে query সংখ্যার মতো স্থির মাপ ব্যবহার করলে test flaky হয় না।
+    ref: write-fitness-functions
+  - q: 'Last responsible moment কী?'
+    a: 'সেই শেষ সময়, যার পরে সিদ্ধান্ত না নিলে ক্ষতি শুরু হয়। এর আগে পর্যন্ত সিদ্ধান্ত পিছানো যায়।'
+    more: |
+      যত দেরিতে সিদ্ধান্ত, তত বেশি তথ্য হাতে। তাই কঠিন-বদলানো সিদ্ধান্ত মুহূর্তের ঠিক আগে নেওয়া ভালো। তবে "পরে" মানে অনির্দিষ্ট নয়: কোন মাপা সংখ্যা ছুঁলে সিদ্ধান্ত নেবে, তা আগেই লিখে রাখো।
+    ref: last-responsible-moment
+  - q: 'সিদ্ধান্ত পিছানোর সময় কী লিখে রাখা জরুরি?'
+    a: 'একটা trigger: কোন মাপা সংখ্যা বা ঘটনা ছুঁলে সিদ্ধান্ত নেওয়া হবে।'
+    more: |
+      যেমন "মিনিটে ১০০০ message ছাড়ালে বা queue lag এক মিনিট পেরোলে Redis-এ যাব"। trigger না থাকলে পিছানো আসলে এড়িয়ে যাওয়া হয়, আর সমস্যা আগুনের মতো এসে পড়ে।
+    ref: last-responsible-moment
+
+quiz:
+  - q: 'দলের নিয়ম: Domain কোডে Doctrine আনা যাবে না। নিয়মটা টেকানোর সবচেয়ে নির্ভরযোগ্য উপায় কোনটা?'
+    hint: 'মানুষ ক্লান্ত হয়, ভোলে। কিন্তু CI?'
+    options:
+      - text: 'Deptrac বা PHPat-এর নিয়ম বসিয়ে CI-তে চালানো, ভাঙলে build লাল'
+        correct: true
+        why: 'প্রতিটা pull request-এ স্বয়ংক্রিয়ভাবে মাপা হয়, কেউ ভুলতে পারে না।'
+      - text: 'wiki-তে নিয়মটা মোটা অক্ষরে লিখে রাখা'
+        correct: false
+        why: 'লেখা থাকলেও মাপা না হলে কেউ জানে না কোড সরছে কি না।'
+      - text: 'প্রতি মাসে একজন সিনিয়র পুরো কোড পড়ে দেখা'
+        correct: false
+        why: 'ধীর, ব্যয়বহুল, আর মানুষের চোখ ছোট ছোট import এড়িয়ে যায়।'
+      - text: 'নতুন সদস্যদের মৌখিকভাবে নিয়মটা বলে দেওয়া'
+        correct: false
+        why: 'মৌখিক নিয়ম ভোলা যায় আর পুরনো সদস্যরাও শর্টকাট নেয়।'
+    ref: silent-drift
+  - q: 'নিচের কোনগুলো ভালো fitness function?'
+    hint: 'যেটা স্বয়ংক্রিয়ভাবে পাশ/ফেল বলতে পারে, সেটাই।'
+    options:
+      - text: 'তালিকা API-তে সর্বোচ্চ ১০টা query, PHPUnit-এ ধরা'
+        correct: true
+        why: 'স্থির মাপ, প্রতিটা PR-এ চলে, N+1 সাথে সাথে ধরে।'
+      - text: 'নিয়মিত নির্ভরতার নিয়ম: Domain কোনো layer চেনে না, Deptrac-এ'
+        correct: true
+        why: 'নির্ভরতার নিয়ম স্বয়ংক্রিয়ভাবে মাপা যায়, তাই ভালো fitness function।'
+      - text: '"কোড পরিষ্কার রাখা হবে" — টিমের অঙ্গীকার'
+        correct: false
+        why: 'সৎ ইচ্ছা, কিন্তু মাপা যায় না। তাই এটা fitness function নয়।'
+      - text: 'p95 ৩০০ms-এর নিচে, k6 threshold সহ রাতের pipeline-এ'
+        correct: true
+        why: 'গতি মাপা হচ্ছে আর বাজেট পেরোলে pipeline ফেল করে।'
+    ref: fitness-functions
+  - q: 'নিচের deptrac নিয়মে সমস্যা কী?'
+    lang: yaml
+    code: |
+      ruleset:
+        Domain: [Infrastructure]
+        Application: [Domain]
+        Infrastructure: [Domain, Application]
+    hint: 'তীরের দিক: কে কাকে চিনছে?'
+    options:
+      - text: 'Domain Infrastructure-কে চিনতে পারছে — নির্ভরতা বাইরে থেকে ভেতরে নয়, ভেতর থেকে বাইরে গেছে'
+        correct: true
+        why: 'Domain-এ Doctrine বা HTTP-র কোড ঢোকার পথ খুলে গেছে। নিয়মটা `Domain: ~` হওয়া উচিত।'
+      - text: 'Application শুধু Domain চিনছে, এটা কম হয়ে গেছে'
+        correct: false
+        why: 'Application-এর Domain চেনাটাই ঠিক। সমস্যা অন্য লাইনে।'
+      - text: 'Infrastructure-এর দুই layer চেনা উচিত নয়'
+        correct: false
+        why: 'Infrastructure ভেতরের layer চিনবে, এটাই ঠিক দিক।'
+      - text: 'কোনো সমস্যা নেই, ruleset-এ যা খুশি লেখা যায়'
+        correct: false
+        why: 'ruleset-ই আর্কিটেকচারের নিয়ম। ভুল লিখলে ভুল জিনিসই পাহারা পায়।'
+    ref: write-fitness-functions
+  - q: 'পণ্যের তালিকা আগে ৮টা query-তে চলত, এখন ৫৪টা। CI-তে ধরার সবচেয়ে ভালো উপায় কী?'
+    hint: 'যা স্থির, তাই মাপো।'
+    options:
+      - text: 'functional test-এ profiler-এর query count-এ সীমা বসানো'
+        correct: true
+        why: 'N+1 হলে query সংখ্যা সাথে সাথে বাড়ে আর test ফেল করে; সংখ্যা স্থির, তাই flaky নয়।'
+      - text: 'test-এ ঘড়ি ধরে ২০০ms-এর বেশি হলে ফেল করানো'
+        correct: false
+        why: 'CI মেশিনের গতি বদলায়, তাই test মাঝে মাঝে বিনা কারণে ফেল করে।'
+      - text: 'production-এ ব্যবহারকারী অভিযোগ করলে তখন দেখা'
+        correct: false
+        why: 'ততদিনে ব্যবহারকারীরা ধীর অবস্থা সয়ে নিয়েছে, আর কারণ খোঁজা কঠিন।'
+      - text: 'সব query-তে cache বসিয়ে দেওয়া'
+        correct: false
+        why: 'cache সমস্যা লুকায়, মেটায় না, আর নিজেই নতুন জটিলতা আনে।'
+    ref: write-fitness-functions
+  - q: 'নতুন প্রজেক্টে ইমেইল background-এ পাঠানো লাগবে। কেউ বলল, "এখনই RabbitMQ বসাই, পরে ঝামেলা হবে।" Last responsible moment-এর দৃষ্টিতে ভালো সিদ্ধান্ত কোনটা?'
+    hint: 'Messenger-এ transport বদলানো কত সস্তা?'
+    options:
+      - text: 'Messenger-এর doctrine transport দিয়ে শুরু; message হার বা lag-এর trigger লিখে রাখা, ছুঁলে বদলানো'
+        correct: true
+        why: 'সিদ্ধান্ত সস্তা (DSN বদল), তথ্য পরে বেশি, আর trigger থাকায় "পরে" সত্যিই আসে।'
+      - text: 'RabbitMQ এখনই বসানো, কারণ বদলানো কঠিন হবে'
+        correct: false
+        why: 'Messenger থাকলে বদলানো কঠিন নয়; এখনই বসালে শুধু বাড়তি চালানোর বোঝা।'
+      - text: 'queue নিয়ে কিছুই না ভেবে request-এর ভেতরেই ইমেইল পাঠানো'
+        correct: false
+        why: 'ব্যবহারকারী অপেক্ষা করে, আর পরে ঠিক করতে গেলে ছড়ানো কোড বদলাতে হয়।'
+      - text: '"পরে দেখব" বলে রাখা, কোনো সংখ্যা ঠিক না করে'
+        correct: false
+        why: 'trigger ছাড়া "পরে" আসে না; আসে আগুন লাগার পর।'
+    ref: last-responsible-moment

@@ -1,0 +1,377 @@
+slides:
+  - slug: nightly-job-restarts
+    title: 'রাত ২টার রিপোর্ট, মাঝপথে সার্ভার restart'
+    kind: story
+    tldr: 'বড় কাজ এক টানে চালালে মাঝপথে ভাঙলে সব শুরু থেকে; cron দুই সার্ভারে দুইবার চললে কাজও দুইবার হয়।'
+    keywords: ['background job', 'cron', 'long running job', 'restart', 'ব্যাকগ্রাউন্ড জব', 'ক্রন']
+    blocks:
+      - type: metaphor
+        icon: building
+        title: 'বিয়েবাড়ির বিশাল হাঁড়ি'
+        body: |
+          একটা বিয়েতে ১০০০ জনের খাবার এক বিশাল হাঁড়িতে চাপানো হলো। অর্ধেক রান্নার পরে চুলা নিভে গেলে পুরো হাঁড়ি ফেলে নতুন করে শুরু। বুদ্ধিমান বাবুর্চি ২০টা ছোট হাঁড়িতে রান্না করেন আর শেষ হলে খাতায় টিক দেন। চুলা নিভলে শুধু চলতি হাঁড়িটা আবার চাপে।
+      - type: visual
+        kind: sequence
+        caption: 'এক টানের জব ভাঙলে প্রতিবার শুরু থেকে'
+        actors:
+          - {id: cron, label: 'Cron', icon: clock, tip: 'নির্দিষ্ট সময়ে কাজ চালু করার ঘড়ি।'}
+          - {id: job, label: 'রিপোর্ট জব', icon: worker, tip: 'সব ব্যবহারকারীর ডেটা এক টানে প্রসেস করে।'}
+          - {id: db, label: 'ডেটাবেস', icon: db, tip: 'যেখান থেকে ১০ লাখ সারি পড়া হচ্ছে।'}
+        messages:
+          - {from: cron, to: job, label: '০২:০০ রিপোর্ট শুরু করো', tip: 'প্রতি রাতের নির্দিষ্ট সময়ের ডাক।'}
+          - {from: job, to: db, label: '১০ লাখ সারির মধ্যে ৬ লাখ প্রসেস'}
+          - {at: job, note: 'সার্ভার restart, কোনো checkpoint নেই', tone: bad}
+          - {from: cron, to: job, label: '০২:১০ আবার শুরু, প্রথম সারি থেকে', tone: bad, dashed: true}
+      - type: quote
+        body: 'বড় কাজ ছোট টুকরোয় ভাঙো, আর প্রতি টুকরোর পরে কোথায় আছ লিখে রাখো।'
+    aside:
+      - type: story
+        title: 'দুই সার্ভার, দুই বেতনের মেইল'
+        body: |
+          এক কোম্পানির মাসের শেষে বেতন-স্লিপ মেইল করার cron ছিল। অ্যাপ দুই সার্ভারে চালানোর পরে একই cron দুই সার্ভারেই চলল, আর সবার কাছে দুটো করে মেইল গেল।
+      - type: terms
+        items:
+          - {term: 'Background job', meaning: 'web request-এর বাইরে, worker-এর চালানো কাজ।'}
+          - {term: 'Checkpoint', meaning: 'কাজ কতদূর হয়েছে তার সংরক্ষিত চিহ্ন।'}
+    check:
+      q: 'এক টানে ১০ লাখ সারি প্রসেস করা জবের প্রধান দুর্বলতা কী?'
+      a: 'মাঝপথে থেমে গেলে অগ্রগতি হারায়, তাই প্রতিবার শুরু থেকে করতে হয়। ছোট টুকরো আর checkpoint থাকলে শুধু চলতি টুকরো আবার চলে।'
+
+  - slug: visibility-and-priority
+    title: 'Visibility timeout আর priority'
+    kind: concept
+    tldr: 'Worker বার্তা তুললে সেটা সাময়িক লুকিয়ে যায়; সময়ে ack না এলে অন্য worker পায়। জরুরি কাজ আলাদা queue-তে রাখলে ধীর কাজের পেছনে আটকায় না।'
+    keywords: ['visibility timeout', 'redeliver_timeout', 'priority queue', 'SQS', 'জরুরি কাজ', 'টাইমআউট']
+    blocks:
+      - type: metaphor
+        icon: hourglass
+        title: 'বাবুর্চির হাঁড়ি তোলা'
+        body: |
+          বাবুর্চি হাঁড়িটা তুলে নিলে অন্যরা সেটা ধরে না, কারণ ওটা এখন তার। কিন্তু ৩০ মিনিটে ফেরত না দিলে ম্যানেজার ধরে নেন সে হারিয়ে গেছে আর হাঁড়ি অন্যজনকে দেন। এই ৩০ মিনিটই **visibility timeout**। আর ম্যানেজারের আলাদা "জরুরি হাঁড়ি" তাক থাকে, যাতে মেহমানের চা বিরিয়ানির পেছনে না পড়ে।
+      - type: visual
+        kind: sequence
+        caption: 'Visibility timeout: worker মরলে বার্তা আবার অন্যের হাতে'
+        actors:
+          - {id: queue, label: 'Queue', icon: queue, tip: 'বার্তা জমা রাখে আর কে কতক্ষণ ধরে আছে মনে রাখে।'}
+          - {id: w1, label: 'Worker A', icon: worker, tip: 'প্রথমে বার্তা তোলে, কিন্তু মাঝপথে মরে যায়।'}
+          - {id: w2, label: 'Worker B', icon: worker, tip: 'সময় শেষে একই বার্তা পায়।'}
+        messages:
+          - {from: queue, to: w1, label: 'বার্তা #9, ৩০s লুকানো', tip: 'এই ৩০ সেকেন্ডে অন্য কেউ বার্তাটা দেখতে পায় না।'}
+          - {at: w1, note: 'ack-এর আগে crash', tone: bad}
+          - {at: queue, note: '৩০s শেষ, বার্তা আবার দৃশ্যমান'}
+          - {from: queue, to: w2, label: 'একই বার্তা #9 এবার B-কে', dashed: true}
+          - {from: w2, to: queue, label: 'কাজ শেষ, ack, মুছে দাও', tone: good}
+      - type: points
+        title: 'দুটো নিয়ম'
+        style: check
+        items:
+          - 'Timeout কাজের সর্বোচ্চ সময়ের চেয়ে বড় রাখো। ছোট হলে কাজ চলতে চলতেই বার্তা অন্যকে চলে যায়, ডুপ্লিকেট হয়।'
+          - 'জরুরি আর ধীর কাজ আলাদা queue-তে রাখো, আর worker আগে জরুরি queue পড়বে।'
+    aside:
+      - type: tips
+        items:
+          - 'SQS-এ transport option `visibility_timeout`, Doctrine transport-এ `redeliver_timeout` এই কাজ করে।'
+          - 'অনেক সময় লাগা কাজ টুকরো করলে timeout ছোট রাখা যায়।'
+      - type: pitfalls
+        items:
+          - 'কাজ ৫ মিনিটের, অথচ timeout ৩০ সেকেন্ড: একই কাজ চলতে চলতে আরেকজনও তুলে নেয়।'
+    check:
+      q: 'কাজ চলতে সর্বোচ্চ ২ মিনিট লাগে। visibility timeout ৩০ সেকেন্ড হলে কী হবে?'
+      a: 'Worker তখনো কাজ করছে, কিন্তু ৩০ সেকেন্ডে বার্তা আবার দৃশ্যমান হয়ে অন্য worker পাবে। ফলে একই কাজ দুই জায়গায় চলবে।'
+
+  - slug: scheduler-and-lanes
+    title: 'Symfony Scheduler আর priority transport'
+    kind: howto
+    tldr: 'Cron-এর বদলে Scheduler-এ সময়সূচি কোডে রাখো, lock দিয়ে এক সার্ভারেই চালাও, আর জরুরি কাজের জন্য আলাদা transport।'
+    keywords: ['Symfony Scheduler', 'RecurringMessage', 'AsSchedule', 'cron', 'priority transport', 'schedule lock', 'সিডিউলার']
+    blocks:
+      - type: code
+        lang: php
+        file: 'src/Scheduler/MainSchedule.php'
+        variant: good
+        code: |
+          #[AsSchedule('default')]
+          final readonly class MainSchedule implements ScheduleProviderInterface
+          {
+              public function __construct(
+                  private CacheInterface $cache,
+                  private LockFactory $locks,
+              ) {}
+
+              public function getSchedule(): Schedule
+              {
+                  return (new Schedule())
+                      ->add(RecurringMessage::cron(
+                          '0 2 * * *', new BuildDailyReport(), new \DateTimeZone('Asia/Dhaka'),
+                      ))
+                      ->add(RecurringMessage::every('5 minutes', new ReleaseStuckPayouts()))
+                      ->stateful($this->cache)
+                      ->lock($this->locks->createLock('schedule-default'));
+              }
+          }
+        marks:
+          - {line: 13, tip: 'ঢাকার সময়ে রাত ২টা। time zone না দিলে সার্ভারের সময় ধরা হয়।'}
+          - {line: 16, tip: '`stateful` শেষ চালানো সময় মনে রাখে, তাই worker বন্ধ থাকলেও মিস করা রান ফেরত আসে।'}
+          - {line: 17, tip: 'lock থাকায় একাধিক সার্ভারে worker চললেও প্রতি সময়ে কাজটা একবারই বের হয়।'}
+      - type: code
+        lang: yaml
+        file: 'config/packages/messenger.yaml'
+        variant: good
+        code: |
+          framework:
+              messenger:
+                  transports:
+                      high: '%env(MESSENGER_TRANSPORT_DSN)%?queue_name=high'
+                      low:  '%env(MESSENGER_TRANSPORT_DSN)%?queue_name=low'
+                  routing:
+                      'App\Message\SendOtp': high        # ব্যবহারকারী অপেক্ষা করছে
+                      'App\Message\BuildDailyReport': low # দেরি হলেও চলে
+
+          # worker: আগে high, খালি হলে low
+          #   php bin/console messenger:consume high low
+          #   php bin/console messenger:consume scheduler_default
+        marks:
+          - {line: 7, tip: 'OTP-র মতো কাজ high queue-তে, তাই লাখ লাখ রিপোর্টের পেছনে আটকায় না।'}
+          - {line: 11, tip: 'transport-এর নামের ক্রমই priority: high সব সময় আগে খালি হয়।'}
+    aside:
+      - type: commands
+        title: 'Scheduler কমান্ড'
+        items:
+          - {cmd: 'php bin/console debug:scheduler', desc: 'সব schedule আর পরের চালানোর সময় দেখো'}
+          - {cmd: 'php bin/console messenger:consume scheduler_default', desc: 'schedule-এর বার্তা বের করার worker'}
+      - type: tips
+        items:
+          - '`RecurringMessage::cron()` ব্যবহার করতে `dragonmantank/cron-expression` প্যাকেজ লাগে।'
+          - 'Scheduler-এর কাজও একটা Messenger বার্তা, তাই retry আর failure transport সেখানেও খাটে।'
+    check:
+      q: 'দুই সার্ভারে worker চললে Scheduler-এর কাজ দুইবার বের হওয়া কীভাবে ঠেকাবে?'
+      a: 'Schedule-এ `->lock(...)` দাও, যাতে এক সময়ে একটা worker-ই বার্তা বের করতে পারে। সাথে `stateful()` দিলে মিস হওয়া রান নিয়েও চিন্তা থাকে না।'
+
+  - slug: chunks-and-checkpoints
+    title: 'ফাঁদ: এক টানে বিশাল কাজ'
+    kind: pitfall
+    tldr: 'বড় কাজকে ছোট টুকরোয় ভাঙো; প্রতি টুকরো একটা বার্তা, আর পরের টুকরোর বার্তায় checkpoint (শেষ id) থাকে। তাহলে ভাঙলে শুধু চলতি টুকরো আবার চলে।'
+    keywords: ['chunk', 'checkpoint', 'cursor', 'batch', 'long running', 'টুকরো', 'চেকপয়েন্ট']
+    blocks:
+      - type: code
+        lang: php
+        file: 'src/MessageHandler/ExportUsersHandler.php'
+        variant: bad
+        code: |
+          public function __invoke(ExportUsers $m): void
+          {
+              // ১০ লাখ entity মেমরিতে, ১ ঘণ্টা চলবে
+              foreach ($this->users->findAll() as $user) {
+                  $this->csv->write($user);
+              }
+          }
+        marks:
+          - {line: 4, tip: 'মেমরি ফুরোবে, visibility timeout পেরোবে, আর ভাঙলে ১০ লাখ আবার।'}
+      - type: code
+        lang: php
+        file: 'src/MessageHandler/ExportUsersHandler.php'
+        variant: good
+        code: |
+          public function __invoke(ExportUsers $m): void
+          {
+              $ids = $this->db->fetchFirstColumn(
+                  'SELECT id FROM users WHERE id > ? ORDER BY id LIMIT 500',
+                  [$m->afterId],
+              );
+              if ([] === $ids) {
+                  $this->jobs->markDone($m->jobId);
+                  return;
+              }
+              $this->exporter->upsertChunk($m->jobId, $ids);   // একই টুকরো দুইবার চললেও নিরাপদ
+              $last = (int) end($ids);
+              $this->jobs->saveCheckpoint($m->jobId, $last);
+              $this->bus->dispatch(new ExportUsers($m->jobId, $last));
+          }
+        marks:
+          - {line: 4, tip: 'OFFSET নয়, শেষ id-র পর থেকে। এতে লাখতম সারিতেও query সমান দ্রুত।'}
+          - {line: 11, tip: 'টুকরো ফের চললে একই ফল দিতে হবে, কারণ redelivery হতে পারে।'}
+          - {line: 13, tip: 'পরের টুকরোর বার্তায় checkpoint। কাজ ভাঙলে এখান থেকেই আবার শুরু হয়।'}
+      - type: quote
+        body: 'টুকরো ছোট রাখো, টুকরো idempotent রাখো, আর অগ্রগতি লিখে রাখো।'
+    aside:
+      - type: tips
+        items:
+          - 'টুকরোর আকার এমন রাখো যাতে একটা টুকরো কয়েক সেকেন্ডে শেষ হয়, মেমরি আর timeout দুটোই নিরাপদ থাকে।'
+          - 'আরেকটা টুকরো নিজে dispatch না করে Messenger batch handler বা fan-out দিয়েও করা যায়, তবে এই cursor ধরন সহজ ও নিরাপদ।'
+      - type: pitfalls
+        items:
+          - '`LIMIT 500 OFFSET n` বড় n-এ ধীর হয়ে যায়, আর মাঝে নতুন সারি এলে সারি বাদ বা ডুপ্লিকেট হয়।'
+    check:
+      q: 'টুকরো-ভিত্তিক জবের কোন দুটো গুণ থাকলে ভাঙার পরেও নিরাপদে ফের চলা যায়?'
+      a: 'প্রতিটা টুকরো idempotent, যাতে দুইবার চললেও ফল এক। আর পরের বার্তায় checkpoint, যাতে নতুন করে সবকিছু না চালিয়ে শেষ জায়গা থেকে চলে।'
+
+  - slug: job-observability
+    title: 'জব চোখে দেখা: কী মাপবে'
+    kind: howto
+    tldr: 'ব্যাকগ্রাউন্ড জব নীরবে মরে। queue-র দৈর্ঘ্য, সবচেয়ে পুরনো বার্তার বয়স, ব্যর্থতার হার আর সময় মেপে alert বসাও।'
+    keywords: ['observability', 'queue depth', 'queue age', 'messenger:stats', 'WorkerMessageFailedEvent', 'মনিটরিং']
+    blocks:
+      - type: visual
+        kind: table
+        caption: 'ব্যাকগ্রাউন্ড জবের চার সংকেত'
+        headers: ['কী মাপো', 'কী বোঝায়', 'কখন alert']
+        rows:
+          - cells: ['Queue depth', 'কয়টা বার্তা জমে আছে', 'টানা বাড়তে থাকলে']
+            tip: 'জমা বাড়ছে মানে worker প্রবাহের সাথে পেরে উঠছে না, বা সব worker মরে গেছে।'
+          - cells: ['সবচেয়ে পুরনো বার্তার বয়স', 'কাজ কতটা পিছিয়ে', 'SLO-র চেয়ে বেশি হলে']
+            tip: 'ব্যবহারকারী যে দেরিটা টের পায় তা এটাই। depth ছোট হলেও বয়স বেশি হতে পারে।'
+          - cells: ['ব্যর্থতার হার', 'কত বার্তা exception ছোড়ে', 'হঠাৎ লাফ দিলে']
+            tip: 'ডিপ্লয় বা বাইরের API ভাঙলে এটা সবার আগে লাফ দেয়।'
+          - cells: ['DLQ-র আকার', 'retry শেষে হারানো কাজ', 'শূন্যের বেশি হলে']
+            tip: 'এখানে একটা বার্তাও মানে একটা কাজ নীরবে বাদ পড়েছে।'
+      - type: code
+        lang: php
+        file: 'src/EventListener/JobFailureLogger.php'
+        variant: good
+        code: |
+          #[AsEventListener]
+          final readonly class JobFailureLogger
+          {
+              public function __construct(private LoggerInterface $logger) {}
+
+              public function __invoke(WorkerMessageFailedEvent $event): void
+              {
+                  $this->logger->error('background job failed', [
+                      'message' => $event->getEnvelope()->getMessage()::class,
+                      'will_retry' => $event->willRetry(),
+                      'error' => $event->getThrowable()->getMessage(),
+                  ]);
+              }
+          }
+        marks:
+          - {line: 6, tip: 'worker একটা বার্তায় ব্যর্থ হলেই Messenger এই event ছোড়ে।'}
+          - {line: 10, tip: '`will_retry` false হলে বার্তা DLQ-তে যাচ্ছে, সেটা আলাদা alert-এর যোগ্য।'}
+    aside:
+      - type: commands
+        items:
+          - {cmd: 'php bin/console messenger:stats', desc: 'প্রতি transport-এ কতগুলো বার্তা জমে আছে'}
+          - {cmd: 'php bin/console messenger:failed:show', desc: 'ব্যর্থ বার্তা আর কারণ দেখো'}
+      - type: remember
+        body: 'Queue-র গভীরতা নয়, সবচেয়ে পুরনো বার্তার বয়সই বলে ব্যবহারকারী কত পিছিয়ে।'
+      - type: refs
+        items:
+          - {to: 'observability/metrics-slos', label: 'Metric আর SLO'}
+    check:
+      q: 'Queue-তে জমা বার্তা মাত্র ১০টা, তবুও অ্যাপে সমস্যা। কোন মাপটা বলে দেবে কেন?'
+      a: 'সবচেয়ে পুরনো বার্তার বয়স। ১০টা বার্তার একটাও আধঘণ্টা ধরে পড়ে থাকলে worker আটকে আছে, যদিও depth দেখে সবই ঠিক মনে হয়।'
+
+flashcards:
+  - q: 'কেন বড় কাজ এক টানে না করে টুকরোয় ভাঙা হয়?'
+    a: 'মাঝপথে ভাঙলে শুধু চলতি টুকরো আবার চলে, পুরোটা নয়। আর ছোট টুকরোয় মেমরি আর timeout সীমার ভেতরে থাকে।'
+    more: |
+      প্রতিটা টুকরো আলাদা বার্তা, তাই আলাদা retry পায়। টুকরোর শেষে checkpoint লিখে রাখলে কাজ কতদূর হয়েছে দেখাও যায়।
+    ref: chunks-and-checkpoints
+  - q: 'Checkpoint কী, আর কীভাবে রাখা হয়?'
+    a: 'কাজ কতদূর হয়েছে তার চিহ্ন, যেমন শেষ প্রসেস হওয়া id। পরের টুকরোর বার্তায় বা job টেবিলে সেটা রাখা হয়।'
+    more: |
+      Checkpoint থাকলে জব ভাঙার পরে শেষ জায়গা থেকে চলে। পাশাপাশি `LIMIT/OFFSET`-এর বদলে `WHERE id > ?`-র মতো cursor ব্যবহার করলে বড় ডেটায়ও query ধীর হয় না।
+    ref: chunks-and-checkpoints
+  - q: 'Visibility timeout কী?'
+    a: 'Worker বার্তা তুললে বার্তাটা নির্দিষ্ট সময় অন্যদের কাছে লুকানো থাকে। ওই সময়ে ack না এলে সেটা আবার দৃশ্যমান হয়ে অন্য worker পায়।'
+    more: |
+      এটা worker মরে গেলে বার্তা হারানো ঠেকায়। কিন্তু timeout কাজের সর্বোচ্চ সময়ের চেয়ে ছোট হলে কাজ চলতে চলতেই বার্তা অন্যজন নিয়ে নেয়, আর কাজ দুইবার চলে।
+    ref: visibility-and-priority
+  - q: 'Visibility timeout কত রাখা উচিত?'
+    a: 'কাজের সর্বোচ্চ সম্ভাব্য সময়ের চেয়ে বড়। আর কাজ লম্বা হলে কাজকে টুকরো করো, timeout বাড়াতে বাড়াতে না।'
+    more: |
+      খুব বড় timeout রাখলে worker মরার পরে বার্তা ফেরত আসতে অনেকক্ষণ লাগে। তাই ছোট টুকরো আর মাঝারি timeout ভালো ভারসাম্য।
+    ref: visibility-and-priority
+  - q: 'জরুরি আর ধীর কাজ কীভাবে আলাদা রাখা যায়?'
+    a: 'আলাদা queue বা transport বানিয়ে, যেমন high আর low। Worker `messenger:consume high low` চালালে আগে high খালি হয়।'
+    more: |
+      একই queue-তে ধীর কাজ থাকলে OTP-র মতো জরুরি বার্তা তাদের পেছনে আটকে যায়। আলাদা transport-এ বার্তার class অনুযায়ী routing দিলে এটা এড়ানো যায়।
+    ref: scheduler-and-lanes
+  - q: 'Cron-এর তুলনায় Symfony Scheduler-এর সুবিধা কী?'
+    a: 'সময়সূচি কোডেই থাকে, version control-এ যায়, Messenger-এর retry পায়, আর lock দিয়ে একাধিক সার্ভারে একবারই চলে।'
+    more: |
+      `RecurringMessage::cron()` বা `every()` দিয়ে সময়সূচি লেখা হয়। `stateful()` দিলে worker বন্ধ থাকার সময়ে মিস হওয়া রান ফিরে আসে, আর `lock()` দিলে একই সময়ের রান ডুপ্লিকেট হয় না।
+    ref: scheduler-and-lanes
+  - q: 'ব্যাকগ্রাউন্ড জবের কোন মাপটা ব্যবহারকারীর টের পাওয়া দেরির সবচেয়ে কাছের?'
+    a: 'Queue-র সবচেয়ে পুরনো বার্তার বয়স। শুধু depth দেখলে ছোট queue-তেও আটকে থাকা একটা বার্তা ধরা পড়ে না।'
+    more: |
+      সাথে ব্যর্থতার হার, কাজের সময় আর DLQ-র আকার মাপো। DLQ-তে একটা বার্তাও মানে একটা কাজ হারিয়েছে, তাই সেটা আলাদা alert-এর যোগ্য।
+    ref: job-observability
+
+quiz:
+  - q: 'অ্যাপ দুটো সার্ভারে চলে, দুটোতেই Scheduler worker চালু। প্রতি রাত ২টার রিপোর্ট দুইবার বের হচ্ছে। সমাধান কী?'
+    hint: 'দুই worker একই সময়ে বার্তা বের করতে চাইলে কে জিতবে?'
+    options:
+      - text: 'Schedule-এ lock যোগ করা, যাতে এক সময়ে একজন বার্তা বের করে'
+        correct: true
+        why: 'Scheduler-এর `lock()` ঠিক এই কাজের জন্য।'
+      - text: 'একটা সার্ভারের worker বন্ধ করে রাখা, কখনো চালু না করা'
+        correct: false
+        why: 'সেটা সার্ভার নষ্ট হলে সব কাজ বন্ধ করে দেয়, কোনো সমাধান নয়।'
+      - text: 'সময় ২টার বদলে ২টা ১ মিনিট করা'
+        correct: false
+        why: 'সময় বদলালেও দুই সার্ভারই একই নতুন সময়ে একসাথে বার্তা বের করবে।'
+    ref: scheduler-and-lanes
+  - q: 'কাজ সর্বোচ্চ ৫ মিনিট চলে। SQS-এ visibility timeout ৩০ সেকেন্ড। কী ঘটবে?'
+    hint: '৩০ সেকেন্ড পরে বার্তার অবস্থা কী?'
+    options:
+      - text: 'কাজ ৩০ সেকেন্ডে আপনা-আপনি থেমে যাবে'
+        correct: false
+        why: 'Timeout worker-কে থামায় না; এটা শুধু বার্তাকে আবার দৃশ্যমান করে।'
+      - text: 'প্রথম worker কাজ করতে থাকবে আর বার্তা অন্য worker-ও তুলে একই কাজ শুরু করবে'
+        correct: true
+        why: '৩০ সেকেন্ড পরে বার্তা আবার দৃশ্যমান হয়, আর দ্বিতীয় worker একই কাজ ধরে ফেলে।'
+      - text: 'বার্তাটা চিরতরে হারিয়ে যাবে'
+        correct: false
+        why: 'হারায় না, বরং আবার দৃশ্যমান হয়, আর তাতেই ডুপ্লিকেট হয়।'
+    ref: visibility-and-priority
+  - q: 'এই handler-এ কী কী সমস্যা?'
+    lang: php
+    code: |
+      public function __invoke(ExportUsers $m): void
+      {
+          foreach ($this->users->findAll() as $user) {
+              $this->csv->write($user);
+          }
+          $this->jobs->markDone($m->jobId);
+      }
+    hint: 'মেমরি, সময় আর ভাঙলে কী হবে ভাবো।'
+    options:
+      - text: 'সব entity মেমরিতে লোড হয়, লাখ লাখ হলে মেমরি ফুরোবে'
+        correct: true
+        why: '`findAll()` সব সারি একবারে আনে।'
+      - text: 'মাঝপথে ভাঙলে কোনো checkpoint নেই, তাই সব শুরু থেকে হবে'
+        correct: true
+        why: 'অগ্রগতি কোথাও লেখা হয় না, তাই retry প্রতিবার প্রথম সারি থেকে।'
+      - text: '`markDone` শেষে ডাকা ভুল, শুরুতে ডাকতে হবে'
+        correct: false
+        why: 'কাজ শেষ হলেই done বলা ঠিক। শুরুতে বললে মিথ্যা অবস্থা দেখাবে।'
+      - text: 'Handler-এ `$m->jobId` ব্যবহার করা যায় না'
+        correct: false
+        why: 'বার্তার সাধারণ ফিল্ড handler-এ ব্যবহার করা যায়।'
+    ref: chunks-and-checkpoints
+  - q: 'OTP আর মাসিক রিপোর্ট একই queue-তে। রিপোর্ট চললে OTP আসতে দেরি হয়। সবচেয়ে ভালো সমাধান কোনটা?'
+    hint: 'কোন কাজ দেরিতে ক্ষতি করে, কোনটা করে না?'
+    options:
+      - text: 'OTP-র জন্য আলাদা high transport, রিপোর্ট low-তে; worker আগে high পড়বে'
+        correct: true
+        why: 'জরুরি বার্তা ধীর কাজের পেছনে আটকায় না।'
+      - text: 'রিপোর্ট বন্ধ করে দেব'
+        correct: false
+        why: 'কাজটা দরকারি, শুধু আলাদা লেনে সরালেই হয়।'
+      - text: 'worker-এর সংখ্যা ১০ গুণ বাড়াব, আলাদা queue ছাড়াই'
+        correct: false
+        why: 'ব্যয় বাড়ে, আর রিপোর্ট বাড়লে আবার একই সমস্যা। আলাদা লেন মূল সমাধান।'
+    ref: scheduler-and-lanes
+  - q: 'কোন মাপ দেখে তুমি বুঝবে worker আটকে আছে, অথচ queue-তে মাত্র ৫টা বার্তা?'
+    hint: 'সংখ্যা ছোট হলেও কিছু একটা অনেকদিন ধরে বসে থাকতে পারে।'
+    options:
+      - text: 'Queue depth, মানে বার্তার সংখ্যা'
+        correct: false
+        why: 'ছোট সংখ্যা সব ঠিকঠাক ভাবাতে পারে, অথচ একটা বার্তা ঘণ্টা ধরে আটকে থাকতে পারে।'
+      - text: 'সবচেয়ে পুরনো বার্তার বয়স'
+        correct: true
+        why: 'আটকে থাকা বার্তা বয়স বাড়ায়। সংখ্যা কম হলেও এটা দেরি ধরিয়ে দেয়।'
+      - text: 'শুধু worker-এর CPU ব্যবহার'
+        correct: false
+        why: 'আটকে থাকা worker হয়তো I/O-র অপেক্ষায় বসে, CPU কম হতে পারে, এতে কিছুই বোঝা যায় না।'
+    ref: job-observability

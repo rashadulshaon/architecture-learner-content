@@ -1,0 +1,373 @@
+slides:
+  - slug: fake-paid-call
+    title: 'কে পাঠাল এই "paid" খবর?'
+    kind: story
+    tldr: 'Webhook হলো বাইরে থেকে তোমার URL-এ আসা POST; সিল না মিলিয়ে বিশ্বাস করলে যে কেউ নকল "paid" পাঠিয়ে বিনা টাকায় অর্ডার ছাড়িয়ে নিতে পারে।'
+    keywords: ['webhook', 'fake webhook', 'payment callback', 'spoofing', 'ওয়েবহুক', 'নকল কল']
+    blocks:
+      - type: text
+        body: |
+          রহিমের দোকানে অনলাইনে টাকা নিয়ে অর্ডার পাঠানো হয়। টাকা এলে payment gateway রহিমের সার্ভারের একটা URL-এ POST করে জানায় "অর্ডার ৭৭ paid" — একেই বলে **webhook**। সমস্যা হলো, সেই URL ইন্টারনেটে খোলা। এক দুষ্টু ছেলে নিজেই ওই URL-এ "অর্ডার ৭৭ paid" লিখে POST করল, আর রহিমের সার্ভার কোনো যাচাই ছাড়াই বিশ্বাস করে পণ্য পাঠিয়ে দিল।
+      - type: visual
+        kind: sequence
+        caption: 'নকল webhook-এ টাকা ছাড়াই অর্ডার paid'
+        actors:
+          - {id: fake, label: 'দুষ্টু ছেলে', icon: user, tip: 'gateway নয়, কিন্তু gateway সেজে সে-ও একই URL-এ POST পাঠাতে পারে, কারণ URL সবার জন্য খোলা।'}
+          - {id: api, label: 'রহিমের সার্ভার', icon: api, tip: 'webhook URL-এর পেছনের কোড। কে পাঠাল তা না দেখে body-র কথা মেনে নেয়।'}
+          - {id: db, label: 'ডেটাবেস', icon: db, tip: 'সার্ভার যা বলে তা-ই লেখে; নকল খবরও সত্য হয়ে যায়।'}
+        messages:
+          - {from: fake, to: api, label: 'POST /webhooks/pay {order: 77, paid}', tone: bad}
+          - {from: api, to: db, label: 'অর্ডার ৭৭ = paid'}
+          - {at: db, note: 'টাকা আসেনি, অর্ডার paid', tone: bad, tip: 'ডেটাবেসে এখন মিথ্যা তথ্য। পণ্য চলে যাবে, টাকা আসবে না।'}
+          - {from: api, to: fake, label: '২০০ OK — পণ্য রওনা', dashed: true, tone: bad}
+      - type: quote
+        body: 'Webhook-এর body-তে যা-ই লেখা থাকুক, সিল না মেলা পর্যন্ত সেটা শুধু একজন অচেনা লোকের কথা।'
+    aside:
+      - type: problem
+        body: 'Webhook URL গোপন নয়। শুধু URL লুকিয়ে রাখলে নিরাপত্তা হয় না — প্রতিটা কল আসলেই gateway থেকে এসেছে কি না, গাণিতিকভাবে যাচাই করতে হয়।'
+      - type: terms
+        items:
+          - {term: 'Webhook', meaning: 'কিছু ঘটলে অন্য সিস্টেম তোমার URL-এ নিজে থেকে যে POST পাঠায়।'}
+          - {term: 'Spoofing', meaning: 'অন্য কেউ সেজে নকল request পাঠানো।'}
+    check:
+      q: 'Webhook URL-টা খুব লম্বা আর এলোমেলো রাখলেই কি যথেষ্ট নিরাপদ? কেন?'
+      a: 'না। URL লগ, proxy বা ইমেইলে ফাঁস হতে পারে। তাই প্রতিটা কলের সিল (signature) যাচাই করতে হয়, শুধু URL গোপন রাখা যথেষ্ট নয়।'
+
+  - slug: sealed-parcel
+    title: 'সিল করা প্যাকেট: HMAC signature'
+    kind: concept
+    tldr: 'Gateway body আর timestamp-কে shared secret দিয়ে HMAC করে signature পাঠায়; সার্ভার নিজে একই hash বানিয়ে মেলায়, আর পুরনো timestamp বাতিল করে।'
+    keywords: ['HMAC', 'signature verification', 'replay protection', 'timestamp', 'shared secret', 'সিল', 'সিগনেচার']
+    blocks:
+      - type: metaphor
+        icon: truck
+        title: 'কুরিয়ারের সিল করা প্যাকেট'
+        body: |
+          কুরিয়ার কোম্পানি আর রহিমের কাছে একটা গোপন সিলমোহর আছে, যা আর কারো কাছে নেই। প্যাকেটের ভেতরের জিনিস আর তারিখ দেখে কোম্পানি সিল মারে। রহিম একই সিলমোহর দিয়ে নিজে সিল বানিয়ে মিলিয়ে দেখে। জিনিস বদলালে সিল মেলে না, আর গত মাসের সিল-করা প্যাকেট আজ আবার এলে তারিখ দেখে সে ফিরিয়ে দেয়।
+      - type: visual
+        kind: flow
+        caption: 'সিল মিললে কাজ, না মিললে ফেরত'
+        nodes:
+          - {id: gw, label: 'Gateway', sub: 'সিল মারে', icon: bank, col: 0, row: 1, tip: 'body আর timestamp-কে shared secret দিয়ে HMAC-SHA256 করে সিল (signature) বানায়, আর header-এ পাঠায়।'}
+          - {id: api, label: 'Webhook endpoint', sub: 'Symfony', icon: api, tone: accent, col: 2, row: 1, tip: 'কোনো কাজে হাত দেওয়ার আগে সিল আর timestamp যাচাই করে।'}
+          - {id: ok, label: 'সিল ঠিক', sub: 'event রাখো', icon: check, tone: good, col: 4, row: 0, tip: 'signature মিলেছে আর timestamp টাটকা। এখন event সংরক্ষণ করা নিরাপদ।'}
+          - {id: no, label: 'সিল ভুল', sub: 'ফেরত', icon: cross, tone: bad, col: 4, row: 2, tip: 'signature না মিললে বা timestamp পাঁচ মিনিটের পুরনো হলে request ফেলে দেওয়া হয়।'}
+        edges:
+          - {from: gw, to: api, label: 'Gateway body ও timestamp-এর সিল header-এ দিয়ে পাঠায়'}
+          - {from: api, to: ok, label: 'সার্ভার নিজের secret দিয়ে সিল বানিয়ে মেলায়, মিলে যায়', tone: good}
+          - {from: api, to: no, label: 'সিল না মিললে বা timestamp পুরনো হলে ফেরত দেয়', tone: bad, dashed: true}
+          - {from: api, to: gw, label: 'ঠিক হলে দ্রুত ২০০ উত্তর দেয়', dashed: true, tone: good}
+    aside:
+      - type: terms
+        items:
+          - {term: 'HMAC', meaning: 'গোপন key আর বার্তা মিলিয়ে বানানো hash; key না জানলে একই hash বানানো যায় না।'}
+          - {term: 'Replay attack', meaning: 'আসল, সিল-করা request ধরে রেখে পরে আবার পাঠানো।'}
+      - type: remember
+        body: 'সিল = HMAC(secret, timestamp + body)। timestamp সিলের ভেতরে থাকে বলেই সেটা বদলানো যায় না।'
+    check:
+      q: 'আসল সিল-করা request ধরে কেউ দুই দিন পরে আবার পাঠালে signature তো ঠিকই থাকবে। সেটা কীভাবে আটকানো যায়?'
+      a: 'Timestamp-ও সিলের অংশ। সার্ভার দেখে timestamp এখনকার সময়ের থেকে পাঁচ মিনিটের বেশি পুরনো কি না। পুরনো হলে সিল ঠিক থাকলেও ফেরত দেয়।'
+
+  - slug: verify-then-store
+    title: 'যাচাই করো, সংরক্ষণ করো, তারপর ২০০ দাও'
+    kind: howto
+    tldr: 'Raw body দিয়ে hash_hmac আর hash_equals-এ সিল মেলাও, event সংরক্ষণ করে Messenger-এ পাঠাও, আর দ্রুত ২০০ ফেরত দাও।'
+    keywords: ['hash_hmac', 'hash_equals', 'raw body', 'respond fast', 'Messenger', 'async processing', 'দ্রুত উত্তর']
+    blocks:
+      - type: text
+        body: |
+          দুটো নিয়ম মাথায় রাখো। এক, সিল মেলাতে হবে **raw body** দিয়ে, `json_decode`-এর পরের array দিয়ে নয়, কারণ ফাঁকা জায়গা বদলালেও hash বদলে যায়। দুই, গেটওয়ে উত্তরের জন্য অল্প সময়ই অপেক্ষা করে, তাই ধীর কাজ নয় — শুধু যাচাই আর সংরক্ষণ করে ২০০ দাও।
+      - type: code
+        lang: php
+        file: 'src/Webhook/WebhookVerifier.php'
+        variant: good
+        code: |
+          final readonly class WebhookVerifier
+          {
+              public function __construct(
+                  #[Autowire('%env(PAY_WEBHOOK_SECRET)%')] private string $secret,
+                  private ClockInterface $clock,
+              ) {}
+
+              public function verify(string $rawBody, string $header): void
+              {
+                  parse_str(str_replace(',', '&', $header), $parts);   // t=...,v1=...
+                  $t = (int) ($parts['t'] ?? 0);
+                  $sig = (string) ($parts['v1'] ?? '');
+
+                  if (abs($this->clock->now()->getTimestamp() - $t) > 300) {
+                      throw new BadRequestHttpException('timestamp পুরনো');
+                  }
+                  $expected = hash_hmac('sha256', $t.'.'.$rawBody, $this->secret);
+                  if (!hash_equals($expected, $sig)) {
+                      throw new AccessDeniedHttpException('সিল মেলেনি');
+                  }
+              }
+          }
+        marks:
+          - {line: 4, tip: 'secret কোডে বা git-এ নয়; env বা Symfony secrets থেকে আসে।'}
+          - {line: 15, tip: 'পাঁচ মিনিটের বেশি পুরনো হলে replay ধরে নিয়ে ফেলে দেওয়া হয়। timestamp সিলের ভেতরেই থাকে, তাই কেউ এটা বদলাতে পারে না।'}
+          - {line: 18, tip: 'সাধারণ === নয়। hash_equals সময় ধরে ধরে অক্ষর অক্ষর অনুমান করা (timing attack) আটকায়।'}
+      - type: code
+        lang: php
+        file: 'src/Controller/PayWebhookController.php'
+        variant: good
+        code: |
+          #[Route('/webhooks/pay', methods: ['POST'])]
+          public function __invoke(
+              Request $request,
+              WebhookVerifier $verifier,
+              MessageBusInterface $bus,
+              Connection $db,
+          ): Response {
+              $raw = $request->getContent();                 // json_decode-এর আগের raw body
+              $verifier->verify($raw, (string) $request->headers->get('X-Signature'));
+              $event = json_decode($raw, true, flags: JSON_THROW_ON_ERROR);
+
+              $db->executeStatement(
+                  'INSERT INTO webhook_event (event_id, type, payload, received_at)
+                   VALUES (?, ?, ?, now()) ON CONFLICT (event_id) DO NOTHING',
+                  [$event['id'], $event['type'], $raw],
+              );
+              $bus->dispatch(new ProcessWebhookEvent($event['id']));
+
+              return new Response('', 200);                  // ধীর কাজ এখানে নয়
+          }
+        marks:
+          - {line: 8, tip: 'getContent() হুবহু যে byte এসেছে তা-ই দেয়। এটা দিয়েই সিল মেলাতে হয়।'}
+          - {line: 14, tip: 'event_id-তে unique constraint। gateway একই event দুইবার পাঠালে দ্বিতীয়বার নতুন সারি তৈরি হয় না।'}
+          - {line: 17, tip: 'আসল কাজ পরে worker করবে। এখানে শুধু ঘটনাটা খাতায় তোলা হলো।'}
+      - type: points
+        title: 'কোন উত্তর কখন'
+        style: check
+        items:
+          - '২০০: সিল ঠিক আর event সংরক্ষিত — এমনকি অচেনা type হলেও।'
+          - '৪০০/৪০১: সিল ভুল। gateway আবার পাঠালেও লাভ নেই।'
+          - '৫০০: ডেটাবেসে লিখতে পারোনি। gateway তখন নিজেই আবার চেষ্টা করবে।'
+    aside:
+      - type: tips
+        items:
+          - 'বেশিরভাগ gateway ব্যর্থ হলে exponential backoff-এ কয়েক ঘণ্টা বা দিন ধরে retry করে। ৫০০ ফেরত দেওয়ার মানে এই retry-টা চাওয়া।'
+          - 'secret বদলানোর সময় কিছুক্ষণ পুরনো আর নতুন দুই secret-ই মেনে নাও।'
+      - type: refs
+        items:
+          - {to: 'messaging/background-jobs', label: 'Messenger worker দিয়ে async কাজ'}
+          - {to: 'security/secrets-management', label: 'Secret সামলানো'}
+    check:
+      q: 'কেন সিল মেলাতে `json_decode` করা array নয়, raw body লাগে? আর ধীর কাজ কেন controller-এ করা হয় না?'
+      a: 'Array আবার encode করলে byte বদলে যেতে পারে, তাতে hash মেলে না। আর ধীর কাজে সময় লাগলে gateway timeout ধরে একই event আবার পাঠায়।'
+
+  - slug: duplicate-out-of-order
+    title: 'দুইবার আসবে, উল্টো ক্রমেও আসবে'
+    kind: pitfall
+    tldr: 'Webhook at-least-once আসে, ক্রম মানে না; handler-কে event id দিয়ে duplicate ঠেকাতে হয়, আর state machine দিয়ে পুরনো খবরকে পেছনে ঠেলা বন্ধ করতে হয়।'
+    keywords: ['duplicate webhook', 'out-of-order', 'at-least-once', 'event id', 'idempotent handler', 'ডুপ্লিকেট', 'উল্টো ক্রম']
+    blocks:
+      - type: text
+        body: |
+          Gateway উত্তর না পেলেই একই event আবার পাঠায়, তাই একটা event দুইবার আসা স্বাভাবিক। আবার `succeeded` আগে আর `pending` পরে পৌঁছাতে পারে, কারণ retry-তে ক্রম বদলে যায়। সবচেয়ে সহজ ভুল হলো controller-এই status বসিয়ে ইমেইল পাঠিয়ে দেওয়া।
+      - type: code
+        lang: php
+        file: 'src/Controller/PayWebhookController.php (ভুল)'
+        variant: bad
+        code: |
+          $event = json_decode($request->getContent(), true);      // সিল দেখা হয়নি
+          $payment = $repo->findOneBy(['gatewayId' => $event['data']['id']]);
+
+          $payment->setStatus($event['data']['status']);           // পুরনো খবরও বসায়
+          $mailer->send(new ReceiptEmail($payment));               // দুইবার এলে দুই ইমেইল
+          $erp->notify($payment);                                  // ধীর, timeout-এর ঝুঁকি
+          $em->flush();
+
+          return new Response('ok');
+        marks:
+          - {line: 4, tip: 'pending event পরে এলে succeeded payment-কে আবার pending করে দেয়। status সরাসরি লেখা বিপজ্জনক।'}
+          - {line: 5, tip: 'একই event দুইবার এলে ক্রেতা দুটো রসিদ পায়, আর gateway-র কপি রাখা ছাড়া duplicate চেনার উপায় নেই।'}
+      - type: code
+        lang: php
+        file: 'src/MessageHandler/ProcessWebhookEventHandler.php'
+        variant: good
+        code: |
+          #[AsMessageHandler]
+          final readonly class ProcessWebhookEventHandler
+          {
+              public function __construct(private Connection $db, private PaymentService $payments) {}
+
+              public function __invoke(ProcessWebhookEvent $m): void
+              {
+                  $this->db->transactional(function () use ($m): void {
+                      $claimed = $this->db->executeStatement(
+                          'UPDATE webhook_event SET processed_at = now()
+                           WHERE event_id = ? AND processed_at IS NULL',
+                          [$m->eventId],
+                      );
+                      if (0 === $claimed) {
+                          return;                    // আগেই সারা — duplicate
+                      }
+                      $payload = $this->db->fetchOne(
+                          'SELECT payload FROM webhook_event WHERE event_id = ?', [$m->eventId]);
+                      $event = json_decode($payload, true);
+                      $this->payments->applyGatewayEvent($event['data']['id'], $event['type']);
+                  });
+              }
+          }
+        marks:
+          - {line: 11, tip: 'processed_at IS NULL থাকলেই কেবল দাবি করা যায়। একসাথে দুই worker এলেও একজনই ১ সারি আপডেট করে।'}
+          - {line: 15, tip: '০ সারি মানে অন্য কেউ আগেই সেরেছে। কিছু না করে ফিরে যাও — exception নয়, নইলে Messenger retry করবে।'}
+          - {line: 20, tip: 'এখানে payment-এর status সরাসরি বসানো হয় না; state machine বৈধ transition দেখে তবেই বদলায়।'}
+      - type: quote
+        body: 'Webhook-এ দুটোই ধরে নাও: একই event একাধিকবার আসবে, আর ক্রম ঠিক থাকবে না।'
+    aside:
+      - type: tips
+        items:
+          - 'ক্রমের ওপর ভরসা না করে state machine-এ শুধু সামনের দিকের transition মানো। পুরনো খবর এলে ফেলে দাও, status পেছনে নিও না।'
+          - 'সন্দেহ হলে event-এর data বিশ্বাস না করে gateway-র API-তে payment-এর বর্তমান অবস্থা জিজ্ঞেস করো।'
+      - type: refs
+        items:
+          - {to: 'payments/payment-state-machine', label: 'বৈধ transition আর state machine'}
+          - {to: 'payments/idempotency-keys', label: 'একই কাজ দুইবার নিরাপদ করা'}
+    check:
+      q: 'Worker handler-এ duplicate event এলে `UPDATE ... processed_at IS NULL` কত সারি বদলাবে, আর তখন handler কী করবে?'
+      a: 'প্রথমবার ১ সারি, তাই কাজ চলে। duplicate-এ ০ সারি, তাই handler চুপচাপ ফিরে যায় — কাজ আর হয় না।'
+
+flashcards:
+  - q: 'Webhook কী, আর কেন তা যাচাই ছাড়া বিশ্বাস করা যায় না?'
+    a: 'কিছু ঘটলে বাইরের সিস্টেম তোমার URL-এ যে POST পাঠায়। URL খোলা, তাই যে কেউ gateway সেজে নকল খবর পাঠাতে পারে।'
+    more: |
+      Payment gateway টাকা এলে তোমার সার্ভারকে জানায় — এই কলটাই webhook। কিন্তু URL ইন্টারনেটে খোলা, তাই body-তে "paid" লেখা থাকলেই সেটা সত্য নয়। কে পাঠিয়েছে তা প্রমাণ করার জন্য signature লাগে।
+    ref: fake-paid-call
+  - q: 'HMAC signature দিয়ে webhook কীভাবে যাচাই হয়?'
+    a: 'Gateway shared secret দিয়ে timestamp আর body-র HMAC পাঠায়। সার্ভার নিজের secret দিয়ে একই hash বানিয়ে মেলায়।'
+    more: |
+      Secret শুধু gateway আর তোমার কাছে থাকে। তাই সঠিক hash বানাতে পারা মানেই secret জানা, অর্থাৎ পাঠানোর লোক আসল। body এক অক্ষর বদলালে hash পুরো বদলে যায়, তাই বার্তা মাঝপথে বদলানোও ধরা পড়ে।
+    ref: sealed-parcel
+  - q: 'Signature মেলানোর সময় `===` না লিখে `hash_equals` কেন?'
+    a: '`hash_equals` constant-time তুলনা করে, তাই সময় মেপে অক্ষর অক্ষর hash অনুমান করা (timing attack) যায় না।'
+    more: |
+      সাধারণ `===` প্রথম অমিল পাওয়া মাত্র থেমে যায়। আক্রমণকারী উত্তরের সময়ের ছোট পার্থক্য মেপে ধাপে ধাপে সঠিক signature বের করতে পারে। `hash_equals` সবসময় একই সময় নেয়।
+    ref: verify-then-store
+  - q: 'Webhook-এ replay attack কী, আর কীভাবে ঠেকানো হয়?'
+    a: 'আসল সিল-করা request ধরে পরে আবার পাঠানো। Timestamp সিলের ভেতরে রেখে পাঁচ মিনিটের বেশি পুরনো request ফেরত দিয়ে ঠেকানো হয়।'
+    more: |
+      Signature একবার বানানো হলে সেটা আসল, তাই পরে আবার পাঠালেও সিল ঠিক দেখায়। Timestamp-ও যদি hash-এর ইনপুট হয়, তাহলে আক্রমণকারী সেটা বদলাতে পারে না, আর সার্ভার দেখে নিতে পারে request টাটকা কি না।
+    ref: sealed-parcel
+  - q: 'Webhook endpoint-এ ধীর কাজ (ইমেইল, ERP কল) কেন করা উচিত নয়?'
+    a: 'Gateway অল্প সময়েই timeout ধরে নেয় আর একই event আবার পাঠায়। তাই শুধু যাচাই আর সংরক্ষণ করে ২০০ দাও, বাকি কাজ queue-তে।'
+    more: |
+      Controller-এ যাচাই, event সংরক্ষণ আর Messenger-এ dispatch — এটুকুই করো, তারপর ২০০। আসল কাজ worker-এ চলে, ফলে ধীর হলেও gateway-র সাথে সংযোগ আটকে থাকে না, আর কাজ ব্যর্থ হলে worker নিজের retry দিয়ে সামলায়।
+    ref: verify-then-store
+  - q: 'একই webhook event দুইবার এলে handler কীভাবে নিরাপদ থাকে?'
+    a: 'event_id-তে unique constraint আর `processed_at IS NULL` শর্তে UPDATE। ০ সারি বদলালে আগেই সারা হয়েছে, কিছু না করে ফিরে যাও।'
+    more: |
+      Gateway at-least-once পাঠায়, মানে একই event একাধিকবার আসতে পারে। তাই handler-কে idempotent বানাতে হয়। event id-কে খাতায় একবারই ঢোকানো আর একবারই "সারা হয়েছে" চিহ্নিত করা — দুটোই ডেটাবেসের অনন্যতার ওপর দাঁড়ানো।
+    ref: duplicate-out-of-order
+  - q: 'Webhook ক্রম মেনে আসে না — এটা কীভাবে সামলাবে?'
+    a: 'Status সরাসরি না বসিয়ে state machine ব্যবহার করো, যেখানে শুধু সামনের দিকের transition বৈধ। পুরনো খবর এলে ফেলে দাও।'
+    more: |
+      `pending` event দেরিতে এসে `succeeded` payment-কে পেছনে টেনে নিলে ক্ষতি। বৈধ transition-এর তালিকা থাকলে এই ঘটনা বাতিল হয়। বেশি সন্দেহ হলে gateway-র API থেকে payment-এর আসল বর্তমান অবস্থা জিজ্ঞেস করে নাও।
+    ref: duplicate-out-of-order
+  - q: 'Webhook-এ কোন ক্ষেত্রে ৫০০, আর কোন ক্ষেত্রে ২০০ ফেরত দেবে?'
+    a: 'Event সংরক্ষণ করতে পারলে ২০০, এমনকি অচেনা type হলেও। সংরক্ষণ ব্যর্থ হলে ৫০০, যাতে gateway নিজেই আবার পাঠায়।'
+    more: |
+      ২০০ মানে "খবরটা আমি নিরাপদে রেখেছি, আর পাঠাতে হবে না।" যে খবর রাখতে পারোনি, তাতে ২০০ দিলে সেটা চিরতরে হারাবে। আবার সিল ভুল হলে ৪০০/৪০১ দাও, কারণ আসল gateway-র retry এখানে লাগবে না।
+    ref: verify-then-store
+
+quiz:
+  - q: 'রহিম webhook handler-এ শুধু body-র `status: paid` দেখে অর্ডার paid করে দিচ্ছে, কোনো signature যাচাই নেই। সবচেয়ে বড় ঝুঁকি কী?'
+    hint: 'URL-টা কারা কারা জানতে পারে?'
+    options:
+      - text: 'যে কেউ নকল POST পাঠিয়ে বিনা টাকায় অর্ডার paid করাতে পারবে'
+        correct: true
+        why: 'URL খোলা, আর handler পাঠানো লোকের পরিচয় যাচাই করে না। তাই নকল খবরও সত্য হয়ে যায়।'
+      - text: 'Gateway-র সার্ভার ধীর হয়ে যাবে'
+        correct: false
+        why: 'যাচাই না করলে বরং handler দ্রুতই চলে। সমস্যাটা গতির নয়, বিশ্বাসের।'
+      - text: 'JSON পার্স করতে দেরি হবে'
+        correct: false
+        why: 'পার্সিং-এর সময়ের সাথে নিরাপত্তার কোনো সম্পর্ক নেই।'
+      - text: 'ডেটাবেসে একই অর্ডার দুইবার সংরক্ষিত হবে'
+        correct: false
+        why: 'এটা আলাদা সমস্যা (duplicate)। এখানে মূল ঝুঁকি নকল প্রেরক।'
+    ref: fake-paid-call
+  - q: 'নিচের কোডে signature যাচাইয়ে কী কী ভুল আছে?'
+    lang: php
+    code: |
+      $data = json_decode($request->getContent(), true);
+      $expected = hash_hmac('sha256', json_encode($data), $secret);
+
+      if ($expected == $request->headers->get('X-Signature')) {
+          $this->process($data);
+      }
+    hint: 'কোন জিনিসের hash হচ্ছে, আর তুলনাটা কীভাবে হচ্ছে?'
+    options:
+      - text: 'json_encode করা array-র hash নেওয়া হচ্ছে, raw body-র নয়; byte বদলে গেলে সিল মিলবে না'
+        correct: true
+        why: 'gateway যে হুবহু byte-এর ওপর সিল মেরেছে, সেটার ওপরই hash নিতে হয়। decode-encode-এ ফাঁকা জায়গা বা key-র ক্রম বদলাতে পারে।'
+      - text: '`==` দিয়ে তুলনা করা হচ্ছে, hash_equals নয়'
+        correct: true
+        why: 'সাধারণ তুলনা timing attack-এর সুযোগ দেয়। সিল মেলাতে সবসময় hash_equals।'
+      - text: 'sha256 অনেক দুর্বল, sha1 ব্যবহার করা উচিত'
+        correct: false
+        why: 'উল্টো: sha256 ঠিক আছে, আর sha1 পুরনো ও দুর্বল।'
+      - text: 'Timestamp-এর কথা না ভাবলেও চলে, কারণ HMAC-ই যথেষ্ট'
+        correct: false
+        why: 'timestamp না থাকলে আসল সিল-করা request পরে আবার পাঠানো (replay) যায়। তাই timestamp-ও সিলের অংশ হওয়া উচিত।'
+    ref: verify-then-store
+  - q: 'কোন কোডটা webhook endpoint-এ ধীর কাজ সামলানোর সঠিক উপায়?'
+    hint: 'Gateway কত সময় অপেক্ষা করে? কাজ ব্যর্থ হলে retry কে করবে?'
+    options:
+      - text: 'সিল যাচাই, event সংরক্ষণ আর Messenger-এ dispatch করে সাথে সাথে ২০০ ফেরত দেওয়া'
+        correct: true
+        why: 'gateway দ্রুত উত্তর পায়, আর ধীর কাজ worker-এ চলে — সেখানে নিজের retry আছে।'
+      - text: 'সব কাজ controller-এ শেষ করে তারপর ২০০ ফেরত দেওয়া'
+        correct: false
+        why: 'ধীর হলে gateway timeout ধরে একই event আবার পাঠাবে, ফলে duplicate বাড়বে।'
+      - text: 'কাজ শেষ হওয়ার আগেই কিছু না সংরক্ষণ করে ২০০ ফেরত দেওয়া'
+        correct: false
+        why: 'তখন সার্ভার crash করলে event চিরতরে হারায়, আর gateway ভাববে খবর পৌঁছে গেছে।'
+      - text: 'প্রতিটা event-এ ৫০০ ফেরত দিয়ে gateway-কে বারবার পাঠাতে বাধ্য করা'
+        correct: false
+        why: 'এতে সব event-ই retry লাইনে ঢোকে; আর শেষে gateway endpoint বন্ধই করে দিতে পারে।'
+    ref: verify-then-store
+  - q: 'Webhook-এ `payment.succeeded` আগে এল, তারপর পুরনো `payment.pending` এল। handler `status = event.status` বসায়। কী ঘটবে?'
+    hint: 'Retry আর নেটওয়ার্ক কি ক্রম ঠিক রাখে?'
+    options:
+      - text: 'Payment succeeded থেকে আবার pending হয়ে যাবে, এবং ক্রেতা টাকা দিয়েও অর্ডার আটকা পাবে'
+        correct: true
+        why: 'পুরনো খবরটা পরে এসে সাম্প্রতিক অবস্থা মুছে দিয়েছে। state machine-এ শুধু সামনের transition বৈধ থাকলে এটা বাতিল হতো।'
+      - text: 'Gateway ক্রম নিশ্চিত করে, তাই এমন কখনোই হয় না'
+        correct: false
+        why: 'বেশিরভাগ gateway ক্রমের গ্যারান্টি দেয় না, বিশেষ করে retry-র সময়।'
+      - text: 'Handler দ্বিতীয় event আপনা-আপনি উপেক্ষা করবে'
+        correct: false
+        why: 'এমন কিছু নেই: কোড যা বলেছে (status বসাও), তা-ই করবে।'
+    ref: duplicate-out-of-order
+  - q: 'নিচের কোন আচরণগুলো webhook handler-কে duplicate event থেকে নিরাপদ রাখে?'
+    hint: 'প্রথম বা দ্বিতীয় — কোনবার এলো, সেটা কি handler আলাদা করে চেনে?'
+    options:
+      - text: 'webhook_event টেবিলে event_id-তে unique constraint'
+        correct: true
+        why: 'একই event আবার এলে নতুন সারি তৈরি হয় না, ফলে duplicate-কে সনাক্ত করার ভিত্তি থাকে।'
+      - text: '`UPDATE ... SET processed_at = now() WHERE event_id = ? AND processed_at IS NULL`, আর ০ সারি হলে ফেরা'
+        correct: true
+        why: 'ডেটাবেস একসাথে দুজনের একজনকেই ১ সারি দেয়। বাকিজন ০ পেয়ে কাজ বাদ দেয়।'
+      - text: 'প্রথমে SELECT করে দেখা event আছে কি না, পরে INSERT'
+        correct: false
+        why: 'দুই request একসাথে এলে দুজনেই "নেই" দেখবে। দেখা আর লেখার মাঝে ফাঁক থাকে।'
+      - text: 'Gateway কে বলে দেওয়া, সে যেন কখনো retry না করে'
+        correct: false
+        why: 'retry বন্ধ করলে ৫০০ বা timeout-এর সময় event চিরতরে হারাবে। duplicate সামলানো হয় তোমার দিকে।'
+    ref: duplicate-out-of-order
+  - q: 'Webhook endpoint-এ ডেটাবেস ডাউন, event সংরক্ষণ করা গেল না। কোন উত্তর দেওয়া উচিত?'
+    hint: 'Gateway কখন আবার পাঠায়?'
+    options:
+      - text: '২০০, পরে ঠিক করা হবে'
+        correct: false
+        why: 'gateway ধরে নেবে খবর পৌঁছেছে, আর আর কখনো পাঠাবে না। event চিরতরে হারাবে।'
+      - text: '৪০১, কারণ কিছু একটা ভুল হয়েছে'
+        correct: false
+        why: '৪০১ মানে সিল ভুল। এখানে সিল ঠিক, ভুলটা তোমার সার্ভারের।'
+      - text: '৫০০, যাতে gateway নিজের retry schedule-এ আবার পাঠায়'
+        correct: true
+        why: 'event সংরক্ষিত না হলে ২xx দেওয়া যাবে না। ৫xx মানে "আমি নিতে পারিনি, আবার চেষ্টা করো"।'
+    ref: verify-then-store

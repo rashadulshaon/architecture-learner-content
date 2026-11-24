@@ -1,0 +1,340 @@
+slides:
+  - slug: letter-that-never-delivers
+    title: 'যে বার্তা কিছুতেই সফল হয় না'
+    kind: story
+    tldr: 'ভাঙা বার্তা তাড়াহুড়ো করে বারবার চালালে ব্যর্থ API আরও চাপ পায় আর queue আটকে যায়; একটা কাটছাঁট নিয়ম লাগে।'
+    keywords: ['poison message', 'retry storm', 'infinite retry', 'বিষাক্ত বার্তা', 'রিট্রাই']
+    blocks:
+      - type: metaphor
+        icon: mail
+        title: 'ভুল ঠিকানার চিঠি'
+        body: |
+          ডাকপিয়ন একটা চিঠি নিয়ে বাড়ি খুঁজে পেলেন না। যদি তিনি পুরো দিন ওই চিঠি নিয়েই ঘুরতেন, বাকি শত চিঠি পড়ে থাকত। আবার সাময়িক কারণে, যেমন বাড়ির লোক বাইরে, দ্বিতীয়বার গেলে চিঠি পৌঁছে যায়। দুই ধরনের ব্যর্থতা দুই রকম সামলাতে হয়।
+      - type: visual
+        kind: flow
+        caption: 'একটা ভাঙা বার্তা বারবার ফিরে এসে লাইন আটকে রাখে'
+        nodes:
+          - {id: queue, label: 'Queue', sub: 'বার্তা #77 সামনে', icon: queue, col: 0, row: 0, tip: 'সব বার্তা এখানে লাইন ধরে থাকে। ভাঙা বার্তা ফিরে এসে আবার সামনে বসে।'}
+          - {id: worker, label: 'Worker', sub: 'প্রতিবার ব্যর্থ', icon: worker, tone: warn, col: 1.5, row: 0, tip: 'প্রতিবার একই কাজ করতে যায় আর একই exception পায়।'}
+          - {id: api, label: 'SMS API', sub: '400: ভুল নম্বর', icon: api, tone: bad, col: 3, row: 0, tip: 'নম্বরটাই ভুল, তাই কতবার চেষ্টা করলেও এই API সাড়া দেবে না।'}
+        edges:
+          - {from: queue, to: worker, label: 'Worker বার্তা #77 তোলে'}
+          - {from: worker, to: api, label: 'SMS API বলে নম্বরটাই ভুল, 400', tone: bad}
+          - {from: worker, to: queue, label: 'ব্যর্থ, তাই বার্তা সাথে সাথে আবার queue-তে যায়', dashed: true, tone: bad}
+      - type: quote
+        body: 'সব ব্যর্থতা সমান নয়: সাময়িকটা আবার চেষ্টা করো, স্থায়ীটা আলাদা করে রাখো।'
+    aside:
+      - type: story
+        title: 'ছুটির রাতের SMS ঝড়'
+        body: |
+          এক অ্যাপে SMS gateway ১০ মিনিট বন্ধ ছিল। ফেরার মুহূর্তে হাজার হাজার বার্তা একসাথে retry হয়ে gateway-কে আবার ফেলে দিল, কারণ সব retry ছিল তাৎক্ষণিক আর একই সময়ে।
+      - type: terms
+        items:
+          - {term: 'Poison message', meaning: 'যে বার্তা যতবারই চালাও ব্যর্থ হয়, কারণ বার্তাটা নিজেই ভাঙা।'}
+          - {term: 'Retry storm', meaning: 'অনেক বার্তা একসাথে retry হয়ে ভাঙা সেবাকে আরও চেপে ধরা।'}
+    check:
+      q: 'ভুল নম্বরে SMS যাচ্ছে না। কেন সেটা অনন্তকাল retry করা ভুল?'
+      a: 'ব্যর্থতাটা স্থায়ী: নম্বর বদলাবে না, তাই retry-তে কিছুই বদলায় না। উল্টে বার্তাটা ফিরে ফিরে worker আর API-কে খালি খাটায়।'
+
+  - slug: backoff-and-dlq
+    title: 'Backoff দিয়ে retry, শেষে DLQ'
+    kind: concept
+    tldr: 'প্রতিবার দ্বিগুণ সময় অপেক্ষা করে সীমিত বার retry করো; তারপরও ব্যর্থ হলে বার্তা dead-letter queue-তে রেখে মানুষকে দেখাও।'
+    keywords: ['retry', 'exponential backoff', 'jitter', 'DLQ', 'dead letter queue', 'max retries', 'ব্যাকঅফ']
+    blocks:
+      - type: metaphor
+        icon: mail
+        title: 'ডাকপিয়ন আর ডেড লেটার অফিস'
+        body: |
+          পিয়ন প্রথমে ১ ঘণ্টা পরে, তারপর ২ ঘণ্টা পরে, তারপর ৪ ঘণ্টা পরে আবার যান। প্রতিবার ব্যবধান বাড়ে, আর কেউ কেউ একটু আগে-পরে যান যাতে সব পিয়ন একই মুহূর্তে একই বাড়িতে না পৌঁছায়। তিনবারেও না পেলে চিঠি যায় **ডেড লেটার অফিসে**, যেখানে একজন মানুষ দেখে সিদ্ধান্ত নেয়।
+      - type: visual
+        kind: bars
+        caption: 'Messenger-এর ডিফল্ট backoff: ১s থেকে শুরু, প্রতিবার দ্বিগুণ'
+        items:
+          - {label: '১ম retry', value: 1, display: '1s', tone: good, tip: 'সাময়িক ঝামেলা প্রায়ই এক সেকেন্ডেই কেটে যায়।'}
+          - {label: '২য় retry', value: 2, display: '2s', tone: good, tip: 'ব্যবধান দ্বিগুণ, যাতে ভাঙা সেবা দম নেওয়ার সময় পায়।'}
+          - {label: '৩য় retry', value: 4, display: '4s', tone: warn, tip: 'এখনো না হলে সমস্যাটা সম্ভবত সাময়িক নয়।'}
+          - {label: 'Failure transport', value: 8, display: 'DLQ', tone: bad, tip: 'max_retries শেষ, বার্তা আলাদা জায়গায় জমা হয়। এরপর মানুষ দেখে।'}
+      - type: visual
+        kind: steps
+        caption: 'একটা বার্তার জীবন: ব্যর্থতা থেকে মীমাংসা'
+        steps:
+          - {title: '১. ব্যর্থ', body: 'handler exception ছোড়ে, ack হয় না', tip: 'Messenger বোঝে কাজটা হয়নি।'}
+          - {title: '২. অপেক্ষা', body: 'backoff-এ বাড়তে থাকা সময় থেমে থাকে', tip: 'ভাঙা সেবাকে সুস্থ হওয়ার সময় দেওয়া।'}
+          - {title: '৩. retry', body: 'আবার চেষ্টা, সর্বোচ্চ max_retries বার', tip: 'সীমা না থাকলে ভাঙা বার্তা চিরকাল ঘুরবে।'}
+          - {title: '৪. DLQ', body: 'ব্যর্থ বার্তা আলাদা queue-তে জমা', tip: 'মূল queue আবার পরিষ্কার হয়ে চলতে থাকে।'}
+          - {title: '৫. মানুষ', body: 'কারণ ঠিক করে বার্তা আবার চালায় বা ফেলে', tip: 'DLQ-তে বার্তা জমা মানেই alert।'}
+    aside:
+      - type: remember
+        body: 'ব্যবধান বাড়াও, সংখ্যা সীমিত রাখো, আর জিদ্দি বার্তাকে আলাদা জায়গায় সরাও।'
+      - type: terms
+        items:
+          - {term: 'Backoff', meaning: 'প্রতিবার retry-র আগে আগের চেয়ে বেশি অপেক্ষা।'}
+          - {term: 'Jitter', meaning: 'অপেক্ষার সময়ে ছোট এলোমেলো যোগ-বিয়োগ, যাতে সবাই একসাথে না আসে।'}
+          - {term: 'DLQ', meaning: 'dead-letter queue: retry শেষেও ব্যর্থ বার্তার আলাদা ঘর।'}
+    check:
+      q: 'Backoff-এ jitter যোগ করা হয় কেন?'
+      a: 'হাজার বার্তা একই মুহূর্তে ব্যর্থ হলে jitter ছাড়া সবাই একই সেকেন্ডে retry করে সেবাকে আবার ফেলে দেয়। Jitter তাদের ছড়িয়ে দেয়।'
+
+  - slug: messenger-retry-config
+    title: 'Messenger-এ retry strategy আর failure transport'
+    kind: howto
+    tldr: 'Transport-এ retry_strategy আর failure_transport বসাও, সাময়িক ব্যর্থতায় exception ছোড়ো, স্থায়ীটায় UnrecoverableMessageHandlingException।'
+    keywords: ['retry_strategy', 'failure_transport', 'UnrecoverableMessageHandlingException', 'messenger:failed:retry', 'ফেইলিওর ট্রান্সপোর্ট']
+    blocks:
+      - type: code
+        lang: yaml
+        file: 'config/packages/messenger.yaml'
+        variant: good
+        code: |
+          framework:
+              messenger:
+                  failure_transport: failed
+
+                  transports:
+                      async:
+                          dsn: '%env(MESSENGER_TRANSPORT_DSN)%'
+                          retry_strategy:
+                              max_retries: 3
+                              delay: 1000        # প্রথম অপেক্ষা: ১ সেকেন্ড
+                              multiplier: 2      # ১s, ২s, ৪s
+                              max_delay: 60000   # কখনো ১ মিনিটের বেশি নয়
+                              jitter: 0.1        # ±১০% এলোমেলো
+                      failed: 'doctrine://default?queue_name=failed'
+
+                  routing:
+                      'App\Message\SendSms': async
+        marks:
+          - {line: 3, tip: 'এই এক লাইন না থাকলে max_retries শেষে বার্তাটা শুধু ফেলে দেওয়া হয়, কেউ দেখতেও পায় না।'}
+          - {line: 9, tip: 'এই সংখ্যার বেশি retry হবে না। শেষ ব্যর্থতার পর বার্তা failure transport-এ যায়।'}
+          - {line: 14, tip: 'ব্যর্থ বার্তার ঘর। ছোট অ্যাপে Doctrine টেবিলই যথেষ্ট, আলাদা worker লাগে না।'}
+      - type: code
+        lang: php
+        file: 'src/MessageHandler/SendSmsHandler.php'
+        variant: good
+        code: |
+          #[AsMessageHandler]
+          final readonly class SendSmsHandler
+          {
+              public function __construct(private TexterInterface $texter) {}
+
+              public function __invoke(SendSms $m): void
+              {
+                  if (!preg_match('/^\+8801[3-9]\d{8}$/', $m->phone)) {
+                      // স্থায়ী ব্যর্থতা: retry করলেও নম্বর ঠিক হবে না
+                      throw new UnrecoverableMessageHandlingException('ভুল ফোন নম্বর');
+                  }
+
+                  // gateway বন্ধ থাকলে TransportException ওঠে; সেটা সাময়িক, তাই retry হবে
+                  $this->texter->send(new SmsMessage($m->phone, $m->text));
+              }
+          }
+        marks:
+          - {line: 10, tip: 'এই exception দেখলে Messenger retry বাদ দিয়ে সরাসরি failure transport-এ পাঠায়।'}
+          - {line: 14, tip: 'সাধারণ exception বা transport exception ছাড়লে retry strategy চলে। এখানে নিজে catch করে গিলে ফেলো না।'}
+    aside:
+      - type: commands
+        title: 'Failed বার্তা দেখা ও সামলানো'
+        items:
+          - {cmd: 'php bin/console messenger:failed:show', desc: 'failure transport-এর বার্তা ও কারণ দেখো'}
+          - {cmd: 'php bin/console messenger:failed:retry 12', desc: 'নির্দিষ্ট বার্তা আবার মূল transport-এ পাঠাও'}
+          - {cmd: 'php bin/console messenger:failed:retry --force', desc: 'সব ব্যর্থ বার্তা একে একে আবার চালাও'}
+          - {cmd: 'php bin/console messenger:failed:remove 12', desc: 'যে বার্তা আর দরকার নেই, তা মুছে দাও'}
+      - type: tips
+        items:
+          - 'failure transport-এ বার্তা জমলে alert বাজাও। নীরবে জমা DLQ আসলে হারিয়ে যাওয়া কাজ।'
+          - 'Retry করার আগে মূল কারণ ঠিক করো, নইলে একই বার্তা আবার ফিরে আসবে।'
+    check:
+      q: 'ভুল ফোন নম্বরের বার্তায় কোন exception ছুড়বে, আর তার ফল কী?'
+      a: '`UnrecoverableMessageHandlingException`। Messenger retry বাদ দিয়ে সরাসরি বার্তাটা failure transport-এ পাঠায়, কারণ নম্বর ঠিক না হলে retry বৃথা।'
+
+  - slug: idempotent-consumer
+    title: 'ফাঁদ: retry-র পর কাজ দুইবার হয়ে যাওয়া'
+    kind: pitfall
+    tldr: 'Retry আর redelivery মানেই handler একাধিকবার চলতে পারে। বার্তার id processed-message টেবিলে রেখে কাজটা একবারই হতে দাও।'
+    keywords: ['idempotent consumer', 'processed message', 'inbox', 'deduplication', 'unique constraint', 'ডুপ্লিকেট হ্যান্ডলার']
+    blocks:
+      - type: metaphor
+        icon: book
+        title: 'মুদি দোকানের চালান খাতা'
+        body: |
+          দোকানি প্রতিটা মালের চালানে নম্বর বসান। চালান ১০২ নিয়ে লোক দুইবার এলে তিনি খাতা খুলে দেখেন, "১০২ তো আগেই তোলা হয়েছে", আর মাল দ্বিতীয়বার দেন না। **Idempotent consumer**-এর খাতা হলো `processed_message` টেবিল।
+      - type: code
+        lang: php
+        file: 'src/MessageHandler/AwardPointsHandler.php'
+        variant: bad
+        code: |
+          public function __invoke(AwardPoints $m): void
+          {
+              // redelivery হলে একই পয়েন্ট আবার যোগ হয়
+              $this->db->executeStatement(
+                  'UPDATE loyalty SET points = points + ? WHERE user_id = ?',
+                  [$m->points, $m->userId],
+              );
+          }
+        marks:
+          - {line: 3, tip: 'এই কোড প্রতিবার চললে পয়েন্ট বাড়ায়। ডুপ্লিকেট বার্তা মানেই ডবল পয়েন্ট।'}
+      - type: code
+        lang: php
+        file: 'src/MessageHandler/AwardPointsHandler.php'
+        variant: good
+        code: |
+          public function __invoke(AwardPoints $m): void
+          {
+              $this->db->beginTransaction();
+              try {
+                  $new = $this->db->executeStatement(
+                      'INSERT INTO processed_message (message_id, handler) VALUES (?, ?)
+                       ON CONFLICT DO NOTHING', [$m->messageId, self::class]);
+                  if (0 === $new) {            // আগেই প্রক্রিয়া হয়েছে
+                      $this->db->rollBack();
+                      return;
+                  }
+                  $this->db->executeStatement(
+                      'UPDATE loyalty SET points = points + ? WHERE user_id = ?',
+                      [$m->points, $m->userId]);
+                  $this->db->commit();
+              } catch (\Throwable $e) {
+                  $this->db->rollBack();
+                  throw $e;                    // retry-র জন্য exception ছাড়ো
+              }
+          }
+        marks:
+          - {line: 6, tip: '(message_id, handler)-এ UNIQUE constraint থাকলে এক বার্তা এক handler-এ একবারই ঢুকবে।'}
+          - {line: 8, tip: '০ সারি ঢুকেছে মানে আগেই হয়ে গেছে, চুপচাপ ফিরে যাও। এটা ব্যর্থতা নয়।'}
+          - {line: 15, tip: 'কাজ আর খাতায় লেখা একই transaction-এ, তাই একটা হয়ে অন্যটা না হওয়ার সুযোগ নেই।'}
+      - type: quote
+        body: 'Retry থাকলে ডুপ্লিকেট আছে, আর ডুপ্লিকেট সামলানো handler-এর কাজ।'
+    aside:
+      - type: pitfalls
+        items:
+          - 'ইমেইল বা পেমেন্ট API-র মতো বাইরের কাজ DB transaction-এ ঢোকে না। সেখানে provider-কে idempotency key দাও।'
+          - 'বার্তার id producer বানাবে (`Uuid::v7()`)। retry-তে id একই থাকা চাই, নতুন বানালে চেক বেকার।'
+      - type: refs
+        items:
+          - {to: 'payments/idempotency-keys', label: 'Idempotency key ও replay'}
+          - {to: 'workflows/outbox-inbox', label: 'Inbox টেবিলের পূর্ণ রূপ'}
+    check:
+      q: 'processed_message টেবিলে কেবল message_id-তে UNIQUE না দিয়ে (message_id, handler)-এ দেওয়া হয় কেন?'
+      a: 'একই বার্তা একাধিক handler পেতে পারে। শুধু message_id unique হলে প্রথম handler দাগ কেটে দিলে বাকি handler-রা কাজটা করতেই পারবে না।'
+
+flashcards:
+  - q: 'Poison message কী?'
+    a: 'যে বার্তা যতবারই চালানো হোক ব্যর্থ হয়, কারণ বার্তাটা নিজেই ভাঙা বা তার ডেটা অগ্রহণযোগ্য।'
+    more: |
+      Poison message retry করে সারে না। সীমাহীন retry হলে সেটা ফিরে ফিরে worker আটকায়। তাই সীমিত retry-র পর তাকে dead-letter queue-তে সরিয়ে দিতে হয়।
+    ref: letter-that-never-delivers
+  - q: 'কোন ব্যর্থতায় retry করা উচিত, কোনটায় নয়?'
+    a: 'সাময়িক ব্যর্থতায় (timeout, gateway বন্ধ) retry করো। স্থায়ী ব্যর্থতায় (ভুল নম্বর, validation ভুল) retry না করে সরাসরি DLQ-তে পাঠাও।'
+    more: |
+      স্থায়ী ব্যর্থতায় retry-তে কিছু বদলায় না, শুধু সময় আর খরচ যায়। Messenger-এ স্থায়ী ব্যর্থতা বোঝাতে `UnrecoverableMessageHandlingException` ছোড়ো, তাতে retry বাদ যায়।
+    ref: messenger-retry-config
+  - q: 'Exponential backoff কী?'
+    a: 'প্রতিটা retry-র আগে আগের চেয়ে বেশি অপেক্ষা, সাধারণত দ্বিগুণ। যেমন ১s, ২s, ৪s।'
+    more: |
+      ভাঙা সেবাকে সুস্থ হওয়ার সময় দেওয়াই লক্ষ্য। তাৎক্ষণিক retry সেই ভাঙা সেবাকে আরও চাপ দেয়। Messenger-এ `delay`, `multiplier` আর `max_delay` দিয়ে এটা ঠিক করা হয়।
+    ref: backoff-and-dlq
+  - q: 'Retry-তে jitter যোগ করা হয় কেন?'
+    a: 'যাতে হাজার বার্তা একই সেকেন্ডে retry না করে। অপেক্ষার সময়ে সামান্য এলোমেলো যোগ-বিয়োগ retry-গুলোকে ছড়িয়ে দেয়।'
+    more: |
+      Jitter ছাড়া একই সময়ে ব্যর্থ হওয়া সব বার্তা একই সময়ে ফিরে এসে সেবাকে আবার ফেলে দেয়, যাকে retry storm বলে। Messenger-এ `jitter: 0.1` মানে ±১০%।
+    ref: backoff-and-dlq
+  - q: 'Dead-letter queue (DLQ) কী কাজে লাগে?'
+    a: 'Retry শেষেও ব্যর্থ বার্তা এখানে জমা থাকে। মূল queue পরিষ্কার চলে, আর মানুষ কারণ দেখে বার্তা আবার চালাতে বা ফেলতে পারে।'
+    more: |
+      DLQ শুধু ফেলে রাখার জায়গা নয়, এটা একটা কাজের তালিকা। এতে বার্তা জমলে alert দিতে হয়, নইলে ব্যর্থ কাজ নীরবে হারিয়ে যায়।
+    ref: backoff-and-dlq
+  - q: 'Messenger-এ DLQ-র জায়গায় কোন config বসে, আর ব্যর্থ বার্তা কীভাবে আবার চালাও?'
+    a: '`failure_transport: failed` দিয়ে। পরে `messenger:failed:show` দিয়ে দেখো আর `messenger:failed:retry` দিয়ে আবার চালাও।'
+    more: |
+      `failure_transport` না থাকলে max_retries শেষে বার্তা ফেলে দেওয়া হয়। Retry করার আগে কারণ ঠিক করো, নইলে একই বার্তা আবার ব্যর্থ হয়ে ফিরে আসবে।
+    ref: messenger-retry-config
+  - q: 'Idempotent consumer কীভাবে বানানো হয়?'
+    a: 'প্রতিটা বার্তার একটা id থাকে। Handler কাজ করার সময় একই transaction-এ id-টা processed_message টেবিলে UNIQUE constraint-সহ লেখে।'
+    more: |
+      Insert-এ conflict হলে বার্তাটা আগেই প্রক্রিয়া হয়েছে, তাই handler কিছু না করে ফিরে যায়। কাজ আর খাতায় লেখা একই transaction-এ থাকলে একটা হয়ে অন্যটা না হওয়ার সুযোগ থাকে না।
+    ref: idempotent-consumer
+
+quiz:
+  - q: 'কোন ক্ষেত্রে retry করা অর্থহীন এবং বার্তা সরাসরি failure transport-এ পাঠানো উচিত?'
+    hint: 'কোন ক্ষেত্রে সময় গেলে পরিস্থিতি বদলাবে না?'
+    options:
+      - text: 'SMS gateway ৩০ সেকেন্ডের জন্য timeout দিচ্ছে'
+        correct: false
+        why: 'এটা সাময়িক ব্যর্থতা। কিছুক্ষণ পরে gateway ঠিক হলে retry সফল হবে।'
+      - text: 'বার্তার ফোন নম্বরটাই ভুল ফরম্যাটে'
+        correct: true
+        why: 'নম্বর নিজে নিজে ঠিক হবে না, তাই retry বৃথা।'
+      - text: 'ডেটাবেস কয়েক সেকেন্ডের জন্য deadlock-এ পড়ল'
+        correct: false
+        why: 'Deadlock সাময়িক। retry করলে সাধারণত নিঃশব্দে সেরে যায়।'
+      - text: 'বার্তার JSON-এ ডেটা ভুল ধরনের, কোনো handler বুঝতে পারে না'
+        correct: true
+        why: 'ডেটা ভাঙা, তাই যতবার চালাবে ততবার ব্যর্থ হবে। এটাও স্থায়ী ব্যর্থতা।'
+    ref: messenger-retry-config
+  - q: 'নিচের config-এ `max_retries` শেষ হলে ব্যর্থ বার্তার কী হবে?'
+    lang: yaml
+    code: |
+      framework:
+          messenger:
+              transports:
+                  async:
+                      dsn: '%env(MESSENGER_TRANSPORT_DSN)%'
+                      retry_strategy:
+                          max_retries: 3
+                          delay: 1000
+                          multiplier: 2
+    hint: 'কোনো failure_transport লাইন আছে কি?'
+    options:
+      - text: 'নিজে থেকে একটা failed queue বানিয়ে সেখানে জমবে'
+        correct: false
+        why: 'failure transport নিজে বানাতে হয়, Messenger আপনা-আপনি বানায় না।'
+      - text: 'বার্তাটা বাদ দেওয়া হবে, কেউ দেখতেও পাবে না'
+        correct: true
+        why: '`failure_transport` সেট না থাকলে retry শেষে বার্তা ফেলে দেওয়া হয়। কাজ নীরবে হারায়।'
+      - text: 'অনন্তকাল ধরে ১s, ২s, ৪s ব্যবধানে retry হতে থাকবে'
+        correct: false
+        why: '`max_retries: 3` সীমা বেঁধে দিয়েছে। তার পরে আর retry হয় না।'
+    ref: messenger-retry-config
+  - q: 'একটা handler প্রতিবার চলার সময় লয়্যালটি পয়েন্ট যোগ করে। Redelivery হলে কী ঘটে, আর কী করা উচিত?'
+    hint: 'একই বার্তা দ্বিতীয়বার এলে handler কীভাবে চিনবে?'
+    options:
+      - text: 'পয়েন্ট দুইবার যোগ হয়; বার্তার id processed_message টেবিলে UNIQUE-সহ রেখে চেক করা উচিত'
+        correct: true
+        why: 'Idempotent consumer: id আগে দেখা হয়ে থাকলে handler কিছু করে না।'
+      - text: 'Messenger ডুপ্লিকেট নিজে চিনে বাদ দেয়, কিছু করতে হবে না'
+        correct: false
+        why: 'Messenger কাজের অর্থ জানে না। ডুপ্লিকেট সামলানো handler-এর দায়িত্ব।'
+      - text: 'retry বন্ধ করে দিলেই আর ডুপ্লিকেট হবে না'
+        correct: false
+        why: 'Retry বন্ধ করলেও crash-এর পর redelivery হয়, আর কাজ হারানোর ঝুঁকি বাড়ে।'
+    ref: idempotent-consumer
+  - q: 'কোন বাক্যগুলো সঠিক?'
+    hint: 'Backoff আর DLQ-র উদ্দেশ্য ভাবো।'
+    options:
+      - text: 'Backoff ভাঙা সেবাকে সুস্থ হওয়ার সময় দেয়'
+        correct: true
+        why: 'তাৎক্ষণিক retry ভাঙা সেবাকে আরও চাপ দেয়। বাড়ন্ত ব্যবধান তাকে শ্বাস নিতে দেয়।'
+      - text: 'DLQ-তে বার্তা জমলে alert দেওয়া উচিত'
+        correct: true
+        why: 'DLQ মানে মানুষের দেখার কাজ। alert না থাকলে সেখানে কাজ নীরবে পচে।'
+      - text: 'Retry যত বেশি করা যায় তত ভালো, তাই `max_retries` বড় রাখা উচিত'
+        correct: false
+        why: 'বড় সংখ্যা ভাঙা বার্তাকে ঘণ্টার পর ঘণ্টা ফেরায়। সীমা ছোট রেখে DLQ-তে সরানো ভালো।'
+      - text: 'DLQ-র বার্তা নিজে নিজে ঠিক হয়ে আবার চলে'
+        correct: false
+        why: 'কারণ সারিয়ে কাউকে `messenger:failed:retry` চালাতে হয়।'
+    ref: backoff-and-dlq
+  - q: '(message_id, handler)-এ UNIQUE constraint আর কাজ একই transaction-এ রাখা হয় কেন?'
+    hint: 'কাজ হয়ে খাতায় লেখা না হলে বা উল্টোটা হলে কী হবে?'
+    options:
+      - text: 'যাতে খাতায় লেখা আর কাজ একসাথে হয় অথবা একসাথে বাতিল হয়'
+        correct: true
+        why: 'আলাদা হলে crash-এ দাগ পড়ে গেছে অথচ কাজ হয়নি, বা কাজ হয়েছে অথচ দাগ নেই, এমন হতে পারে।'
+      - text: 'যাতে ডেটাবেস দ্রুত চলে'
+        correct: false
+        why: 'এটা গতির জন্য নয়, সঠিকতার জন্য।'
+      - text: 'যাতে Messenger ডুপ্লিকেট বার্তা queue-তে ঢুকতেই না দেয়'
+        correct: false
+        why: 'বার্তা queue-তে ঢুকবেই; ডুপ্লিকেট ধরা পড়ে handler-এর ভেতরে, ঢোকার সময় নয়।'
+    ref: idempotent-consumer

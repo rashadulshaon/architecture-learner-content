@@ -1,0 +1,477 @@
+slides:
+  - slug: average-lies
+    title: 'গড় বলছে সব ঠিক, ক্রেতারা বলছে সাইট ধীর'
+    kind: story
+    tldr: 'গড় response time ধীর কয়েকজনকে লুকিয়ে ফেলে; তাই আসল অভিজ্ঞতা মাপতে percentile (p90, p99) আর ক্রমাগত জমা হওয়া metric দেখতে হয়।'
+    keywords: ['metrics', 'average vs percentile', 'p99', 'latency', 'monitoring', 'মেট্রিক', 'গড়']
+    blocks:
+      - type: metaphor
+        icon: heart
+        title: 'ডাক্তারের ভাইটাল সাইন'
+        body: |
+          রোগীর জ্বর, নাড়ির গতি আর রক্তচাপ নার্স নিয়ম করে মেপে চার্টে লেখেন। রোগী ভালো আছে কি না, তা মুখ দেখে নয়, সংখ্যার ধারা দেখে বোঝা যায়। Metric হলো অ্যাপের সেই চার্ট: প্রতি মিনিটে মাপা সংখ্যা, যা সময়ের সাথে জমতে থাকে।
+      - type: visual
+        kind: bars
+        caption: 'একই ১০০ জন ক্রেতার response time: গড় আর percentile'
+        items:
+          - {label: 'গড় (average)', value: 120, display: '120ms', tone: good, tip: 'সব সময় যোগ করে ভাগ। কয়েকটা খুব ধীর request গড়ে ডুবে যায়, তাই গড় সুন্দর দেখায়।'}
+          - {label: 'p50', value: 80, display: '80ms', tone: good, tip: 'মাঝের ক্রেতা: অর্ধেক ক্রেতা এর চেয়ে দ্রুত উত্তর পেয়েছে।'}
+          - {label: 'p90', value: 150, display: '150ms', tone: default, tip: '১০০ জনের ৯০ জন এর মধ্যে উত্তর পেয়েছে। বাকি ১০ জন এর চেয়ে বেশি অপেক্ষা করেছে।'}
+          - {label: 'p99', value: 2400, display: '2400ms', tone: bad, tip: '১০০ জনের একজন ২.৪ সেকেন্ড বসে ছিল। সে-ই হয়তো তোমার সবচেয়ে বেশি কেনাকাটা করা ক্রেতা, কারণ বড় cart-এর পাতা সবচেয়ে ভারী।'}
+      - type: quote
+        body: 'গড় দিয়ে অভিজ্ঞতা মাপা যায় না; দেখো p90 আর p99 — ধীরতম ক্রেতারা।'
+    aside:
+      - type: story
+        title: 'সোমবারের অভিযোগ'
+        body: 'ইমনের ড্যাশবোর্ডে গড় ১২০ms, সবুজ। তবু সাপোর্টে প্রতিদিন "চেকআউট আটকে যায়" অভিযোগ আসত। p99 দেখার পর বোঝা গেল, বড় cart-এর ক্রেতারা ২–৩ সেকেন্ড বসে থাকছে আর অনেকে ছেড়ে চলে যাচ্ছে। গড় তাদের কথা বলেনি।'
+      - type: terms
+        items:
+          - {term: 'Percentile (p99)', meaning: 'p99 = ১০০ জনের ৯৯ জন যার মধ্যে উত্তর পেয়েছে সেই সময়; অর্থাৎ ধীরতম ১% বাদে সবাই।'}
+          - {term: 'Metric', meaning: 'সময়ের সাথে নিয়ম করে মাপা একটা সংখ্যা: request-সংখ্যা, error, response time।'}
+    check:
+      q: 'গড় response time ১২০ms, তবু p99 ২.৪ সেকেন্ড। এর মানে কী?'
+      a: 'বেশিরভাগ ক্রেতা দ্রুত উত্তর পাচ্ছে, কিন্তু প্রতি ১০০ জনে একজন অনেক ধীর অভিজ্ঞতা পাচ্ছে। গড় সেটা লুকিয়ে ফেলেছে।'
+
+  - slug: three-metric-types
+    title: 'তিন ধরনের metric: counter, gauge, histogram'
+    kind: concept
+    tldr: 'Counter শুধু বাড়ে (কতবার), gauge ওঠানামা করে (এখন কত), histogram মান বালতিতে ফেলে (কত সময়ে কয়টা) — percentile আসে histogram থেকে।'
+    keywords: ['counter', 'gauge', 'histogram', 'Prometheus', 'label cardinality', 'বালতি', 'metric type']
+    blocks:
+      - type: metaphor
+        icon: ticket
+        title: 'বাসের কন্ডাক্টরের তিন হিসাব'
+        body: |
+          কন্ডাক্টরের টিকিটের কাউন্টার শুধু বাড়ে: আজ কত টিকিট বিক্রি হলো (counter)। বাসে এই মুহূর্তে কতজন যাত্রী আছে, সেটা ওঠানামা করে (gauge)। আর কে কত মিনিটে স্টপেজে পৌঁছাল, তা সে "১০ মিনিটের মধ্যে, ২০ মিনিটের মধ্যে" এমন খোপে ফেলে গোনে (histogram)।
+      - type: visual
+        kind: table
+        caption: 'তিন metric: কখন কোনটা'
+        headers: ['ধরন', 'আচরণ', 'উদাহরণ']
+        rows:
+          - cells: ['Counter', 'শুধু বাড়ে, রিসেটে শূন্য', 'http_requests_total, orders_failed_total']
+            tip: 'মোট সংখ্যার জন্য। আসল কাজের হিসাব (প্রতি সেকেন্ডে কত) আসে rate() দিয়ে, সংখ্যাটা নিজে দেখে নয়।'
+          - cells: ['Gauge', 'ওঠে-নামে', 'queue_depth, active_connections']
+            tip: 'এই মুহূর্তের অবস্থা: queue-তে কত message জমা, কয়টা connection খোলা।'
+          - cells: ['Histogram', 'মান বালতিতে (bucket) গোনে', 'http_request_duration_seconds']
+            tip: 'প্রতিটা মান কোন খোপে পড়ল তা গোনে। এ থেকে p50, p90, p99 বের হয়, আর একাধিক সার্ভারের মান জোড়াও যায়।'
+      - type: points
+        title: 'Label-এর নিয়ম'
+        style: cross
+        items:
+          - 'user_id, order_id বা পুরো URL (/orders/5512) label করো না: প্রতিটা আলাদা মান আলাদা time series, সংখ্যা ফেটে যায়।'
+          - 'label হবে সীমিত তালিকার: method, route নাম, status।'
+          - 'ব্যক্তির তথ্য বা token label-এ নয়।'
+      - type: quote
+        body: 'Label-এর মান সীমিত রাখো; ID-কে label বানালে metric সিস্টেম নিজেই ভেঙে পড়ে।'
+    aside:
+      - type: remember
+        body: 'Counter: কতবার। Gauge: এখন কত। Histogram: কত দ্রুত।'
+      - type: pitfalls
+        items:
+          - 'Counter-এর কাঁচা মান দেখা: সার্ভার restart হলে শূন্য থেকে শুরু; সবসময় rate() ব্যবহার করো।'
+          - 'Histogram-এর bucket ভুল ধরনের হলে percentile ভুল: তোমার SLO-র সীমার (যেমন ০.৫ সেকেন্ড) আশেপাশে bucket রাখো।'
+      - type: terms
+        items:
+          - {term: 'Cardinality', meaning: 'একটা metric-এর label মিলিয়ে কতগুলো আলাদা time series হয়; যত বেশি, তত দামি।'}
+    check:
+      q: 'Metric-এ route নাম label রাখা ঠিক, কিন্তু user_id label রাখা ভুল কেন?'
+      a: 'route অল্প কয়েকটা, কিন্তু user_id লাখ লাখ। প্রতিটা আলাদা মান আলাদা time series, তাই user_id দিলে metric সিস্টেমের মেমোরি আর খরচ ফেটে যায়।'
+
+  - slug: red-and-use
+    title: 'কী মাপবে: RED আর USE'
+    kind: concept
+    tldr: 'সেবার জন্য RED (Rate, Errors, Duration), যন্ত্রের জন্য USE (Utilization, Saturation, Errors) — এই ছয়টা মাপলেই বেশিরভাগ সমস্যা ধরা পড়ে।'
+    keywords: ['RED method', 'USE method', 'golden signals', 'saturation', 'utilization', 'monitoring']
+    blocks:
+      - type: metaphor
+        icon: building
+        title: 'রেস্তোরাঁর ক্রেতা আর রান্নাঘর'
+        body: |
+          রেস্তোরাঁ ভালো চলছে কি না দুই দিক থেকে দেখা যায়। ক্রেতার দিক: প্রতি ঘণ্টায় কত অর্ডার এল, কত অর্ডার ভুল হলো, কত মিনিটে খাবার এল (RED)। রান্নাঘরের দিক: চুলা কত ভাগ সময় চালু, অর্ডারের লাইন কত লম্বা, কোন যন্ত্র নষ্ট (USE)।
+      - type: visual
+        kind: compare
+        caption: 'RED সেবার চোখে, USE যন্ত্রের চোখে'
+        columns:
+          - title: 'RED: সেবার (API) জন্য'
+            tone: accent
+            icon: chart
+            tip: 'ব্যবহারকারী যা অনুভব করে, তার মাপ। কী ভাঙছে তা বলে।'
+            items:
+              - 'Rate: প্রতি সেকেন্ডে কত request'
+              - 'Errors: কত অংশ ব্যর্থ (৫xx)'
+              - 'Duration: কত সময় লাগছে (p50, p99)'
+          - title: 'USE: যন্ত্রের (CPU, DB, queue)'
+            tone: warn
+            icon: cpu
+            tip: 'যন্ত্রের স্বাস্থ্যের মাপ। কেন ভাঙছে তা বলে।'
+            items:
+              - 'Utilization: কত ভাগ সময় ব্যস্ত'
+              - 'Saturation: কতটা কাজ লাইনে অপেক্ষা করছে'
+              - 'Errors: যন্ত্র কতবার ব্যর্থ হলো'
+      - type: code
+        lang: text
+        file: 'PromQL: RED-এর তিন query'
+        variant: good
+        code: |
+          # Rate: প্রতি সেকেন্ডে request
+          sum(rate(shop_http_requests_total[5m]))
+
+          # Errors: ৫xx-এর অনুপাত
+          sum(rate(shop_http_requests_total{status=~"5.."}[5m]))
+            / sum(rate(shop_http_requests_total[5m]))
+
+          # Duration: p99
+          histogram_quantile(0.99,
+            sum by (le) (rate(shop_http_request_duration_seconds_bucket[5m])))
+        marks:
+          - {line: 2, tip: 'rate() counter-কে "প্রতি সেকেন্ডে কত" এ বদলায়; [5m] মানে গত ৫ মিনিটের ধারা।'}
+          - {line: 5, tip: 'অনুপাত, সংখ্যা নয়: ১০টা ব্যর্থতা ১০০ request-এ বিপজ্জনক, ১০ লাখে নয়।'}
+      - type: quote
+        body: 'সেবায় RED দেখো, যন্ত্রে USE; সবচেয়ে আগে ধরা পড়ে saturation।'
+    aside:
+      - type: tips
+        items:
+          - 'RED-এর ড্যাশবোর্ড প্রতিটা সেবা আর গুরুত্বপূর্ণ endpoint (checkout, login)-এর জন্য এক ধাঁচে বানাও।'
+          - 'Queue-র গভীরতা (saturation) প্রায়ই সমস্যার প্রথম ইঙ্গিত: CPU শান্ত, কিন্তু কাজ জমছে।'
+      - type: terms
+        items:
+          - {term: 'Saturation', meaning: 'যন্ত্র যতটা পারে তার চেয়ে বেশি কাজ এসে লাইনে জমছে কি না; জমা মানে দেরি আসন্ন।'}
+      - type: refs
+        items:
+          - {to: 'scaling/load-latency', label: 'Load আর latency'}
+    check:
+      q: 'API-র error হার ঠিক আছে, কিন্তু queue-তে ১০ হাজার message জমে আছে। কোন মাপ এটা ধরত?'
+      a: 'USE-এর saturation, অর্থাৎ queue-র গভীরতা। RED-এর মাপ ভালো দেখাচ্ছে কারণ API উত্তর দিচ্ছে; জমা কাজ পেছনে আটকে আছে।'
+
+  - slug: instrument-symfony
+    title: 'Symfony-তে metric বসানো'
+    kind: howto
+    tldr: 'একটা listener প্রতিটা request-এ counter আর histogram বাড়ায়, আর /metrics endpoint সেগুলো Prometheus-কে দেখায় — route নাম label, URL নয়।'
+    keywords: ['promphp', 'Prometheus', 'CollectorRegistry', 'metrics endpoint', 'event listener', 'Symfony metrics']
+    blocks:
+      - type: text
+        body: |
+          `promphp/prometheus_client_php` প্যাকেজ দিয়ে counter আর histogram বানানো যায়। PHP-FPM-এ প্রতিটা request আলাদা process, তাই metric জমা রাখতে Redis বা APCu storage লাগে। Prometheus প্রতি ১৫ সেকেন্ডে `/metrics` পাতায় এসে সংখ্যাগুলো নিয়ে যায়।
+      - type: code
+        lang: php
+        file: 'src/Metrics/RequestMetricsListener.php'
+        variant: good
+        code: |
+          final class RequestMetricsListener
+          {
+              public function __construct(private readonly CollectorRegistry $registry)
+              {
+              }
+
+              #[AsEventListener(priority: 1024)]
+              public function onRequest(RequestEvent $event): void
+              {
+                  $event->getRequest()->attributes->set('_started', microtime(true));
+              }
+
+              #[AsEventListener]
+              public function onTerminate(TerminateEvent $event): void
+              {
+                  $request = $event->getRequest();
+                  $route = (string) $request->attributes->get('_route', 'unknown');
+                  $status = (string) $event->getResponse()->getStatusCode();
+                  $seconds = microtime(true) - (float) $request->attributes->get('_started');
+
+                  $this->registry
+                      ->getOrRegisterCounter('shop', 'http_requests_total', 'Requests',
+                          ['method', 'route', 'status'])
+                      ->inc([$request->getMethod(), $route, $status]);
+
+                  $this->registry
+                      ->getOrRegisterHistogram('shop', 'http_request_duration_seconds', 'Latency',
+                          ['route'], [0.05, 0.1, 0.25, 0.5, 1, 2.5])
+                      ->observe($seconds, [$route]);
+              }
+          }
+        marks:
+          - {line: 17, tip: '_route হলো route-এর নাম (order_show), URL নয়। নাম সীমিত, URL অসীম; এটাই cardinality বাঁচায়।'}
+          - {line: 23, tip: 'status-ও label: ৫xx-এর অনুপাত বের করা যায়।'}
+          - {line: 28, tip: 'Bucket-এর সীমা (০.৫ সেকেন্ড) তোমার SLO-র কাছাকাছি রাখো। তাহলে "০.৫ সেকেন্ডের মধ্যে কত %" সরাসরি পাওয়া যায়।'}
+      - type: code
+        lang: php
+        file: 'src/Controller/MetricsController.php'
+        variant: good
+        code: |
+          #[Route('/metrics', methods: ['GET'])]
+          public function metrics(CollectorRegistry $registry): Response
+          {
+              $text = (new RenderTextFormat())->render($registry->getMetricFamilySamples());
+
+              return new Response($text, 200, ['Content-Type' => RenderTextFormat::MIME_TYPE]);
+          }
+        marks:
+          - {line: 1, tip: 'এই পাতা শুধু ভেতরের নেটওয়ার্কে খোলা রাখো (firewall বা nginx allow), ইন্টারনেটে নয়।'}
+    aside:
+      - type: tips
+        items:
+          - 'Business metric-ও মাপো: orders_placed_total, payments_failed_total। প্রযুক্তিগত metric ঠিক আছে কিন্তু অর্ডার শূন্য, এমনও হয়।'
+          - 'Queue-র জন্য gauge: messenger-এ জমা message সংখ্যা প্রতি মিনিটে সেট করো।'
+          - 'CollectorRegistry service-কে Redis storage (Prometheus\Storage\Redis) দিয়ে বসাও, নইলে প্রতি request-এ শূন্য থেকে শুরু।'
+      - type: refs
+        items:
+          - {to: 'observability/logging-tracing', label: 'Log আর trace'}
+    check:
+      q: 'Route-এর নামের বদলে পুরো URL label করলে কী ঘটবে?'
+      a: '/orders/1, /orders/2, ... প্রতিটা আলাদা time series হবে। সংখ্যা ফেটে metric সিস্টেমের মেমোরি আর খরচ বেড়ে যাবে, আর ড্যাশবোর্ড পড়া অসম্ভব হবে।'
+
+  - slug: sli-slo
+    title: 'SLI আর SLO: "ভালো" মানে ঠিক কতটুকু?'
+    kind: concept
+    tldr: 'SLI একটা মাপা অনুপাত (ভালো request ÷ মোট request); SLO তার লক্ষ্য (যেমন ৩০ দিনে ৯৯.৯%); আর ১০০% কখনো লক্ষ্য হয় না।'
+    keywords: ['SLI', 'SLO', 'SLA', 'availability', 'nines', 'service level objective', 'লক্ষ্যমাত্রা']
+    blocks:
+      - type: metaphor
+        icon: school
+        title: 'স্কুলের হাজিরার নিয়ম'
+        body: |
+          স্কুলে নিয়ম: অন্তত ৭৫% ক্লাসে উপস্থিত থাকলে পরীক্ষায় বসা যাবে। উপস্থিত ক্লাস ÷ মোট ক্লাস একটা অনুপাত, এটা SLI। ৭৫% হলো লক্ষ্য, এটা SLO। আর বাকি ২৫% অনুপস্থিতির সুযোগ আছে, সেটাই error budget।
+      - type: points
+        title: 'তিনটা শব্দ'
+        style: number
+        items:
+          - 'SLI: ভালো ঘটনা ÷ মোট ঘটনা। যেমন: ৫০০ms-এর মধ্যে ৫xx ছাড়া উত্তর পাওয়া checkout request ÷ মোট checkout request।'
+          - 'SLO: ওই অনুপাতের লক্ষ্য একটা সময়সীমায়। যেমন: ৩০ দিনে ৯৯.৯%।'
+          - 'SLA: ক্রেতার সাথে চুক্তি, ভাঙলে জরিমানা। SLO-র চেয়ে আলগা রাখা হয়, যাতে ভাঙার আগেই সতর্ক হওয়া যায়।'
+      - type: visual
+        kind: table
+        caption: '৩০ দিনে কতটা ব্যর্থতা SLO-র মধ্যে'
+        headers: ['SLO', 'অনুমোদিত ব্যর্থতা', '১০ লাখ request-এ']
+        rows:
+          - cells: ['৯৯%', 'মোট সময়ের ১%, প্রায় ৭.২ ঘণ্টা', '১০,০০০ ব্যর্থ']
+            tip: 'অভ্যন্তরীণ টুল বা কম গুরুত্বের সেবার জন্য যথেষ্ট হতে পারে।'
+          - cells: ['৯৯.৫%', 'প্রায় ৩.৬ ঘণ্টা', '৫,০০০ ব্যর্থ']
+            tip: 'সাধারণ ওয়েব অ্যাপের জন্য সাধারণ লক্ষ্য।'
+          - cells: ['৯৯.৯%', 'প্রায় ৪৩ মিনিট', '১,০০০ ব্যর্থ']
+            tip: 'checkout বা payment-এর মতো গুরুত্বপূর্ণ পথে। প্রতিটা ৯ বাড়ালে খরচ বহুগুণ বাড়ে।'
+          - cells: ['৯৯.৯৯%', 'প্রায় ৪ মিনিট ২০ সেকেন্ড', '১০০ ব্যর্থ']
+            tip: 'মানুষ দিয়ে সমস্যা সামলানোর সময়ই থাকে না; সবকিছু স্বয়ংক্রিয় হতে হবে, তাই খুব দামি।'
+      - type: quote
+        body: 'SLO ১০০% হয় না; ক্রেতা যতটুকু অনুভব করে আর যতটুকু খরচ করা যায়, তার মাঝামাঝি।'
+    aside:
+      - type: tips
+        items:
+          - 'SLI বাছো ক্রেতার চোখে: "server up" নয়, "checkout সফল আর ৫০০ms-এর মধ্যে"। CPU কতটা তা SLI নয়।'
+          - 'গুরুত্বপূর্ণ পথ (login, checkout) আর কম গুরুত্বের পথ (রিপোর্ট)-এর আলাদা SLO রাখো।'
+      - type: terms
+        items:
+          - {term: 'Rolling window', meaning: 'সবসময় "গত ৩০ দিন" ধরে মাপা, ক্যালেন্ডার মাস ধরে নয়।'}
+      - type: remember
+        body: 'SLI = মাপা। SLO = লক্ষ্য। SLA = চুক্তি।'
+    check:
+      q: 'টিম বলল "আমাদের লক্ষ্য ১০০% uptime"। কেন এটা ভালো SLO নয়?'
+      a: '১০০% অসম্ভব, আর তার কাছাকাছি যেতে খরচ ফেটে যায়। তাছাড়া কোনো বদল বা deploy-এর জায়গাই থাকে না, কারণ প্রতিটা বদলেই ঝুঁকি আছে।'
+
+  - slug: error-budget
+    title: 'Error budget: ঝুঁকি কতটুকু নেওয়া যায়'
+    kind: howto
+    tldr: 'SLO যতটুকু ব্যর্থতা মেনে নেয়, সেটাই budget; budget থাকলে দ্রুত feature, ফুরিয়ে এলে স্থিতিশীলতা — তর্ক নয়, সংখ্যাই সিদ্ধান্ত নেয়।'
+    keywords: ['error budget', 'burn rate', 'feature freeze', 'release policy', 'SRE', 'অগ্রাধিকার']
+    blocks:
+      - type: metaphor
+        icon: wallet
+        title: 'মাসের ছুটির খাতা'
+        body: |
+          মাসে ৩ দিন ছুটির সুযোগ থাকলে সেটা ইচ্ছেমতো খরচ করা যায়: ঘুরতে যাও, নতুন কিছু চেষ্টা করো। ছুটি ফুরিয়ে গেলে আর নয়, অফিসেই থাকতে হবে। Error budget সেই খাতা: যতক্ষণ ব্যর্থতার সুযোগ বাকি, ততক্ষণ নতুন ফিচার দ্রুত পাঠানো চলে।
+      - type: visual
+        kind: compare
+        caption: 'Budget কতটা বাকি, সেই অনুযায়ী টিমের নিয়ম (৯৯.৯% SLO, ৩০ দিন, ৪৩ মিনিট budget)'
+        columns:
+          - title: 'বাকি ৫০%-এর বেশি'
+            tone: good
+            icon: rocket
+            tip: 'প্রচুর budget মানে সিস্টেম SLO-র চেয়ে ভালো চলছে; ঝুঁকি নেওয়ার জায়গা আছে।'
+            items:
+              - 'ফিচার দ্রুত deploy, প্রয়োজনে একাধিক বার'
+              - 'পরীক্ষামূলক বদল আর ঝুঁকিপূর্ণ migration চলে'
+          - title: 'বাকি ১০–৫০%'
+            tone: warn
+            icon: warning
+            tip: 'budget কমছে। সতর্কতা ও দেখাশোনা বাড়ানোর সময়।'
+            items:
+              - 'ঝুঁকিপূর্ণ বদল ছোট ছোট ধাপে'
+              - 'কী খরচ করছে তা খুঁজে ঠিক করো'
+          - title: 'ফুরিয়ে গেছে'
+            tone: bad
+            icon: cross
+            tip: 'এই নিয়ম আগে থেকে টিম আর ম্যানেজারের সম্মতিতে লেখা থাকে, যাতে সংকটের সময় তর্ক না হয়।'
+            items:
+              - 'নতুন ফিচার বন্ধ, শুধু স্থিতিশীলতার কাজ'
+              - 'budget ফিরে আসা পর্যন্ত, বা কারণ ঠিক হওয়া পর্যন্ত'
+      - type: code
+        lang: text
+        file: 'PromQL: burn rate alert (৩০ দিনের ৯৯.৯% SLO)'
+        variant: good
+        code: |
+          # গত ১ ঘণ্টায় ব্যর্থতার হার budget-এর চেয়ে ১৪.৪ গুণ দ্রুত খরচ হচ্ছে?
+          (
+            sum(rate(shop_http_requests_total{route="checkout",status=~"5.."}[1h]))
+            / sum(rate(shop_http_requests_total{route="checkout"}[1h]))
+          ) > (14.4 * 0.001)
+        marks:
+          - {line: 5, tip: '০.001 = ১ - ০.999, অর্থাৎ অনুমোদিত ব্যর্থতার হার। ১৪.৪ গুণ বেশি হারে চললে ১ ঘণ্টায় ৩০ দিনের budget-এর প্রায় ২% শেষ।'}
+      - type: quote
+        body: 'Budget থাকলে ঝুঁকি নাও, ফুরোলে স্থিতি; সিদ্ধান্ত নেয় সংখ্যা, মেজাজ নয়।'
+    aside:
+      - type: problem
+        body: 'ডেভেলপাররা বলে "আরও ফিচার চাই", অপারেশন বলে "আরও স্থিতি চাই", আর তর্ক মতামতের লড়াই হয়ে যায়। Error budget দুই পক্ষের একটা সাধারণ সংখ্যা দেয়।'
+      - type: tips
+        items:
+          - 'Budget কে খেল, তা দেখো: একটা বড় outage, নাকি প্রতিদিনের ছোট ব্যর্থতা? ওষুধ আলাদা।'
+          - 'Burn-rate alert দুই স্তরে: দ্রুত ক্ষয়ে (১৪.৪×, ১ ঘণ্টা) page, ধীরে ক্ষয়ে (৬×, ৬ ঘণ্টা) ticket।'
+      - type: refs
+        items:
+          - {to: 'observability/health-alerts', label: 'Alert কীভাবে সাজাবে'}
+    check:
+      q: 'এই মাসের error budget ফুরিয়ে গেছে, কিন্তু ম্যানেজার একটা বড় ফিচার পাঠাতে চান। কী করা উচিত?'
+      a: 'আগে থেকে লেখা নিয়ম মানা: নতুন ফিচার থামিয়ে স্থিতিশীলতার কাজ। ব্যতিক্রম করতে হলে সচেতনভাবে, সম্মতি নিয়ে, ঝুঁকি জেনে।'
+
+flashcards:
+  - q: 'গড় response time কেন যথেষ্ট নয়?'
+    a: 'গড় কয়েকটা খুব ধীর request লুকিয়ে ফেলে। p90 আর p99 দেখলে ধীরতম ক্রেতাদের অভিজ্ঞতা বোঝা যায়।'
+    more: |
+      ১০০ জনের ৯৯ জন ১০০ms, একজন ৩ সেকেন্ড পেলে গড় প্রায় ১৩০ms: সুন্দর দেখায়। অথচ ওই একজন হয়তো সবচেয়ে বড় cart-এর ক্রেতা। তাই latency সবসময় percentile দিয়ে মাপো।
+    ref: average-lies
+  - q: 'p99 latency মানে কী?'
+    a: 'প্রতি ১০০ জনের ৯৯ জন যে সময়ের মধ্যে উত্তর পেয়েছে। বাকি ১ জন এর চেয়ে বেশি অপেক্ষা করেছে।'
+    more: |
+      p50 হলো মাঝের ক্রেতার অভিজ্ঞতা, p99 হলো প্রায় ধীরতম ক্রেতার। বড় সিস্টেমে একজন ব্যবহারকারীর একটা পাতায় অনেক request থাকে, তাই p99 সেই ব্যবহারকারীর কাছে প্রায়ই স্বাভাবিক অভিজ্ঞতা।
+    ref: average-lies
+  - q: 'Counter, gauge আর histogram-এর পার্থক্য কী?'
+    a: 'Counter শুধু বাড়ে, gauge ওঠানামা করে, আর histogram মান বালতিতে (bucket) গুনে percentile বের করতে দেয়।'
+    more: |
+      Counter: মোট request। Gauge: এখন queue-তে কত message। Histogram: request কত সময়ে শেষ হলো, বালতিতে ভাগ করে। Counter-এর মান সরাসরি না দেখে `rate()` দিয়ে "প্রতি সেকেন্ডে কত" দেখা হয়।
+    ref: three-metric-types
+  - q: 'Metric label-এ user_id দিলে কী সমস্যা?'
+    a: 'Cardinality বিস্ফোরণ: প্রতিটা ইউজার আলাদা time series, তাই মেমোরি ও খরচ ফেটে যায়।'
+    more: |
+      Label-এর প্রতিটা আলাদা মান-সমাবেশ একটা আলাদা time series। route (কয়েক ডজন) চলে, user_id (লাখ লাখ) চলে না। আলাদা ব্যবহারকারীর খোঁজ log বা trace-এর কাজ, metric-এর নয়।
+    ref: three-metric-types
+  - q: 'RED আর USE কী?'
+    a: 'RED সেবার জন্য: Rate, Errors, Duration। USE যন্ত্রের জন্য: Utilization, Saturation, Errors।'
+    more: |
+      RED ব্যবহারকারীর অভিজ্ঞতা মাপে: কত request, কতটা ব্যর্থ, কত ধীর। USE সম্পদের স্বাস্থ্য মাপে: CPU কত ব্যস্ত, queue কত লম্বা, কতবার ব্যর্থ। RED বলে কী ভাঙছে, USE বলে কেন।
+    ref: red-and-use
+  - q: 'Saturation মানে কী, আর কেন গুরুত্বপূর্ণ?'
+    a: 'যন্ত্রের সামর্থ্যের বেশি কাজ লাইনে জমা। এটা দেরির আগাম ইঙ্গিত দেয়।'
+    more: |
+      CPU ৪০% ব্যস্ত দেখালেও queue-তে ১০ হাজার message জমে থাকতে পারে, কারণ worker কম। জমা কাজই (saturation) পরে ব্যবহারকারীর দেরি হয়ে ফেরে। তাই queue-র গভীরতা আর connection pool-এর অপেক্ষা সবসময় মাপো।
+    ref: red-and-use
+  - q: 'SLI, SLO আর SLA-র পার্থক্য কী?'
+    a: 'SLI: মাপা অনুপাত। SLO: তার লক্ষ্য। SLA: ক্রেতার সাথে চুক্তি, ভাঙলে জরিমানা।'
+    more: |
+      SLI যেমন "৫০০ms-এর মধ্যে সফল checkout ÷ মোট checkout"। SLO যেমন "৩০ দিনে ৯৯.৯%"। SLA সাধারণত SLO-র চেয়ে আলগা, যাতে নিজেদের লক্ষ্য ভাঙার আগেই সতর্ক হওয়া যায়।
+    ref: sli-slo
+  - q: '৩০ দিনে ৯৯.৯% SLO-তে error budget কত?'
+    a: 'প্রায় ৪৩ মিনিটের ব্যর্থতা, বা প্রতি ১০ লাখ request-এ ১,০০০টা ব্যর্থ request।'
+    more: |
+      হিসাব: ৩০ দিন = ৪৩,২০০ মিনিট। ০.১% = ৪৩.২ মিনিট। ৯৯.৯৯% হলে মাত্র ৪ মিনিটের মতো। প্রতিটা ৯ বাড়ানোর খরচ বহুগুণ, তাই সব সেবায় একই উঁচু SLO দেওয়া অপচয়।
+    ref: sli-slo
+  - q: 'Error budget কীভাবে সিদ্ধান্ত নিতে সাহায্য করে?'
+    a: 'Budget বাকি থাকলে দ্রুত ফিচার; ফুরিয়ে এলে ফিচার থামিয়ে স্থিতিশীলতার কাজ। নিয়ম আগে থেকে লেখা থাকে।'
+    more: |
+      ফিচার বনাম স্থিতি তর্ক মতের লড়াই হয়ে যায়। Budget দুই পক্ষকে একটা সাধারণ সংখ্যা দেয়। আগে থেকে সম্মতিতে লেখা নিয়ম থাকলে সংকটের সময় তর্ক ছাড়াই সিদ্ধান্ত হয়।
+    ref: error-budget
+
+quiz:
+  - q: 'মিরাজের ড্যাশবোর্ডে গড় latency ১০০ms, সবুজ। তবু কিছু ক্রেতা বলছে checkout "আটকে যায়"। কোন মাপটা প্রথম দেখবে?'
+    hint: 'ধীরতম অল্প কয়েকজনের কথা কোন মাপে ধরা পড়ে?'
+    options:
+      - text: 'checkout route-এর p99 latency'
+        correct: true
+        why: 'ধীরতম ১% ক্রেতার অভিজ্ঞতা এখানে দেখা যায়, যা গড়ে ডুবে যায়।'
+      - text: 'সার্ভারের CPU গড়'
+        correct: false
+        why: 'CPU কম থাকলেও বাইরের API বা lock-এর অপেক্ষায় request ধীর হতে পারে।'
+      - text: 'মোট request সংখ্যা'
+        correct: false
+        why: 'সংখ্যা traffic বলে, ধীরতা নয়।'
+      - text: 'গড় আরেকবার, আরও লম্বা সময় ধরে'
+        correct: false
+        why: 'গড় যত লম্বা সময়েরই হোক, ধীর কয়েকজনকে ঢেকেই রাখে।'
+    ref: average-lies
+  - q: 'কোন মাপগুলো কোন ধরনের metric?'
+    hint: 'কোনটা শুধু বাড়ে, কোনটা ওঠানামা করে?'
+    options:
+      - text: 'orders_placed_total: counter'
+        correct: true
+        why: 'মোট অর্ডার শুধু বাড়ে; rate() দিয়ে হার বের হয়।'
+      - text: 'queue_depth: gauge'
+        correct: true
+        why: 'এখনকার জমা message সংখ্যা ওঠে-নামে।'
+      - text: 'request_duration_seconds: histogram'
+        correct: true
+        why: 'সময় বালতিতে গুনে percentile বের করা হয়।'
+      - text: 'active_connections: counter'
+        correct: false
+        why: 'সংযোগ খোলে-বন্ধ হয়, মান নামে; এটা gauge।'
+    ref: three-metric-types
+  - q: 'নিচের কোডে metric-এর সমস্যা কী?'
+    lang: php
+    code: |
+      $counter->inc([
+          $request->getMethod(),
+          $request->getPathInfo(),   // /orders/5512
+          $userId,
+      ]);
+    hint: 'label-এর সম্ভাব্য মান কয়টা হতে পারে?'
+    options:
+      - text: 'পুরো path আর userId label: অসংখ্য আলাদা time series, cardinality ফেটে যাবে'
+        correct: true
+        why: 'route-এর নাম (order_show) আর status-এর মতো সীমিত মান label করো; ID নয়।'
+      - text: 'inc() একটার বদলে incBy() হওয়া উচিত'
+        correct: false
+        why: 'inc বা incBy দুটোই ঠিক; সমস্যা label-এর মানে।'
+      - text: 'method label থাকা উচিত নয়'
+        correct: false
+        why: 'method সীমিত (GET, POST...), label করা নিরাপদ।'
+    ref: three-metric-types
+  - q: 'RED-এর ড্যাশবোর্ড সব সবুজ, তবু ইমেইল পৌঁছাচ্ছে না। পেছনে worker আটকে আছে। কোন metric আগে ধরত?'
+    hint: 'API উত্তর দিচ্ছে, কিন্তু কাজ কোথায় জমছে?'
+    options:
+      - text: 'Queue-র গভীরতা (saturation) আর পুরনোতম message-এর বয়স'
+        correct: true
+        why: 'জমে থাকা কাজই আটকে পড়ার সরাসরি চিহ্ন।'
+      - text: 'API-র p50 latency'
+        correct: false
+        why: 'API দ্রুত উত্তর দিচ্ছে কারণ কাজ queue-তে ফেলে; সমস্যা পেছনে।'
+      - text: 'মোট request সংখ্যা'
+        correct: false
+        why: 'এটা traffic দেখায়, আটকে থাকা কাজ নয়।'
+      - text: 'ডিস্কের মোট জায়গা'
+        correct: false
+        why: 'এখানে জায়গা সমস্যা নয়, worker-এর প্রক্রিয়া।'
+    ref: red-and-use
+  - q: 'টিম ঠিক করল checkout-এর SLO ৯৯.৯% (৩০ দিন)। এই মাসে ইতিমধ্যে ৪০ মিনিট ব্যর্থতা গেছে। কী করা উচিত?'
+    hint: 'budget কত, আর কতটা খরচ হয়েছে?'
+    options:
+      - text: 'Budget প্রায় ৪৩ মিনিট; প্রায় সবই শেষ। ঝুঁকিপূর্ণ ফিচার থামিয়ে স্থিতিশীলতায় জোর'
+        correct: true
+        why: 'আগে থেকে ঠিক করা নিয়ম অনুযায়ী budget ফুরিয়ে এলে ঝুঁকি কমাতে হয়।'
+      - text: 'কিছু না করা; ৪০ মিনিট তো মাত্র ১ ঘণ্টারও কম'
+        correct: false
+        why: 'লক্ষ্যের সীমা ৪৩ মিনিট, তাই মাত্র ৩ মিনিট বাকি।'
+      - text: 'SLO বদলে ৯৯% করে দেওয়া, যাতে আবার budget হয়'
+        correct: false
+        why: 'ব্যর্থ হয়ে লক্ষ্য নামানো আসল সমস্যা লুকায়; লক্ষ্য ঠিক হয় ক্রেতার প্রয়োজন দেখে।'
+      - text: 'মাস শেষ হওয়া পর্যন্ত পুরো সেবা বন্ধ রাখা'
+        correct: false
+        why: 'বন্ধ রাখলে আরও ব্যর্থতা। লক্ষ্য হলো ঝুঁকি কমানো, সেবা থামানো নয়।'
+    ref: error-budget
+  - q: 'কোনগুলো ভালো SLI?'
+    hint: 'ক্রেতার অভিজ্ঞতা কি এই সংখ্যায় ধরা পড়ে?'
+    options:
+      - text: '৫০০ms-এর মধ্যে ৫xx ছাড়া উত্তর পাওয়া checkout request ÷ মোট checkout request'
+        correct: true
+        why: 'সরাসরি ক্রেতার দেখা সফলতা আর গতি, একটা অনুপাতে।'
+      - text: 'সার্ভারের CPU ৮০%-এর নিচে থাকা সময়'
+        correct: false
+        why: 'CPU যন্ত্রের মাপ; CPU কম থেকেও ক্রেতা ব্যর্থ হতে পারে।'
+      - text: 'সফল login ÷ মোট বৈধ login চেষ্টা'
+        correct: true
+        why: 'বৈধ চেষ্টা ধরা হয়, ভুল পাসওয়ার্ড আর bot ধরা হয় না; ঠিক অনুপাত।'
+    ref: sli-slo

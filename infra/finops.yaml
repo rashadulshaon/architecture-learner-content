@@ -1,0 +1,417 @@
+slides:
+  - slug: surprise-bill
+    title: 'মাস শেষে ২,১৪০ ডলারের বিল'
+    kind: story
+    tldr: 'ক্লাউডে খরচ অদৃশ্যভাবে জমে; হিসাব না রাখলে মাস শেষে বিলই প্রথম জানায় কিছু ভুল হয়েছে।'
+    keywords: ['FinOps', 'cloud bill', 'cost', 'বিল', 'খরচ', 'NAT gateway']
+    blocks:
+      - type: text
+        body: |
+          প্রতি মাসে বিল আসে প্রায় ৮২০ ডলার। এই মাসে এল ২,১৪০ ডলার। কেউ নতুন কিছু বানায়নি, তবু বিল প্রায় আড়াই গুণ। কারণ খুঁজতে দুই দিন গেল: একটা সার্ভিস ছবি আনছিল NAT gateway দিয়ে, আর এক ডেভেলপার debug level-এর log চালু রেখে গিয়েছিল।
+      - type: visual
+        kind: bars
+        caption: 'এই মাসের ২,১৪০ ডলারের বিল — কোথায় কত গেল'
+        items:
+          - {label: 'Network (NAT)', value: 900, display: '$900', tone: bad, tip: 'স্বাভাবিক ছিল $120। একটা সার্ভিস S3 থেকে ছবি টানছিল NAT gateway দিয়ে, প্রতি GB-র বাড়তি দামে।'}
+          - {label: 'Logs', value: 650, display: '$650', tone: bad, tip: 'স্বাভাবিক ছিল $110। debug log চালু থাকায় প্রতিদিন কয়েকগুণ বেশি লাইন জমা হয়েছে।'}
+          - {label: 'ডেটাবেস', value: 260, display: '$260', tip: 'স্বাভাবিক। multi-AZ ডেটাবেসের নির্ধারিত মাসিক দাম।'}
+          - {label: 'Compute', value: 210, display: '$210', tip: 'স্বাভাবিক। তিনটা অ্যাপ node।'}
+          - {label: 'বাকি সব', value: 120, display: '$120', tip: 'Cache, load balancer আর storage মিলিয়ে।'}
+      - type: quote
+        body: 'যে খরচের মালিক নেই, তা প্রতিদিন চুপচাপ বাড়ে।'
+    aside:
+      - type: problem
+        body: 'ক্লাউডে "যত ব্যবহার, তত বিল"। তাই কোডের একটা ভুল সিদ্ধান্ত — বাড়তি call, বাড়তি log — সরাসরি টাকার অঙ্ক বদলে দেয়। FinOps হলো খরচকে ইঞ্জিনিয়ারিংয়ের আলোচনার অংশ বানানো।'
+      - type: terms
+        items:
+          - {term: 'FinOps', meaning: 'Financial Operations: ইঞ্জিনিয়ার, ফাইন্যান্স আর ব্যবসা মিলে ক্লাউড খরচ বোঝা ও নিয়ন্ত্রণ করার চর্চা।'}
+    check:
+      q: 'কোডে কোনো নতুন feature না এলেও ক্লাউডের বিল বাড়তে পারে কেন?'
+      a: 'কারণ ক্লাউডে খরচ ব্যবহারের সাথে বাড়ে — বাড়তি data transfer, debug log বা ভুলে চালু রাখা resource-ও টাকা খরচ করে, কেউ কিছু বানায়নি তবুও।'
+
+  - slug: cost-model
+    title: 'খরচের মডেল: বিয়েবাড়ির বাজেট-ফর্দ'
+    kind: concept
+    tldr: 'মাসের খরচকে উপাদান ধরে ভাগ করো, fixed আর variable আলাদা করো — তাহলে বিল আসার আগেই অঙ্কটা অনুমান করা যায়।'
+    keywords: ['cost model', 'fixed cost', 'variable cost', 'forecast', 'খরচের মডেল', 'বাজেট']
+    blocks:
+      - type: metaphor
+        icon: receipt
+        title: 'বিয়েবাড়ির বাজেট-ফর্দ'
+        body: |
+          বিয়ের আগে ফর্দ হয়: হল ভাড়া (অতিথি যত-ই হোক, একই) আর খাবার (মাথাপিছু)। অতিথি দ্বিগুণ হলে হল ভাড়া একই, খাবারের টাকা দ্বিগুণ। ক্লাউডেও তাই: কিছু খরচ **fixed**, কিছু **variable** — ব্যবহারের সাথে বাড়ে।
+      - type: visual
+        kind: table
+        caption: 'Shop API-র মাসিক খরচ-মডেল (৩ লাখ অর্ডার, উদাহরণ সংখ্যা)'
+        headers: ['উপাদান', 'ধরন', 'মাসে']
+        rows:
+          - cells: ['Compute (৩ node × $70)', 'fixed', '$210']
+            tip: 'নোড চালু থাকলেই বিল — অর্ডার কম হলেও।'
+          - cells: ['ডেটাবেস (multi-AZ)', 'fixed', '$260']
+            tip: 'সবচেয়ে বড় একক খরচ। Instance-এর আকার বদলালে দামও বদলায়।'
+          - cells: ['Cache + load balancer', 'fixed', '$75']
+            tip: 'Redis $50 আর load balancer $25 — দুটোই ঘণ্টা-হিসাবে।'
+          - cells: ['Storage (S3, backup)', 'variable', '$45']
+            tip: 'ডেটা জমলে বাড়ে। পুরনো ফাইল সস্তা স্তরে সরালে কমে।'
+          - cells: ['Network (NAT, transfer)', 'variable', '$120']
+            tip: 'প্রতি GB-তে বিল। ট্রাফিকের সাথে সরাসরি বাড়ে।'
+          - cells: ['Logs ও monitoring', 'variable', '$110']
+            tip: 'কত GB log জমা হলো তার হিসাবে — লাইন বাড়লেই খরচ বাড়ে।'
+          - cells: ['মোট', 'fixed $545 + variable $275', '$820']
+            tip: '210 + 260 + 75 + 45 + 120 + 110 = 820।'
+      - type: text
+        body: |
+          এই মডেল দিয়ে ভবিষ্যৎ অনুমান করা যায়: অর্ডার দ্বিগুণ হলে variable অংশ প্রায় দ্বিগুণ (২৭৫ থেকে প্রায় ৫৫০), fixed আপাতত একই — যতক্ষণ না একটা সীমা পেরিয়ে আরেকটা node বা বড় ডেটাবেস লাগে। মডেলটা সাধারণ স্প্রেডশিটেই বানানো যায়; জরুরি হলো সংখ্যার পেছনের কারণ জানা।
+    aside:
+      - type: tips
+        items:
+          - 'প্রতিটা সংখ্যার পাশে ধারণা লেখো — "ডেটাবেস $260 কারণ মাঝারি multi-AZ।" তাহলে বদল হলে কেন হলো বোঝা যায়।'
+          - 'প্রতি মাসে প্রকৃত বিলের সাথে মডেল মেলাও; ফারাক পেলেই কিছু অজানা খরচ ধরা পড়ল।'
+      - type: remember
+        body: 'Fixed খরচ ব্যবহার ছাড়াই আসে; variable ব্যবহারের পিছু পিছু।'
+    check:
+      q: 'অর্ডার দ্বিগুণ হলে উপরের মডেলে কোন অংশ প্রায় দ্বিগুণ হবে, আর কোনটা আপাতত একই থাকবে?'
+      a: 'Variable অংশ (storage, network, logs — প্রায় ২৭৫ থেকে ৫৫০) প্রায় দ্বিগুণ হবে। Fixed অংশ (compute, ডেটাবেস, cache) আপাতত একই থাকবে, যতক্ষণ না সীমা পেরোয়।'
+
+  - slug: unit-economics
+    title: 'Unit economics: অর্ডার-প্রতি খরচ'
+    kind: concept
+    tldr: 'মোট বিল নয়, প্রতি ১,০০০ অর্ডারে কত খরচ — এটাই বলে ব্যবসা সুস্থ বাড়ছে, নাকি শুধু খরচ বাড়ছে।'
+    keywords: ['unit economics', 'cost per order', 'cost per user', 'ইউনিট খরচ', 'FinOps metric']
+    blocks:
+      - type: metaphor
+        icon: users
+        title: 'মাথাপিছু খরচ'
+        body: |
+          ক্যাটারিং-ম্যানেজার জানে মোট বিল কত, কিন্তু আসল প্রশ্ন "মাথাপিছু কত?"। ১০০ জনে ২০,০০০ টাকা আর ৫০০ জনে ৫০,০০০ টাকা — মোট বেড়েছে, কিন্তু মাথাপিছু কমেছে, তাই ব্যবসা ভালো। Cloud-এ মাথা হলো অর্ডার, ব্যবহারকারী বা request।
+      - type: visual
+        kind: bars
+        caption: 'প্রতি ১,০০০ অর্ডারে ক্লাউড খরচ: মোট বিল বাড়লেও unit খরচ কমছে (এপ্রিলে ছাড়া)'
+        items:
+          - {label: 'জানু: ১ লাখ অর্ডার, $600', value: 6.0, display: '$6.00', tone: warn, tip: '600 ÷ 100 = $6.00 প্রতি ১,০০০ অর্ডারে। ছোট অবস্থায় fixed খরচ কম মানুষের ওপর ভাগ হয়, তাই বেশি।'}
+          - {label: 'ফেব্রু: ২ লাখ, $700', value: 3.5, display: '$3.50', tone: good, tip: '700 ÷ 200 = $3.50। অর্ডার দ্বিগুণ, বিল মাত্র কিছুটা বেশি — স্বাস্থ্যকর বাড়।'}
+          - {label: 'মার্চ: ৩ লাখ, $820', value: 2.73, display: '$2.73', tone: good, tip: '820 ÷ 300 ≈ $2.73। Fixed খরচ বেশি অর্ডারে ভাগ হচ্ছে।'}
+          - {label: 'এপ্রিল: ৩.২ লাখ, $1,400', value: 4.38, display: '$4.38', tone: bad, tip: '1,400 ÷ 320 ≈ $4.38। অর্ডার সামান্য বেড়েছে, বিল লাফিয়েছে — কোথাও অপচয় ঢুকেছে।'}
+      - type: code
+        lang: sql
+        file: 'reports/unit_cost.sql'
+        code: |
+          SELECT c.day,
+                 SUM(c.cost_usd)                              AS cloud_cost,
+                 o.orders,
+                 ROUND(SUM(c.cost_usd) / o.orders * 1000, 2)  AS cost_per_1000_orders
+          FROM cloud_cost_daily c
+          JOIN orders_daily o ON o.day = c.day
+          WHERE c.tag_service = 'shop-api'
+          GROUP BY c.day, o.orders
+          ORDER BY c.day;
+        marks:
+          - {line: 6, tip: 'বিলিং এক্সপোর্টের ডেটা (cloud_cost_daily) আর ব্যবসার ডেটা (orders_daily) একসাথে জুড়লেই unit খরচ মেলে।'}
+          - {line: 7, tip: 'Tag দিয়ে filter — তাই সব resource-এ ঠিকঠাক tag থাকা জরুরি।'}
+      - type: quote
+        body: 'মোট বিল নয়, অর্ডার-প্রতি খরচ দেখো।'
+    aside:
+      - type: tips
+        items:
+          - 'ব্যবসার সাথে মানানসই "unit" বেছে নাও: অর্ডার, সক্রিয় ব্যবহারকারী, GB প্রক্রিয়া, কিংবা পাঠানো ইমেইল।'
+          - 'Unit খরচকে প্রতি অর্ডারের আয়ের সাথে তুলনা করো — তাহলে ক্লাউড খরচ ব্যবসার কত অংশ খেয়ে নিচ্ছে বোঝা যায়।'
+      - type: when
+        use: ['ব্যবসা দ্রুত বাড়ার সময়, যখন মোট বিল ভয় দেখায়', 'নতুন feature-এর খরচ মাপতে']
+        avoid: ['unit খরচ কমাতে গিয়ে নির্ভরযোগ্যতা বা নিরাপত্তায় কাটছাঁট করতে']
+    check:
+      q: 'মোট বিল ৭০০ থেকে ৮২০ হলো, অর্ডার ২ লাখ থেকে ৩ লাখ। বিল বাড়ার খবর কি খারাপ?'
+      a: 'না। প্রতি ১,০০০ অর্ডারের খরচ $3.50 থেকে $2.73-এ নেমেছে — মোট খরচ বাড়লেও প্রতি অর্ডারে খরচ কমেছে, অর্থাৎ ব্যবসা সুস্থভাবে বাড়ছে।'
+
+  - slug: tagging-budgets
+    title: 'Tag আর budget: কার খরচ, কত সীমা'
+    kind: howto
+    tldr: 'প্রতিটা resource-এ team, service ও env tag বসাও; Terraform-এ budget আর alert দাও, যাতে বিল ফাটার আগেই জানা যায়।'
+    keywords: ['tagging', 'budget', 'cost allocation', 'Terraform', 'alert', 'ট্যাগ']
+    blocks:
+      - type: metaphor
+        icon: tag
+        title: 'প্রতিটা বাজারের থলেতে নাম'
+        body: |
+          বিয়েবাড়ির বাজারে প্রতিটা থলেতে লেখা থাকে: "রান্নাঘর", "সাজসজ্জা", "মিষ্টি"। শেষে বিল এলে বোঝা যায় কোন খাতে কত। **Tag** সেই নাম-লেখা, আর **budget** হলো আগে থেকে ঠিক করা সীমা — ছাড়ালে ঘণ্টা বাজে।
+      - type: code
+        lang: text
+        file: 'infra/cost.tf (HCL)'
+        variant: good
+        code: |
+          provider "aws" {
+            region = "ap-southeast-1"
+            default_tags {
+              tags = {
+                team    = "checkout"
+                service = "shop-api"
+                env     = "prod"
+              }
+            }
+          }
+
+          resource "aws_budgets_budget" "shop_prod" {
+            name         = "shop-prod-monthly"
+            budget_type  = "COST"
+            limit_amount = "900"
+            limit_unit   = "USD"
+            time_unit    = "MONTHLY"
+
+            notification {
+              comparison_operator        = "GREATER_THAN"
+              threshold                  = 80
+              threshold_type             = "PERCENTAGE"
+              notification_type          = "FORECASTED"
+              subscriber_email_addresses = ["checkout-team@example.com"]
+            }
+          }
+        marks:
+          - {line: 3, tip: 'default_tags: এই provider দিয়ে বানানো প্রতিটা resource নিজে থেকে এই tag পায়। কাউকে মনে রাখতে হয় না।'}
+          - {line: 15, tip: 'মাসিক সীমা $900 — স্বাভাবিক বিল $820-এর একটু ওপরে, যাতে বাড়তি এলে ধরা পড়ে।'}
+          - {line: 23, tip: 'FORECASTED: মাসের মাঝামাঝি পূর্বাভাস $720 ছাড়ালেই সতর্কতা; মাস শেষের অপেক্ষা নেই।'}
+      - type: visual
+        kind: steps
+        caption: 'Tag থেকে সতর্কতা: খরচের নজরদারির ধারা'
+        steps:
+          - {title: '১. Tag বসাও', body: 'team, service, env — IaC থেকে', tip: 'হাতে নয়; Terraform-এ বসালে কেউ ভোলে না।'}
+          - {title: '২. Activate করো', body: 'বিলিং কনসোলে cost allocation tag', tip: 'Tag বসানো থাকলেও বিলিং রিপোর্টে আসার জন্য এটা আলাদা করে চালু করতে হয়।'}
+          - {title: '৩. Budget দাও', body: 'প্রতি সার্ভিস/টিমের মাসিক সীমা', tip: 'টিম-ভিত্তিক budget হলে বিল বাড়লে মালিক কে, তা স্পষ্ট।'}
+          - {title: '৪. সপ্তাহে একবার দেখো', body: 'unit খরচ আর শীর্ষ ৫ খাত', tip: 'মাস শেষে নয়; সপ্তাহে দেখলে অপচয় সপ্তাহেই ধরা পড়ে।'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'Tag ছাড়া resource-এর "কার খরচ" প্রশ্নের উত্তর নেই — অমালিকানা খরচই সবচেয়ে বেশি বাড়ে।'
+          - 'Alert শুধু ইমেইলে গেলে কেউ দেখে না; টিমের চ্যাট চ্যানেলে পাঠাও।'
+      - type: terms
+        items:
+          - {term: 'Cost allocation tag', meaning: 'যে tag দিয়ে বিলের টাকা টিম বা সার্ভিসে ভাগ করা যায়।'}
+          - {term: 'Forecasted alert', meaning: 'এখনকার গতিতে চললে মাস শেষে কত হবে, তার ভিত্তিতে সতর্কতা।'}
+    check:
+      q: 'Budget alert "ACTUAL"-এর বদলে "FORECASTED" রাখলে কী সুবিধা?'
+      a: 'মাসের মাঝেই জানা যায় এই গতিতে গেলে সীমা ছাড়াবে। ACTUAL সীমা ছোঁয়ার পরে জানায় — তখন টাকা খরচ হয়েই গেছে।'
+
+  - slug: save-without-risk
+    title: 'নির্ভরযোগ্যতা না কমিয়ে খরচ কমানো'
+    kind: compare
+    tldr: 'অপচয় কাটো (অলস resource, বড় instance, বেশি log), কিন্তু নিরাপত্তা-জাল নয় (backup, multi-AZ, monitoring)।'
+    keywords: ['cost optimization', 'right-sizing', 'autoscaling', 'savings plan', 'spot', 'খরচ কমানো']
+    blocks:
+      - type: text
+        body: |
+          খরচ কমানোর দুটো ধরন আছে: **অপচয় কাটা** আর **সুরক্ষা কাটা**। অপচয় হলো যা কেউ ব্যবহার করছে না। সুরক্ষা হলো যা আজ ব্যবহার হচ্ছে না, কিন্তু বিপদে প্রাণ বাঁচাবে — backup, দ্বিতীয় availability zone, monitoring। প্রথমটা সব সময় ভালো, দ্বিতীয়টা কখনোই সস্তা নয়।
+      - type: visual
+        kind: table
+        caption: 'কোন পদক্ষেপে কী বাঁচে, আর ঝুঁকি কতটা'
+        headers: ['পদক্ষেপ', 'কীভাবে বাঁচে', 'ঝুঁকি']
+        rows:
+          - cells: ['Right-sizing', 'ব্যবহার কম হলে ছোট instance', 'কম — মেপে করলে']
+            tip: 'CPU আর memory-র গড় ব্যবহার ২০%-এর নিচে থাকলে ছোট instance ভাবা যায়।'
+          - cells: ['Autoscaling', 'রাতে কম Pod, ভিড়ে বেশি', 'কম']
+            tip: 'ন্যূনতম সংখ্যা ২-এর নিচে নামিও না, নইলে availability যায়।'
+          - cells: ['Savings Plan / Reserved', 'নিয়মিত ব্যবহারে ১-৩ বছরের প্রতিশ্রুতি', 'মাঝারি — প্রতিশ্রুতির ঝুঁকি']
+            tip: 'শুধু যে ব্যবহার সবসময় থাকবে, সেটুকুর ওপর নাও।'
+          - cells: ['Spot instance', 'সস্তা কিন্তু যেকোনো সময় কেড়ে নেয়', 'শুধু worker/batch-এ']
+            tip: 'ডেটাবেস বা ওয়েব Pod-এ নয়। Retry করা যায় এমন কাজে।'
+          - cells: ['Storage lifecycle', 'পুরনো ফাইল সস্তা স্তরে বা মুছে', 'কম']
+            tip: 'আইনি রাখার সময় আছে কি না আগে জেনে নাও।'
+          - cells: ['Log retention', 'debug log ৭ দিন, audit log দীর্ঘ', 'কম']
+            tip: 'সব log সমান নয় — audit আর পেমেন্টের log বেশি দিন রাখতে হয়।'
+          - cells: ['অলস resource মোছা', 'অব্যবহৃত disk, IP, পুরনো snapshot', 'কম']
+            tip: 'মালিক tag দেখে জিজ্ঞেস করো, তারপর মোছো।'
+      - type: quote
+        body: 'অপচয় কাটো; সুরক্ষা-জাল নয়।'
+    aside:
+      - type: when
+        use: ['আগে মাপো, তারপর কাটো — প্রমাণ নিয়ে', 'একবারে একটা বদল, ফল দেখে পরেরটা']
+        avoid: ['প্রোডাকশন ডেটাবেসে spot বা single-AZ']
+      - type: remember
+        body: 'যা ব্যবহার হচ্ছে না তা অপচয়; যা বিপদে লাগবে তা বিমা।'
+      - type: refs
+        items:
+          - {to: 'scaling/horizontal-vertical', label: 'Autoscaling-এর ভিত্তি'}
+    check:
+      q: 'ছোট একটা টিম খরচ বাঁচাতে multi-AZ বন্ধ করতে চায়। কেন এটা "অপচয় কাটা" নয়?'
+      a: 'Multi-AZ কেবল এক zone গেলে কাজে লাগে — অর্থাৎ এটা বিমা। এটা বন্ধ করলে বছরে কিছু টাকা বাঁচে, কিন্তু একটা ভবনের বিদ্যুৎ গেলেই সাইট বসে যায়।'
+
+  - slug: bad-savings
+    title: 'ভুল সাশ্রয়: যা কেটে বিপদ ডেকে আনা যায়'
+    kind: pitfall
+    tldr: 'Backup মুছে, replica কমিয়ে বা না মেপে optimise করলে বিল কমে, কিন্তু একটা ঘটনাতেই সব সঞ্চয় উড়ে যায়।'
+    keywords: ['false saving', 'cost cutting', 'reliability', 'premature optimization', 'ভুল সাশ্রয়']
+    blocks:
+      - type: visual
+        kind: compare
+        caption: 'দুই টিমের দুই পথ'
+        columns:
+          - title: 'ভুল সাশ্রয়'
+            tone: bad
+            icon: cross
+            tip: 'বিল কমল ঠিকই, কিন্তু বিপদ সামলানোর ক্ষমতা কমে গেল।'
+            items:
+              - 'ডেটাবেস single-AZ, backup ১ দিন'
+              - 'Monitoring বন্ধ, alert নেই'
+              - 'Spot instance-এ ওয়েব Pod'
+              - 'কিছু না মেপে সব সার্ভার ছোট'
+          - title: 'বুদ্ধিমান সাশ্রয়'
+            tone: good
+            icon: check
+            tip: 'অপচয় গেছে, কিন্তু সুরক্ষা অটুট।'
+            items:
+              - 'ব্যবহার মেপে instance ঠিক আকারে'
+              - 'রাতে autoscaling, ন্যূনতম ২ Pod'
+              - 'শুধু worker-এ spot'
+              - 'পুরনো snapshot ও disk মোছা'
+      - type: text
+        body: |
+          একটা ছোট অ্যাপ বছরে ৭০০ ডলার বাঁচিয়েছিল backup retention কমিয়ে। ছয় মাস পরে এক ভুল migration ডেটা মুছে দিল, আর পরিষ্কার করার মতো কোনো backup ছিল না। সাশ্রয় গেল, সাথে গ্রাহকের আস্থাও।
+      - type: quote
+        body: 'একটা ঘটনার দাম সারা বছরের সাশ্রয়ের চেয়ে বেশি হতে পারে।'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Reserved/Savings Plan বেশি কিনে ফেলা — পরে ব্যবহার কমলে প্রতিশ্রুতির টাকা আটকে থাকে।'
+          - 'না মেপে optimise করা — যেখানে বড় খরচ নেই, সেখানে সময় নষ্ট; আগে শীর্ষ ৩ খরচ দেখো।'
+      - type: refs
+        items:
+          - {to: 'recovery/backups-restore', label: 'Backup কেন কাটা যায় না'}
+    check:
+      q: 'খরচ কমানোর আগে প্রথম কাজ কী, আর কেন?'
+      a: 'মাপা: কোন খাতে কত যাচ্ছে আর কত ব্যবহার হচ্ছে। না মেপে কাটলে যেখানে বড় খরচ নেই সেখানে সময় নষ্ট হয়, বা সুরক্ষা কেটে ফেলা হয়।'
+
+flashcards:
+  - q: 'FinOps বলতে কী বোঝায়?'
+    a: 'ইঞ্জিনিয়ার, ফাইন্যান্স আর ব্যবসা মিলে ক্লাউড খরচ বোঝা, ভাগ করা আর নিয়ন্ত্রণ করার চর্চা।'
+    more: |
+      মূল ধারণা: খরচ শুধু ফাইন্যান্স বিভাগের চিন্তা নয়। যে ইঞ্জিনিয়ার resource বানায়, সে-ই খরচের সিদ্ধান্ত নেয়, তাই তার কাছেও খরচ দৃশ্যমান থাকা চাই।
+    ref: surprise-bill
+  - q: 'Fixed আর variable cloud খরচের পার্থক্য কী?'
+    a: 'Fixed চালু থাকলেই আসে (node, ডেটাবেস)। Variable ব্যবহারের সাথে বাড়ে (data transfer, log, storage)।'
+    more: |
+      অর্ডার দ্বিগুণ হলে variable প্রায় দ্বিগুণ হয়, fixed আপাতত একই থাকে। কিন্তু সীমা পেরোলে আরেকটা node বা বড় ডেটাবেস লাগে, তখন fixed খরচ ধাপে ধাপে বাড়ে।
+    ref: cost-model
+  - q: 'Cost model কীভাবে বানাতে হয়?'
+    a: 'খরচ উপাদানে ভাগ করো (compute, ডেটাবেস, network...), প্রতিটার হিসাবের ভিত্তি লেখো, fixed ও variable আলাদা করো।'
+    more: |
+      প্রতি মাসে প্রকৃত বিলের সাথে মডেল মেলাও। ফারাক মানে অজানা খরচ আছে। মডেল দিয়ে "অর্ডার দ্বিগুণ হলে কত?" ধরনের প্রশ্নের উত্তর বিল আসার আগেই দেওয়া যায়।
+    ref: cost-model
+  - q: 'Unit economics কী, আর cloud-এ কীভাবে মাপা হয়?'
+    a: 'ব্যবসার একক-প্রতি খরচ, যেমন প্রতি ১,০০০ অর্ডারে ক্লাউড খরচ = মাসের মোট খরচ ÷ অর্ডার × ১,০০০।'
+    more: |
+      মোট বিল বাড়লেও unit খরচ কমলে ব্যবসা সুস্থ। উল্টো, অর্ডার সামান্য বাড়ল কিন্তু unit খরচ লাফাল — তাহলে কোথাও অপচয় ঢুকেছে, তদন্ত দরকার।
+    ref: unit-economics
+  - q: 'Cloud resource-এ tag কেন লাগে?'
+    a: 'বিলের টাকা টিম, সার্ভিস আর environment-এ ভাগ করতে। Tag ছাড়া "এই খরচ কার?" প্রশ্নের উত্তর মেলে না।'
+    more: |
+      Terraform-এর default_tags দিয়ে প্রতিটা resource-এ team, service, env বসানো যায়। বিলিংয়ে tag-টা cost allocation tag হিসেবে চালু করতে হয়, নইলে রিপোর্টে আসে না।
+    ref: tagging-budgets
+  - q: 'Budget-এর FORECASTED alert কেন ACTUAL-এর চেয়ে ভালো?'
+    a: 'FORECASTED বলে এই গতিতে চললে মাস শেষে সীমা ছাড়াবে — আগেই। ACTUAL সীমা ছোঁয়ার পরে জানায়, তখন টাকা চলে গেছে।'
+    more: |
+      সাধারণত দুটোই রাখা হয়: ৮০% forecast আর ১০০% actual। অ্যালার্ট টিমের চ্যাট চ্যানেলে পাঠানো ভালো, যাতে কেউ না কেউ দেখে।
+    ref: tagging-budgets
+  - q: 'কোন কোন কাজে spot instance চালানো নিরাপদ?'
+    a: 'Retry করা যায় এমন কাজে: queue worker, batch job, ছবি প্রসেসিং। ডেটাবেস বা ওয়েব Pod-এ নয়।'
+    more: |
+      Spot সস্তা কিন্তু cloud যেকোনো সময় ফেরত নিতে পারে। Worker-এর কাজ যদি idempotent হয় আর queue-তে থাকে, মরলেও অন্য worker আবার তুলে নেয়।
+    ref: save-without-risk
+  - q: 'খরচ কমাতে গিয়ে কোন জিনিস কাটা উচিত নয়?'
+    a: 'Backup, multi-AZ, monitoring আর alert — এগুলো অপচয় নয়, বিমা।'
+    more: |
+      অপচয় হলো যা কেউ ব্যবহার করছে না (অলস disk, বড় instance, বেশি log)। সুরক্ষা হলো যা বিপদে বাঁচায়। একটা ঘটনার দাম সারা বছরের সাশ্রয়ের চেয়ে বেশি হতে পারে।
+    ref: bad-savings
+
+quiz:
+  - q: 'গত মাসের বিল ৮২০ ডলার, এই মাসে ২,১৪০। কোড বদলায়নি। প্রথম কী করবে?'
+    hint: 'কোন খাত বেড়েছে, আগে সেটা দেখা দরকার।'
+    options:
+      - text: 'সব সার্ভার ছোট করে দেওয়া'
+        correct: false
+        why: 'কারণ না জেনে কাটলে ভুল জায়গায় হাত পড়ে, আর নির্ভরযোগ্যতা কমে।'
+      - text: 'Tag/service ধরে বিল ভাগ করে কোন খাত লাফিয়েছে দেখা'
+        correct: true
+        why: 'কোন খাতে (network, logs ইত্যাদি) বেড়েছে জানলে কারণ সংকীর্ণ হয়।'
+      - text: 'পরের মাস অপেক্ষা করে দেখা বিল আবার কমে কি না'
+        correct: false
+        why: 'অপচয় নিজে থেকে থামে না; প্রতিদিন টাকা যাচ্ছে।'
+    ref: surprise-bill
+  - q: 'নিচের সংখ্যাগুলো থেকে মার্চ মাসে প্রতি ১,০০০ অর্ডারে খরচ কত? মোট ক্লাউড বিল $820, অর্ডার ৩,০০,০০০।'
+    hint: 'বিল ÷ অর্ডার × ১,০০০।'
+    options:
+      - text: 'প্রায় $0.27'
+        correct: false
+        why: 'এটা প্রতি অর্ডারের খরচ (প্রায় ০.২৭ সেন্ট), ডলার নয়; ১,০০০ দিয়ে গুণ করতে ভুলে গেছ।'
+      - text: 'প্রায় $2.73'
+        correct: true
+        why: '820 ÷ 300,000 × 1,000 ≈ 2.73।'
+      - text: 'প্রায় $27.3'
+        correct: false
+        why: 'এটা দশ গুণ বেশি; ১,০০০ দিয়ে ভাগ-গুণ ঠিক করে দেখো।'
+    ref: unit-economics
+  - q: 'এপ্রিলে অর্ডার ৩ লাখ থেকে ৩.২ লাখ, কিন্তু বিল ৮২০ থেকে ১,৪০০। কোন ব্যাখ্যাগুলো সংগত?'
+    hint: 'অর্ডার সামান্য বেড়েছে; বিল প্রায় দ্বিগুণ।'
+    options:
+      - text: 'ব্যবসা খুব ভালো চলছে, বিল বাড়াই স্বাভাবিক'
+        correct: false
+        why: 'অর্ডার ৭% বেড়েছে, বিল ৭০%। এই অসমতা স্বাভাবিক বাড় নয়।'
+      - text: 'কোনো সার্ভিসে অপচয় ঢুকেছে — যেমন বাড়তি log বা ট্রাফিক'
+        correct: true
+        why: 'Unit খরচ $2.73 থেকে $4.38 হয়েছে; তদন্ত দরকার।'
+      - text: 'নতুন চালু হওয়া, ভুলে থাকা resource (যেমন বড় instance) থাকতে পারে'
+        correct: true
+        why: 'অলস বা ভুলে থাকা resource-ও একই লক্ষণ দেখায়; tag দেখে মালিক খুঁজে বের করতে হবে।'
+      - text: 'ক্লাউড প্রতি মাসে দাম বাড়ায়, তাই কিছু করার নেই'
+        correct: false
+        why: 'এত বড় লাফ দাম বাড়ার কারণে হয় না; এটা ব্যবহারের পরিবর্তন।'
+    ref: unit-economics
+  - q: 'নিচের Terraform অংশে tag দেওয়ার সবচেয়ে বড় সুবিধা কোনটা?'
+    lang: text
+    code: |
+      provider "aws" {
+        default_tags {
+          tags = {
+            team    = "checkout"
+            service = "shop-api"
+            env     = "prod"
+          }
+        }
+      }
+    hint: 'কেউ ভুলে গেলে কী হয়?'
+    options:
+      - text: 'এই provider-এর প্রতিটা resource নিজে থেকে tag পায়; কাউকে মনে রাখতে হয় না'
+        correct: true
+        why: 'IaC-এ কেন্দ্রীয়ভাবে বসালে tag-হীন resource প্রায় থাকে না, তাই বিল ভাগ করা যায়।'
+      - text: 'Resource দ্রুত চলে'
+        correct: false
+        why: 'Tag-এর সাথে কর্মদক্ষতার সম্পর্ক নেই।'
+      - text: 'Tag থাকলে বিল নিজে থেকে কমে'
+        correct: false
+        why: 'Tag খরচ কমায় না; কার খরচ তা দেখায়। কমানো সিদ্ধান্তের কাজ।'
+    ref: tagging-budgets
+  - q: 'শাহিনের টিম বিল কমাতে চায়। নিচের কোন পদক্ষেপগুলো নির্ভরযোগ্যতা না কমিয়ে করা যায়?'
+    hint: 'অপচয় বনাম বিমা।'
+    options:
+      - text: 'দুই মাস ধরে অব্যবহৃত disk আর পুরনো snapshot মুছে ফেলা (মালিক নিশ্চিত করে)'
+        correct: true
+        why: 'কেউ ব্যবহার করছে না, তাই অপচয়; মুছলে নিরাপত্তা বাড়ে বা অপরিবর্তিত থাকে।'
+      - text: 'Debug log ৭ দিন রেখে বাকিটা মুছে ফেলা (audit log বাদে)'
+        correct: true
+        why: 'সব log সমান নয়; কম দরকারি log কম সময় রাখলে সমস্যা নেই।'
+      - text: 'প্রোডাকশন ডেটাবেস single-AZ করে দেওয়া'
+        correct: false
+        why: 'এক zone গেলে সাইট বন্ধ। এটা বিমা কেটে ফেলা।'
+      - text: 'Backup retention ১ দিনে নামানো'
+        correct: false
+        why: 'ভুল migration বা ডেটা নষ্ট ২-৩ দিন পরে ধরা পড়লে ফেরার পথ থাকে না।'
+    ref: save-without-risk
+  - q: 'কোন কাজটা spot instance-এ চালানো সবচেয়ে নিরাপদ?'
+    hint: 'যে কাজ হঠাৎ থামলেও আবার চালানো যায়।'
+    options:
+      - text: 'প্রোডাকশন ডেটাবেস'
+        correct: false
+        why: 'হঠাৎ কেড়ে নিলে ডেটা ও সংযোগ হারানোর ঝুঁকি।'
+      - text: 'Idempotent queue worker যে ছবি resize করে'
+        correct: true
+        why: 'Worker মরলে message queue-তে ফিরে যায়, অন্য worker আবার তোলে। এটাই spot-এর আদর্শ কাজ।'
+      - text: 'ক্রেতার request নেওয়া একমাত্র ওয়েব Pod'
+        correct: false
+        why: 'কেড়ে নেওয়ার সাথে সাথে ক্রেতার request ব্যর্থ হবে।'
+    ref: save-without-risk

@@ -1,0 +1,361 @@
+slides:
+  - slug: status-anyone-writes
+    title: 'যে status যে কেউ যা খুশি লিখতে পারে'
+    kind: story
+    tldr: 'Payment-এর status যদি একটা সাধারণ string হয় আর যে কেউ সেটা বসাতে পারে, তাহলে ব্যর্থ payment refund হয়ে যায়, আর সফল payment আবার pending হয়ে যায়।'
+    keywords: ['payment status', 'illegal transition', 'status string', 'state bug', 'পেমেন্ট স্ট্যাটাস', 'অবৈধ পরিবর্তন']
+    blocks:
+      - type: text
+        body: |
+          রহিমের অ্যাপে `payments` টেবিলে একটা `status` কলাম আছে, আর কোডের দশ জায়গা থেকে `setStatus('...')` ডাকা হয়। একদিন একটা পুরনো webhook দেরিতে এসে `succeeded` payment-কে আবার `pending` করে দিল। আরেকদিন সাপোর্টের একজন `failed` payment-এ refund চেপে দিল, আর যে টাকা কখনো আসেইনি, তা-ই ফেরত চলে গেল। কোনো exception নেই, কোনো লগ নেই — শুধু ভুল টাকার হিসাব।
+      - type: visual
+        kind: compare
+        caption: 'status শুধু string হলে কী হয়, আর state machine থাকলে কী হয়'
+        columns:
+          - title: 'যা খুশি লেখা যায়'
+            tone: bad
+            icon: cross
+            tip: 'কোড যেকোনো জায়গা থেকে যেকোনো status বসাতে পারে, তাই ভুল পরিবর্তন আটকানোর কেউ নেই।'
+            items: ['succeeded → pending (পুরনো খবরে)', 'failed → refunded (টাকাই আসেনি)', 'কে কখন বদলাল, জানা যায় না']
+          - title: 'শুধু বৈধ পথে চলে'
+            tone: good
+            icon: check
+            tip: 'প্রতিটা পরিবর্তন একটা নামী transition দিয়ে হয়, আর বৈধ না হলে সাথে সাথে বাতিল হয়।'
+            items: ['succeeded থেকে pending নেই', 'failed থেকে সামনে যাওয়ার পথ নেই', 'প্রতিটা পরিবর্তন লগে থাকে']
+      - type: quote
+        body: 'Payment-এর status কখনো সরাসরি লেখা হয় না। শুধু নামী, বৈধ transition দিয়ে বদলায়।'
+    aside:
+      - type: story
+        title: 'ট্রেনের টিকিটের নিয়ম'
+        body: 'একবার ফেরত দেওয়া টিকিট আর চালু হয় না, আর যে টিকিট কাটাই হয়নি তা ফেরতও দেওয়া যায় না। নিয়মগুলো কাউন্টারের ক্লার্কের মুখস্থের ওপর নয়, সিস্টেমের গঠনেই বসানো থাকে।'
+      - type: terms
+        items:
+          - {term: 'State', meaning: 'কাজটা এই মুহূর্তে কোন অবস্থায় আছে, যেমন pending বা succeeded।'}
+          - {term: 'Transition', meaning: 'এক অবস্থা থেকে আরেক অবস্থায় যাওয়ার একটা নামী, বৈধ পথ।'}
+    check:
+      q: 'কোড কোথাও ভুলে `failed` payment-এ `refund` চালাতে চাইলে state machine থাকলে কী হবে?'
+      a: 'failed থেকে refund নামের কোনো transition নেই, তাই চালানোই যাবে না। কোড exception দেবে বা `can()` false ফেরত দেবে, টাকা ফেরত যাবে না।'
+
+  - slug: ticket-lifecycle
+    title: 'টিকিটের জীবনচক্র: state, transition আর terminal'
+    kind: concept
+    tldr: 'Payment-এর বৈধ state আর তাদের মধ্যে বৈধ transition আগেই ছকে এঁকে নাও; failed ও refunded থেকে আর কোথাও যাওয়া যায় না।'
+    keywords: ['state machine', 'terminal state', 'legal transitions', 'payment lifecycle', 'টার্মিনাল স্টেট', 'ট্রানজিশন']
+    blocks:
+      - type: metaphor
+        icon: ticket
+        title: 'রেলের টিকিটের জীবন'
+        body: |
+          টিকিটের আবেদন থেকে শুরু: টাকা নেওয়া চলছে (pending), টিকিট ইস্যু হলো (succeeded) অথবা টাকা না আসায় বাতিল (failed)। ইস্যু হওয়া টিকিট ফেরত দেওয়া যায় (refunded)। কিন্তু বাতিল বা ফেরত দেওয়া টিকিট নিয়ে আর কিছু করার নেই। এই শেষ অবস্থাগুলোকেই বলে **terminal state**।
+      - type: visual
+        kind: flow
+        animate: false
+        caption: 'Payment-এর পাঁচটা state আর চারটা বৈধ transition'
+        nodes:
+          - {id: created, label: 'created', sub: 'শুরু', icon: pencil, col: 0, row: 1, tip: 'payment বানানো হয়েছে, কিন্তু gateway-তে এখনো পাঠানো হয়নি।'}
+          - {id: pending, label: 'pending', sub: 'gateway-র উত্তরের অপেক্ষা', icon: hourglass, tone: warn, col: 1.5, row: 1, tip: 'gateway-কে বলা হয়েছে। উত্তর না আসা পর্যন্ত আমরা জানি না টাকা এসেছে কি না।'}
+          - {id: succeeded, label: 'succeeded', sub: 'টাকা এসেছে', icon: check, tone: good, col: 3, row: 0, tip: 'টাকা এসে গেছে। এখান থেকে শুধু refund-এর পথ খোলা।'}
+          - {id: failed, label: 'failed', sub: 'terminal', icon: cross, tone: bad, col: 3, row: 2, tip: 'টাকা আসেনি। এটা শেষ অবস্থা; এখান থেকে আর কোনো transition নেই।'}
+          - {id: refunded, label: 'refunded', sub: 'terminal', icon: money, tone: muted, col: 4, row: 1, tip: 'টাকা ফেরত গেছে। এটাও শেষ অবস্থা; পুরো refund হলে আর কিছু করার নেই।'}
+        edges:
+          - {from: created, to: pending, label: 'submit', tip: 'gateway-তে payment পাঠানো হলো।'}
+          - {from: pending, to: succeeded, label: 'succeed', tone: good, tip: 'gateway জানাল টাকা এসেছে।'}
+          - {from: pending, to: failed, label: 'fail', tone: bad, tip: 'gateway জানাল টাকা আসেনি।'}
+          - {from: succeeded, to: refunded, label: 'refund', tip: 'টাকা ফেরত দেওয়া হলো। শুধু succeeded থেকেই এটা সম্ভব।'}
+      - type: points
+        title: 'এই ছক থেকে যা পাই'
+        style: check
+        items:
+          - '`created → succeeded` সোজা নেই: টাকা এসেছে কি না gateway-কে না জিজ্ঞেস করে সফল ধরা যায় না।'
+          - '`failed` আর `refunded` থেকে বের হওয়া যায় না, তাই পুরনো খবর এসে এদের বদলাতে পারে না।'
+          - 'আংশিক refund-এর মতো জটিল ব্যাপার [[workflows/refunds-reversals|আলাদা segment-এ]]।'
+    aside:
+      - type: remember
+        body: 'আগে ছকটা আঁকো, তারপর কোড। যে পথ ছকে নেই, কোডেও নেই।'
+      - type: when
+        use: ['যে জিনিসের স্পষ্ট কয়েকটা অবস্থা আছে — payment, অর্ডার, চুক্তি', 'পুরনো বা দেরি করে আসা event বাতিল করতে হলে']
+        avoid: ['যেখানে অবস্থা কেবল দুটো (সক্রিয়/নিষ্ক্রিয়) আর কোনো নিয়ম নেই']
+    check:
+      q: 'ছকে `refunded` থেকে `succeeded`-এ ফেরার তীর নেই। কেন এটা ইচ্ছাকৃত?'
+      a: 'টাকা ফেরত দেওয়া হয়ে গেলে payment "সফল" অবস্থায় ফিরলে হিসাব ভুল হতো। নতুন করে টাকা নিতে হলে নতুন payment বানাতে হয়।'
+
+  - slug: symfony-workflow
+    title: 'Symfony Workflow দিয়ে ছকটা কোডে বসানো'
+    kind: howto
+    tldr: 'framework.workflows-এ type: state_machine দিয়ে places আর transitions লেখো; কোডে can() ও apply() ডাকলে অবৈধ পরিবর্তন সাথে সাথে বাতিল হয়।'
+    keywords: ['Symfony Workflow', 'state_machine', 'can apply', 'marking_store', 'audit trail', 'ওয়ার্কফ্লো কনফিগ']
+    blocks:
+      - type: text
+        body: |
+          Symfony Workflow component-এ ছকটা `framework.workflows`-এ লেখা হয়। `type: state_machine` বলে এক সময়ে payment একটাই state-এ থাকবে। `marking_store` বলে দেয় status কোন property-তে জমা হবে, তাই entity-র `status` ফিল্ড নিজে থেকেই আপডেট হয়। এরপর শুধু `can()` দিয়ে জিজ্ঞেস আর `apply()` দিয়ে পরিবর্তন।
+      - type: code
+        lang: yaml
+        file: 'config/packages/workflow.yaml'
+        variant: good
+        code: |
+          framework:
+              workflows:
+                  payment:
+                      type: state_machine
+                      audit_trail: {enabled: true}
+                      marking_store: {type: method, property: status}
+                      supports: [App\Entity\Payment]
+                      initial_marking: created
+                      places: [created, pending, succeeded, failed, refunded]
+                      transitions:
+                          submit:  {from: created,   to: pending}
+                          succeed: {from: pending,   to: succeeded}
+                          fail:    {from: pending,   to: failed}
+                          refund:  {from: succeeded, to: refunded}
+        marks:
+          - {line: 4, tip: 'state_machine মানে এক সময়ে একটাই state। (workflow type-এ একসাথে একাধিক place থাকতে পারে, payment-এ তা চাই না।)'}
+          - {line: 5, tip: 'প্রতিটা transition লগে লেখা হয়: কোন payment, কোন state থেকে কোন state।'}
+          - {line: 6, tip: 'Workflow Payment::getStatus()/setStatus() ব্যবহার করে। entity-তে status ফিল্ড একটা string।'}
+      - type: code
+        lang: php
+        file: 'src/Payment/PaymentTransitions.php'
+        variant: good
+        code: |
+          final readonly class PaymentTransitions
+          {
+              public function __construct(private WorkflowInterface $paymentStateMachine) {}
+
+              public function apply(Payment $payment, string $transition): bool
+              {
+                  if (!$this->paymentStateMachine->can($payment, $transition)) {
+                      return false;                    // বৈধ নয় — চুপচাপ বাদ
+                  }
+                  $this->paymentStateMachine->apply($payment, $transition);
+
+                  return true;
+              }
+          }
+        marks:
+          - {line: 3, tip: 'পরামিতির নাম paymentStateMachine হলে Symfony আপনা-আপনি payment নামের state machine inject করে।'}
+          - {line: 7, tip: 'can() মানে "এই state থেকে এই নামের পথ আছে কি?"। false হলে অবস্থা অপরিবর্তিত থাকে।'}
+          - {line: 10, tip: 'apply() status বদলায়। এ পর্যন্ত শুধু memory-তে; ডেটাবেসে লিখতে flush লাগবে।'}
+    aside:
+      - type: commands
+        title: 'ছক দেখা'
+        items:
+          - {cmd: 'php bin/console debug:container --tag=workflow', desc: 'কোন workflow-গুলো নিবন্ধিত আছে দেখো'}
+          - {cmd: 'composer require symfony/workflow', desc: 'component না থাকলে যোগ করো'}
+          - {cmd: 'php bin/console workflow:dump payment | dot -Tpng -o payment.png', desc: 'ছকের ছবি আঁকো (graphviz লাগে)'}
+      - type: tips
+        items:
+          - 'Event listener দিয়ে transition-এর আগে-পরে কাজ জুড়তে পারো: `#[AsEventListener(event: ''workflow.payment.completed.succeed'')]`।'
+          - 'guard দিয়ে শর্ত বসানো যায়: `guard: ''is_granted("ROLE_ADMIN")''`।'
+    check:
+      q: '`apply()` ডাকলে কি ডেটাবেসে status বদলে যায়? আর `can()` কী জানায়?'
+      a: 'না। apply() শুধু memory-র object বদলায়; flush করলে তবেই ডেটাবেসে যায়। can() জানায় ঐ state থেকে ঐ transition বৈধ কি না।'
+
+  - slug: race-on-transition
+    title: 'দুই worker একসাথে: can() যথেষ্ট নয়'
+    kind: pitfall
+    tldr: 'can() আর apply() memory-তে চলে; দুই worker একসাথে একই pending payment পড়লে দুজনেই বৈধ ভাবে। ডেটাবেস-lock বা শর্তযুক্ত UPDATE দিয়ে পরিবর্তনটা atomic করতে হয়।'
+    keywords: ['race condition', 'pessimistic lock', 'optimistic lock', 'atomic transition', 'concurrent webhook', 'রেস কন্ডিশন', 'lock']
+    blocks:
+      - type: text
+        body: |
+          ধরো `succeed` webhook আর `fail` webhook প্রায় একসাথে এল (আলাদা দুটো worker ধরেছে)। দুজনেই payment পড়ল, দুজনের কাছেই status `pending`, দুজনের `can()` সত্য। একজন `succeeded` লিখল, অন্যজন তার ওপর `failed` লিখে দিল। ছক ঠিক ছিল, কিন্তু পড়া আর লেখার মাঝের ফাঁকে ছক ফাঁকি খেল।
+      - type: code
+        lang: php
+        file: 'src/Payment/PaymentTransitions.php (ফাঁক আছে)'
+        variant: bad
+        code: |
+          $payment = $em->find(Payment::class, $id);           // দুজনেই 'pending' দেখল
+          if ($this->paymentStateMachine->can($payment, 'fail')) {
+              $this->paymentStateMachine->apply($payment, 'fail');
+              $em->flush();                                    // শেষ লেখকই জেতে
+          }
+        marks:
+          - {line: 1, tip: 'কোনো lock নেই। অন্য worker একই সময়ে একই সারি পড়ে নিয়েছে।'}
+          - {line: 4, tip: 'flush দুটোই সফল হয়। পরের জন আগের জনের ফলাফল না জেনেই লিখে দেয়।'}
+      - type: code
+        lang: php
+        file: 'src/Payment/PaymentTransitions.php'
+        variant: good
+        code: |
+          public function apply(int $id, string $transition): bool
+          {
+              return $this->em->wrapInTransaction(function () use ($id, $transition): bool {
+                  $payment = $this->em->find(Payment::class, $id, LockMode::PESSIMISTIC_WRITE);
+
+                  if (!$this->paymentStateMachine->can($payment, $transition)) {
+                      return false;                  // অন্য কেউ আগেই এগিয়েছে
+                  }
+                  $this->paymentStateMachine->apply($payment, $transition);
+                  $this->em->persist(new PaymentLog($payment, $transition));
+
+                  return true;                       // wrapInTransaction এখানে flush করে
+              });
+          }
+        marks:
+          - {line: 4, tip: 'SELECT ... FOR UPDATE। অন্য worker এই সারি পড়তে এলে অপেক্ষা করে, যতক্ষণ না এই transaction শেষ হয়।'}
+          - {line: 6, tip: 'দ্বিতীয় worker এখন পড়ে দেখবে status আর pending নেই, তাই can() false দেবে।'}
+          - {line: 10, tip: 'transition-এর ইতিহাস একই transaction-এ লেখা হয়, যাতে "কে কখন কী বদলাল" কখনো হারায় না।'}
+      - type: quote
+        body: 'Transition বৈধ কি না দেখা আর status বদলানো — দুটোই এক lock-এর ভেতরে, এক transaction-এ।'
+    aside:
+      - type: when
+        use: ['Pessimistic lock: একই payment-এ একসাথে কয়েকজনের ঢোকার সম্ভাবনা বেশি হলে', 'Optimistic lock (`#[ORM\Version]`): conflict বিরল হলে, আর retry করা সহজ হলে']
+        avoid: ['কোনো lock ছাড়া শুধু can() ভরসা করা']
+      - type: refs
+        items:
+          - {to: 'concurrency/locking', label: 'Pessimistic ও optimistic lock'}
+          - {to: 'payments/webhooks', label: 'Webhook handler-এ এই transition'}
+    check:
+      q: 'দ্বিতীয় worker lock-এর জন্য অপেক্ষার পর কী দেখে, আর কী করে?'
+      a: 'প্রথম worker commit করার পর সে দেখে status আর pending নেই। তাই `can()` false দেয়, আর সে কোনো পরিবর্তন না করে ফিরে যায়।'
+
+flashcards:
+  - q: 'Payment-এর status শুধু একটা string কলাম হলে কী ঝুঁকি?'
+    a: 'যে কেউ যেকোনো status বসাতে পারে, তাই succeeded আবার pending হয়, বা failed payment-এ refund চলে যায়। কেউ আটকানোর নেই।'
+    more: |
+      কোডের দশ জায়গা থেকে `setStatus()` ডাকা মানে দশ জায়গাতেই ভুলের সুযোগ। State machine এই নিয়মগুলো এক জায়গায় এনে দেয়, যাতে কোনো ভুল পরিবর্তন চালানোই না যায়।
+    ref: status-anyone-writes
+  - q: 'State machine কী?'
+    a: 'একটা ছক, যেখানে আগেই ঠিক করা থাকে কোন কোন state আছে আর কোন state থেকে কোন state-এ নামী পথে যাওয়া যায়।'
+    more: |
+      এক সময়ে জিনিসটা ঠিক একটা state-এ থাকে। এক state থেকে আরেকটায় যাওয়ার প্রতিটা পথের একটা নাম থাকে (যেমন `succeed`)। যে পথ ছকে নেই, তা চালানোই যায় না।
+    ref: ticket-lifecycle
+  - q: 'Terminal state কাকে বলে? Payment-এর উদাহরণ দাও।'
+    a: 'যে অবস্থা থেকে আর কোনো transition নেই। যেমন failed আর refunded।'
+    more: |
+      Terminal state-এর সুবিধা: পুরনো বা দেরিতে আসা event এসে এই অবস্থা বদলাতে পারে না। কাজ শেষ, এর পর কিছু বদলাতে হলে নতুন record বানাতে হয়, পুরনোটা বদলাতে নয়।
+    ref: ticket-lifecycle
+  - q: 'Payment ছকে `created` থেকে সরাসরি `succeeded`-এ যাওয়ার পথ রাখা হয় না কেন?'
+    a: 'কারণ gateway-কে জিজ্ঞেস না করে টাকা এসেছে ধরা যায় না। মাঝখানে `pending` থাকে, যা "জানি না" অবস্থা বোঝায়।'
+    more: |
+      Pending অবস্থা না থাকলে "পাঠানো হয়েছে কিন্তু উত্তর আসেনি" দেখানোর উপায় থাকে না, আর timeout-এর পর আমরা ধরে নিই সফল বা ব্যর্থ। এটা unknown outcome-এর সবচেয়ে বড় ভুল, যা [[payments/unknown-outcomes|পরের segment-এ]] আছে।
+    ref: ticket-lifecycle
+  - q: 'Symfony Workflow-এ `state_machine` আর `workflow` type-এর পার্থক্য কী?'
+    a: '`state_machine` এ জিনিসটা এক সময়ে একটাই place-এ থাকে। `workflow` type-এ একসাথে একাধিক place-এও থাকতে পারে।'
+    more: |
+      Payment-এ এক সময়ে একটাই অবস্থা চাই, তাই state_machine। অনেক সমান্তরাল ধাপের কাজ (যেমন একসাথে "ছবি যাচাই" আর "ঠিকানা যাচাই" চলছে) হলে workflow type লাগে।
+    ref: symfony-workflow
+  - q: 'Symfony Workflow-এ `can()` আর `apply()` কী করে?'
+    a: '`can()` জানায় ঐ state থেকে ঐ transition বৈধ কি না। `apply()` বৈধ হলে status বদলায়, আর অবৈধ হলে exception ছোড়ে।'
+    more: |
+      apply() শুধু memory-র object বদলায়, ডেটাবেসে লিখতে flush লাগে। তাই বাইরে থেকে আসা event-এ আগে can() দিয়ে দেখে নেওয়া ভালো। সরাসরি apply() করলে অবৈধ হলে `LogicException` আসে।
+    ref: symfony-workflow
+  - q: 'দুই worker একসাথে একই payment-এর transition চালালে কী ঝুঁকি, আর সমাধান কী?'
+    a: 'দুজনেই pending দেখে বৈধ ভাবে, তাই শেষ লেখকই জেতে। সমাধান: transaction-এ pessimistic lock বা optimistic version দিয়ে পড়া আর লেখা একসাথে বাঁধা।'
+    more: |
+      `LockMode::PESSIMISTIC_WRITE` SELECT ... FOR UPDATE চালায়, ফলে দ্বিতীয় worker অপেক্ষা করে। অপেক্ষা শেষে সে নতুন status দেখে, আর তার can() false দেয়। বিকল্প হলো `#[ORM\Version]` কলাম: conflict হলে flush exception দেয়, আর তুমি retry করো।
+    ref: race-on-transition
+  - q: 'Transition-এর ইতিহাস (audit log) কেন একই transaction-এ লিখতে হয়?'
+    a: 'যাতে status বদলেছে অথচ লগ নেই, বা লগ আছে অথচ status বদলায়নি — এমন অবস্থা তৈরি না হয়।'
+    more: |
+      টাকার ব্যাপারে "কে কখন কেন বদলাল" প্রশ্নের উত্তর হারালে বিরোধ মেটানো যায় না। দুটো আলাদা transaction-এ লিখলে মাঝখানে crash হলে অমিল থেকে যায়। `audit_trail` শুধু লগ ফাইলে লেখে; ডেটাবেসের ইতিহাস নিজে একই transaction-এ রাখতে হয়।
+    ref: race-on-transition
+
+quiz:
+  - q: 'রহিমের payment টেবিলে status শুধু `VARCHAR`, আর কোডের নানা জায়গা থেকে সরাসরি `setStatus()` ডাকা হয়। কোন সমস্যাটা সবচেয়ে সম্ভাব্য?'
+    hint: 'পুরনো event যদি দেরিতে আসে, কী ঠেকাবে?'
+    options:
+      - text: 'পুরনো event এসে succeeded payment-কে আবার pending করে দেবে'
+        correct: true
+        why: 'status যেকোনো মান বসাতে দেয়, আর "পেছনে যাওয়া নিষেধ" নিয়মটা কোথাও নেই।'
+      - text: 'ডেটাবেস `VARCHAR` সংরক্ষণ করতেই পারবে না'
+        correct: false
+        why: 'VARCHAR দিব্যি চলে; সমস্যা ধরনের নয়, নিয়মের।'
+      - text: 'Payment তৈরি করাই যাবে না'
+        correct: false
+        why: 'তৈরি করা ঠিকই যায়; ভুল পরিবর্তন আটকানো যায় না, এটাই সমস্যা।'
+      - text: 'Status কলাম আপডেটে খুব ধীর হবে'
+        correct: false
+        why: 'গতি এখানে কোনো ব্যাপার নয়।'
+    ref: status-anyone-writes
+  - q: 'নিচের ছকে `refund` transition কোথা থেকে কোথায় যায়? আর কোন কোন state terminal?'
+    lang: yaml
+    code: |
+      places: [created, pending, succeeded, failed, refunded]
+      transitions:
+          submit:  {from: created,   to: pending}
+          succeed: {from: pending,   to: succeeded}
+          fail:    {from: pending,   to: failed}
+          refund:  {from: succeeded, to: refunded}
+    hint: 'যে state থেকে কোনো `from:` নেই, সেটা কী?'
+    options:
+      - text: 'refund: succeeded → refunded; terminal হলো failed আর refunded'
+        correct: true
+        why: 'failed আর refunded কোনো transition-এর from-এ নেই, তাই সেখান থেকে বের হওয়া যায় না।'
+      - text: 'refund: failed → refunded; terminal হলো শুধু created'
+        correct: false
+        why: 'created থেকে submit আছে, আর refund-এর from হলো succeeded।'
+      - text: 'refund: pending → refunded; terminal হলো শুধু succeeded'
+        correct: false
+        why: 'pending থেকে refund নেই; আর succeeded থেকে refund বেরোয়, তাই সেটা terminal নয়।'
+      - text: 'কোনো state terminal নয়, সব state থেকেই কোনো না কোনো পথ আছে'
+        correct: false
+        why: 'failed আর refunded-এ কোনো তীর বেরোয় না।'
+    ref: ticket-lifecycle
+  - q: 'Payment pending অবস্থায় আছে। ছক অনুযায়ী এখান থেকে সরাসরি কোন কোন transition বৈধ?'
+    hint: 'ছকের pending থেকে বের হওয়া তীরগুলো গোনো।'
+    options:
+      - text: 'succeed'
+        correct: true
+        why: 'pending → succeeded, gateway টাকা পাওয়ার খবর দিলে।'
+      - text: 'fail'
+        correct: true
+        why: 'pending → failed, gateway ব্যর্থতার খবর দিলে।'
+      - text: 'refund'
+        correct: false
+        why: 'refund শুধু succeeded থেকে চলে; টাকা আসার আগে ফেরত দেওয়ার কিছু নেই।'
+      - text: 'submit'
+        correct: false
+        why: 'submit created থেকে pending-এ নিয়ে যায়। payment ইতিমধ্যে pending-এ।'
+    ref: ticket-lifecycle
+  - q: 'Symfony-তে payment-এর এক সময়ে একটাই অবস্থা চাই, কিন্তু কোনো parallel ধাপ নেই। কোন কনফিগ ঠিক?'
+    hint: 'এক জিনিস কি একসাথে দুই জায়গায় থাকবে?'
+    options:
+      - text: '`type: workflow`, কারণ এটাই ডিফল্ট আর সব ক্ষেত্রে চলে'
+        correct: false
+        why: 'workflow type-এ জিনিস একসাথে একাধিক place-এ থাকতে পারে; payment-এ এটা চাই না।'
+      - text: '`type: state_machine`, `marking_store: {type: method, property: status}`'
+        correct: true
+        why: 'state_machine এক সময়ে একটাই place রাখে, আর method marking store entity-র status property-তে মান জমা রাখে।'
+      - text: 'কনফিগ লাগবে না, কোডে `if ($status === ...)` লিখলেই হবে'
+        correct: false
+        why: 'ছড়ানো if আবার সেই আগের সমস্যা ফিরিয়ে আনে: নিয়ম এক জায়গায় থাকে না, ভুলও আটকায় না।'
+    ref: symfony-workflow
+  - q: 'দুইটা worker একসাথে একই pending payment-এর `succeed` আর `fail` transition চালায়। নিচের কোড নিরাপদ কি না?'
+    lang: php
+    code: |
+      $payment = $em->find(Payment::class, $id);
+      if ($sm->can($payment, $transition)) {
+          $sm->apply($payment, $transition);
+          $em->flush();
+      }
+    hint: 'পড়া আর লেখার মাঝখানে অন্য worker ঢুকলে কী ঘটে?'
+    options:
+      - text: 'নিরাপদ নয়: দুজনেই pending দেখতে পারে, আর শেষ flush-ই টিকবে'
+        correct: true
+        why: 'can() শুধু নিজের memory-র object দেখে। ডেটাবেসে অন্য worker কী করল, তা জানে না।'
+      - text: 'নিরাপদ, কারণ can() আছে'
+        correct: false
+        why: 'can() পড়ার মুহূর্তের snapshot দেখে। ফাঁকে অন্য worker বদলে দিলে সে জানে না।'
+      - text: 'নিরাপদ, কারণ Doctrine আপনা-আপনি row lock করে'
+        correct: false
+        why: 'ডিফল্টে find() কোনো lock নেয় না। LockMode বা version কলাম আলাদা করে চাইতে হয়।'
+      - text: 'নিরাপদ, কারণ state machine নিজেই transaction খোলে'
+        correct: false
+        why: 'Workflow component ডেটাবেস ছোঁয় না; transaction আর lock তোমার দায়িত্ব।'
+    ref: race-on-transition
+  - q: 'কোন কোন উপায়ে একই payment-এ দুইটা transition-এর race নিরাপদ করা যায়?'
+    hint: 'ডেটাবেস কীভাবে "আগে যে এসেছে সে জিতবে" নিশ্চিত করে?'
+    options:
+      - text: 'transaction-এ `LockMode::PESSIMISTIC_WRITE` দিয়ে সারি পড়ে তারপর can()/apply()'
+        correct: true
+        why: 'দ্বিতীয় worker অপেক্ষা করে, পরে নতুন status দেখে।'
+      - text: 'Entity-তে `#[ORM\Version]` কলাম, আর conflict-এ exception ধরে retry'
+        correct: true
+        why: 'ডেটাবেসে লেখার সময় version মিলিয়ে দেখা হয়; যে পরে এল সে ব্যর্থ হয়।'
+      - text: 'দুই worker-এর মধ্যে `sleep(1)` দেওয়া'
+        correct: false
+        why: 'সময়ের ওপর ভরসা: কখনো কখনো কাজ করবে, কখনো করবে না। এটা race-এর সমাধান নয়।'
+      - text: 'can() দুইবার ডাকা'
+        correct: false
+        why: 'দুইবার ডাকলেও দুটোই একই পুরনো snapshot দেখে।'
+    ref: race-on-transition

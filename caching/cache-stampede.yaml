@@ -1,0 +1,379 @@
+slides:
+  - slug: herd-at-the-counter
+    title: 'মেয়াদ ফুরালো, হাজার জন একসাথে ছুটল'
+    kind: story
+    tldr: 'জনপ্রিয় cache entry-র মেয়াদ ফুরালে একই মুহূর্তে হাজার request miss পেয়ে একই ভারী query ডেটাবেসে পাঠায়; এই ঝড়ের নাম cache stampede।'
+    keywords: ['cache stampede', 'thundering herd', 'dogpile', 'miss storm', 'হার্ড এক্সপায়ারি']
+    blocks:
+      - type: metaphor
+        icon: ticket
+        title: 'স্টেশনের ট্রেনের সময়সূচি বোর্ড'
+        body: |
+          ঈদের আগে স্টেশনের বোর্ডে ট্রেনের সময় লেখা থাকে, তাই কেউ কাউন্টারে যায় না। হঠাৎ বোর্ড মুছে ফেলা হলো। এক সেকেন্ডে হাজার যাত্রী কাউন্টারে ছুটে গিয়ে একই প্রশ্ন করল, "কটায় ছাড়বে?" একজন কর্মচারী হাজার জনকে সামলাতে পারে না। বোর্ড হলো cache, কাউন্টার ডেটাবেস।
+      - type: visual
+        kind: flow
+        caption: 'এক সেকেন্ডে মেয়াদ ফুরালে ঠিক কী ঘটে'
+        nodes:
+          - {id: users, label: '১০০০ request', sub: 'এক সেকেন্ডে', icon: users, col: 0, row: 1, tip: 'হোমপেজ খুলতে আসা হাজারখানেক ব্যবহারকারী, সবাই একই চাবি চায়।'}
+          - {id: app, label: 'অ্যাপ', sub: 'Symfony', icon: api, col: 1.5, row: 1, tip: 'প্রতিটা request আলাদা আলাদাভাবে cache দেখে, কেউ জানে না বাকিরাও দেখছে।'}
+          - {id: cache, label: 'Cache', sub: 'মেয়াদ ফুরিয়েছে', icon: cache, tone: warn, col: 3, row: 0, tip: 'এইমাত্র entry মরেছে। প্রতিটা খোঁজ এখন miss।'}
+          - {id: db, label: 'ডেটাবেস', sub: '৮০০ms-এর query', icon: db, tone: bad, col: 3, row: 2, tip: 'ভারী query একসাথে ১০০০ বার চললে CPU শেষ, অন্য সব request-ও আটকে যায়।'}
+        edges:
+          - {from: users, to: app, label: 'এক সেকেন্ডে ১০০০ request একই পাতা চায়'}
+          - {from: app, to: cache, label: 'প্রতিটা request আগে cache-এ খোঁজে'}
+          - {from: cache, to: app, label: 'মেয়াদ এইমাত্র ফুরিয়েছে, তাই সবাই miss পায়', dashed: true, tone: warn}
+          - {from: app, to: db, label: 'হাজার request একই ভারী query ডেটাবেসে পাঠায়', tone: bad}
+          - {from: db, to: app, label: 'ডেটাবেস ধুঁকতে থাকে, উত্তর আসতে সময় লাগে', dashed: true, tone: bad}
+      - type: quote
+        body: 'Cache কাজ করছিল বলেই ডেটাবেস টিকে ছিল। cache একসাথে মরলে ডেটাবেসও মরে।'
+    aside:
+      - type: story
+        title: 'মধ্যরাতের হোমপেজ'
+        body: 'এক সাইটের হোমপেজ cache-এর মেয়াদ ছিল ঠিক ১ ঘণ্টা, রাত ১২টায় সেট করা। প্রতি রাত ১টায় সাইট ধীর হয়ে যেত। কারণ: ১টায় মেয়াদ ফুরালে সব request একসাথে ডেটাবেসে ছুটত।'
+      - type: terms
+        items:
+          - {term: 'Cache stampede', meaning: 'একটা জনপ্রিয় entry মরলে অনেক request একসাথে সেটা নতুন করে বানাতে ছোটা।'}
+          - {term: 'Thundering herd', meaning: 'একই ঘটনায় অনেক প্রক্রিয়া একসাথে জেগে উঠে একই সম্পদে ঝাঁপিয়ে পড়া।'}
+    check:
+      q: 'কেন একটা cache entry মরলে ডেটাবেস শুধু একবারের বদলে হাজার বার query চালায়?'
+      a: 'কারণ প্রতিটা request আলাদাভাবে miss পায় আর কেউ জানে না আরেকজন একই কাজ করছে, তাই সবাই একসাথে নিজে নিজে query চালায়।'
+
+  - slug: one-rebuilds
+    title: 'একজন রাঁধে, বাকিরা অপেক্ষা করে'
+    kind: concept
+    tldr: 'Stampede ঠেকানোর মূল কথা: একই চাবির জন্য এক সময়ে একজনই নতুন মান বানাবে (lock), বাকিরা অপেক্ষা করবে বা বাসি মান দেখাবে।'
+    keywords: ['lock', 'request coalescing', 'single flight', 'mutex', 'lock-based rebuild', 'একজন হিসাব করে']
+    blocks:
+      - type: metaphor
+        icon: lock
+        title: 'বিয়েবাড়ির এক ডেকচি'
+        body: |
+          বিয়েবাড়িতে বিরিয়ানি ফুরালে একজন বাবুর্চি ডেকচি নিয়ে রান্নায় বসে। ১০০ জন অতিথি আলাদা আলাদা ডেকচি চুলায় চাপায় না। বাকিরা অপেক্ষা করে, নয়তো যা আছে তার তলানি নিয়ে নেয়। এই "ডেকচির চাবি" হলো **lock**।
+      - type: visual
+        kind: flow
+        caption: 'Lock দিয়ে ১০০০ জনের জায়গায় একজনই ডেটাবেসে যায়'
+        nodes:
+          - {id: app, label: 'অ্যাপ', sub: '১০০০ request', icon: api, col: 0, row: 1, tip: 'সবাই miss পেয়েছে। এখন সিদ্ধান্ত: কে হিসাব করবে?'}
+          - {id: lock, label: 'Lock', sub: 'একজনই পায়', icon: lock, tone: accent, col: 1.5, row: 0, tip: 'প্রতি চাবির জন্য আলাদা lock। যে পেল সে বাবুর্চি; বাকিরা পেল না।'}
+          - {id: db, label: 'ডেটাবেস', sub: 'মাত্র ১টা query', icon: db, col: 3, row: 2, tip: 'এখন ১০০০টা নয়, মাত্র একটা ভারী query আসে।'}
+          - {id: cache, label: 'Cache', sub: 'নতুন মান', icon: cache, tone: good, col: 3, row: 0, tip: 'বাবুর্চি রান্না শেষ করে এখানে রাখে; এরপর সবাই hit পায়।'}
+        edges:
+          - {from: app, to: lock, label: 'miss পেয়ে সবাই lock চায়, পায় মাত্র একজন'}
+          - {from: lock, to: db, label: 'যে lock পেল, শুধু সে ডেটাবেসে ভারী query চালায়'}
+          - {from: db, to: cache, label: 'ফলটা cache-এ জমা হয়', tone: good}
+          - {from: cache, to: app, label: 'বাকিরা অপেক্ষা করে বা বাসি মান নিয়ে নতুন মান পেয়ে যায়', dashed: true, tone: good}
+      - type: points
+        title: 'যারা lock পায়নি, তাদের দুই পথ'
+        style: dot
+        items:
+          - 'অল্প অপেক্ষা: ২০০ms পরে আবার cache দেখো। বাবুর্চি ততক্ষণে সম্ভবত শেষ করেছে।'
+          - 'বাসি মান: আগের মান (একটু পুরনো) সাথে সাথে দেখাও। অপেক্ষাই নেই।'
+      - type: quote
+        body: 'একই চাবির জন্য এক সময়ে একজনই হিসাব করবে। বাকিরা অপেক্ষা করবে বা বাসি মান নেবে।'
+    aside:
+      - type: problem
+        body: 'হাজারটা একই ধরনের ভারী কাজকে একটা কাজে নামিয়ে আনা। একে request coalescing-ও বলে।'
+      - type: remember
+        body: 'এক চাবি, এক বাবুর্চি।'
+    check:
+      q: 'Lock না পাওয়া request-গুলো কী করতে পারে, যাতে ডেটাবেসে বাড়তি চাপ না পড়ে?'
+      a: 'অল্প সময় অপেক্ষা করে আবার cache দেখতে পারে, অথবা সাথে সাথে বাসি (পুরনো) মান দেখাতে পারে।'
+
+  - slug: jitter-and-early-expiry
+    title: 'মেয়াদ ছড়িয়ে দাও: jitter আর early expiration'
+    kind: howto
+    tldr: 'মেয়াদের সাথে এলোমেলো কয়েক সেকেন্ড যোগ করলে (jitter) অনেক entry একসাথে মরে না; আর Symfony-র beta পরামিতি মেয়াদের একটু আগেই কোনো একটা request-কে নতুন মান বানাতে দেয়।'
+    keywords: ['jitter', 'probabilistic early expiration', 'beta', 'XFetch', 'LockRegistry', 'Symfony Cache get']
+    blocks:
+      - type: text
+        body: |
+          সব entry একই সময়ে সেট হলে একই সময়ে মরবে। তাই মেয়াদে সামান্য এলোমেলো সময় (**jitter**) জুড়ে দাও। আরও এক ধাপ: Symfony-র `get()`-এর `beta` পরামিতি মেয়াদ ফুরানোর একটু আগে থেকেই, ছোট সম্ভাবনায়, কোনো একটা request-কে আগেভাগেই নতুন মান বানিয়ে ফেলতে বলে। মেয়াদ যত কাছে আসে, সম্ভাবনা তত বাড়ে। ফলে সাধারণত কেউ একজন আগেই বানিয়ে রাখে, আর মেয়াদের মুহূর্তে ঝড় ওঠে না।
+      - type: code
+        lang: php
+        file: 'src/Catalog/TopProducts.php'
+        variant: good
+        code: |
+          public function forHomepage(): array
+          {
+              return $this->cache->get(
+                  'top_products.v1',
+                  function (ItemInterface $item): array {
+                      // jitter: ৬০০ সেকেন্ড + ০ থেকে ১২০ সেকেন্ড এলোমেলো
+                      $item->expiresAfter(600 + random_int(0, 120));
+
+                      return $this->products->findTopSelling(10);
+                  },
+                  beta: 1.0,    // early expiration; ০ দিলে বন্ধ, \INF দিলে এখনই নতুন করে বানাবে
+              );
+          }
+        marks:
+          - {line: 7, tip: 'একসাথে বানানো entry-গুলোও ভিন্ন ভিন্ন সময়ে মরবে। ফলে বহু চাবি মিলে ঝড় ওঠে না।'}
+          - {line: 11, tip: '১.০ হলো ডিফল্ট। বেশি দিলে আরও আগে থেকে চেষ্টা শুরু হয়, কিন্তু আরও বেশি বাড়তি রান্না হয়।'}
+      - type: visual
+        kind: table
+        caption: 'চার সুরক্ষা: কোনটা কী ঠেকায়'
+        headers: ['কৌশল', 'কীভাবে ঠেকায়', 'দাম']
+        rows:
+          - cells: ['Jitter', 'বহু entry একসাথে মরে না', 'কিছু entry একটু আগে মরে']
+            tip: 'প্রায় বিনা খরচে, সবসময় দিয়ে রাখার মতো।'
+          - cells: ['Early expiration (beta)', 'মেয়াদের আগেই একজন নতুন বানায়', 'মাঝে মাঝে বাড়তি হিসাব']
+            tip: 'Symfony এটা নিজেই করে; কোড লাগে না।'
+          - cells: ['Lock', 'একজনই বানায়', 'অন্যদের অপেক্ষা বা বাসি মান']
+            tip: 'Symfony-র LockRegistry একই সার্ভারের ভেতর কাজ করে; একাধিক সার্ভারে নিজে lock লাগাতে হয়।'
+          - cells: ['Stale-while-revalidate', 'বাসি দেখাও, পেছনে বানাও', 'কিছুক্ষণ পুরনো মান']
+            tip: 'পরের স্লাইডে এর কোড।'
+    aside:
+      - type: tips
+        items:
+          - 'Symfony-র নিজস্ব LockRegistry একই সার্ভারে একই চাবির একাধিক একসাথে হিসাব আটকায়। কিন্তু অনেক সার্ভার থাকলে প্রতিটা সার্ভার আলাদা lock রাখে, তাই সেখানে ভাগ করা lock লাগে।'
+          - 'Jitter-এর পরিসর মূল TTL-এর ১০ থেকে ২০ শতাংশ রাখা একটা ভালো শুরু।'
+      - type: refs
+        items:
+          - {to: 'caching/cache-invalidation', label: 'TTL ঠিক করা'}
+    check:
+      q: 'Jitter আর beta — দুটোই মেয়াদ নিয়ে খেলে। এদের কাজের তফাত কী?'
+      a: 'Jitter বহু entry-র মেয়াদ ভিন্ন সময়ে ছড়ায়, যাতে সবগুলো একসাথে না মরে। Beta একটা entry-র মেয়াদ ফুরানোর আগেই কেউ একজন সেটা নতুন করে বানায়।'
+
+  - slug: stale-while-revalidate
+    title: 'বাসি দেখাও, পেছনে নতুন বানাও'
+    kind: howto
+    tldr: 'Entry-র একটা নরম মেয়াদ (soft) আর একটা কড়া মেয়াদ (hard) রাখো; নরম মেয়াদ গেলে একজন lock নিয়ে নতুন বানায়, বাকিরা পুরনো মান পেয়ে যায়।'
+    keywords: ['stale-while-revalidate', 'LockFactory', 'soft ttl', 'hard ttl', 'বাসি মান', 'revalidate']
+    blocks:
+      - type: text
+        body: |
+          এই কৌশলে ব্যবহারকারী কখনো অপেক্ষা করে না। Entry-তে দুটো সময় থাকে: **soft** (৫ মিনিট, এরপর "বাসি-প্রায়") আর **hard** (১ ঘণ্টা, এরপর cache-ই মুছে যায়)। soft পার হলে প্রথম যে lock পায় সে নতুন মান বানায়; বাকিরা সাথে সাথে পুরনো মানই পেয়ে যায়।
+      - type: code
+        lang: php
+        file: 'src/Catalog/TopProductsSwr.php'
+        variant: good
+        code: |
+          public function get(): array
+          {
+              $entry = $this->cache->get('top.v1', $this->fresh(...));
+              if ($entry['soft'] > time()) {
+                  return $entry['data'];
+              }
+
+              $lock = $this->locks->createLock('refresh.top.v1', 30);
+              if ($lock->acquire()) {          // blocking নয়: পেলাম বা পেলাম না
+                  try {
+                      $entry = $this->cache->get('top.v1', $this->fresh(...), beta: \INF);
+                  } finally {
+                      $lock->release();
+                  }
+              }
+
+              return $entry['data'];           // lock না পেলে বাসি-প্রায় মানই চলবে
+          }
+
+          private function fresh(ItemInterface $item): array
+          {
+              $item->expiresAfter(3600);       // hard TTL
+              $data = $this->products->findTopSelling(10);
+
+              return ['soft' => time() + 300, 'data' => $data];   // soft TTL
+          }
+        marks:
+          - {line: 4, tip: 'soft সময় বাকি থাকলে সোজা ফেরত। বেশিরভাগ request এখানেই শেষ।'}
+          - {line: 9, tip: 'acquire() ডিফল্টে অপেক্ষা করে না; সাথে সাথে true বা false ফেরত দেয়। তাই কেউ আটকে থাকে না।'}
+          - {line: 11, tip: 'beta: INF মানে "এখনই নতুন করে বানাও", cache-এর মেয়াদ বাকি থাকলেও।'}
+          - {line: 13, tip: 'lock সবসময় finally-তে ছাড়ো। না ছাড়লে বাকিরা অন্তত ৩০ সেকেন্ড (lock-এর TTL) অপেক্ষায় থাকবে।'}
+      - type: quote
+        body: 'ব্যবহারকারীকে ১০ মিনিট পুরনো উত্তর দেওয়া, তাকে ৮০০ms বসিয়ে রাখার চেয়ে প্রায়ই ভালো।'
+    aside:
+      - type: when
+        use:
+          - 'হোমপেজ, তালিকা, রিপোর্ট — যেখানে কয়েক মিনিটের পুরনো মান চলে।'
+        avoid:
+          - 'টাকা বা স্টকের মতো সঠিকতা-নির্ভর ডেটা।'
+      - type: tips
+        items:
+          - 'বড় সিস্টেমে refresh-এর কাজটা request-এর ভেতরে না করে Messenger-এ বার্তা পাঠিয়ে worker-কে দাও, যাতে কোনো ব্যবহারকারী কখনো ধীর না হয়।'
+      - type: refs
+        items:
+          - {to: 'caching/http-caching', label: 'HTTP-তেও stale-while-revalidate আছে'}
+    check:
+      q: 'Soft মেয়াদ পার হওয়ার পরে ১০০ request একসাথে এলে কয়জন নতুন মান বানাবে, আর বাকিরা কী পাবে?'
+      a: 'মাত্র একজন, যে lock পাবে। বাকি ৯৯ জন lock না পেয়ে পুরনো (বাসি-প্রায়) মানই সাথে সাথে পাবে।'
+
+  - slug: blocking-lock-trap
+    title: 'Lock-ই নতুন বিপদ হতে পারে'
+    kind: pitfall
+    tldr: 'মেয়াদ বা timeout ছাড়া lock বা অনন্ত অপেক্ষা করলে lock-ধারী মরে গেলে সবাই আটকে যায় আর PHP worker ফুরিয়ে যায়; lock-এর TTL দাও, অপেক্ষার সীমা রাখো।'
+    keywords: ['lock ttl', 'blocking lock', 'deadlock', 'php-fpm workers', 'timeout', 'lock pitfall']
+    blocks:
+      - type: text
+        body: |
+          বাবুর্চি যদি ডেকচির চাবি নিয়ে বাড়ি চলে যায়, বাকি ১০০ জন চিরকাল অপেক্ষায়। কোডেও এটা ঘটে: যে request lock ধরেছিল সেটা crash করল, আর বাকিরা `acquire(true)`-এ বসে আছে। প্রতিটা অপেক্ষারত request একটা PHP worker ধরে রাখে, তাই কিছুক্ষণেই worker ফুরিয়ে যায় আর পুরো সাইট থেমে যায়।
+      - type: code
+        lang: php
+        file: 'src/Catalog/Rebuild.php'
+        variant: bad
+        code: |
+          $lock = $this->locks->createLock('rebuild.top');
+          $lock->acquire(true);                 // না পেলে অনন্তকাল অপেক্ষা
+
+          $value = $this->products->findTopSelling(10);
+          $this->cache->get('top.v1', fn () => $value);
+          $lock->release();                     // exception হলে এখানে পৌঁছাবেই না
+        marks:
+          - {line: 1, tip: 'ডিফল্ট lock-এর TTL ৩০০ সেকেন্ড। কেউ crash করলে ৫ মিনিট কেউ ঢুকতে পারবে না।'}
+          - {line: 2, tip: 'true মানে blocking। প্রতিটা অপেক্ষারত request একটা worker আটকে রাখে।'}
+          - {line: 6, tip: 'exception উঠলে release() হয় না। try/finally ছাড়া lock ঝুলে থাকে।'}
+      - type: code
+        lang: php
+        file: 'src/Catalog/Rebuild.php'
+        variant: good
+        code: |
+          $lock = $this->locks->createLock('rebuild.top', ttl: 30);
+
+          if (!$lock->acquire()) {
+              return $this->staleCopy->get() ?? $this->waitBriefly();   // ছোট অপেক্ষা বা বাসি মান
+          }
+
+          try {
+              return $this->rebuildAndStore();
+          } finally {
+              $lock->release();
+          }
+        marks:
+          - {line: 1, tip: 'ছোট TTL: ধারক মরে গেলেও ৩০ সেকেন্ড পরে lock নিজে থেকে ছাড়া পায়। কাজ এর চেয়ে বেশি লাগলে refresh() ডাকতে হবে।'}
+          - {line: 3, tip: 'non-blocking: না পেলে সাথে সাথে বিকল্প পথে যাও।'}
+          - {line: 10, tip: 'যা-ই ঘটুক, lock ছাড়ার নিশ্চয়তা।'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'অপেক্ষারতদের পুরোপুরি ফেল করিয়ো না; বাসি মান বা সামান্য অপেক্ষার পরে নিজে হিসাব, এমন একটা বিকল্প রাখো।'
+          - 'lock-এর TTL হিসাবের সর্বোচ্চ সময়ের চেয়ে একটু বেশি রাখো, নইলে কাজ চলতে চলতেই lock ছেড়ে যাবে।'
+      - type: remember
+        body: 'TTL ছাড়া lock আর try/finally ছাড়া release — দুটোই ঝুলন্ত lock-এর বাড়ি।'
+    check:
+      q: 'যে request lock ধরেছিল সে crash করলে lock-এর TTL থাকলে কী হয়, আর না থাকলে কী হতো?'
+      a: 'TTL থাকলে মেয়াদ শেষে lock নিজে ছাড়া পায় আর বাকিরা এগোয়। না থাকলে (বা খুব লম্বা হলে) সবাই বসে থাকে আর PHP worker ফুরিয়ে যায়।'
+
+flashcards:
+  - q: 'Cache stampede কী?'
+    a: 'একটা জনপ্রিয় entry-র মেয়াদ ফুরালে অনেক request একসাথে miss পেয়ে একই ভারী query ডেটাবেসে পাঠায়।'
+    more: |
+      প্রতিটা request আলাদাভাবে miss পায়, আর কেউ জানে না বাকিরাও একই কাজ করছে। ফলে ডেটাবেস হঠাৎ হাজার গুণ চাপ পায়। cache আসলে ডেটাবেসকে বাঁচিয়ে রাখছিল, তাই cache মরলে ডেটাবেসও পড়ে যায়।
+    ref: herd-at-the-counter
+  - q: 'Thundering herd আর cache stampede কি আলাদা?'
+    a: 'প্রায় একই জিনিস: অনেক প্রক্রিয়া একসাথে জেগে একই সম্পদে ঝাঁপিয়ে পড়া। Cache-এর প্রসঙ্গে একে stampede বলে।'
+    more: |
+      Thundering herd শব্দটা আরও ব্যাপক: lock ছাড়া পাওয়ার পর সবাই একসাথে জাগা, বা সার্ভার ফিরে আসার পর সব client একসাথে retry করা। cache-এ এর রূপ হলো stampede (dogpile)।
+    ref: herd-at-the-counter
+  - q: 'Lock দিয়ে stampede কীভাবে ঠেকানো হয়?'
+    a: 'একই চাবির জন্য এক সময়ে একজনই lock নিয়ে নতুন মান বানায়; বাকিরা অপেক্ষা করে বা বাসি মান নেয়।'
+    more: |
+      ফলে ১০০০টা ভারী query-র জায়গায় একটা চলে। একে request coalescing-ও বলে। যে lock পায়নি তার দুই পথ: অল্প অপেক্ষা করে আবার cache দেখা, অথবা সাথে সাথে পুরনো মান দেখানো।
+    ref: one-rebuilds
+  - q: 'Jitter কী, আর কেন লাগে?'
+    a: 'TTL-এ কয়েক সেকেন্ডের এলোমেলো সময় যোগ করা, যাতে অনেক entry একসাথে না মরে।'
+    more: |
+      একই মুহূর্তে ভরা অনেক entry যদি একই TTL পায়, তারা একই মুহূর্তে মরে। `expiresAfter(600 + random_int(0, 120))`-এ মেয়াদ ছড়িয়ে যায়। খরচ প্রায় নেই, তাই সবসময় দেওয়া ভালো।
+    ref: jitter-and-early-expiry
+  - q: 'Probabilistic early expiration কীভাবে কাজ করে?'
+    a: 'মেয়াদ ফুরানোর আগেই, মেয়াদ যত কাছে তত বেশি সম্ভাবনায়, কোনো একটা request নতুন মান বানিয়ে ফেলে।'
+    more: |
+      Symfony Cache-এর `get($key, $callback, beta: 1.0)` এটা নিজেই করে। beta বাড়ালে আরও আগে থেকে চেষ্টা শুরু হয়। beta: 0 এটা বন্ধ করে, আর `\INF` দিলে এখনই নতুন করে বানানো হয়।
+    ref: jitter-and-early-expiry
+  - q: 'Stale-while-revalidate কী?'
+    a: 'মেয়াদ গেলেও পুরনো মান সাথে সাথে দেখানো, আর পেছনে একজন নতুন মান বানিয়ে রাখা।'
+    more: |
+      এতে entry-র দুটো সময় থাকে: soft (এরপর নতুন বানাতে হবে) আর hard (এরপর মুছে যাবে)। soft পার হলে একজন lock নিয়ে নতুন বানায়, বাকিরা পুরনো মান পায়। ব্যবহারকারী কখনো অপেক্ষা করে না, দাম হলো কিছুক্ষণ পুরনো মান।
+    ref: stale-while-revalidate
+  - q: 'Cache rebuild-এর lock-এ কেন TTL আর try/finally দরকার?'
+    a: 'নইলে lock-ধারী crash করলে lock চিরকাল ঝুলে থাকে, আর বাকি request সবাই আটকে গিয়ে PHP worker ফুরিয়ে দেয়।'
+    more: |
+      lock-এর ছোট TTL (যেমন ৩০ সেকেন্ড) নিশ্চিত করে যে ধারক মরলেও lock নিজে ছাড়া পাবে। finally-তে release() ডাকলে exception উঠলেও lock ছাড়ে। অপেক্ষারতদের জন্য সবসময় বিকল্প রাখো: বাসি মান বা ছোট অপেক্ষা।
+    ref: blocking-lock-trap
+
+quiz:
+  - q: 'রাত ১২টায় একসাথে হাজারটা product-cache entry ১ ঘণ্টার মেয়াদে বসানো হলো। রাত ১টায় সাইট ধীর হয়ে যায়। সবচেয়ে সহজ প্রতিরোধ কোনটা?'
+    hint: 'সব entry একই মুহূর্তে মরছে কেন?'
+    options:
+      - text: 'TTL-এ এলোমেলো সময় (jitter) যোগ করা, যাতে entry-গুলো ভিন্ন সময়ে মরে'
+        correct: true
+        why: 'মেয়াদ ছড়িয়ে গেলে একসাথে হাজার miss-এর ঝড় হয় না।'
+      - text: 'Redis-এর মেমোরি বাড়ানো'
+        correct: false
+        why: 'সমস্যা জায়গার নয়, মরার সময় একই হওয়ার।'
+      - text: 'TTL ১ ঘণ্টা থেকে ৫ ঘণ্টা করা'
+        correct: false
+        why: 'ঝড় ৫ ঘণ্টা পরে হবে, তবে তখনও একসাথেই।'
+      - text: 'ডেটাবেসে আরও connection খোলা'
+        correct: false
+        why: 'ভারী query একসাথে বেশি চললে ডেটাবেস আরও ধীর হয়।'
+    ref: jitter-and-early-expiry
+  - q: 'হোমপেজের cache মরলে ১০০০ request একসাথে ডেটাবেসে যাচ্ছে। কোন সমাধানে ডেটাবেসে একটাই query যাবে?'
+    hint: 'একজনই কাজটা করুক; বাকিরা কী করবে?'
+    options:
+      - text: 'চাবির জন্য lock নেওয়া; যে পাবে সে বানাবে, বাকিরা অপেক্ষা করবে বা বাসি মান নেবে'
+        correct: true
+        why: 'ভারী কাজ এক সময়ে একবারই চলে।'
+      - text: 'প্রতিটা request-এ cache মুছে দেওয়া'
+        correct: false
+        why: 'আরও miss বাড়বে, ঝড় আরও খারাপ হবে।'
+      - text: 'প্রতিটা request নিজের query চালিয়ে cache-এ লিখবে, শেষজনেরটা থাকবে'
+        correct: false
+        why: 'এটাই stampede; হাজার query চলে।'
+      - text: 'TTL কমিয়ে ১ সেকেন্ড করা'
+        correct: false
+        why: 'আরও ঘনঘন মরবে, আরও বেশি ঝড়।'
+    ref: one-rebuilds
+  - q: 'নিচের কোডের বিপদ কী?'
+    lang: php
+    code: |
+      $lock = $this->locks->createLock('rebuild.top');
+      $lock->acquire(true);
+
+      $this->rebuild();
+      $lock->release();
+    hint: 'rebuild() exception ছুড়লে বা প্রসেস মরলে কী হবে?'
+    options:
+      - text: 'lock-ধারী crash করলে বাকি request অনেকক্ষণ আটকে থাকে আর PHP worker ফুরিয়ে যায়'
+        correct: true
+        why: 'ডিফল্ট TTL ৩০০ সেকেন্ড, আর blocking acquire প্রতিটা worker আটকে রাখে।'
+      - text: 'release() ডাকা আসলে দরকার নেই'
+        correct: false
+        why: 'দরকার; না ডাকলে TTL পর্যন্ত lock ঝুলে থাকে।'
+      - text: 'LockFactory Redis ছাড়া কাজ করে না'
+        correct: false
+        why: 'Symfony Lock অনেক store-এ চলে (flock, Redis, ডেটাবেস)।'
+      - text: 'acquire() কখনো true ফেরায় না'
+        correct: false
+        why: 'ফেরায়; সমস্যা অনন্ত অপেক্ষায়।'
+    ref: blocking-lock-trap
+  - q: 'Stale-while-revalidate ঠিকমতো চললে সুবিধা কোনগুলো?'
+    hint: 'ব্যবহারকারী কখন অপেক্ষা করে?'
+    options:
+      - text: 'ব্যবহারকারী প্রায় কখনো ধীর উত্তর পায় না'
+        correct: true
+        why: 'soft মেয়াদের পরেও সে সাথে সাথে পুরনো মান পায়।'
+      - text: 'একসাথে মাত্র একজন নতুন মান বানায়'
+        correct: true
+        why: 'lock এটা নিশ্চিত করে; ডেটাবেসে বাড়তি চাপ পড়ে না।'
+      - text: 'cache কখনোই কয়েক সেকেন্ডও পুরনো মান দেখায় না'
+        correct: false
+        why: 'উল্টো: এই কৌশলের দামই হলো কিছুক্ষণ পুরনো মান দেখানো।'
+      - text: 'টাকার ব্যালেন্সের জন্য এটাই সেরা উপায়'
+        correct: false
+        why: 'ব্যালেন্সে বাসি মান চলে না; সেখানে cache-ই এড়াও।'
+    ref: stale-while-revalidate
+  - q: 'Symfony-র get($key, $cb, beta: 1.0) নিয়ে কোনটা ঠিক?'
+    hint: 'beta-র কাজ কখন কার জন্য?'
+    options:
+      - text: 'মেয়াদ ফুরানোর একটু আগেই কোনো একটা request ছোট সম্ভাবনায় নতুন মান বানিয়ে ফেলতে পারে'
+        correct: true
+        why: 'এটাই probabilistic early expiration; মেয়াদের মুহূর্তে ঝড় এড়ায়।'
+      - text: 'beta: 0 দিলে এই আগাম নবায়ন বন্ধ হয়'
+        correct: true
+        why: 'beta 0 মানে আগাম নবায়ন নেই; মেয়াদ ফুরালে তবেই miss।'
+      - text: 'beta cache-এ ডেটা কত বছর থাকবে তা ঠিক করে'
+        correct: false
+        why: 'মেয়াদ ঠিক করে expiresAfter(); beta শুধু আগাম নবায়নের ঝোঁক।'
+      - text: 'beta ছাড়া Symfony cache কাজই করে না'
+        correct: false
+        why: 'beta ঐচ্ছিক; ডিফল্ট ১.০।'
+    ref: jitter-and-early-expiry

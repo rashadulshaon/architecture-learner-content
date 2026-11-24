@@ -1,0 +1,370 @@
+slides:
+  - slug: float-trap
+    title: 'দেখতে ঠিক, ভেতরে ভুল: float-এ টাকা'
+    kind: story
+    tldr: 'float দশমিক অঙ্ক হুবহু ধরে রাখতে পারে না; ছোট ভুল জমতে জমতে হিসাব মেলে না — তাই টাকা কখনো float-এ নয়।'
+    keywords: ['float', 'floating point', 'precision', '0.1 + 0.2', 'টাকার হিসাব', 'ভুল যোগফল']
+    blocks:
+      - type: text
+        body: |
+          মুদি দোকানের ক্যালকুলেটরে ০.১ + ০.২ চাপলে ০.৩ দেখায়, কিন্তু তোমার PHP কোড ভেতরে ভেতরে একটু অন্য অঙ্ক রাখে। কম্পিউটার দশমিক সংখ্যা **binary**-তে রাখে, আর ০.১ binary-তে কখনো শেষ হয় না — যেমন ১ ÷ ৩ দশমিকে শেষ হয় না। তাই `float` সবসময় খুব কাছের একটা অঙ্ক রাখে, হুবহু অঙ্কটা নয়।
+      - type: code
+        lang: php
+        file: 'float-এ যোগ (ভুল পথ)'
+        variant: bad
+        code: |
+          $total = 0.10 + 0.20;           // ১০ পয়সা + ২০ পয়সা
+
+          var_dump($total == 0.30);       // bool(false)
+          echo $total;                    // 0.3 — দেখতে ঠিক
+          printf('%.20f', $total);        // 0.30000000000000004441
+        marks:
+          - {line: 3, tip: 'যোগফল ০.৩০-র সমান নয়। `if ($paid == $due)` ধরনের তুলনা তাই কখনো কখনো ভুল সিদ্ধান্ত দেয়।'}
+          - {line: 5, tip: 'আসল জমা অঙ্কটা এটা। echo ছোট করে দেখায় বলে ভুলটা চোখে পড়ে না।'}
+      - type: visual
+        kind: steps
+        caption: 'ছোট ভুল কীভাবে বড় অসংগতি হয়ে ওঠে'
+        steps:
+          - {title: '১. float-এ যোগ', body: '০.১০ + ০.২০ ঘটে ০.30000000000000004', tip: 'binary-তে ০.১ আর ০.২ দুটোই আনুমানিক, তাই যোগফলও আনুমানিক।'}
+          - {title: '২. তুলনা ভাঙে', body: '`==` দিয়ে ০.৩০-র সাথে মেলালে false আসে', tip: 'পাওনা আর পরিশোধ সমান কি না — এই প্রশ্নের উত্তরই ভুল আসতে পারে।'}
+          - {title: '৩. লাখো লেনদেন', body: 'প্রতিটায় সামান্য ভুল জমতে থাকে', tip: 'একটা ভুল কয়েক কোটি ভাগের এক ভাগ, কিন্তু রোজ লাখো লেনদেনে সেটা জমে।'}
+          - {title: '৪. হিসাব মেলে না', body: 'দিনশেষে ব্যাংক আর লেজারের অঙ্ক আলাদা', tip: 'কোনো exception নেই, কোনো log নেই — শুধু মেলে না। এই ভুল খুঁজে বের করা সবচেয়ে কঠিন।'}
+      - type: quote
+        body: 'টাকা কখনো float নয়। কখনো না।'
+    aside:
+      - type: story
+        title: 'এক পয়সার খোঁজে তিন দিন'
+        body: |
+          এক ই-কমার্স কোম্পানির দিনশেষের রিপোর্টে ব্যাংকের অঙ্কের চেয়ে ৩ টাকা ১২ পয়সা কম আসছিল। তিন দিন খুঁজে বের হলো, ভ্যাট হিসাবের একটা float গুণ। কোথাও exception ছিল না।
+      - type: terms
+        items:
+          - {term: 'float', meaning: 'binary-তে রাখা আনুমানিক দশমিক সংখ্যা; হুবহু টাকার অঙ্ক ধরে না।'}
+    check:
+      q: '০.১০ + ০.২০ প্রিন্ট করলে ০.৩ দেখায়, তবু একে ভরসা করা যায় না কেন?'
+      a: 'প্রিন্ট ছোট করে দেখায়। আসলে জমা থাকে ০.30000000000000004..., তাই `==` তুলনা ভাঙে আর লাখো লেনদেনে ভুল জমে।'
+
+  - slug: poisa-and-currency
+    title: 'পয়সা গোনো, আর currency সাথে লেখো'
+    kind: concept
+    tldr: 'টাকা রাখো ছোটতম এককে (minor unit) integer হিসেবে, আর currency কোড সবসময় অঙ্কের সাথে।'
+    keywords: ['minor unit', 'integer', 'currency', 'ISO 4217', 'পয়সা', 'cents']
+    blocks:
+      - type: metaphor
+        icon: wallet
+        title: 'ক্যাশ কাউন্টারের গোনা'
+        body: |
+          ক্যাশিয়ার "আধা টাকা" গোনেন না; গোনেন ৫০টা এক-পয়সা, মানে পূর্ণসংখ্যা। আর টাকার ড্রয়ার আর ডলারের ড্রয়ার আলাদা — একটার নোট অন্যটায় ঢোকালে হিসাব গোলমাল হয়। **Minor unit** হলো সেই ছোটতম একক (পয়সা, cent), আর currency হলো ড্রয়ারের নাম।
+      - type: visual
+        kind: table
+        caption: 'দেখানো অঙ্ক আর ডেটাবেসে জমা integer'
+        headers: ['দেখানো অঙ্ক', 'Currency', 'জমা integer']
+        rows:
+          - cells: ['১২৫০.৫০ টাকা', 'BDT (২ ঘর)', '125050']
+            tip: 'টাকার ১ পয়সা হলো minor unit। ১২৫০ টাকা ৫০ পয়সা মানে ১২৫০৫০ পয়সা।'
+          - cells: ['৫.৯৯ ডলার', 'USD (২ ঘর)', '599']
+            tip: 'ডলারের minor unit cent। ৫ ডলার ৯৯ cent মানে ৫৯৯ cent।'
+          - cells: ['৫০০ ইয়েন', 'JPY (০ ঘর)', '500']
+            tip: 'ইয়েনের কোনো ভগ্নাংশ নেই। তাই সব currency-তে "দুই ঘর" ধরে নেওয়া ভুল।'
+          - cells: ['১.২৩৪ দিনার', 'KWD (৩ ঘর)', '1234']
+            tip: 'কুয়েতি দিনার তিন দশমিকের। কত ঘর, তা ISO 4217 তালিকা বলে দেয়।'
+      - type: quote
+        body: 'অঙ্কটা integer minor unit, সাথে currency। এই দুইটা কখনো আলাদা হবে না।'
+    aside:
+      - type: problem
+        body: 'float-এর ভুল আর "কোন currency?" প্রশ্ন — দুটোই এক বদলে মেটে: integer আর currency একসাথে একটা Money-তে।'
+      - type: terms
+        items:
+          - {term: 'Minor unit', meaning: 'currency-র ছোটতম একক; টাকার পয়সা, ডলারের cent।'}
+          - {term: 'ISO 4217', meaning: 'currency-র আন্তর্জাতিক তালিকা: BDT, USD, JPY ইত্যাদি, আর কত দশমিক ঘর।'}
+      - type: tips
+        items:
+          - 'ঘর সংখ্যা নিজে হার্ডকোড কোরো না; তালিকাটা library থেকে নাও (যেমন `brick/money` বা `moneyphp/money`)।'
+    check:
+      q: '৫০০ ইয়েন আর ৫০০ টাকা — দুটোকেই ডেটাবেসে `500` রাখলে কী হারায়?'
+      a: 'Currency হারায়। `500` একা বলে না এটা ইয়েন না টাকা। আর টাকার ৫০০ আসলে ৫০০০০ পয়সা, তাই ঘর সংখ্যাও জানতে হবে।'
+
+  - slug: money-value-object
+    title: 'Money value object আর Doctrine'
+    kind: howto
+    tldr: 'একটা immutable Money class integer আর currency ধরে; যোগের আগে currency মেলায়, overflow ধরে; Doctrine-এ দুটো কলামে জমা হয়।'
+    keywords: ['Money value object', 'readonly class', 'Doctrine', 'BIGINT', 'immutable', 'ভ্যালু অবজেক্ট']
+    blocks:
+      - type: text
+        body: |
+          অঙ্ক আর currency-কে একটা **value object**-এ বেঁধে ফেলো: তৈরি হওয়ার পর বদলায় না (`readonly`), আর ভুল কাজ করতেই দেয় না। BDT আর USD যোগ করতে গেলে সে exception দেয়, চুপচাপ ভুল অঙ্ক বানায় না।
+      - type: code
+        lang: php
+        file: 'src/Money/Money.php'
+        variant: good
+        code: |
+          final readonly class Money
+          {
+              private function __construct(
+                  public int $amount,        // minor unit: পয়সা
+                  public string $currency,   // 'BDT'
+              ) {}
+
+              public static function of(int $minor, string $currency): self
+              {
+                  return new self($minor, strtoupper($currency));
+              }
+
+              public function add(self $other): self
+              {
+                  $this->assertSameCurrency($other);
+                  $sum = $this->amount + $other->amount;
+                  if (!is_int($sum)) {            // PHP overflow-এ float বানায়
+                      throw new \OverflowException('Money overflow');
+                  }
+
+                  return new self($sum, $this->currency);
+              }
+
+              private function assertSameCurrency(self $other): void
+              {
+                  if ($this->currency !== $other->currency) {
+                      throw new \DomainException("{$this->currency} আর {$other->currency} যোগ হয় না");
+                  }
+              }
+          }
+        marks:
+          - {line: 1, tip: '`readonly` মানে একবার বানালে অঙ্ক আর বদলায় না। যোগ করলে নতুন Money ফেরে।'}
+          - {line: 17, tip: 'PHP-তে int উপচে পড়লে নিঃশব্দে float হয়ে যায়। এই এক লাইন সেটা ধরে ফেলে।'}
+          - {line: 26, tip: 'ড্রয়ার মেলানো: ভিন্ন currency যোগ করলে exception, নীরব ভুল নয়।'}
+      - type: code
+        lang: php
+        file: 'src/Entity/Wallet.php'
+        variant: good
+        code: |
+          #[ORM\Entity]
+          class Wallet
+          {
+              #[ORM\Id, ORM\GeneratedValue, ORM\Column]
+              private ?int $id = null;
+
+              #[ORM\Column(type: Types::BIGINT)]
+              private int $balanceMinor = 0;      // পয়সায়, কখনো float নয়
+
+              #[ORM\Column(length: 3)]
+              private string $currency = 'BDT';
+
+              public function balance(): Money
+              {
+                  return Money::of($this->balanceMinor, $this->currency);
+              }
+          }
+        marks:
+          - {line: 7, tip: 'কলাম BIGINT, কারণ ১ কোটি টাকাও পয়সায় ১০০ কোটির বেশি — ৩২ বিটের INT ছোট পড়বে।'}
+          - {line: 15, tip: 'বাইরে থেকে সবাই Money দেখে; দুটো কলামের কথা entity-র ভেতরেই থাকে।'}
+    aside:
+      - type: tips
+        items:
+          - 'DBAL 4-এ BIGINT কলাম `int` হয়ে ফেরে; পুরনো DBAL-এ string আসে, তখন `(int)` কাস্ট লাগে।'
+          - 'DB-তে `DECIMAL`-ও চলে, কিন্তু PHP-তে সেটা string হয়ে আসে; integer minor unit সবচেয়ে সরল।'
+      - type: remember
+        body: 'Money immutable: যোগ-বিয়োগ নতুন Money ফেরায়।'
+    check:
+      q: 'Money-তে `$amount` আর `$currency` দুটো public property রেখেও class-টা নিরাপদ কেন?'
+      a: 'class `readonly`, তাই বানানোর পর কেউ বদলাতে পারে না। আর যোগ-বিয়োগের পথ currency মেলায়, তাই ভুল অঙ্ক তৈরিই হয় না।'
+
+  - slug: remainder-never-lost
+    title: 'ভাগ করলে এক পয়সাও হারানো চলবে না'
+    kind: pitfall
+    tldr: 'টাকা ভাগ করলে ভাগশেষ থাকে; সবাইকে একই অঙ্ক round করে দিলে পয়সা হারায়। allocate করে ভাগশেষ কারো ঘরে ফেলতে হয়।'
+    keywords: ['allocate', 'rounding', 'remainder', 'half-up', 'ভাগশেষ', 'টাকা ভাগ']
+    blocks:
+      - type: text
+        body: |
+          বিয়েবাড়ির ১০০ টাকা তিন ভাইয়ের মধ্যে ভাগ হবে। ১০০ ÷ ৩ = ৩৩.৩৩৩... — প্রত্যেককে ৩৩.৩৩ দিলে মোট হয় ৯৯.৯৯, ১ পয়সা কেউ পেল না। একে একে round করলে এমন পয়সা হারায় বা তৈরি হয়। সমাধান: আগে সবাইকে মেঝে (floor) অনুযায়ী ভাগ দাও, তারপর **ভাগশেষ** এক এক পয়সা করে কারো ঘরে বিলিয়ে দাও।
+      - type: code
+        lang: php
+        file: 'ভুল ভাগ'
+        variant: bad
+        code: |
+          $share = (int) round(10000 / 3);          // 3333 পয়সা
+          $parts = [$share, $share, $share];        // মোট 9999 — ১ পয়সা উধাও
+        marks:
+          - {line: 2, tip: '১০০ টাকা ভাগ করে আমরা ৯৯.৯৯ ফিরে পেলাম। লেজারে এই এক পয়সা কোথাও লেখা নেই।'}
+      - type: code
+        lang: php
+        file: 'src/Money/Money.php'
+        variant: good
+        code: |
+          /** @return list<self> */
+          public function allocate(int ...$ratios): array
+          {
+              if ($this->amount < 0 || array_sum($ratios) <= 0) {
+                  throw new \DomainException('allocate: ভুল অঙ্ক বা অনুপাত');
+              }
+
+              $total = array_sum($ratios);
+              $shares = array_map(fn (int $r) => intdiv($this->amount * $r, $total), $ratios);
+              $remainder = $this->amount - array_sum($shares);
+
+              for ($i = 0; $remainder > 0; $i++, $remainder--) {
+                  $shares[$i]++;                      // ভাগশেষ এক পয়সা করে
+              }
+
+              return array_map(fn (int $s) => new self($s, $this->currency), $shares);
+          }
+        marks:
+          - {line: 9, tip: 'intdiv ছোট দিকে কাটে (মেঝে), তাই কেউ বেশি পায় না। কাটা অংশটাই ভাগশেষ।'}
+          - {line: 12, tip: 'ভাগশেষ সবসময় অনুপাতের সংখ্যার চেয়ে কম, তাই এক পয়সা করে বিলালেই যথেষ্ট।'}
+      - type: visual
+        kind: bars
+        caption: '১০০ টাকা (10000 পয়সা) তিন ভাগে allocate(1, 1, 1)'
+        items:
+          - {label: 'ভাই ১', value: 3334, display: '3334 পয়সা', tone: accent, tip: 'প্রথম জন ভাগশেষের ১ পয়সা পেল। কে পাবে, তার নিয়ম আগে ঠিক করা থাকে।'}
+          - {label: 'ভাই ২', value: 3333, display: '3333 পয়সা', tone: good, tip: 'মেঝে অনুযায়ী ভাগ।'}
+          - {label: 'ভাই ৩', value: 3333, display: '3333 পয়সা', tone: good, tip: 'মেঝে অনুযায়ী ভাগ। তিনজনের যোগফল ঠিক 10000।'}
+      - type: quote
+        body: 'ভাগের যোগফল সবসময় মূল অঙ্কের সমান। ভাগশেষ কারো ঘরে যাবেই।'
+    aside:
+      - type: tips
+        items:
+          - 'শতাংশ (ফি, ভ্যাট) হিসাবে ভগ্নাংশ এলে rounding নিয়ম (সাধারণত half-up) একবার ঠিক করে এক জায়গায় রাখো।'
+          - 'ধাপে ধাপে round কোরো না; সব গুণ-ভাগ সেরে শেষে একবারই round করো।'
+      - type: pitfalls
+        items:
+          - 'API-তে অঙ্ক JSON number (12.5) হিসেবে পাঠালে JavaScript সেটা float করে ফেলে। পাঠাও integer minor unit আর currency।'
+    check:
+      q: '১০০ টাকা ৪ জনের মধ্যে ১:১:১:১ অনুপাতে ভাগ হলে allocate কী ফেরে?'
+      a: 'প্রত্যেকে ২৫ টাকা (2500 পয়সা), ভাগশেষ ০। আর ১০০ টাকা ৩ জনে ভাগ হলে ভাগশেষ ১ পয়সা প্রথমজন পায়: 3334, 3333, 3333।'
+
+flashcards:
+  - q: 'কেন টাকা float-এ রাখা যায় না?'
+    a: 'float দশমিক অঙ্ক binary-তে আনুমানিক রাখে। তাই ০.১ + ০.২ হুবহু ০.৩ হয় না, আর ছোট ভুল জমতে থাকে।'
+    more: |
+      ০.১ binary-তে অসীম ভগ্নাংশ, যেমন দশমিকে ১ ÷ ৩। কম্পিউটার কেটে রাখে বলে `0.1 + 0.2 == 0.3` false হয়। একটা ভুল ছোট, কিন্তু লাখো লেনদেনে জমে দিনশেষের হিসাব ভাঙে।
+    ref: float-trap
+  - q: 'Minor unit কী? টাকা আর ডলারের minor unit কী?'
+    a: 'Currency-র ছোটতম একক। টাকার minor unit পয়সা, ডলারের cent।'
+    more: |
+      ১২৫০ টাকা ৫০ পয়সা রাখা হয় `125050` পয়সা হিসেবে। এভাবে সব যোগ-বিয়োগ পূর্ণসংখ্যার হিসাব, তাই কোনো আনুমানিক ভুল ঢোকে না।
+    ref: poisa-and-currency
+  - q: 'সব currency কি দুই দশমিক ঘরের?'
+    a: 'না। JPY-র ০ ঘর, BDT ও USD-র ২ ঘর, KWD-র ৩ ঘর। ঘর সংখ্যা ISO 4217 থেকে আসে।'
+    more: |
+      "সবসময় ১০০ দিয়ে গুণ করো" ধরনের কোড ইয়েনে ১০০ গুণ ভুল অঙ্ক বানায়। তাই ঘর সংখ্যা hardcode না করে `brick/money`-র মতো library-র currency তালিকা ব্যবহার করো।
+    ref: poisa-and-currency
+  - q: 'টাকার অঙ্কের সাথে currency আলাদা না রাখলে কী ঝুঁকি?'
+    a: 'অঙ্কটা অর্থহীন হয়ে যায়: `500` টাকা না ডলার, বোঝা যায় না। ভিন্ন currency ভুল করে যোগ হয়ে যেতে পারে।'
+    more: |
+      Money value object অঙ্ক আর currency একসাথে রাখে, আর যোগ-বিয়োগের আগে currency মেলায়। BDT + USD করতে গেলে exception আসে, চুপচাপ ভুল যোগফল তৈরি হয় না।
+    ref: money-value-object
+  - q: 'Money class-কে `readonly` বানানো হয় কেন?'
+    a: 'বানানোর পর অঙ্ক বদলানো যায় না। যোগ-বিয়োগ নতুন Money ফেরায়, তাই কোথাও লুকিয়ে অঙ্ক বদলায় না।'
+    more: |
+      Mutable Money একটা জায়গায় বদলালে অন্য জায়গার একই object-ও বদলে যায়। Immutable value object এই ঝামেলা তৈরিই হতে দেয় না।
+    ref: money-value-object
+  - q: 'PHP-তে integer যোগ উপচে পড়লে কী হয়?'
+    a: 'PHP নিঃশব্দে সেটাকে float বানিয়ে ফেলে। তাই `is_int($sum)` দিয়ে যাচাই করে exception দিতে হয়।'
+    more: |
+      `PHP_INT_MAX + 1` একটা float ফেরায়, কোনো error ছাড়াই। টাকার হিসাবে এই নীরব বদল সবচেয়ে বিপজ্জনক, তাই Money-র যোগ-বিয়োগে overflow check রাখা হয়।
+    ref: money-value-object
+  - q: '১০০ টাকা তিনজনে ভাগ করার সঠিক উপায় কী?'
+    a: 'allocate: সবাইকে মেঝে অনুযায়ী ভাগ দিয়ে ভাগশেষ ১ পয়সা করে কারো ঘরে দাও। ফল 3334, 3333, 3333 পয়সা।'
+    more: |
+      সবাইকে round করা অঙ্ক দিলে যোগফল মূল অঙ্কের সাথে মেলে না। allocate-এর নিয়ম: ভাগের যোগফল সবসময় মূল অঙ্কের সমান।
+    ref: remainder-never-lost
+  - q: 'টাকার API-তে অঙ্ক JSON number (`12.5`) পাঠালে কী সমস্যা?'
+    a: 'JavaScript সংখ্যাকে float করে ফেলে, আর ভুল ঢোকে। পাঠাও integer minor unit আর currency আলাদা field-এ।'
+    more: |
+      যেমন `{"amount": 125050, "currency": "BDT"}`। Client এখানে শুধু integer দেখায়, আর দেখানোর সময় ভাগ করে ১২৫০.৫০ বানায়।
+    ref: remainder-never-lost
+
+quiz:
+  - q: 'নিচের কোডে কী সমস্যা?'
+    lang: php
+    code: |
+      $price = 19.99;
+      $qty = 3;
+      $total = $price * $qty;
+      if ($total == 59.97) {
+          $order->markPaid();
+      }
+    hint: 'float গুণ করলে ঠিক ৫৯.৯৭ আসবে কি?'
+    options:
+      - text: 'float গুণফল ৫৯.৯৭-র সমান নাও হতে পারে, তাই `==` ভুলভাবে false দিতে পারে'
+        correct: true
+        why: 'আনুমানিক অঙ্ক হুবহু সমান হওয়ার গ্যারান্টি নেই। integer পয়সায় (1999 × 3 = 5997) এই সমস্যা হয় না।'
+      - text: '`$qty` int না হয়ে float হওয়া উচিত'
+        correct: false
+        why: 'উল্টো। integer ঠিক আছে; সমস্যা দামটা float হওয়ায়।'
+      - text: '`markPaid()` transaction-এর বাইরে'
+        correct: false
+        why: 'transaction ভিন্ন প্রসঙ্গ; এই কোডের সমস্যা float-এর তুলনা।'
+      - text: 'সমস্যা নেই, ৫৯.৯৭ ঠিকই মিলবে'
+        correct: false
+        why: 'এটা ভরসার যোগ্য নয়; এই ধরনের কোড কখনো কখনো ভাঙে, আর ভাঙলে কোনো error ছাড়াই।'
+    ref: float-trap
+  - q: '১২৫০ টাকা ৫০ পয়সা ডেটাবেসে কীভাবে রাখা উচিত?'
+    hint: 'minor unit আর currency দুটোই লাগবে।'
+    options:
+      - text: '`1250.5` একটা DOUBLE কলামে'
+        correct: false
+        why: 'DOUBLE একটা float; আনুমানিক অঙ্ক ধরে।'
+      - text: '`125050` পয়সা BIGINT কলামে, আর `BDT` আলাদা কলামে'
+        correct: true
+        why: 'integer minor unit হুবহু, আর currency সাথে থাকায় অঙ্কের মানে পরিষ্কার।'
+      - text: '`"১২৫০.৫০"` VARCHAR কলামে'
+        correct: false
+        why: 'string-এ যোগ-বিয়োগ হয় না, আর ফরম্যাট ভাঙার ঝুঁকি থাকে।'
+      - text: '`1250` টাকা আর `50` পয়সা আলাদা দুই কলামে'
+        correct: false
+        why: 'যোগ করার সময় পয়সা ১০০ ছাড়ালে ক্যারি নিজে সামলাতে হয়; এক integer অনেক সরল।'
+    ref: poisa-and-currency
+  - q: 'নিচের Money কোডে কোনটা সবচেয়ে বড় সমস্যা?'
+    lang: php
+    code: |
+      public function add(Money $other): Money
+      {
+          return new Money($this->amount + $other->amount, $this->currency);
+      }
+    hint: 'BDT-র Money-তে USD-র Money যোগ করলে কী হবে?'
+    options:
+      - text: 'দুই Money-র currency না মিলিয়েই যোগ করা হচ্ছে'
+        correct: true
+        why: 'BDT ১০০ + USD ৫ চুপচাপ BDT ১০৫ হয়ে যাবে। যোগের আগে currency মিলিয়ে exception দিতে হয়।'
+      - text: 'মেথডটা `public` হওয়া উচিত নয়'
+        correct: false
+        why: 'public যোগ ঠিক আছে; সমস্যা currency-র যাচাইয়ে।'
+      - text: 'নতুন Money বানানো হচ্ছে, এটা ভুল'
+        correct: false
+        why: 'নতুন object ফেরানোই immutable value object-এর ঠিক নিয়ম।'
+      - text: 'amount `int` না হয়ে `string` হওয়া উচিত'
+        correct: false
+        why: 'integer-ই সঠিক পছন্দ; string-এ যোগ করতে আবার কাস্ট লাগে।'
+    ref: money-value-object
+  - q: 'কোনগুলো Money-র সঠিক নকশার অংশ?'
+    hint: 'অঙ্ক, currency আর overflow নিয়ে ভাবো।'
+    options:
+      - text: 'অঙ্ক integer minor unit হিসেবে রাখা'
+        correct: true
+        why: 'পূর্ণসংখ্যার হিসাবে আনুমানিক ভুল নেই।'
+      - text: 'অঙ্কের সাথে currency একই object-এ রাখা'
+        correct: true
+        why: 'দুটো আলাদা থাকলে ভুল জোড়া লেগে যেতে পারে; একসাথে থাকলে যোগের আগে মেলানো যায়।'
+      - text: 'যোগের পর `is_int` দিয়ে overflow ধরা'
+        correct: true
+        why: 'PHP int উপচালে float বানায়; এই চেক নীরব ভুল আটকায়।'
+      - text: 'সুবিধার জন্য `float $amount` রাখা'
+        correct: false
+        why: 'float-ই মূল সমস্যা; সুবিধা নেই, শুধু লুকানো ভুল আছে।'
+    ref: money-value-object
+  - q: '১০০ টাকা (10000 পয়সা) ৩ জনের মধ্যে ১:১:১ অনুপাতে allocate করা হলো। সঠিক ফল কোনটা?'
+    hint: 'ফলের যোগফল ঠিক 10000 হতে হবে।'
+    options:
+      - text: '3333, 3333, 3333'
+        correct: false
+        why: 'যোগফল 9999; ১ পয়সা হারিয়েছে।'
+      - text: '3334, 3334, 3334'
+        correct: false
+        why: 'যোগফল 10002; ২ পয়সা বাড়তি তৈরি হয়েছে।'
+      - text: '3334, 3333, 3333'
+        correct: true
+        why: 'ভাগশেষ ১ পয়সা একজনের ঘরে গেছে, যোগফল ঠিক 10000।'
+      - text: '3333, 3333, 3333 আর ১ পয়সা "অন্য খাতে" ফেলে রাখা'
+        correct: false
+        why: 'লেজারে এমন ঘর নেই; পরে হিসাব মিলবে না। ভাগশেষ কারো ঘরেই যেতে হয়।'
+    ref: remainder-never-lost

@@ -1,0 +1,365 @@
+slides:
+  - slug: replay-all-at-once
+    title: 'ঠিক হলো, সব আবার চালিয়ে দিই — আর দ্বিতীয় বিপদ'
+    kind: story
+    tldr: 'ব্যর্থ ৪০০০ event এক ধাক্কায় আবার চালালে ডবল প্রসেসিং আর নিজের সিস্টেমের ওপর চাপ দুটোই ঘটে; recovery নিজেই দ্বিতীয় incident হয়ে ওঠে।'
+    keywords: ['replay', 'reprocessing', 'bulk retry', 'dead letter', 'incident', 'আবার চালানো']
+    blocks:
+      - type: text
+        body: |
+          ৬ ঘণ্টা একটা bug-এর কারণে পেমেন্ট webhook-এর handler ব্যর্থ হলো; ৪০০০ event জমে গেল। bug ঠিক হলো, আর ইঞ্জিনিয়ার এক লাইনের script চালাল: সব event আবার queue-তে ঢালো। ৪০০০ টার মধ্যে ৬০০ টা আসলে আংশিক হয়েছিল, সেগুলো দুইবার টাকা জমা করল। আর একসাথে ৪০০০ কাজে ডেটাবেস আর গেটওয়ে দুটোই চাপে পড়ল।
+      - type: visual
+        kind: sequence
+        caption: 'ঠিক করার চেষ্টাই দ্বিতীয় বিপদ হয়ে গেল'
+        actors:
+          - {id: eng, label: 'ইঞ্জিনিয়ার', icon: user, tip: 'ভালো উদ্দেশ্যেই script চালিয়েছে, কিন্তু সীমা, পরীক্ষা বা নিরাপত্তা ছাড়া।'}
+          - {id: q, label: 'Queue', icon: queue, tip: 'যা আসে তা-ই নেয়। ৪০০০ কাজ একসাথে আসলেও।'}
+          - {id: sys, label: 'DB ও গেটওয়ে', icon: db, tip: 'একসাথে এত চাপ নেওয়ার জন্য তৈরি নয়।'}
+        messages:
+          - {from: eng, to: q, label: 'সব ৪০০০ event আবার ঢালো', tone: warn}
+          - {from: q, to: sys, label: 'একসাথে ৪০০০ কাজ', tone: bad}
+          - {at: sys, note: 'DB connection শেষ, গেটওয়ে 429 দিল', tone: bad, tip: 'ধীর হওয়া সিস্টেমে নতুন retry আরও চাপ বাড়ায়।'}
+          - {at: sys, note: '৬০০ event ডবল, গ্রাহক দুইবার টাকা পেল', tone: bad, tip: 'আগেই আংশিক হওয়া event দ্বিতীয়বার চলায় এমন হলো।'}
+      - type: quote
+        body: 'Replay নতুন কাজ নয়, পুরনো কাজ আবার করা। তাই আগে idempotent, ধীর আর দেখে-নেওয়া হতে হবে।'
+    aside:
+      - type: problem
+        body: 'ব্যর্থ কাজ আবার চালানো ছাড়া উপায় নেই, কিন্তু অসাবধানে চালালে মূল বিপদের চেয়ে বড় বিপদ হয়।'
+      - type: terms
+        items:
+          - {term: 'Replay', meaning: 'আগে ব্যর্থ বা হারানো event/job আবার চালানো।'}
+    check:
+      q: 'Replay-এ ৬০০ event ডবল প্রসেস হলো কেন?'
+      a: 'ওগুলো আগেই আংশিক হয়েছিল, আর handler জানত না কোনটা হয়েছে। Idempotent guard ছিল না, তাই দ্বিতীয়বার আবার কাজ করল।'
+
+  - slug: four-safeguards
+    title: 'ডাকপিয়নের জমা চিঠি: চার রক্ষাকবচ'
+    kind: concept
+    tldr: 'নিরাপদ replay-এর চার রক্ষাকবচ: idempotent handler, throttle, dry run আর checkpoint — চারটাই একসাথে।'
+    keywords: ['idempotent replay', 'throttle', 'dry run', 'checkpoint', 'resumable', 'নিরাপদ replay']
+    blocks:
+      - type: metaphor
+        icon: mail
+        title: 'ডাক ধর্মঘটের পর জমা চিঠি'
+        body: |
+          ধর্মঘটের পর ডাকঘরে ১০ হাজার চিঠি জমেছে। ডাকপিয়ন আগে তালিকা গোনেন (dry run)। প্রতিটা চিঠির রসিদ দেখে নেন, আগে দেওয়া হয়ে থাকলে আবার দেন না (idempotent)। দিনে ২০০টা করে বিলি করেন, পাড়া অচল করেন না (throttle)। আর বান্ডিলে দাগ দেন "এ পর্যন্ত হয়েছে" (checkpoint), যাতে অসুস্থ হলে অন্যজন সেখান থেকে ধরতে পারে।
+      - type: visual
+        kind: table
+        caption: 'চার রক্ষাকবচ: কী ঠেকায়, কীভাবে'
+        headers: ['রক্ষাকবচ', 'কী ঠেকায়', 'কীভাবে']
+        rows:
+          - cells: ['Idempotent handler', 'একই কাজ দুইবার ঘটা', 'processed_event-এ unique key']
+            tip: 'handler নিজে মনে রাখে কোন event আগে হয়েছে; দ্বিতীয়বার এলে কিছু করে না।'
+          - cells: ['Throttle', 'recovery-র ধাক্কায় নিজেই ধসা', 'সেকেন্ডে ২০, আলাদা transport']
+            tip: 'সিস্টেম স্বাভাবিক কাজের পাশাপাশি recovery-ও টানতে পারে, এমন গতি।'
+          - cells: ['Dry run', 'ভুল জিনিস চালানো', 'আগে শুধু গোনো ও নমুনা দেখো']
+            tip: 'কিছু না চালিয়ে বলে দেয় কয়টা কাজ হবে আর কোনগুলো। ভুল filter আগেই ধরা পড়ে।'
+          - cells: ['Checkpoint', 'মাঝপথে থামলে শুরু থেকে করা', 'শেষ id সংরক্ষণ, সেখান থেকে চালু']
+            tip: 'কমান্ড ক্র্যাশ করলে বা বন্ধ করলে আবার চালালে যেখানে থেমেছিল সেখান থেকে ধরে।'
+      - type: quote
+        body: 'চালানোর আগে গোনো। চালানোর সময় ধীরে। থামলে যেখানে থেমেছিলে সেখান থেকে।'
+    aside:
+      - type: remember
+        body: 'গোনো, দেখো, ধীরে চালাও, দাগ দাও।'
+      - type: terms
+        items:
+          - {term: 'Checkpoint', meaning: 'কাজ কতদূর হয়েছে তার সংরক্ষিত চিহ্ন, যেমন শেষ প্রসেস করা id।'}
+          - {term: 'Dry run', meaning: 'আসল কিছু না বদলে পুরো কাজের মহড়া; শুধু ফল দেখায়।'}
+    check:
+      q: 'Dry run আর checkpoint-এর কাজ আলাদা কীভাবে?'
+      a: 'Dry run চালানোর আগে ভুল ধরে (কয়টা, কোনগুলো)। Checkpoint চালানোর মাঝে থামলে আবার কোথা থেকে শুরু করবে তা মনে রাখে।'
+
+  - slug: replay-command
+    title: 'Symfony console command: ধীরে, দাগ দিয়ে'
+    kind: howto
+    tldr: '`--dry-run`, `--rate` আর checkpoint-সহ একটা console command: batch ধরে event নেয়, ধীরে dispatch করে, প্রতি batch-এ শেষ id সংরক্ষণ করে।'
+    keywords: ['console command', 'Messenger dispatch', 'keyset pagination', 'checkpoint table', 'dry-run option', 'usleep']
+    blocks:
+      - type: text
+        body: |
+          পুরো তালিকা একসাথে মেমরিতে না তুলে ১০০টা করে batch আনো, আর `OFFSET` নয়, শেষ id-র পর থেকে (**keyset pagination**)। প্রতি batch শেষে checkpoint সংরক্ষণ করো। `--dry-run` দিলে dispatch আর checkpoint দুটোই বাদ।
+      - type: code
+        lang: php
+        file: 'src/Command/ReplayEventsCommand.php'
+        variant: good
+        code: |
+          protected function configure(): void
+          {
+              $this->addOption('dry-run', null, InputOption::VALUE_NONE, 'শুধু গুনে দেখাও')
+                  ->addOption('rate', null, InputOption::VALUE_REQUIRED, 'সেকেন্ডে কয়টা', '20')
+                  ->addOption('job', null, InputOption::VALUE_REQUIRED, 'checkpoint-এর নাম', 'replay');
+          }
+
+          protected function execute(InputInterface $in, OutputInterface $out): int
+          {
+              $job = $in->getOption('job');
+              $dry = (bool) $in->getOption('dry-run');
+              $pause = intdiv(1_000_000, max(1, (int) $in->getOption('rate')));
+              $after = $this->checkpoints->get($job);
+              $done = 0;
+
+              while ($batch = $this->failed->after($after, 100)) {
+                  foreach ($batch as $e) {
+                      if (!$dry) {
+                          $this->bus->dispatch(new ProcessPayment($e->id, $e->payload));
+                          usleep($pause);                  // ধীরে: সেকেন্ডে সীমিত
+                      }
+                      $after = $e->id;
+                      ++$done;
+                  }
+                  if (!$dry) {
+                      $this->checkpoints->save($job, $after);   // এ পর্যন্ত হয়েছে
+                  }
+                  $out->writeln("$done টা, শেষ id: $after");
+              }
+
+              return Command::SUCCESS;
+          }
+        marks:
+          - {line: 3, tip: '`--dry-run` দিলে কিছুই dispatch হয় না; শুধু কয়টা কাজ হবে তা গোনে।'}
+          - {line: 13, tip: 'আগের বার যেখানে থেমেছিল সেখান থেকে শুরু। প্রথমবার ০।'}
+          - {line: 20, tip: 'প্রতিটা dispatch-এর পরে বিরতি। সেকেন্ডে ২০ হলে ৫০ হাজার মাইক্রোসেকেন্ড।'}
+          - {line: 26, tip: 'প্রতি batch শেষে দাগ। কমান্ড ক্র্যাশ করলে সর্বোচ্চ একটা batch আবার হবে, আর handler idempotent বলে ক্ষতি নেই।'}
+      - type: code
+        lang: sql
+        file: 'migrations — checkpoint আর পরের batch'
+        variant: good
+        code: |
+          CREATE TABLE replay_checkpoint (
+            job        text PRIMARY KEY,
+            last_id    bigint NOT NULL,
+            updated_at timestamptz NOT NULL DEFAULT now()
+          );
+
+          -- checkpoint সংরক্ষণ (upsert)
+          INSERT INTO replay_checkpoint (job, last_id) VALUES (:job, :id)
+          ON CONFLICT (job) DO UPDATE
+             SET last_id = EXCLUDED.last_id, updated_at = now();
+
+          -- পরের batch: OFFSET নয়, শেষ id-র পর থেকে
+          SELECT id, payload FROM failed_event
+           WHERE id > :after AND status = 'failed'
+           ORDER BY id LIMIT 100;
+        marks:
+          - {line: 8, tip: 'প্রতিটা job-এর একটাই সারি। বারবার সংরক্ষণ করলে সেই সারিই বদলায়।'}
+          - {line: 14, tip: '`id > :after` ইনডেক্সে সরাসরি সেখানে যায়। OFFSET বড় হলে প্রতিবার সব সারি পেরোতে হয়, ধীর হয়।'}
+    aside:
+      - type: commands
+        title: 'চালানোর ধাপ'
+        items:
+          - {cmd: 'php bin/console app:events:replay --dry-run', desc: 'আগে শুধু গোনো, কিছু চালিও না'}
+          - {cmd: 'php bin/console app:events:replay --rate=10', desc: 'ধীরে আসল চালানো'}
+          - {cmd: 'php bin/console messenger:consume replay --limit=500', desc: 'আলাদা transport-এ সীমিত worker'}
+      - type: tips
+        items:
+          - 'Replay-এর কাজ আলাদা `replay` transport-এ পাঠাও আর সেখানে কম worker চালাও, যাতে স্বাভাবিক কাজ ধীর না হয়।'
+          - 'গতি সরাসরি না বাড়িয়ে dashboard দেখে বাড়াও: CPU, DB connection আর error-rate স্বাভাবিক থাকলে তবেই।'
+    check:
+      q: '১০০টা batch আনতে `OFFSET` না ব্যবহার করে `id > :after` ব্যবহার করা হলো কেন?'
+      a: 'OFFSET বড় হলে প্রতিবার আগের সব সারি পেরিয়ে যেতে হয়, ধীর হয়। `id > :after` ইনডেক্স ধরে সরাসরি সেখানে পৌঁছায়, আর checkpoint-এর সাথেও মেলে।'
+
+  - slug: replay-twice-safe
+    title: 'দুইবার চললে কিছু ঘটবে না, আর ইমেইল আবার যাবে না'
+    kind: pitfall
+    tldr: 'Replay-এর handler-কে idempotent বানাও, আর ইমেইল বা SMS-এর মতো বাইরের পার্শ্বপ্রভাব replay-এ বন্ধ রাখো।'
+    keywords: ['idempotent handler', 'processed_event', 'side effects', 'duplicate email', 'replay flag', 'পার্শ্বপ্রভাব']
+    blocks:
+      - type: text
+        body: |
+          সবচেয়ে বিপজ্জনক কাজ হলো সেই handler, যে দুইবার চললে দুইবারই কাজ করে। আর বাইরে যাওয়া কাজ (ইমেইল, SMS, বাইরের API) ফেরানো যায় না। তাই handler নিজে মনে রাখে কোন event আগে হয়েছে, আর replay হলে বাইরে কিছু পাঠায় না।
+      - type: code
+        lang: php
+        file: 'ভুল handler'
+        variant: bad
+        code: |
+          #[AsMessageHandler]
+          public function __invoke(ProcessPayment $m): void
+          {
+              $this->wallet->credit($m->userId, $m->amount);      // দুইবার এলে দুইবার জমা
+              $this->mailer->send(new ReceiptEmail($m->userId));  // হাজার রসিদ আবার
+          }
+        marks:
+          - {line: 4, tip: 'এই event আগে প্রসেস হয়েছে কি না কেউ দেখে না। দ্বিতীয়বারে টাকা আবার জমা হয়।'}
+          - {line: 5, tip: 'গ্রাহক আবার ইমেইল পাবে। পাঠানো ইমেইল ফেরত নেওয়া যায় না।'}
+      - type: code
+        lang: php
+        file: 'ঠিক handler'
+        variant: good
+        code: |
+          #[AsMessageHandler]
+          public function __invoke(ProcessPayment $m): void
+          {
+              $applied = $this->db->transactional(function () use ($m): bool {
+                  $new = $this->db->executeStatement(
+                      'INSERT INTO processed_event (event_id) VALUES (?) ON CONFLICT DO NOTHING',
+                      [$m->eventId],
+                  );
+                  if (0 === $new) {
+                      return false;                          // আগেই হয়েছে
+                  }
+                  $this->wallet->credit($m->userId, $m->amount);
+
+                  return true;
+              });
+
+              if ($applied && !$m->isReplay) {
+                  $this->mailer->send(new ReceiptEmail($m->userId));
+              }
+          }
+        marks:
+          - {line: 4, tip: 'event_id-র INSERT আর টাকা জমা এক transaction-এ। হয় দুটোই হয়, নয় কিছুই না।'}
+          - {line: 10, tip: '০ সারি মানে এই event আগেই প্রসেস হয়েছে। এবার কিছুই না করে ফেরে।'}
+          - {line: 17, tip: 'নতুন করে প্রসেস হয়েছে এবং replay নয়, তবেই ইমেইল। replay-এ বাইরে কিছু যায় না।'}
+      - type: visual
+        kind: table
+        caption: 'Replay-এ কোন কাজের কী আচরণ হওয়া উচিত'
+        headers: ['কাজ', 'ঝুঁকি', 'Replay-এ করণীয়']
+        rows:
+          - cells: ['টাকা জমা/কাটা', 'ডবল জমা', 'processed_event guard']
+            tip: 'ledger বা ওয়ালেটের লেখা অবশ্যই idempotent হবে। এটাই মূল রক্ষা।'
+          - cells: ['ইমেইল/SMS', 'গ্রাহক বিরক্ত', 'replay হলে পাঠাবে না']
+            tip: 'বাইরে একবার গেলে ফেরানো যায় না। replay-এ বন্ধ রাখাই নিরাপদ।'
+          - cells: ['বাইরের API call', 'ডবল চার্জ', 'একই Idempotency-Key']
+            tip: 'মূল লেনদেনের key-ই আবার পাঠাও, যাতে ওপাশও একবারই ধরে।'
+          - cells: ['Cache/Search index', 'কোনো ক্ষতি নেই', 'যতবার খুশি']
+            tip: 'এসব নিজে থেকে "বসানো" ধরনের, তাই দুইবার চললেও একই ফল।'
+    aside:
+      - type: pitfalls
+        items:
+          - 'পুরনো event-এর payload-এর ওপর ভরসা করে বর্তমান অবস্থা উল্টে দিও না। বর্তমান অবস্থা দেখে সিদ্ধান্ত নাও।'
+      - type: refs
+        items:
+          - {to: 'payments/idempotency-keys', label: 'Idempotency key'}
+          - {to: 'messaging/dlq-retries', label: 'Idempotent consumer'}
+    check:
+      q: 'ইমেইল পাঠানোর কাজ replay-এ কেন বন্ধ রাখা হয়, অথচ টাকা জমার কাজ চলে?'
+      a: 'টাকা জমা guard-এর কারণে আগে হয়ে থাকলে এড়িয়ে যায় আর ক্ষতি নেই। ইমেইল একবার গেলে ফেরানো যায় না, আর replay-এ আবার গেলে গ্রাহক বিরক্ত হয়।'
+
+flashcards:
+  - q: 'Bulk replay করার আগে কোন চার রক্ষাকবচ থাকা উচিত?'
+    a: 'Idempotent handler, throttle (গতি সীমা), dry run আর checkpoint।'
+    more: |
+      চারটাই একসাথে লাগে। একটাও বাদ গেলে ডবল প্রসেস, নিজের সিস্টেমে চাপ, ভুল জিনিস চালানো বা মাঝপথে থামলে শুরু থেকে করার ঝুঁকি থাকে।
+    ref: four-safeguards
+  - q: 'Replay কেন নিজেই দ্বিতীয় incident হতে পারে?'
+    a: 'সব ব্যর্থ কাজ একসাথে ঢাললে সিস্টেমে ধাক্কা লাগে, আর আংশিক হওয়া কাজ ডবল চলে।'
+    more: |
+      ব্যর্থ ৪০০০ কাজ একসাথে আসা মানে স্বাভাবিক লোডের ওপর বাড়তি লোড। সাথে গেটওয়ের 429 আর DB connection শেষ। recovery-ও পরিকল্পিত, ধীর আর নিরাপদ হতে হয়।
+    ref: replay-all-at-once
+  - q: 'Dry run কী, আর কী কাজে লাগে?'
+    a: 'আসল কিছু না চালিয়ে শুধু গুনে দেখায় কতগুলো কাজ হবে। ভুল filter বা অনুমান আগেই ধরা পড়ে।'
+    more: |
+      `--dry-run` দিলে command dispatch করে না, checkpoint সংরক্ষণও করে না। আউটপুটে কয়টা, কোন সীমা, কয়েকটা নমুনা দেখে নিয়ে তারপর আসল চালানো হয়।
+    ref: four-safeguards
+  - q: 'Replay-এ checkpoint কী কাজে লাগে?'
+    a: 'শেষ প্রসেস করা id সংরক্ষণ করে; থামলে বা ক্র্যাশ করলে আবার সেখান থেকে চালু হয়।'
+    more: |
+      Checkpoint না থাকলে ক্র্যাশের পর শুরু থেকে চালাতে হয়, আর আগেই হয়ে যাওয়া কাজ আবার চলে। প্রতি batch শেষে `replay_checkpoint` টেবিলে upsert করা হয়।
+    ref: replay-command
+  - q: 'Replay-এ গতি কীভাবে সীমিত রাখা হয়?'
+    a: 'প্রতি dispatch-এর পর বিরতি (সেকেন্ডে ২০), আর replay-এর জন্য আলাদা transport-এ কম worker।'
+    more: |
+      লক্ষ্য হলো স্বাভাবিক কাজ ধীর না করে recovery চালানো। dashboard-এ CPU, DB connection আর error-rate দেখে ধীরে গতি বাড়ানো হয়।
+    ref: replay-command
+  - q: 'কেন batch ধরতে OFFSET না ব্যবহার করে `id > :after` ব্যবহার করা হয়?'
+    a: 'OFFSET বড় হলে প্রতিবার আগের সব সারি পেরোতে হয়, ধীর হয়। `id > :after` ইনডেক্স ধরে সরাসরি পৌঁছায়।'
+    more: |
+      একে keyset pagination বলে। শেষ id-ই আমাদের checkpoint-ও, তাই দুই কাজ এক জিনিস দিয়ে হয়।
+    ref: replay-command
+  - q: 'Replay-এ ইমেইল বা SMS কেন পাঠানো হয় না?'
+    a: 'বাইরে গেলে ফেরানো যায় না। হাজার গ্রাহক আবার একই রসিদ পেলে বিরক্ত হবে; তাই replay flag-এ বন্ধ রাখা হয়।'
+    more: |
+      টাকার লেখা guard-এর কারণে নিরাপদ, কিন্তু বাইরের কাজ নিজে নিজে নিরাপদ নয়। message-এ `isReplay` চিহ্ন রেখে handler সেটা দেখে বাইরের কাজ বাদ দেয়।
+    ref: replay-twice-safe
+  - q: 'Handler-কে idempotent করার সহজ উপায় কী?'
+    a: '`processed_event(event_id)`-এ UNIQUE রেখে একই transaction-এ INSERT করো; ০ সারি হলে কিছু না করে ফেরো।'
+    more: |
+      INSERT আর আসল লেখা এক transaction-এ থাকলে ক্র্যাশের পর হয় দুটোই থাকে, নয় কোনোটাই নয়। তাই আবার চালালে ঠিক একবারই কাজ হয়।
+    ref: replay-twice-safe
+
+quiz:
+  - q: '৩০০০টা ব্যর্থ job আবার চালাতে হবে, আর handler কোনো guard ছাড়া। প্রথম কাজ কী?'
+    hint: 'চালানোর আগে কোনটা ঠিক করতেই হবে?'
+    options:
+      - text: 'Handler-কে idempotent বানানো আর dry run দিয়ে গোনা'
+        correct: true
+        why: 'guard না থাকলে আংশিক হওয়া কাজ ডবল হবে। আগে নিরাপদ বানিয়ে, গুনে, তারপর ধীরে চালাও।'
+      - text: 'সব job একসাথে dispatch করা, দ্রুত শেষ হবে'
+        correct: false
+        why: 'ডবল প্রসেস আর সিস্টেম-ওভারলোড, দুটো ঝুঁকিই থাকে।'
+      - text: 'Worker সংখ্যা ১০ গুণ বাড়িয়ে দেওয়া'
+        correct: false
+        why: 'দ্রুত হলেও ডবল আর চাপ দুটোই বাড়ে।'
+      - text: 'রাতে চালানো, কেউ দেখবে না'
+        correct: false
+        why: 'সময় বদলালে ঝুঁকি কমে না; ডবল জমা রাতেও ডবল।'
+    ref: four-safeguards
+  - q: 'Replay command ২৫০০ নম্বর event-এ ক্র্যাশ করল। Checkpoint প্রতি batch (১০০) শেষে সংরক্ষিত। আবার চালালে কী হবে?'
+    hint: 'শেষ সংরক্ষিত checkpoint কোথায়?'
+    options:
+      - text: '২৪০০ থেকে চালু হবে; ২৪০১-২৫০০ আবার হতে পারে, তাই handler idempotent হতে হবে'
+        correct: true
+        why: 'checkpoint batch-এর শেষে সংরক্ষিত; ক্র্যাশের batch আবার চলে, guard থাকায় ক্ষতি নেই।'
+      - text: 'একদম শুরু (১) থেকে'
+        correct: false
+        why: 'checkpoint থাকাই এটা এড়াতে।'
+      - text: '২৫০১ থেকে, কিছুই আবার হবে না'
+        correct: false
+        why: 'checkpoint ২৫০০-এর আগে সংরক্ষিত হয়নি; ২৪০০ পর্যন্ত আছে।'
+      - text: 'কিছুই চলবে না, আগে হাতে checkpoint মুছতে হবে'
+        correct: false
+        why: 'মুছতে হয় না; command নিজেই checkpoint পড়ে।'
+    ref: replay-command
+  - q: 'নিচের command-এ কোন ভুলটা সবচেয়ে বিপজ্জনক?'
+    lang: php
+    code: |
+      foreach ($this->failed->all() as $e) {
+          $this->bus->dispatch(new ProcessPayment($e->id, $e->payload));
+      }
+    hint: 'সীমা, মহড়া আর দাগ কোথায়?'
+    options:
+      - text: 'গতি সীমা, dry run আর checkpoint কিছুই নেই; সব একসাথে dispatch আর ক্র্যাশ হলে শুরু থেকে'
+        correct: true
+        why: 'চার রক্ষাকবচের তিনটাই অনুপস্থিত; handler idempotent কি না তাও অজানা।'
+      - text: '`all()` নাম ভালো নয়'
+        correct: false
+        why: 'নামে কিছু আসে-যায় না; সমস্যা আচরণে।'
+      - text: '`foreach`-এর বদলে `array_map` হওয়া উচিত'
+        correct: false
+        why: 'loop-এর ধরন সমস্যা নয়।'
+      - text: 'কোনো সমস্যা নেই, ছোট কোড তাই নিরাপদ'
+        correct: false
+        why: 'ছোট কোডও বড় ক্ষতি করে; উল্টে নিরাপত্তা-ধাপ না থাকাই সমস্যা।'
+    ref: replay-command
+  - q: 'কোনগুলো replay-এ নিরাপদে নেওয়ার উপযোগী ব্যবস্থা?'
+    hint: 'টাকা, ইমেইল, বাইরের API।'
+    options:
+      - text: 'টাকার লেখা processed_event-এর UNIQUE guard-সহ এক transaction-এ'
+        correct: true
+        why: 'দ্বিতীয়বার এলে ০ সারি, কিছু ঘটে না।'
+      - text: 'ইমেইল/SMS replay flag দেখে বাদ দেওয়া'
+        correct: true
+        why: 'বাইরে গেলে ফেরানো যায় না, তাই replay-এ বন্ধ।'
+      - text: 'বাইরের API-তে মূল লেনদেনের Idempotency-Key আবার পাঠানো'
+        correct: true
+        why: 'ওপাশও একই কাজ চিনে একবারই করে।'
+      - text: 'সব কাজেই নতুন Idempotency-Key বানিয়ে পাঠানো'
+        correct: false
+        why: 'নতুন key মানে ওপাশে নতুন কাজ; ডবল চার্জ হবে।'
+    ref: replay-twice-safe
+  - q: 'Replay চলার সময় DB-র CPU ৮০% ছাড়াল আর ব্যবহারকারীর পেজ ধীর। কী করা উচিত?'
+    hint: 'recovery-র চেয়ে স্বাভাবিক সেবা আগে।'
+    options:
+      - text: 'Replay-এর rate কমানো বা থামানো; checkpoint থাকায় পরে সেখান থেকে চালানো যাবে'
+        correct: true
+        why: 'স্বাভাবিক সেবা আগে। checkpoint আর idempotent guard থাকায় থামানো নিরাপদ।'
+      - text: 'rate আরও বাড়িয়ে দ্রুত শেষ করা'
+        correct: false
+        why: 'চাপ আরও বাড়বে; ব্যবহারকারীর ভোগান্তিও।'
+      - text: 'ডেটাবেসের সব index মুছে ফেলা'
+        correct: false
+        why: 'এতে সবই আরও ধীর হয়।'
+      - text: 'Replay বন্ধ করে ব্যর্থ event মুছে ফেলা'
+        correct: false
+        why: 'event মুছলে হারানো কাজ আর ফেরত আনা যাবে না।'
+    ref: four-safeguards

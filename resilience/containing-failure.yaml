@@ -1,0 +1,500 @@
+slides:
+  - slug: one-slow-call-stops-all
+    title: 'একটা ধীর API পুরো সাইট থামিয়ে দিল'
+    kind: story
+    tldr: 'কুরিয়ার API ধীর হলে শুধু চেকআউট নয়, পুরো সাইট বন্ধ হয়ে যায় — কারণ সব worker তার উত্তরের অপেক্ষায় আটকে থাকে।'
+    keywords: ['cascading failure', 'worker pool', 'slow dependency', 'ধীর API', 'সাইট ডাউন', 'worker আটকে যাওয়া']
+    blocks:
+      - type: metaphor
+        icon: shop
+        title: 'বিরিয়ানির হোটেলের ২০ জন ওয়েটার'
+        body: |
+          হোটেলে ২০ জন ওয়েটার। আজ কাবাবের চুলা নষ্ট, এক প্লেট কাবাব আসতে আধা ঘণ্টা লাগছে। যে ওয়েটারই কাবাবের অর্ডার নেয়, সে কাউন্টারে দাঁড়িয়েই থাকে। একটু পরে ২০ জনই সেখানে দাঁড়িয়ে — যে খদ্দের শুধু এক গ্লাস পানি চায়, তাকে দেওয়ারও কেউ নেই। তোমার সার্ভারে ওয়েটার হলো PHP-FPM **worker**, আর নষ্ট চুলা হলো কুরিয়ার API।
+      - type: visual
+        kind: flow
+        caption: 'কুরিয়ার API ধীর — ১০ সেকেন্ডে পুরো সাইট অচল'
+        nodes:
+          - {id: users, label: 'ব্যবহারকারী', sub: 'হোম, সার্চ, চেকআউট', icon: users, col: 0, row: 1, tip: 'সবাই চেকআউট করছে না — বেশিরভাগ শুধু পণ্য দেখছে। তবু সবাই ভুগবে।'}
+          - {id: app, label: 'অ্যাপ সার্ভার', sub: '২০টা PHP-FPM worker', icon: server, tone: accent, col: 2, row: 1, tip: 'একটা worker একবারে একটাই request সামলায়। ২০টা worker মানে একসাথে সর্বোচ্চ ২০টা request।'}
+          - {id: courier, label: 'কুরিয়ার API', sub: 'উত্তর দিতে ৩০ সেকেন্ড', icon: truck, tone: bad, col: 4, row: 0, tip: 'বন্ধ নয়, শুধু ধীর। তাই সংযোগ হয়, কিন্তু উত্তর আসে অনেক দেরিতে।'}
+          - {id: db, label: 'ডেটাবেস', sub: 'সম্পূর্ণ সুস্থ', icon: db, tone: good, col: 4, row: 2, tip: 'ডেটাবেসের কোনো দোষ নেই, CPU প্রায় ফাঁকা। সমস্যা অন্য জায়গায়।'}
+        edges:
+          - {from: users, to: app, label: 'প্রতি সেকেন্ডে ২টা চেকআউট request আসে'}
+          - {from: app, to: courier, label: 'প্রতিটা চেকআউট কুরিয়ারকে ডেলিভারি চার্জ জিজ্ঞেস করে'}
+          - {from: courier, to: app, label: 'উত্তর আসে ৩০ সেকেন্ড পরে — worker ততক্ষণ আটকা', tone: bad, dashed: true}
+          - {from: users, to: app, label: '২ × ১০ = ২০: দশ সেকেন্ডে সব worker আটকে গেল', tone: bad, tip: 'প্রতি সেকেন্ডে ২টা করে worker আটকায়, কিন্তু ৩০ সেকেন্ডের আগে কেউ ছাড়া পায় না।'}
+          - {from: app, to: db, label: 'ডেটাবেস ফাঁকা বসে, কিন্তু ডাকার মতো worker নেই', tone: warn}
+          - {from: app, to: users, label: 'হোম পেজের request-ও এখন 504 পায়', tone: bad, dashed: true, tip: 'nginx কোনো খালি worker না পেয়ে অপেক্ষা করে, শেষে 504 Gateway Timeout ফেরত দেয়।'}
+      - type: quote
+        body: 'বন্ধ সার্ভিসের চেয়ে ধীর সার্ভিস বেশি বিপজ্জনক — সে সাথে সাথে "না" বলে না, তোমার worker আটকে রাখে।'
+    aside:
+      - type: story
+        title: 'সেলের দিনের দুপুর'
+        body: |
+          একটা অনলাইন দোকানে সেলের দিন কুরিয়ার কোম্পানির API ধীর হয়ে গেল। টিম দেখল ডেটাবেস ঠিক, সার্ভারের CPU মাত্র ১০%, অথচ সাইট খুলছে না। কারণ CPU ব্যস্ত ছিল না — worker-গুলো শুধু বসে অপেক্ষা করছিল। অপেক্ষা করতে CPU লাগে না, কিন্তু worker লাগে।
+      - type: terms
+        items:
+          - {term: 'Worker', meaning: 'সার্ভারের যে process একটা request হাতে নিয়ে শেষ পর্যন্ত সামলায়। সংখ্যা সীমিত।'}
+          - {term: 'Dependency', meaning: 'তোমার কোড যার ওপর নির্ভর করে: বাইরের API, ডেটাবেস, cache, অন্য সার্ভিস।'}
+          - {term: '504 Gateway Timeout', meaning: 'সামনের সার্ভার (nginx) পেছনের অ্যাপ থেকে সময়মতো উত্তর পায়নি।'}
+    check:
+      q: 'কুরিয়ার API ধীর, অথচ যে ব্যবহারকারী শুধু হোম পেজ দেখছে সেও error পাচ্ছে কেন?'
+      a: 'চেকআউটের request-গুলো সব worker ধরে রেখে কুরিয়ারের উত্তরের অপেক্ষায় বসে আছে। হোম পেজের request সামলানোর মতো খালি worker আর নেই।'
+
+  - slug: how-failure-spreads
+    title: 'ভাঙন কীভাবে ছড়ায়, আর কোথায় দেয়াল তুলবে'
+    kind: concept
+    tldr: 'Cascading failure ছড়ায় ভাগাভাগি করা সীমিত সম্পদ দিয়ে। দুইটা দেয়াল তাকে আটকায়: timeout আর bulkhead।'
+    keywords: ['cascading failure', 'timeout', 'bulkhead', 'isolation', 'ভাঙন ছড়ানো', 'shared resource']
+    blocks:
+      - type: text
+        body: |
+          এক জায়গার সমস্যা ধাপে ধাপে সুস্থ অংশগুলোকেও টেনে নামালে তাকে বলে **cascading failure**। প্রতিবার কৌশলটা একই: অসুস্থ অংশটা এমন একটা সীমিত সম্পদ দখল করে রাখে, যা সবাই ভাগ করে ব্যবহার করে — worker, ডেটাবেস connection, মেমোরি বা queue।
+      - type: visual
+        kind: steps
+        caption: 'একটা ধীর dependency থেকে পুরো সিস্টেম পড়ে যাওয়ার পাঁচ ধাপ'
+        steps:
+          - {title: '১. একটা dependency ধীর', body: 'কুরিয়ার API ২০০ms-এর জায়গায় ৩০ সেকেন্ড নিচ্ছে।', tip: 'শুরুটা সবসময় ছোট: একটা ধীর query, একটা ধীর বাইরের সার্ভিস, একটা ভরা disk।'}
+          - {title: '২. worker অপেক্ষায় আটকে', body: 'যে worker-ই ওকে ডাকে, সে উত্তরের আশায় বসে থাকে।', tip: 'timeout না থাকলে এই অপেক্ষার কোনো শেষ নেই। এখানেই প্রথম দেয়াল বসে।'}
+          - {title: '৩. pool ফুরিয়ে যায়', body: '২০টা worker-ই দখল। নতুন request লাইনে জমতে থাকে।', tone: warn, tip: 'সম্পদ ভাগাভাগি করা বলেই একটা ফিচার সবার ভাগ খেয়ে ফেলে। এখানে দ্বিতীয় দেয়াল বসে।'}
+          - {title: '৪. সুস্থ ফিচারও মরে', body: 'হোম পেজ, লগইন, সার্চ — কুরিয়ারের সাথে সম্পর্ক নেই, তবু বন্ধ।', tone: bad, tip: 'ব্যবহারকারীর চোখে এখন পুরো সাইটই ডাউন, যদিও নষ্ট মাত্র একটা ছোট অংশ।'}
+          - {title: '৫. ওপরের দিকে ছড়ায়', body: 'যারা তোমার API ডাকে, তারাও তোমার অপেক্ষায় আটকে যায়।', tone: bad, tip: 'মোবাইল অ্যাপ, অন্য সার্ভিস, এমনকি retry-ও — সবাই আরও চাপ বাড়ায়, ভাঙন এক ধাপ ওপরে ওঠে।'}
+      - type: points
+        title: 'দুইটা দেয়াল'
+        style: check
+        items:
+          - '**Timeout** (ধাপ ২-এ): কোনো ডাকের জন্য অনন্তকাল অপেক্ষা নয়। সময় ফুরালে worker ছাড়া পায়।'
+          - '**Bulkhead** (ধাপ ৩-এ): প্রতিটা dependency-র জন্য সম্পদের আলাদা ভাগ। একটা ভাগ ফুরালে বাকিগুলো অক্ষত।'
+      - type: quote
+        body: 'যে সম্পদ সবাই ভাগ করে নেয়, ভাঙন সেই পথ ধরেই ছড়ায়।'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Cascading failure', meaning: 'একটা অংশের ব্যর্থতা ডমিনোর মতো একে একে অন্য অংশগুলোকে ফেলে দেওয়া।'}
+          - {term: 'Bulkhead', meaning: 'লঞ্চের তলার আলাদা আলাদা খোপ। একটায় পানি ঢুকলেও বাকিগুলো শুকনো থাকে, লঞ্চ ভাসে।'}
+          - {term: 'Pool', meaning: 'আগে থেকে তৈরি সীমিত সংখ্যক সম্পদের ভাণ্ডার — যেমন ২০টা worker বা ৫০টা ডেটাবেস connection।'}
+      - type: remember
+        body: 'হোটেলের দুই নিয়ম: ওয়েটার ২ মিনিটের বেশি দাঁড়াবে না (timeout), আর কাবাবের কাউন্টারে একসাথে ৫ জনের বেশি নয় (bulkhead)।'
+      - type: refs
+        items:
+          - {to: 'resilience/circuit-breakers', label: 'তৃতীয় দেয়াল: circuit breaker'}
+    check:
+      q: 'Cascading failure-এর পাঁচ ধাপের কোন দুই জায়গায় দেয়াল তোলা যায়, কী দিয়ে?'
+      a: 'ধাপ ২-এ timeout: worker অনন্তকাল অপেক্ষা করে না। ধাপ ৩-এ bulkhead: একটা dependency সব worker দখল করতে পারে না, তাই বাকি ফিচার বেঁচে থাকে।'
+
+  - slug: timeout-every-call
+    title: 'প্রতিটা নেটওয়ার্ক ডাকে timeout বসাও'
+    kind: howto
+    tldr: 'HttpClient-এ timeout (idle) আর max_duration (মোট) দুটোই দাও, ডেটাবেসে statement_timeout দাও, আর ব্যর্থ হলে কী করবে তা কোডে লেখো।'
+    keywords: ['timeout', 'max_duration', 'HttpClient', 'statement_timeout', 'scoped client', 'টাইমআউট']
+    blocks:
+      - type: text
+        body: |
+          হোটেলের নিয়ম: ওয়েটার কাউন্টারে ২ মিনিটের বেশি দাঁড়াবে না; না পেলে খদ্দেরকে গিয়ে বলবে "কাবাব হচ্ছে না"। কোডে প্রতিটা dependency-র জন্য আলাদা **scoped client** বানাও আর তাতে দুইটা ঘড়ি বসাও। মান ঠিক করো ওই সার্ভিসের স্বাভাবিক ধীরতম উত্তরের (p99) একটু ওপরে।
+      - type: code
+        lang: yaml
+        file: 'config/packages/framework.yaml'
+        variant: good
+        code: |
+          framework:
+              http_client:
+                  default_options:
+                      timeout: 3          # idle: এত সেকেন্ড কিছু না এলে ছেড়ে দাও
+                      max_duration: 10    # পুরো ডাকের সর্বোচ্চ সময়
+                  scoped_clients:
+                      courier.client:
+                          base_uri: 'https://api.courier.example'
+                          timeout: 2
+                          max_duration: 4
+        marks:
+          - {line: 4, tip: 'timeout হলো idle timeout: দুই টুকরো ডেটার মাঝে এর বেশি নীরবতা সহ্য করা হবে না। না দিলে ডিফল্ট ৬০ সেকেন্ড।'}
+          - {line: 5, tip: 'max_duration পুরো request + response-এর মোট সময়সীমা। না দিলে কোনো সীমাই নেই।'}
+          - {line: 7, tip: 'প্রতিটা বাইরের সার্ভিসের নিজের client, নিজের সীমা। ধীর রিপোর্ট API আর দ্রুত কুরিয়ার API-র সীমা এক হওয়া উচিত নয়।'}
+      - type: code
+        lang: php
+        file: 'src/Shipping/CourierRateProvider.php'
+        variant: good
+        code: |
+          final class CourierRateProvider
+          {
+              public function __construct(
+                  private readonly HttpClientInterface $courierClient,
+                  private readonly LoggerInterface $logger,
+              ) {
+              }
+
+              public function chargeFor(string $district, int $weightGrams): ?int
+              {
+                  try {
+                      $data = $this->courierClient->request('GET', '/v1/rates', [
+                          'query' => ['district' => $district, 'weight' => $weightGrams],
+                      ])->toArray();
+
+                      return (int) $data['charge_paisa'];
+                  } catch (ExceptionInterface $e) {
+                      $this->logger->warning('Courier rate unavailable', ['exception' => $e]);
+
+                      return null;   // কলার ঠিক করবে: ডিফল্ট চার্জ, নাকি "পরে জানাব"
+                  }
+              }
+          }
+        marks:
+          - {line: 4, tip: 'আর্গুমেন্টের নাম $courierClient বলেই Symfony এখানে courier.client নামের scoped client-টা বসিয়ে দেয়।'}
+          - {line: 14, tip: 'HttpClient অলস: timeout-এর exception request()-এ নয়, উত্তর পড়ার সময় (toArray) ছোড়া হয়। তাই পড়াটাও try-এর ভেতরে থাকতে হবে।'}
+          - {line: 17, tip: 'Symfony\Contracts\HttpClient\Exception\ExceptionInterface — timeout, সংযোগ ব্যর্থ, 4xx/5xx আর ভাঙা JSON সবই এর ভেতরে পড়ে।'}
+      - type: visual
+        kind: table
+        caption: 'কোথায় কোন timeout, আর শুরু করার মতো মান'
+        headers: ['কোথায়', 'কোন সেটিং', 'শুরুর মান']
+        rows:
+          - cells: ['বাইরের HTTP API', 'timeout + max_duration', '২ সেকেন্ড / ৪ সেকেন্ড']
+            tip: 'Symfony HttpClient-এর দুই ঘড়ি। মান ঠিক করো ওই API-র p99 latency দেখে, আন্দাজে নয়।'
+          - cells: ['PostgreSQL query', 'statement_timeout', '৫ সেকেন্ড']
+            tip: 'একটা query এর বেশি চললে ডেটাবেস নিজেই সেটা বাতিল করে। ওয়েবের ডেটাবেস user-এ বসাও।'
+          - cells: ['row lock-এর অপেক্ষা', 'lock_timeout', '২ সেকেন্ড']
+            tip: 'অন্য transaction-এর lock ছাড়ার জন্য কতক্ষণ দাঁড়াবে। না দিলে অনির্দিষ্টকাল।'
+          - cells: ['Redis / cache', 'connect ও read timeout', '০.৫–১ সেকেন্ড']
+            tip: 'cache দ্রুত হওয়ার কথা। সে-ই যদি ধীর হয়, তার জন্য বসে থাকার মানে নেই — ডেটাবেস থেকে পড়ো।'
+          - cells: ['পুরো request', 'request_terminate_timeout', '৩০ সেকেন্ড']
+            tip: 'PHP-FPM-এর শেষ রক্ষা: এর বেশি চললে worker-টাকেই মেরে নতুন করে চালু করে।'
+      - type: quote
+        body: 'প্রতিটা নেটওয়ার্ক ডাকে timeout থাকবে। ব্যতিক্রম নেই।'
+    aside:
+      - type: commands
+        title: 'PostgreSQL-এ সময়সীমা'
+        items:
+          - {cmd: 'ALTER ROLE app_web SET statement_timeout = ''5s'';', desc: 'ওয়েবের ডেটাবেস user-এর কোনো query ৫ সেকেন্ডের বেশি চলবে না'}
+          - {cmd: 'ALTER ROLE app_web SET lock_timeout = ''2s'';', desc: 'lock-এর জন্য সর্বোচ্চ ২ সেকেন্ড অপেক্ষা'}
+          - {cmd: 'SHOW statement_timeout;', desc: 'এখনকার মান দেখো (0 মানে সীমাহীন)'}
+      - type: tips
+        items:
+          - 'ভেতরের timeout সবসময় বাইরেরটার চেয়ে ছোট: HttpClient ৪ সেকেন্ড < PHP-FPM ৩০ সেকেন্ড < nginx ৩৫ সেকেন্ড।'
+          - 'রিপোর্ট বা migration-এর জন্য আলাদা ডেটাবেস user রাখো, যার সময়সীমা বেশি।'
+      - type: refs
+        items:
+          - {to: 'time/expiry-timeouts', label: 'Timeout budget কীভাবে ভাগ করবে'}
+          - {to: 'ledgers/third-party-integrations', label: 'বাইরের সার্ভিসের সাথে ইন্টিগ্রেশন'}
+    check:
+      q: 'HttpClient-এ শুধু timeout: 3 দিলে কোন ধরনের ধীর সার্ভার তবুও worker-কে মিনিটের পর মিনিট আটকে রাখতে পারে?'
+      a: 'যে সার্ভার প্রতি ১–২ সেকেন্ডে একটু একটু ডেটা পাঠায়। দুই টুকরোর মাঝে ৩ সেকেন্ড নীরবতা হয় না বলে idle timeout ধরে না। মোট সময় বাঁধতে max_duration লাগে।'
+
+  - slug: bulkheads
+    title: 'Bulkhead: প্রতিটা কাজের আলাদা খোপ'
+    kind: howto
+    tldr: 'একটা dependency যেন সব worker বা পুরো queue দখল না করতে পারে: একসাথে ডাকের সংখ্যা বেঁধে দাও আর কাজ অনুযায়ী আলাদা queue ও worker রাখো।'
+    keywords: ['bulkhead', 'semaphore', 'separate queue', 'messenger transport', 'isolation', 'আলাদা pool']
+    blocks:
+      - type: text
+        body: |
+          Timeout থাকলেও ৪ সেকেন্ড করে ২০টা worker আটকে থাকতে পারে। তাই হোটেলের দ্বিতীয় নিয়ম: কাবাবের কাউন্টারে একসাথে সর্বোচ্চ ৫ জন ওয়েটার; ষষ্ঠজন অপেক্ষা না করে খদ্দেরকে জানিয়ে দেয়। কোডে এটা করে Symfony **Semaphore** — একসাথে কতজন ঢুকতে পারবে তার গোনা টোকেন।
+      - type: visual
+        kind: compare
+        caption: 'একই ২০টা worker — ভাগ না করলে আর করলে'
+        columns:
+          - title: 'সবাই এক pool-এ'
+            tone: bad
+            icon: cross
+            tip: 'যে কাজটা ধীর, সে-ই ধীরে ধীরে পুরো pool খেয়ে ফেলে — বাকিদের জন্য কিছু থাকে না।'
+            items:
+              - 'কুরিয়ার ধীর হলে ২০টা worker-ই আটকা'
+              - '৫,০০০ রিপোর্টের পেছনে পেমেন্টের message বসে থাকে'
+              - 'অ্যাডমিনের ভারী export ক্রেতার worker খায়'
+          - title: 'আলাদা খোপে'
+            tone: good
+            icon: check
+            tip: 'প্রতিটা কাজের নিজের সীমা। একটা খোপ ডুবলে শুধু সেই ফিচারটা ভোগে।'
+            items:
+              - 'কুরিয়ারের জন্য সর্বোচ্চ ৫টা worker, ১৫টা সবসময় মুক্ত'
+              - 'payments, emails, reports — তিনটা আলাদা queue ও worker'
+              - 'অ্যাডমিনের জন্য আলাদা PHP-FPM pool'
+      - type: code
+        lang: php
+        file: 'src/Shipping/CourierRateProvider.php'
+        variant: good
+        code: |
+          public function __construct(
+              private readonly HttpClientInterface $courierClient,
+              private readonly SemaphoreFactory $semaphores,
+          ) {
+          }
+
+          public function chargeFor(string $district, int $weightGrams): ?int
+          {
+              // ২০টা worker-এর মধ্যে একসাথে সর্বোচ্চ ৫টা কুরিয়ারের কাছে যেতে পারবে
+              $slot = $this->semaphores->createSemaphore('courier-api', 5, ttlInSecond: 10);
+
+              if (!$slot->acquire()) {
+                  return null;   // খোপ ভরা: দাঁড়িয়ে থাকা নয়, সাথে সাথে ফিরে যাও
+              }
+
+              try {
+                  return $this->fetchCharge($district, $weightGrams);
+              } finally {
+                  $slot->release();
+              }
+          }
+        marks:
+          - {line: 10, tip: 'limit 5: এই নামের semaphore একসাথে ৫ জনের বেশি কাউকে দেয় না। ttl 10 সেকেন্ড: worker মরে গেলেও জায়গাটা নিজে থেকে খালি হয়।'}
+          - {line: 12, tip: 'acquire() অপেক্ষা করে না — জায়গা না থাকলে সাথে সাথে false দেয়। এটাই চাই: fail fast।'}
+          - {line: 19, tip: 'finally-তে release না করলে exception-এর পরে জায়গাটা ttl শেষ না হওয়া পর্যন্ত আটকে থাকবে।'}
+      - type: code
+        lang: yaml
+        file: 'config/packages/messenger.yaml'
+        variant: good
+        code: |
+          framework:
+              messenger:
+                  transports:
+                      payments:
+                          dsn: '%env(MESSENGER_TRANSPORT_DSN)%'
+                          options: { queue_name: payments }
+                      emails:
+                          dsn: '%env(MESSENGER_TRANSPORT_DSN)%'
+                          options: { queue_name: emails }
+                      reports:
+                          dsn: '%env(MESSENGER_TRANSPORT_DSN)%'
+                          options: { queue_name: reports }
+                  routing:
+                      App\Message\CapturePayment: payments
+                      App\Message\SendOrderEmail: emails
+                      App\Message\BuildSalesReport: reports
+        marks:
+          - {line: 6, tip: 'queue_name Doctrine transport-এর option। Redis-এ এর জায়গায় stream, AMQP-তে আলাদা queue নাম দিতে হয়।'}
+          - {line: 14, tip: 'পেমেন্টের message নিজের queue-তে যায়। রিপোর্টের লাইন যত লম্বাই হোক, এই লাইনে তার প্রভাব পড়ে না।'}
+    aside:
+      - type: commands
+        title: 'প্রতিটা queue-র নিজের worker'
+        items:
+          - {cmd: 'php bin/console messenger:consume payments --time-limit=3600', desc: 'শুধু পেমেন্টের কাজ — যেমন ৪টা process'}
+          - {cmd: 'php bin/console messenger:consume emails --time-limit=3600', desc: 'ইমেইলের জন্য আলাদা ২টা process'}
+          - {cmd: 'php bin/console messenger:consume reports --time-limit=3600', desc: 'ভারী রিপোর্টের জন্য ১টা process'}
+      - type: tips
+        items:
+          - 'Symfony Semaphore চালু করতে: composer require symfony/semaphore, আর framework.semaphore-এ Redis-এর DSN দাও।'
+          - 'অ্যাডমিন ও রিপোর্টের URL আলাদা PHP-FPM pool-এ পাঠাও (আলাদা pm.max_children), যাতে ভারী export ক্রেতার worker না খায়।'
+          - 'খোপের মাপ ঠিক করো হিসাব করে: সব খোপের যোগফল যেন মোট worker-এর চেয়ে কম থাকে।'
+      - type: refs
+        items:
+          - {to: 'messaging/background-jobs', label: 'ব্যাকগ্রাউন্ড জব ও priority'}
+    check:
+      q: 'Timeout ৪ সেকেন্ড দেওয়া আছে। তবু কুরিয়ার ধীর হলে সাইট কেন বন্ধ হতে পারে, আর bulkhead সেটা কীভাবে ঠেকায়?'
+      a: 'প্রতি সেকেন্ডে ৫টা চেকআউট এলে ৪ সেকেন্ডে ২০টা worker-ই আটকে যায়। Semaphore কুরিয়ারের জন্য সর্বোচ্চ ৫টা worker দেয়; বাকি ১৫টা অন্য request সামলাতে মুক্ত থাকে।'
+
+  - slug: default-timeouts-lie
+    title: 'ফাঁদ: "ডিফল্ট timeout তো আছেই"'
+    kind: pitfall
+    tldr: 'ডিফল্ট মানগুলো হয় ৬০ সেকেন্ড, নয় সীমাহীন। আর PHP-র max_execution_time নেটওয়ার্কের অপেক্ষাকে গোনেই না।'
+    keywords: ['default timeout', 'max_execution_time', 'default_socket_timeout', 'ডিফল্ট মান', 'idle timeout', 'ফাঁদ']
+    blocks:
+      - type: text
+        body: |
+          CRUD অ্যাপে আমরা এভাবেই বাইরের API ডাকি, আর ভাবি PHP-র ৩০ সেকেন্ডের সীমা তো আছেই। কিন্তু Linux-এ `max_execution_time` শুধু PHP কোড চালানোর সময় গোনে; নেটওয়ার্ক বা ডেটাবেসের উত্তরের অপেক্ষায় বসে থাকা সময় সে গোনে না। ফলে নিচের worker-টা ৬০ সেকেন্ড বা তারও বেশি আটকে থাকতে পারে।
+      - type: code
+        lang: php
+        file: 'src/Shipping/CourierRateProvider.php'
+        variant: bad
+        code: |
+          public function chargeFor(string $district, int $weightGrams): int
+          {
+              // কোনো timeout নেই, কোনো catch নেই
+              $response = $this->client->request('GET', 'https://api.courier.example/v1/rates', [
+                  'query' => ['district' => $district, 'weight' => $weightGrams],
+              ]);
+
+              return (int) $response->toArray()['charge_paisa'];
+          }
+        marks:
+          - {line: 4, tip: 'timeout না দিলে idle সীমা হয় PHP-র default_socket_timeout = ৬০ সেকেন্ড, আর মোট সময়ের কোনো সীমাই থাকে না।'}
+          - {line: 8, tip: 'কুরিয়ার ব্যর্থ হলে exception সোজা ব্যবহারকারীর কাছে 500 হয়ে যায়। ব্যর্থ হলে কী হবে, তা কেউ ভাবেনি।'}
+      - type: visual
+        kind: table
+        caption: 'কিছু না বদলালে কোন সীমা কত থাকে'
+        headers: ['সেটিং', 'ডিফল্ট', 'মানে কী']
+        rows:
+          - cells: ['HttpClient timeout', '৬০ সেকেন্ড', 'একটা ডাকেই worker ১ মিনিট আটকা']
+            tip: 'ডিফল্ট আসে PHP-র default_socket_timeout থেকে। ২০টা worker আটকাতে মিনিটে ২০টা ধীর ডাকই যথেষ্ট।'
+          - cells: ['HttpClient max_duration', 'সীমাহীন', 'ফোঁটা ফোঁটা উত্তর হলে শেষ নেই']
+            tip: 'যে সার্ভার অল্প অল্প করে ডেটা পাঠাতে থাকে, তাকে idle timeout ধরতে পারে না।'
+          - cells: ['PHP max_execution_time', '৩০ সেকেন্ড', 'অপেক্ষার সময় গোনে না']
+            tip: 'Linux-এ শুধু স্ক্রিপ্টের নিজের চলার সময় গোনা হয়; stream, ডেটাবেস query বা sleep-এ কাটানো সময় বাদ।'
+          - cells: ['PostgreSQL statement_timeout', '0 (সীমাহীন)', 'ধীর query ঘণ্টাও চলতে পারে']
+            tip: 'একটা ভুল query ডেটাবেস connection ধরে বসে থাকবে, যতক্ষণ না কেউ হাতে বন্ধ করে।'
+          - cells: ['FPM request_terminate_timeout', '0 (বন্ধ)', 'আটকা worker-কে কেউ থামায় না']
+            tip: 'এটাই একমাত্র সীমা যা সত্যিকারের ঘড়ির সময় গোনে এবং worker-কে জোর করে থামায়।'
+      - type: points
+        title: 'ঠিক করার তিন কাজ'
+        style: number
+        items:
+          - 'প্রতিটা scoped client-এ `timeout` ও `max_duration` দুটোই লেখো — আগের স্লাইডের মতো।'
+          - 'উত্তর পড়াসহ পুরো ডাক try/catch-এ রাখো, আর ব্যর্থ হলে কী ফেরত যাবে তা ঠিক করো।'
+          - 'PHP-FPM-এ `request_terminate_timeout = 30s` দাও — সব ফসকালে এটাই শেষ জাল।'
+    aside:
+      - type: pitfalls
+        items:
+          - 'Timeout খুব ছোট দিলে সুস্থ সার্ভিসও ব্যর্থ দেখায়; খুব বড় দিলে কোনো কাজেই আসে না। p99 মেপে ঠিক করো।'
+          - 'Timeout হয়েছে মানে কাজটা হয়নি — এমন নয়। পেমেন্টের মতো ডাকে ফল অজানা থাকে।'
+      - type: remember
+        body: 'ডিফল্ট মান লেখা হয়েছে যেন কিছু না ভাঙে — তোমার সাইট বাঁচানোর জন্য নয়। সীমা নিজে লেখো।'
+      - type: refs
+        items:
+          - {to: 'payments/unknown-outcomes', label: 'Timeout হলে "হলো কি না জানি না"'}
+    check:
+      q: 'php.ini-তে max_execution_time = 30 আছে। তবু একটা worker কুরিয়ার API-র অপেক্ষায় ৬০ সেকেন্ড আটকে থাকল কীভাবে?'
+      a: 'Linux-এ max_execution_time নেটওয়ার্কের অপেক্ষার সময় গোনে না। HttpClient-এ timeout না থাকায় default_socket_timeout-এর ৬০ সেকেন্ডই একমাত্র সীমা ছিল।'
+
+flashcards:
+  - q: 'Cascading failure কী?'
+    a: 'একটা অংশের সমস্যা ভাগাভাগি করা সম্পদ (worker, connection, queue) দখল করে একে একে সুস্থ অংশগুলোকেও ফেলে দেওয়া।'
+    more: |
+      শুরু হয় ছোট কিছু দিয়ে — একটা ধীর API বা একটা ধীর query। যে worker তাকে ডাকে, সে আটকে যায়। সব worker আটকে গেলে যেসব ফিচারের সাথে ওই সমস্যার সম্পর্কই নেই, সেগুলোও বন্ধ হয়ে যায়। এরপর যারা তোমাকে ডাকে, তারাও আটকায়।
+    ref: how-failure-spreads
+  - q: 'ধীর সার্ভিস কেন বন্ধ সার্ভিসের চেয়ে বেশি বিপজ্জনক?'
+    a: 'বন্ধ সার্ভিস সাথে সাথে error দেয়, worker ছাড়া পায়। ধীর সার্ভিস worker-কে দীর্ঘক্ষণ আটকে রাখে, আর pool ফুরিয়ে যায়।'
+    more: |
+      সংযোগই না হলে মিলিসেকেন্ডে জানা যায় যে ডাকটা ব্যর্থ। কিন্তু সংযোগ হয়ে উত্তর যদি ৩০ সেকেন্ড পরে আসে, ততক্ষণ worker কিছুই করতে পারে না। প্রতি সেকেন্ডে ২টা এমন ডাক এলে ১০ সেকেন্ডে ২০টা worker শেষ।
+    ref: one-slow-call-stops-all
+  - q: 'Symfony HttpClient-এ timeout আর max_duration-এর পার্থক্য কী?'
+    a: 'timeout হলো idle সীমা — কতক্ষণ কোনো ডেটা না এলে ছাড়বে। max_duration হলো পুরো ডাকের মোট সময়সীমা।'
+    more: |
+      যে সার্ভার প্রতি সেকেন্ডে একটু একটু ডেটা পাঠায়, তাকে idle timeout কখনো ধরে না, তাই মোট সীমাও লাগে। timeout না দিলে ডিফল্ট ৬০ সেকেন্ড (default_socket_timeout), আর max_duration না দিলে কোনো সীমাই নেই। তাই দুটোই নিজে লেখো।
+    ref: timeout-every-call
+  - q: 'Bulkhead প্যাটার্ন কী?'
+    a: 'সম্পদকে আলাদা খোপে ভাগ করা, যাতে একটা কাজ বা dependency সব worker, connection বা queue দখল করতে না পারে।'
+    more: |
+      নামটা এসেছে লঞ্চের তলার আলাদা খোপ থেকে: একটায় পানি ঢুকলেও লঞ্চ ডোবে না। সফটওয়্যারে এর রূপ হলো dependency প্রতি একসাথে ডাকের সীমা (semaphore), কাজ অনুযায়ী আলাদা queue ও worker, আর অ্যাডমিনের জন্য আলাদা PHP-FPM pool।
+    ref: bulkheads
+  - q: 'PHP-র max_execution_time কেন ধীর API থেকে worker-কে বাঁচায় না?'
+    a: 'Linux-এ এটা শুধু PHP কোড চলার সময় গোনে; নেটওয়ার্ক বা ডেটাবেসের উত্তরের অপেক্ষার সময় গোনে না।'
+    more: |
+      তাই max_execution_time = 30 থাকলেও একটা worker বাইরের API-র অপেক্ষায় মিনিটের পর মিনিট বসে থাকতে পারে। সত্যিকারের ঘড়ি ধরে worker থামায় PHP-FPM-এর request_terminate_timeout। তবে সেটা শেষ জাল; আসল সমাধান প্রতিটা ডাকে নিজের timeout।
+    ref: default-timeouts-lie
+  - q: 'একটা বাইরের API-র timeout-এর মান কীভাবে ঠিক করবে?'
+    a: 'ওই API-র স্বাভাবিক ধীরতম উত্তরের (p99) একটু ওপরে, এবং তোমার নিজের request-এর সময়সীমার চেয়ে অবশ্যই কম।'
+    more: |
+      p99 যদি ৮০০ms হয়, তাহলে ১.৫–২ সেকেন্ড ভালো শুরু। খুব ছোট দিলে সুস্থ ডাকও ব্যর্থ হবে, খুব বড় দিলে worker আটকে থাকবে। ভেতরের timeout সবসময় বাইরেরটার চেয়ে ছোট রাখো: HttpClient < PHP-FPM < nginx।
+    ref: timeout-every-call
+  - q: 'Messenger-এ পেমেন্ট আর রিপোর্টের message আলাদা transport-এ রাখা হয় কেন?'
+    a: 'যাতে হাজার হাজার ধীর রিপোর্টের লাইনের পেছনে জরুরি পেমেন্টের message আটকে না থাকে।'
+    more: |
+      এক queue-তে সব কাজ থাকলে সামনের ধীর কাজগুলো শেষ না হওয়া পর্যন্ত পেছনের জরুরি কাজ অপেক্ষা করে। আলাদা transport আর প্রতিটার নিজের worker থাকলে রিপোর্টের queue ভরে গেলেও পেমেন্টের worker নিজের গতিতে চলে। এটাই queue-র bulkhead।
+    ref: bulkheads
+  - q: 'PostgreSQL-এ statement_timeout-এর ডিফল্ট কত, আর ওয়েব অ্যাপে কী করা উচিত?'
+    a: 'ডিফল্ট 0, মানে সীমাহীন। ওয়েবের ডেটাবেস user-এ কয়েক সেকেন্ডের সীমা বসাও, যেমন ৫ সেকেন্ড।'
+    more: |
+      সীমা না থাকলে একটা ভুল query ডেটাবেস connection আর worker — দুটোই আটকে রাখে। `ALTER ROLE app_web SET statement_timeout = '5s'` দিলে শুধু ওই user-এর query-তে সীমা বসে। রিপোর্ট বা migration-এর জন্য বেশি সীমার আলাদা user রাখো।
+    ref: timeout-every-call
+  - q: 'Bulkhead-এর খোপ ভরা থাকলে নতুন request-এর কী করা উচিত?'
+    a: 'অপেক্ষা না করে সাথে সাথে ফিরে যাওয়া (fail fast) এবং বিকল্প উত্তর দেওয়া।'
+    more: |
+      খোপের সামনে লাইন দিয়ে দাঁড়ালে আবার সেই worker আটকে থাকার সমস্যাই ফিরে আসে। Symfony Semaphore-এর acquire() জায়গা না পেলে সাথে সাথে false দেয়। তখন ডিফল্ট মান দেখাও বা ফিচারটা সাময়িক বাদ দাও: [[resilience/graceful-degradation|graceful degradation]]।
+    ref: bulkheads
+
+quiz:
+  - q: 'রিমির অ্যাপ অর্ডারের পর SMS gateway-কে ডাকে। আজ gateway ধীর। মনিটরে দেখা যাচ্ছে ডেটাবেস সুস্থ, সার্ভারের CPU ৮%, কিন্তু পুরো সাইট 504 দিচ্ছে। সবচেয়ে সম্ভাব্য কারণ কী?'
+    hint: 'CPU কম মানে কেউ কাজ করছে না। তাহলে worker-গুলো কী করছে?'
+    options:
+      - text: 'সব worker SMS gateway-র উত্তরের অপেক্ষায় আটকে আছে'
+        correct: true
+        why: 'অপেক্ষা করতে CPU লাগে না, কিন্তু worker দখল হয়ে থাকে। সব worker দখল হলে অন্য কোনো request সামলানোর কেউ থাকে না।'
+      - text: 'সার্ভারের RAM শেষ হয়ে গেছে'
+        correct: false
+        why: 'RAM শেষ হলে process মরে যেত বা swap-এ CPU/disk ব্যস্ত দেখাত। এখানে লক্ষণ হলো অলস CPU আর timeout।'
+      - text: 'ডেটাবেসে index নেই'
+        correct: false
+        why: 'ডেটাবেস সুস্থ বলা আছে। ধীর query হলে ডেটাবেসের CPU বা lock-এ তা দেখা যেত।'
+      - text: 'nginx-এর কনফিগ ভুল'
+        correct: false
+        why: 'nginx ঠিকই কাজ করছে — সে খালি worker না পেয়ে নিয়ম মেনেই 504 দিচ্ছে।'
+    ref: one-slow-call-stops-all
+  - q: 'নিচের কোডে timeout: 2 সেট করা client ব্যবহার হয়েছে। তবু timeout হলে ব্যবহারকারী 500 পায়। কেন?'
+    lang: php
+    code: |
+      try {
+          $response = $this->courierClient->request('GET', '/v1/rates');
+      } catch (TransportExceptionInterface $e) {
+          return null;
+      }
+
+      return (int) $response->toArray()['charge_paisa'];
+    hint: 'Symfony HttpClient-এর response অলস (lazy)। আসল অপেক্ষাটা কোন লাইনে হয়?'
+    options:
+      - text: 'timeout-এর exception ছোড়া হয় toArray()-তে, যা try-এর বাইরে'
+        correct: true
+        why: 'request() সাথে সাথে ফিরে আসে; নেটওয়ার্কের অপেক্ষা ও exception ঘটে উত্তর পড়ার সময়। তাই পড়াটাও try-এর ভেতরে রাখতে হবে।'
+      - text: 'TransportExceptionInterface timeout ধরতে পারে না'
+        correct: false
+        why: 'পারে — TimeoutException এই interface-ই implement করে। সমস্যা exception-এর ধরনে নয়, try-এর সীমানায়।'
+      - text: 'timeout: 2 খুব ছোট, বাড়াতে হবে'
+        correct: false
+        why: 'মান বাড়ালে শুধু worker বেশিক্ষণ আটকাবে; exception তখনো try-এর বাইরেই পড়বে।'
+      - text: 'GET request-এ timeout কাজ করে না'
+        correct: false
+        why: 'timeout সব HTTP method-এ একইভাবে কাজ করে।'
+    ref: timeout-every-call
+  - q: 'নিচের কোনগুলো bulkhead-এর উদাহরণ?'
+    hint: 'কোনগুলো সম্পদকে আলাদা খোপে ভাগ করছে, আর কোনগুলো শুধু সম্পদ বা চেষ্টা বাড়াচ্ছে?'
+    options:
+      - text: 'কুরিয়ার API-র জন্য semaphore দিয়ে একসাথে সর্বোচ্চ ৫টা ডাক'
+        correct: true
+        why: 'কুরিয়ার যত ধীরই হোক, ৫টার বেশি worker সে দখল করতে পারবে না।'
+      - text: 'payments আর reports-এর জন্য আলাদা Messenger transport ও worker'
+        correct: true
+        why: 'রিপোর্টের লাইন লম্বা হলেও পেমেন্টের worker নিজের queue থেকে কাজ করে যায়।'
+      - text: 'pm.max_children ২০ থেকে বাড়িয়ে ২০০ করা'
+        correct: false
+        why: 'এটা pool বড় করে, ভাগ করে না। ধীর dependency ২০০টাই দখল করবে — শুধু একটু দেরিতে, আর মেমোরিও ফুরাবে।'
+      - text: 'অ্যাডমিন প্যানেলের জন্য আলাদা PHP-FPM pool'
+        correct: true
+        why: 'অ্যাডমিনের ভারী export তখন ক্রেতাদের worker খেতে পারে না।'
+      - text: 'ব্যর্থ ডাক ৫ বার retry করা'
+        correct: false
+        why: 'retry ভাগ করে না, বরং ধীর সার্ভিসের ওপর আর নিজের worker-এর ওপর চাপ বাড়ায়।'
+    ref: bulkheads
+  - q: 'একটা পেমেন্ট API-র স্বাভাবিক উত্তরের সময় p50 = 200ms, p99 = 900ms। HttpClient-এর max_duration কোনটা সবচেয়ে যুক্তিসঙ্গত?'
+    hint: 'সুস্থ অবস্থার ধীরতম ডাকগুলোও যেন পার পায়, কিন্তু অসুস্থ অবস্থায় worker যেন বেশিক্ষণ না আটকায়।'
+    options:
+      - text: '২ সেকেন্ডের আশেপাশে'
+        correct: true
+        why: 'p99-এর একটু ওপরে: সুস্থ ডাক প্রায় সবই পার পায়, আর অসুস্থ হলে worker ২ সেকেন্ডেই ছাড়া পায়।'
+      - text: '৩০০ms'
+        correct: false
+        why: 'সুস্থ অবস্থাতেই বহু ডাক এর বেশি সময় নেয়; তুমি নিজেই অকারণ ব্যর্থতা তৈরি করবে।'
+      - text: '৬০ সেকেন্ড'
+        correct: false
+        why: 'এটা প্রায় ডিফল্টের সমান — অসুস্থ হলে প্রতিটা worker ১ মিনিট আটকাবে, pool ফুরিয়ে যাবে।'
+      - text: 'কোনো সীমা না দেওয়াই ভালো, পেমেন্ট তো জরুরি'
+        correct: false
+        why: 'জরুরি বলেই সীমা দরকার। সীমা না থাকলে পেমেন্টের ধীরতা পুরো সাইট ডুবিয়ে দেবে।'
+    ref: timeout-every-call
+  - q: 'একটাই Messenger queue-তে সব কাজ যায়। মাস শেষে ৫,০০০ রিপোর্টের job জমায় পেমেন্ট নিশ্চিত করার message ৪০ মিনিট দেরিতে চলছে। সঠিক সমাধান কোনটা?'
+    hint: 'জরুরি কাজ আর ধীর কাজ একই লাইনে দাঁড়ালে কী হয়?'
+    options:
+      - text: 'পেমেন্ট ও রিপোর্টের জন্য আলাদা transport আর আলাদা worker রাখা'
+        correct: true
+        why: 'তখন রিপোর্টের লাইন পেমেন্টের লাইনকে ছুঁতেই পারে না — এটাই queue-র bulkhead।'
+      - text: 'রিপোর্টের handler-এ timeout কমিয়ে দেওয়া'
+        correct: false
+        why: 'রিপোর্ট ব্যর্থ হবে, কিন্তু ৫,০০০ message তবু পেমেন্টের সামনেই দাঁড়িয়ে থাকবে।'
+      - text: 'একই queue-তে worker দ্বিগুণ করা'
+        correct: false
+        why: 'সাময়িক আরাম মিলবে, কিন্তু পরের মাসে ১০,০০০ রিপোর্ট এলে একই সমস্যা। লাইনটা ভাগ হয়নি।'
+      - text: 'রিপোর্ট বানানো বন্ধ করে দেওয়া'
+        correct: false
+        why: 'রিপোর্ট দরকারি কাজ; তাকে বাদ নয়, আলাদা খোপে সরাতে হবে।'
+    ref: bulkheads
+  - q: 'নিচের কোন কোন জায়গায় timeout না বসালে একটা worker অনির্দিষ্টকাল বা খুব দীর্ঘ সময় আটকে থাকতে পারে?'
+    hint: 'যেখানেই কোড অন্য কোনো process বা যন্ত্রের উত্তরের জন্য অপেক্ষা করে।'
+    options:
+      - text: 'বাইরের HTTP API ডাকা'
+        correct: true
+        why: 'ডিফল্ট idle timeout ৬০ সেকেন্ড, মোট সময়ের কোনো সীমাই নেই।'
+      - text: 'ডেটাবেসে query চালানো'
+        correct: true
+        why: 'PostgreSQL-এ statement_timeout ডিফল্ট 0 — ধীর query বা lock-এর অপেক্ষা ইচ্ছামতো লম্বা হতে পারে।'
+      - text: 'মেমোরিতে থাকা একটা array সাজানো (sort)'
+        correct: false
+        why: 'এখানে কারো উত্তরের অপেক্ষা নেই; এটা CPU-র কাজ, আর max_execution_time ঠিক এই সময়টাই গোনে।'
+      - text: 'Redis থেকে cache পড়া'
+        correct: true
+        why: 'Redis-ও নেটওয়ার্কের ওপারে। সংযোগ বা পড়ায় সীমা না থাকলে ধীর Redis পুরো সাইট আটকে দিতে পারে।'
+    ref: default-timeouts-lie

@@ -1,0 +1,377 @@
+slides:
+  - slug: old-price-board
+    title: 'দাম বদলেছে, বোর্ডে পুরনো দাম'
+    kind: story
+    tldr: 'Cache-এ রাখা উত্তর আসল ডেটার কপি; আসল ডেটা বদলালে কপি নিজে থেকে বদলায় না, তাই ব্যবহারকারী বাসি তথ্য দেখে। এই সমস্যার নাম cache invalidation।'
+    keywords: ['cache invalidation', 'stale data', 'বাসি ডেটা', 'পুরনো দাম', 'TTL']
+    blocks:
+      - type: metaphor
+        icon: tag
+        title: 'মুদি দোকানের দামের বোর্ড'
+        body: |
+          দোকানের সামনে বোর্ডে লেখা: "চিনি ১২০ টাকা"। সকালে দাম বেড়ে ১৩০ হলো, কিন্তু বোর্ড বদলানো হয়নি। খদ্দের বোর্ড দেখে ১২০ টাকা নিয়ে আসে, কাউন্টারে এসে শোনে ১৩০। বোর্ড হলো cache, কাউন্টারের খাতা হলো ডেটাবেস। আসল খাতা বদলালে বোর্ডটাও কাউকে বদলাতে হয়।
+      - type: text
+        body: |
+          রহিমের অ্যাপে পণ্যের দাম ১ ঘণ্টার জন্য cache করা। বিক্রেতা ৫০০ টাকা থেকে দাম কমিয়ে ৪৫০ করল, ডেটাবেসে ঠিকই সেভ হলো। কিন্তু ক্রেতারা আরও ৫০ মিনিট ৫০০ টাকাই দেখল। কেউ কেউ ৫০০ দেখে কিনে নিল, কেউ ৪৫০ দেখে অভিযোগ করল।
+      - type: visual
+        kind: sequence
+        caption: 'দাম বদলের পরেও cache পুরনো দাম দেখায়'
+        actors:
+          - {id: seller, label: 'বিক্রেতা', icon: user, tip: 'দাম কমিয়ে ৪৫০ করেছে।'}
+          - {id: db, label: 'ডেটাবেস', icon: db, tip: 'আসল সত্য। এখানে দাম ইতিমধ্যে ৪৫০।'}
+          - {id: cache, label: 'Cache', icon: cache, tip: 'পুরনো উত্তর ধরে বসে আছে, কারণ কেউ তাকে বদলাতে বলেনি।'}
+          - {id: buyer, label: 'ক্রেতা', icon: user, tip: 'cache থেকেই উত্তর পায়, ডেটাবেস পর্যন্ত যায় না।'}
+        messages:
+          - {from: seller, to: db, label: 'দাম ৪৫০ করো'}
+          - {at: cache, note: 'cache-এ এখনো ৫০০', tone: warn}
+          - {from: buyer, to: cache, label: 'পণ্যটার দাম কত?'}
+          - {from: cache, to: buyer, label: '৫০০ টাকা (পুরনো)', dashed: true, tone: bad, tip: 'cache hit হয়েছে, কিন্তু উত্তরটা ভুল। দ্রুত ভুল উত্তর ধীর ঠিক উত্তরের চেয়ে খারাপ হতে পারে।'}
+          - {at: buyer, note: 'ভুল দাম দেখল', tone: bad}
+      - type: quote
+        body: 'Cache মানে একটা কপি। আসল বদলালে কপিকেও বদলাতে বা ফেলে দিতে হবে।'
+    aside:
+      - type: story
+        title: 'ফ্ল্যাশ সেলের পরের দিন'
+        body: 'একটা সাইটে সেল শেষ হলো রাত ১২টায়, কিন্তু cache-এর মেয়াদ ছিল ৬ ঘণ্টা। সকাল ৬টা পর্যন্ত সেলের দামে অর্ডার এল, আর কোম্পানিকে সেই দামেই দিতে হলো।'
+      - type: terms
+        items:
+          - {term: 'Invalidation', meaning: 'আসল ডেটা বদলালে cache-এর পুরনো কপি মুছে ফেলা বা অকেজো করা।'}
+          - {term: 'Stale', meaning: 'বাসি — আসল ডেটার চেয়ে পিছিয়ে থাকা কপি।'}
+    check:
+      q: 'Cache hit হয়েছে কিন্তু ক্রেতা ভুল দাম দেখল। এখানে সমস্যা cache-এর গতিতে নাকি অন্য কোথাও?'
+      a: 'গতিতে নয়। সমস্যা হলো আসল ডেটা বদলের পরে cache-এর কপি বদলানো হয়নি, তাই সে বাসি উত্তর দিচ্ছে।'
+
+  - slug: ttl-design
+    title: 'TTL: প্রতিটা ডেটার একটা মেয়াদ'
+    kind: concept
+    tldr: 'TTL মানে cache-এর উত্তরের মেয়াদ; মেয়াদ ফুরালে মুছে যায়। ডেটা কতটা বাসি সহ্য করা যায়, তার ওপর TTL ঠিক করো, আর TTL-কে শেষ ভরসা হিসেবে রাখো।'
+    keywords: ['TTL', 'time to live', 'expiry', 'মেয়াদ', 'staleness budget', 'expiresAfter']
+    blocks:
+      - type: metaphor
+        icon: clock
+        title: 'দুধের প্যাকেটের মেয়াদ'
+        body: |
+          দুধের প্যাকেটে তারিখ লেখা থাকে; তারিখ পার হলে কেউ খায় না, ফেলে দেয়। TTL (time to live) হলো সেই তারিখ। কিন্তু মেয়াদ কতদিন হবে, তা নির্ভর করে জিনিসটার ওপর: দুধ ২ দিন, চাল ৬ মাস। তুমি জিজ্ঞেস করবে, "এই তথ্য কতক্ষণ পুরনো থাকলে কারো ক্ষতি নেই?"
+      - type: visual
+        kind: table
+        caption: 'ডেটার ধরন দেখে TTL ঠিক করার একটা নমুনা'
+        headers: ['কী cache করছ', 'TTL', 'কেন']
+        rows:
+          - cells: ['দেশের তালিকা, বিভাগ', '১ দিন', 'বছরে একবার বদলায় কি না']
+            tip: 'প্রায় অপরিবর্তনীয় ডেটায় লম্বা TTL নিরাপদ, আর hit হার ভালো থাকে।'
+          - cells: ['সেরা ১০ পণ্যের তালিকা', '১০ মিনিট', '১০ মিনিট পুরনো হলে কেউ টের পায় না']
+            tip: 'সবচেয়ে সাধারণ ক্ষেত্র: ভারী হিসাব, অল্প বাসি চলে।'
+          - cells: ['পণ্যের দাম', '১ মিনিট + invalidate', 'ভুল দাম টাকার ক্ষতি করে']
+            tip: 'দামের মতো ডেটায় ছোট TTL রাখো আর বদলালেই সরাসরি মুছো।'
+          - cells: ['স্টকের সংখ্যা (তালিকায়)', '৩০ সেকেন্ড', 'আনুমানিক দেখানো চলে; কেনার সময় ডেটাবেস']
+            tip: 'দেখানোর জন্য cache, সিদ্ধান্তের জন্য ডেটাবেস।'
+          - cells: ['ব্যালেন্স, checkout-এর মান', 'cache নয়', 'ভুল চলে না']
+            tip: 'কিছু ডেটার জন্য সঠিক উত্তর সবচেয়ে বড় কথা।'
+      - type: quote
+        body: 'TTL হলো শেষ ভরসা: invalidate করতে ভুলে গেলেও ভুলটা মেয়াদ পর্যন্তই থাকবে।'
+    aside:
+      - type: tips
+        items:
+          - 'TTL ঠিক করার প্রশ্ন: "এই ডেটা সর্বোচ্চ কতক্ষণ পুরনো থাকলে চলে?" সেটাই TTL-এর ওপরসীমা।'
+          - 'শুধু TTL-এর ওপর নির্ভর করলে প্রতিটা বদলে মেয়াদ পর্যন্ত ভুল দেখা যাবে; তাই গুরুত্বপূর্ণ ডেটায় invalidate-ও যোগ করো।'
+      - type: pitfalls
+        items:
+          - 'সব কিছুতে একই TTL, যেমন ১ ঘণ্টা, বসিয়ে দেওয়া — কোনোটার জন্য অনেক বেশি, কোনোটার জন্য অনেক কম।'
+    check:
+      q: 'পণ্যের বিবরণের পাতা আর "দেশের তালিকা" — কার TTL বেশি হওয়া উচিত, কেন?'
+      a: 'দেশের তালিকার। সেটা প্রায় কখনো বদলায়, তাই লম্বা TTL-এ ক্ষতি নেই; পণ্যের তথ্য অনেক ঘন ঘন বদলায়।'
+
+  - slug: cache-keys
+    title: 'Cache key: সঠিক চাবি আর version'
+    kind: concept
+    tldr: 'চাবিতে এমন সব কিছু থাকতে হবে যা উত্তরকে বদলায়: আইডি, ভাষা, পাতা। আর চাবিতে একটা version রাখলে পুরনো আকারের entry একসাথে অকেজো করা যায়।'
+    keywords: ['cache key', 'versioned key', 'key design', 'namespace', 'চাবি', 'version bump']
+    blocks:
+      - type: text
+        body: |
+          চাবি হলো লকারের নম্বর: ভুল নম্বর দিলে অন্য কারো জিনিস পাবে। যে জিনিস উত্তর বদলায়, সে চাবিতে থাকবে; যে জিনিস বদলায় না, সে থাকবে না। আর কখনো সব entry-র আকার বদলাতে হয়, যেমন নতুন একটা ঘর যোগ হলো। তখন একটা একটা মুছতে হয় না: চাবির `v1`-কে `v2` করলে পুরনোগুলো আর কেউ খোঁজেই না, তারা নিজে নিজে TTL-এ মরে।
+      - type: visual
+        kind: compare
+        caption: 'চাবি কেমন হলে নিরাপদ, কেমন হলে ভুল উত্তর'
+        columns:
+          - title: 'বিপজ্জনক চাবি'
+            tone: bad
+            icon: cross
+            tip: 'উত্তরকে প্রভাবিত করে এমন কিছু চাবিতে নেই, তাই আলাদা উত্তরগুলো একে অপরের জায়গা নেয়।'
+            items:
+              - 'products — ভাষা, পাতা, sort বাদ'
+              - 'cart — কোন ব্যবহারকারী?'
+              - 'user_list — সবার জন্য এক, অথচ ভূমিকা অনুযায়ী আলাদা'
+          - title: 'নিরাপদ চাবি'
+            tone: good
+            icon: check
+            tip: 'প্রতিটা আলাদা উত্তরের আলাদা চাবি; পুরনো আকার version দিয়ে আলাদা।'
+            items:
+              - 'products.v2.cat7.page2.sort-price.bn'
+              - 'cart.v1.user.42'
+              - 'product.v3.42 — আকার বদলালে v3 থেকে v4'
+      - type: quote
+        body: 'যা উত্তর বদলায়, তা চাবিতে থাকবে। যা বদলায় না, তা থাকবে না।'
+    aside:
+      - type: tips
+        items:
+          - 'চাবিতে PSR-6-এর নিষিদ্ধ অক্ষর `{ } ( ) / \ @ :` রেখো না। বিন্দু আর underscore নিরাপদ।'
+          - 'ইউজারের ইনপুট থেকে চাবি বানালে সেটাকে hash করে নাও, নইলে লম্বা বা অদ্ভুত চাবি আসবে।'
+      - type: when
+        use:
+          - 'cache-এর ভেতরের আকার বদলালে (নতুন field, নাম বদল) version বাড়াও।'
+        avoid:
+          - 'প্রতিটা ছোট ডেটা বদলে version বাড়ানো; সেটা tag বা সরাসরি মোছার কাজ।'
+    check:
+      q: 'পণ্যের cache-এ নতুন একটা field যোগ করে deploy করলে পুরনো entry ভুল আকারে আসবে। সবচেয়ে সহজ সমাধান কী?'
+      a: 'চাবির version বাড়ানো, যেমন product.v1.42 থেকে product.v2.42। পুরনো entry আর কেউ খোঁজে না, তারা TTL-এ মরে যায়।'
+
+  - slug: tag-invalidation
+    title: 'Tag দিয়ে একসাথে অনেক entry মোছা'
+    kind: howto
+    tldr: 'একটা পণ্য অনেক cache entry-তে আছে; সবগুলোকে tag দিয়ে চিহ্নিত রাখলে পণ্য বদলের পর invalidateTags() দিয়ে একটা কলেই সব মুছে যায়।'
+    keywords: ['TagAwareCacheInterface', 'invalidateTags', 'cache tags', 'redis_tag_aware', 'ট্যাগ', 'ItemInterface::tag']
+    blocks:
+      - type: metaphor
+        icon: tag
+        title: 'বোর্ডে রঙিন স্টিকার'
+        body: |
+          দামের বোর্ডে চিনি একাধিক জায়গায় লেখা: সামনের বোর্ডে, মেনু কার্ডে, অফারের পোস্টারে। প্রতিটায় "চিনি" লেখা সবুজ স্টিকার লাগানো আছে। দাম বদলালে বলা যায়, "সব সবুজ স্টিকার খুলে ফেলো"। কোথায় কোথায় চিনি ছিল তা মনে রাখতে হয় না। Cache tag ঠিক এই কাজ করে।
+      - type: code
+        lang: php
+        file: 'src/Catalog/ProductCache.php'
+        variant: good
+        code: |
+          final readonly class ProductCache
+          {
+              public function __construct(
+                  private TagAwareCacheInterface $cache,
+                  private ProductRepository $products,
+              ) {
+              }
+
+              public function view(int $id): array
+              {
+                  return $this->cache->get("product.v1.$id", function (ItemInterface $item) use ($id) {
+                      $product = $this->products->find($id) ?? throw new NotFoundHttpException();
+                      $item->expiresAfter(3600);
+                      $item->tag(["product_$id", 'category_'.$product->getCategoryId()]);
+
+                      return ProductView::from($product)->toArray();
+                  });
+              }
+
+              public function afterPriceChanged(int $id): void
+              {
+                  $this->cache->invalidateTags(["product_$id"]);  // flush-এর পরে ডাকো
+              }
+          }
+        marks:
+          - {line: 4, tip: 'সাধারণ CacheInterface নয়, TagAwareCacheInterface চাই; এতেই invalidateTags() আছে।'}
+          - {line: 14, tip: 'এই entry-টা কোন কোন জিনিসের ওপর নির্ভর করে তার তালিকা। একটা entry-র একাধিক tag থাকতে পারে।'}
+          - {line: 22, tip: 'ডেটাবেসে flush শেষ হওয়ার পরে ডাকো। আগে ডাকলে পুরনো মান আবার ভরে যেতে পারে।'}
+      - type: code
+        lang: yaml
+        file: 'config/packages/cache.yaml'
+        code: |
+          framework:
+              cache:
+                  app: cache.adapter.redis_tag_aware
+                  default_redis_provider: '%env(REDIS_URL)%'
+        marks:
+          - {line: 3, tip: 'Redis-এর জন্য tag-aware adapter। এতে tag-ওয়ালা invalidation কম ধাপে আর দ্রুত হয়।'}
+    aside:
+      - type: tips
+        items:
+          - 'পণ্যের দাম বদলালে তার নিজের পাতা ও তার বিভাগের তালিকা — দুটোই একটা tag-এ বাঁধো, তাহলে একটা কলেই সারে।'
+          - 'tag-এর নামও চাবির মতো সাজাও: product_42, category_7।'
+      - type: commands
+        items:
+          - {cmd: 'php bin/console cache:pool:invalidate-tags product_42', desc: 'কনসোল থেকে একটা tag-এর সব entry মোছো'}
+      - type: pitfalls
+        items:
+          - 'অসংখ্য tag দিলে প্রতিটা entry-র সাথে বাড়তি ডেটা জমে; যতটুকু মোছার দরকার, ততটুকুই tag দাও।'
+    check:
+      q: 'কোনো একটা পণ্য বদলালে তার নিজের পাতা ও বিভাগের তালিকা — দুটোই cache থেকে মুছতে চাও। Tag দিয়ে কীভাবে?'
+      a: 'দুটো entry-তেই ->tag([''product_42'']) দাও, তারপর পণ্য বদলের পরে invalidateTags([''product_42'']) একবার ডাকো।'
+
+  - slug: invalidate-after-commit
+    title: 'মোছার সঠিক সময় আর ক্রম'
+    kind: pitfall
+    tldr: 'আগে ডেটাবেসে লেখো ও commit করো, তারপর cache মোছো। উল্টো করলে এক request পুরনো মান আবার cache-এ ভরে দিতে পারে; তাই TTL ও রাখো।'
+    keywords: ['invalidate order', 'race condition', 'stale cache', 'commit then invalidate', 'সময়ের ভুল']
+    blocks:
+      - type: text
+        body: |
+          অনেকে বোর্ড আগে মুছে ফেলে, পরে খাতায় নতুন দাম লেখে। এই ফাঁকে একজন খদ্দের এসে খাতায় পুরনো দাম দেখে, আর তাই বোর্ডে নতুন করে লিখে ফেলে। এবার খাতায় নতুন দাম, বোর্ডে পুরনো, আর কেউ আর মুছবে না।
+      - type: visual
+        kind: sequence
+        caption: 'ভুল ক্রম: আগে cache মোছা, পরে ডেটাবেস লেখা'
+        actors:
+          - {id: writer, label: 'লেখক', icon: pencil, tip: 'দাম বদলানোর request।'}
+          - {id: reader, label: 'পাঠক', icon: eye, tip: 'ঠিক ওই মুহূর্তে দাম দেখতে আসা অন্য request।'}
+          - {id: cache, label: 'Cache', icon: cache, tip: 'দ্রুত পড়ার জন্য রাখা কপি, যেটা এখানে পুরনো হয়ে যাচ্ছে।'}
+          - {id: db, label: 'ডেটাবেস', icon: db, tip: 'আসল সত্য এখানে; লেখার পরে এখানে নতুন মান থাকে।'}
+        messages:
+          - {from: writer, to: cache, label: 'cache থেকে দাম মুছো'}
+          - {from: reader, to: cache, label: 'দাম আছে?'}
+          - {from: cache, to: reader, label: 'নেই (miss)', dashed: true}
+          - {from: reader, to: db, label: 'দাম পড়ো'}
+          - {from: db, to: reader, label: '৫০০ (পুরনো)', dashed: true, tip: 'লেখক এখনো ডেটাবেসে লেখেনি, তাই পুরনো মানই আসে।'}
+          - {from: writer, to: db, label: 'নতুন দাম ৪৫০ লেখো'}
+          - {from: reader, to: cache, label: '৫০০ রেখে দাও', tone: bad}
+          - {at: cache, note: 'cache-এ ৫০০, ডেটাবেসে ৪৫০', tone: bad, tip: 'কেউ আর মুছবে না। TTL শেষ হওয়া পর্যন্ত ভুল দাম থাকবে।'}
+      - type: code
+        lang: php
+        file: 'src/Catalog/PriceUpdater.php'
+        variant: good
+        code: |
+          public function changePrice(Product $product, int $paisa): void
+          {
+              $product->changePrice($paisa);
+              $this->em->flush();                               // ১. আগে সত্য লেখা
+
+              $this->cache->invalidateTags(['product_'.$product->getId()]);  // ২. তারপর মোছা
+          }
+        marks:
+          - {line: 4, tip: 'flush সফল না হলে পরের লাইনেই যাওয়া হয় না; তাই cache কখনো এগিয়ে থাকে না।'}
+          - {line: 6, tip: 'মোছার পর যে request আসে, সে miss পেয়ে ডেটাবেস থেকে নতুন মান আনে।'}
+      - type: quote
+        body: 'আগে ডেটাবেস commit, তারপর cache মোছা। আর সবসময় একটা TTL।'
+    aside:
+      - type: remember
+        body: 'সত্য আগে, কপি পরে — লেখার বেলাতেও, মোছার বেলাতেও।'
+      - type: pitfalls
+        items:
+          - 'এই ক্রমেও খুব ছোট একটা ফাঁক থাকে (একটা পুরনো পড়া মোছার পরে ভরে দেওয়া)। এজন্যই TTL ছাড়া cache রাখা ঠিক নয়।'
+          - 'transaction চলাকালে নয়, commit-এর পরে মোছো; নইলে rollback হলে cache অকারণে খালি হবে।'
+      - type: refs
+        items:
+          - {to: 'caching/cache-stampede', label: 'মোছার পর miss-এর ঝড়'}
+    check:
+      q: 'Cache মুছে তারপর ডেটাবেসে লিখলে কীভাবে পুরনো মান আবার cache-এ ফিরে আসতে পারে?'
+      a: 'মোছা আর লেখার ফাঁকে অন্য request miss পেয়ে ডেটাবেস থেকে পুরনো মান পড়ে cache-এ রেখে দেয়, আর কেউ তাকে আবার মোছে না।'
+
+flashcards:
+  - q: 'Cache invalidation কী?'
+    a: 'আসল ডেটা বদলালে cache-এর পুরনো কপি মুছে ফেলা বা অকেজো করা।'
+    more: |
+      cache আসল ডেটার কপি, তাই আসল বদলালে কপি নিজে বদলায় না। invalidate না করলে ব্যবহারকারী বাসি তথ্য দেখে। এটা এত কঠিন যে বলা হয়, কম্পিউটার সায়েন্সে দুটো কঠিন জিনিস আছে: cache invalidation আর নাম রাখা।
+    ref: old-price-board
+  - q: 'TTL কী, আর কেন প্রতিটা cache entry-তে TTL দেওয়া উচিত?'
+    a: 'TTL হলো entry-র মেয়াদ। মেয়াদ ফুরালে সে মুছে যায়। invalidate করতে ভুলে গেলেও ভুলটা মেয়াদ পর্যন্তই থাকে।'
+    more: |
+      TTL একটা সুরক্ষা জাল। কোডে কোথাও invalidate করা বাদ পড়লে TTL ছাড়া বাসি ডেটা চিরকাল থেকে যেত। TTL ঠিক করার প্রশ্ন: "এই ডেটা সর্বোচ্চ কতক্ষণ পুরনো থাকলে চলে?"
+    ref: ttl-design
+  - q: 'দামের মতো গুরুত্বপূর্ণ ডেটায় TTL কেমন রাখবে?'
+    a: 'ছোট, যেমন ১ মিনিট, আর দাম বদলালেই সরাসরি invalidate।'
+    more: |
+      লম্বা TTL-এ ভুল দাম বেশিক্ষণ থাকে, আবার ছোট TTL একা নিশ্চিত নয়। তাই দুই স্তর: বদলালেই মোছো (প্রধান উপায়), আর ছোট TTL (শেষ ভরসা)।
+    ref: ttl-design
+  - q: 'Cache key-তে কী কী থাকতে হয়?'
+    a: 'যা কিছু উত্তরকে বদলায়: আইডি, ব্যবহারকারী, ভাষা, পাতা, sort, আর আকারের version।'
+    more: |
+      `products` চাবিতে পাতা বা ভাষা না থাকলে ২য় পাতা চাইলেও ১ম পাতা ফেরত আসবে। ব্যবহারকারীভেদে আলাদা ডেটায় ব্যবহারকারী না থাকলে তথ্য ফাঁস হয়। উদাহরণ: `products.v2.cat7.page2.sort-price.bn`।
+    ref: cache-keys
+  - q: 'Versioned cache key কী কাজে লাগে?'
+    a: 'cache-এর ভেতরের আকার বদলালে চাবির version বাড়ালে (v1 থেকে v2) সব পুরনো entry একসাথে অকেজো হয়।'
+    more: |
+      নতুন কোড v2 চাবি খোঁজে, তাই v1 entry-গুলো আর কেউ পড়ে না আর TTL-এ নিজেই মরে। এতে একটা একটা মুছতে হয় না। আকার বদলানো deploy-এর সময় এটা প্রায় বাধ্যতামূলক, নইলে নতুন কোড পুরনো আকারের entry পেয়ে ভেঙে যেতে পারে।
+    ref: cache-keys
+  - q: 'Symfony-তে cache tag কী কাজে লাগে?'
+    a: 'একাধিক entry-কে একটা tag দিয়ে চিহ্নিত রাখলে invalidateTags() একটা কলে সবগুলো মুছে দেয়।'
+    more: |
+      `TagAwareCacheInterface` ব্যবহার করে callback-এ `$item->tag(['product_42'])` দিলেই হয়। পণ্য বদলালে `invalidateTags(['product_42'])`। কোন কোন entry-তে পণ্যটা আছে, তা আলাদা করে মনে রাখতে হয় না। Redis-এ `cache.adapter.redis_tag_aware` ব্যবহার করো।
+    ref: tag-invalidation
+  - q: 'ডেটাবেস বদলে cache মুছতে হলে সঠিক ক্রম কী?'
+    a: 'আগে ডেটাবেসে লেখো ও commit করো, তারপর cache মোছো।'
+    more: |
+      আগে মুছলে ফাঁকে অন্য request পুরনো মান পড়ে cache-এ ভরে দিতে পারে, আর কেউ তাকে আর মোছে না। commit-এর পরে মুছলে পরবর্তী miss নতুন মান আনে। তবুও ছোট ফাঁক থেকে যায়, তাই TTL-ও রাখো।
+    ref: invalidate-after-commit
+
+quiz:
+  - q: 'বিক্রেতা পণ্যের দাম বদলাল, কিন্তু ক্রেতারা ঘণ্টাখানেক পুরনো দাম দেখল। সবচেয়ে সম্ভাব্য কারণ কী?'
+    hint: 'cache কপি রাখে; কপি কে আপডেট করে?'
+    options:
+      - text: 'দাম বদলের কোড cache invalidate করেনি, আর TTL ছিল ১ ঘণ্টা'
+        correct: true
+        why: 'কপি আসলের সাথে বদলায় না; invalidate বা মেয়াদ শেষ না হওয়া পর্যন্ত বাসি থাকে।'
+      - text: 'ডেটাবেসে দাম সেভ হয়নি'
+        correct: false
+        why: 'সেভ না হলে কেউই নতুন দাম দেখত না; এখানে ডেটাবেস ঠিক আর cache পিছিয়ে।'
+      - text: 'Redis খুব ধীর'
+        correct: false
+        why: 'গতির সমস্যা ভুল উত্তর দেয় না, ধীর উত্তর দেয়।'
+      - text: 'ক্রেতার ব্রাউজারে ভাষা ভুল'
+        correct: false
+        why: 'ভাষা দামের সংখ্যা বদলায় না।'
+    ref: old-price-board
+  - q: 'কোন ডেটার জন্য সবচেয়ে ছোট TTL (বা cache না করা) উচিত?'
+    hint: 'ভুল দেখালে কার ক্ষতি সবচেয়ে বেশি?'
+    options:
+      - text: 'ব্যবহারকারীর টাকার ব্যালেন্স আর checkout-এর স্টক'
+        correct: true
+        why: 'ভুল মান সরাসরি আর্থিক ক্ষতি করে, তাই এখানে সঠিকতা গতির ওপরে।'
+      - text: 'দেশের তালিকা'
+        correct: false
+        why: 'এটা প্রায় কখনো বদলায়; লম্বা TTL নিরাপদ।'
+      - text: 'সেরা ১০ পণ্যের তালিকা'
+        correct: false
+        why: '১০ মিনিট পুরনো হলেও কারও ক্ষতি নেই।'
+      - text: 'ব্লগের পুরনো পোস্ট'
+        correct: false
+        why: 'পুরনো পোস্ট বদলায় না, তাই লম্বা TTL চলে।'
+    ref: ttl-design
+  - q: 'নিচের কোডে সমস্যা কী?'
+    lang: php
+    code: |
+      $this->cache->delete('product.'.$id);
+      $product->changePrice($paisa);
+      $this->em->flush();
+    hint: 'মোছা আর flush-এর মাঝের সময়ে আরেকটা request এলে কী পড়বে?'
+    options:
+      - text: 'মোছা আর flush-এর ফাঁকে আসা request পুরনো মান পড়ে cache-এ আবার রেখে দিতে পারে'
+        correct: true
+        why: 'তখন ডেটাবেসে নতুন, cache-এ পুরনো — আর কেউ আবার মুছবে না।'
+      - text: 'delete() কখনো কাজ করে না'
+        correct: false
+        why: 'কাজ করে; সমস্যা ক্রমে, মেথডে নয়।'
+      - text: 'cache-এর চাবিতে বিন্দু থাকা নিষেধ'
+        correct: false
+        why: 'বিন্দু বৈধ; নিষিদ্ধ অক্ষর হলো { } ( ) / \ @ :।'
+      - text: 'changePrice() flush-এর আগে ডাকা উচিত নয়'
+        correct: false
+        why: 'changePrice() flush-এর আগেই ডাকা সঠিক; flush তার পরে।'
+    ref: invalidate-after-commit
+  - q: 'কোন কোন কাজ cache key ঠিকভাবে সাজানোর অংশ?'
+    hint: 'যা উত্তর বদলায়, তা চাবিতে।'
+    options:
+      - text: 'তালিকার চাবিতে পাতা, sort আর ভাষা যোগ করা'
+        correct: true
+        why: 'নইলে ২য় পাতা চাইলেও ১ম পাতার cache ফেরত আসতে পারে।'
+      - text: 'ব্যবহারকারীভেদে আলাদা ডেটার চাবিতে ব্যবহারকারীর আইডি রাখা'
+        correct: true
+        why: 'এতে একজনের তথ্য আরেকজন দেখে ফেলার ভয় কাটে।'
+      - text: 'cache-এর আকার বদলালে চাবিতে version বাড়ানো'
+        correct: true
+        why: 'পুরনো আকারের entry-গুলো আর কেউ পড়ে না, তারা TTL-এ মরে।'
+      - text: 'সব তালিকার জন্য একটাই চাবি রাখা, যাতে মনে রাখা সহজ হয়'
+        correct: false
+        why: 'এক চাবিতে ভিন্ন উত্তর রাখলে একটা আরেকটার জায়গা নেয়।'
+    ref: cache-keys
+  - q: 'একটা পণ্য বদলালে তার নিজের পাতা, তার বিভাগের তালিকা আর হোমপেজের একটা ব্লক — তিনটা আলাদা cache entry মুছতে হয়। সবচেয়ে পরিষ্কার উপায় কী?'
+    hint: 'কোথায় কোথায় পণ্যটা আছে, তা কি আলাদা করে মনে রাখতে চাও?'
+    options:
+      - text: 'তিনটা entry-তেই একটা সাধারণ tag দেওয়া, তারপর invalidateTags() একবার ডাকা'
+        correct: true
+        why: 'tag-ই সেই সম্পর্ক মনে রাখে; একটা কলেই সব মোছে।'
+      - text: 'cache:pool:clear দিয়ে পুরো cache খালি করা'
+        correct: false
+        why: 'সবকিছু মুছলে অন্য সব ডেটার hit-ও হারায়, আর ডেটাবেসে হঠাৎ চাপ আসে।'
+      - text: 'তিনটার TTL ১ সেকেন্ড করে দেওয়া'
+        correct: false
+        why: 'cache-এর লাভই থাকে না।'
+      - text: 'কোডে তিনটা চাবি হাতে লিখে delete() ডাকা'
+        correct: false
+        why: 'নতুন একটা জায়গায় পণ্য cache করা হলে এখানে যোগ করতে ভুলে যাবে; tag এই ভুল থেকে বাঁচায়।'
+    ref: tag-invalidation

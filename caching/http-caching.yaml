@@ -1,0 +1,419 @@
+slides:
+  - slug: same-file-again
+    title: 'একই ফাইল প্রতিবার ডাউনলোড'
+    kind: story
+    tldr: 'Cache-Control না দিলে ব্রাউজার আর CDN জানে না কী রাখবে; ফলে একই JS, ছবি আর API উত্তর প্রতি ভিজিটে মূল সার্ভার থেকে আসে। HTTP caching এই অপচয় থামায়।'
+    keywords: ['HTTP caching', 'Cache-Control', 'browser cache', 'CDN', 'ক্যাশ হেডার', 'bandwidth']
+    blocks:
+      - type: metaphor
+        icon: book
+        title: 'পত্রিকার হকার আর পাড়ার স্টল'
+        body: |
+          প্রেস থেকে পত্রিকা ছাপা হয়। প্রতিদিন প্রতিটা পাঠকের জন্য প্রেসে যেতে হলে কেউ পত্রিকা পেত না। তাই পাড়ার স্টল একসাথে অনেক কপি এনে রাখে, আর পাঠক বাসায় নিয়ে টেবিলে রাখে। প্রেস হলো তোমার সার্ভার, স্টল হলো **CDN**, টেবিলের কপি হলো ব্রাউজারের cache।
+      - type: text
+        body: |
+          রহিমের সাইটে `app.js` ২.৪MB, আর সেটা বদলায় সপ্তাহে একবার। কিন্তু প্রতিটা পেজ খোলায় ব্রাউজার ফাইলটা আবার নামায়। দিনে ৫০ হাজার ভিজিটে এটা ১২০GB bandwidth। সার্ভার একই ফাইল বারবার দিচ্ছে আর ব্যবহারকারী বারবার অপেক্ষা করছে।
+      - type: visual
+        kind: bars
+        caption: 'একই app.js, তিন রকম অবস্থায় প্রতি ভিজিটে কত ডাউনলোড (KB)'
+        items:
+          - {label: 'কোনো নিয়ম নেই', value: 2400, display: '২৪০০KB', tone: bad, tip: 'ব্রাউজার জানে না কী করবে, তাই প্রতিবার পুরোটা নামায়।'}
+          - {label: 'ETag + ৩০৪', value: 3, display: 'প্রায় ১KB', tone: warn, tip: 'ব্রাউজার জিজ্ঞেস করে "বদলেছে?"; সার্ভার শুধু header দিয়ে "না" বলে। বডি নামে না।'}
+          - {label: 'max-age-র ভেতরে', value: 1, display: '০KB', tone: good, tip: 'ব্রাউজার সার্ভারকে কিছুই জিজ্ঞেস করে না, নিজের কপি সোজা ব্যবহার করে।'}
+      - type: quote
+        body: 'যে request সার্ভারে পৌঁছায়ই না, সেটাই সবচেয়ে দ্রুত আর সবচেয়ে সস্তা request।'
+    aside:
+      - type: terms
+        items:
+          - {term: 'CDN', meaning: 'পৃথিবীর নানা জায়গায় রাখা সার্ভারের জাল, যারা তোমার ফাইলের কপি ব্যবহারকারীর কাছাকাছি থেকে দেয়।'}
+          - {term: 'Origin', meaning: 'আসল সার্ভার, যেখান থেকে CDN প্রথমবার ফাইল আনে।'}
+      - type: problem
+        body: 'একই কপি বারবার সার্ভার থেকে না আনা — যাতে পেজ দ্রুত খোলে আর সার্ভারের খরচ কমে।'
+    check:
+      q: 'ব্রাউজার max-age-র মধ্যে থাকা ফাইল আর ETag দিয়ে যাচাই করা ফাইল — কোনটা সার্ভারে request-ই পাঠায় না?'
+      a: 'max-age-র মধ্যে থাকা ফাইল। ব্রাউজার নিজের কপিই সরাসরি ব্যবহার করে। ETag-এ সে অন্তত একটা ছোট request পাঠিয়ে জিজ্ঞেস করে।'
+
+  - slug: cache-control-headers
+    title: 'Cache-Control: কে কতক্ষণ রাখবে'
+    kind: concept
+    tldr: 'Cache-Control header বলে দেয় কে (ব্রাউজার না CDN) উত্তরটা রাখতে পারবে আর কতক্ষণ: max-age, s-maxage, public, private, no-cache, no-store, stale-while-revalidate।'
+    keywords: ['Cache-Control', 'max-age', 's-maxage', 'private', 'public', 'no-store', 'no-cache', 'stale-while-revalidate']
+    blocks:
+      - type: text
+        body: |
+          উত্তরের সাথে সার্ভার একটা নির্দেশনা পাঠায়: Cache-Control। স্টলের ভাষায়: "এই পত্রিকা ঘরে রাখো, ১ দিন", "এটা স্টলে রেখো না, শুধু পাঠকের", "এটা কোথাও রেখো না"। সবচেয়ে বেশি ভুল হয় `no-cache` আর `no-store` গুলিয়ে ফেলায়।
+      - type: visual
+        kind: table
+        caption: 'সবচেয়ে দরকারি Cache-Control directive'
+        headers: ['Directive', 'মানে']
+        rows:
+          - cells: ['max-age=600', 'ব্রাউজার ৬০০ সেকেন্ড সার্ভারকে না জিজ্ঞেসই ব্যবহার করবে']
+            tip: 'মেয়াদ থাকতে request সার্ভারে যায়ই না।'
+          - cells: ['s-maxage=3600', 'শুধু shared cache (CDN)-এর জন্য আলাদা মেয়াদ']
+            tip: 'ব্রাউজারের জন্য ছোট, CDN-এর জন্য লম্বা মেয়াদ দিতে চাইলে এটা।'
+          - cells: ['public / private', 'public: CDN-ও রাখতে পারবে। private: শুধু ব্যবহারকারীর ব্রাউজার']
+            tip: 'ব্যক্তিগত উত্তরে সবসময় private (বা no-store)।'
+          - cells: ['no-cache', 'রাখতে পারো, কিন্তু প্রতিবার সার্ভারকে জিজ্ঞেস করে নাও']
+            tip: 'নাম বিভ্রান্তিকর: এটা "রেখো না" নয়, "না জিজ্ঞেস করে ব্যবহার কোরো না"।'
+          - cells: ['no-store', 'কোথাও কপি রেখো না']
+            tip: 'ব্যাংকের তথ্য বা টোকেনের মতো সংবেদনশীল উত্তরে।'
+          - cells: ['stale-while-revalidate=60', 'মেয়াদের পর ৬০ সেকেন্ড পুরনো কপি দেখাও, পেছনে নতুনটা এনে নাও']
+            tip: 'ব্যবহারকারী অপেক্ষা করে না; cache পেছনে নিজেই হালনাগাদ হয়।'
+      - type: quote
+        body: 'no-cache মানে "না জিজ্ঞেস করে ব্যবহার কোরো না"। কিছু না রাখতে চাইলে no-store।'
+    aside:
+      - type: remember
+        body: 'private = শুধু তোমার টেবিল, public = স্টলও রাখতে পারবে।'
+      - type: tips
+        items:
+          - 'লগইন করা ব্যবহারকারীর কোনো উত্তরে ভুলেও public দিয়ো না।'
+          - 'stale-while-revalidate শুধু HTTP-র নয়, সার্ভারের ভেতরের cache-এও একই ধারণা।'
+      - type: refs
+        items:
+          - {to: 'caching/cache-stampede', label: 'Stale-while-revalidate সার্ভারের ভেতরে'}
+    check:
+      q: 'ব্যবহারকারীর নিজের প্রোফাইলের JSON উত্তরে কোন Cache-Control রাখবে, public নাকি private?'
+      a: 'private (সংবেদনশীল হলে no-store)। public দিলে CDN এক ব্যবহারকারীর প্রোফাইল অন্যদের দেখিয়ে দিতে পারে।'
+
+  - slug: etag-304
+    title: 'ETag: বদলেছে? না — তাহলে ডাউনলোড নয়'
+    kind: concept
+    tldr: 'ETag হলো উত্তরের আঙুলের ছাপ। ব্রাউজার If-None-Match-এ সেটা ফেরত পাঠায়; ছাপ মিললে সার্ভার বডি ছাড়া ৩০৪ দেয়, ব্রাউজার নিজের কপি ব্যবহার করে।'
+    keywords: ['ETag', 'If-None-Match', '304 Not Modified', 'conditional request', 'revalidation', 'Last-Modified']
+    blocks:
+      - type: metaphor
+        icon: id
+        title: 'পত্রিকার সংখ্যা নম্বর'
+        body: |
+          পাঠক স্টলে গিয়ে বলে, "আমার কাছে ৭৪১ নম্বর সংখ্যা আছে, এটাই কি সর্বশেষ?" স্টলওয়ালা মিলিয়ে বলে, "হ্যাঁ, রাখো।" পাঠককে নতুন পত্রিকা নিতে হয় না। সংখ্যা নম্বর হলো ETag, আর "হ্যাঁ, রাখো" হলো ৩০৪।
+      - type: visual
+        kind: sequence
+        caption: 'ETag দিয়ে conditional request'
+        actors:
+          - {id: browser, label: 'ব্রাউজার', icon: browser, tip: 'আগের উত্তর আর তার ETag নিজের কাছে রেখে দিয়েছে।'}
+          - {id: server, label: 'সার্ভার', icon: server, tip: 'ছাপ মিলিয়ে দেখে, দরকার হলে তবেই বডি পাঠায়।'}
+        messages:
+          - {from: browser, to: server, label: 'GET /api/products/42'}
+          - {from: server, to: browser, label: '200 + ETag: "v7a1" + বডি', dashed: true, tip: 'প্রথমবার পুরো উত্তর যায় আর সাথে ছাপও।'}
+          - {at: browser, note: 'উত্তর আর ETag জমা রাখল'}
+          - {from: browser, to: server, label: 'GET + If-None-Match: "v7a1"', tip: 'ব্রাউজার বলছে "আমার কাছে v7a1 আছে, বদলেছে?"।'}
+          - {from: server, to: browser, label: '304 Not Modified (বডি নেই)', dashed: true, tone: good, tip: 'ছাপ মিলেছে। সার্ভার শুধু header পাঠাল, কয়েকশো বাইট।'}
+          - {at: browser, note: 'নিজের কপিই ব্যবহার করল', tone: good}
+          - {from: browser, to: server, label: 'পণ্য বদলের পরে আবার If-None-Match'}
+          - {from: server, to: browser, label: '200 + নতুন ETag: "v7b2" + বডি', dashed: true, tip: 'ছাপ মেলেনি, তাই নতুন উত্তর পুরোটা যায়।'}
+      - type: quote
+        body: 'ETag দিয়ে বডির খরচ বাঁচে, request-এর খরচ নয়। request-ই বাঁচাতে চাইলে max-age।'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Conditional request', meaning: 'শর্ত-সহ request: "বদলে থাকলে তবেই পাঠাও" (If-None-Match বা If-Modified-Since)।'}
+          - {term: 'Weak ETag', meaning: 'W/"..." দিয়ে শুরু; অর্থ একই থাকলেই চলে, বাইট-বাই-বাইট না মিললেও।'}
+      - type: tips
+        items:
+          - 'Last-Modified আর If-Modified-Since একই কাজ করে তারিখ দিয়ে। ETag বেশি নির্ভরযোগ্য, কারণ সেকেন্ডের নিচে বদলও ধরে।'
+    check:
+      q: 'ETag মিললে সার্ভার কী পাঠায়, আর তাতে কী বাঁচে?'
+      a: '৩০৪ Not Modified, বডি ছাড়া। উত্তরের বডি ডাউনলোড বাঁচে, আর ETag সস্তায় মেলানো গেলে বডি বানানোর কাজও বাঁচে।'
+
+  - slug: symfony-http-cache
+    title: 'Symfony-তে header আর ৩০৪'
+    kind: howto
+    tldr: '#[Cache] attribute দিয়ে max-age, public, stale-while-revalidate বসাও; ETag ধরে response->isNotModified() দিয়ে ভারী কাজের আগেই ৩০৪ ফেরত দাও।'
+    keywords: ['#[Cache]', 'isNotModified', 'setEtag', 'Symfony Response', 'smaxage', 'HttpKernel']
+    blocks:
+      - type: text
+        body: |
+          Symfony-তে `Response` অবজেক্টই cache header বানায়। সাধারণ মেয়াদ বসানোর জন্য `#[Cache]` attribute যথেষ্ট। ETag-এর বেলায় কৌশল হলো: ETag এমন কিছু থেকে বানাও যা সস্তায় পাওয়া যায়, যেমন `updatedAt`। তাহলে ভারী JSON বানানোর আগেই মিলিয়ে ৩০৪ ফেরত দেওয়া যায়।
+      - type: code
+        lang: php
+        file: 'src/Controller/ProductController.php'
+        variant: good
+        code: |
+          #[Route('/api/products/{id}', methods: ['GET'])]
+          #[Cache(maxage: 60, smaxage: 600, public: true, staleWhileRevalidate: 120)]
+          public function show(Product $product, Request $request): JsonResponse
+          {
+              $response = new JsonResponse();
+              $response->setEtag(md5($product->getId().'|'.$product->getUpdatedAt()->format('U.u')));
+
+              if ($response->isNotModified($request)) {
+                  return $response;            // ৩০৪: ভারী কাজ না করেই ফেরত
+              }
+
+              return $response->setData(ProductView::from($product)->toArray());
+          }
+        marks:
+          - {line: 2, tip: 'ব্রাউজার ১ মিনিট, CDN ১০ মিনিট রাখবে। মেয়াদের পরে ২ মিনিট পুরনো কপিও চলবে।'}
+          - {line: 6, tip: 'ETag বানানো হয় আইডি আর শেষ বদলের সময় থেকে। বডি বানানোর দরকার হয় না।'}
+          - {line: 8, tip: 'isNotModified() request-এর If-None-Match মিলিয়ে দেখে, আর মিললে নিজেই ৩০৪ বসিয়ে দেয়।'}
+      - type: code
+        lang: php
+        file: 'src/Controller/ProfileController.php'
+        variant: good
+        code: |
+          #[Route('/api/me', methods: ['GET'])]
+          public function me(): JsonResponse
+          {
+              $response = $this->json(ProfileView::from($this->getUser()));
+              $response->setPrivate();                                   // CDN রাখবে না
+              $response->headers->addCacheControlDirective('no-store');  // কোথাওই না
+
+              return $response;
+          }
+        marks:
+          - {line: 5, tip: 'ব্যক্তিগত উত্তর: private বলে দেওয়া সবচেয়ে সংক্ষিপ্ত সুরক্ষা।'}
+          - {line: 6, tip: 'ব্রাউজারেও জমা রাখতে না চাইলে no-store।'}
+    aside:
+      - type: tips
+        items:
+          - 'Symfony-তে session ব্যবহার হলে উত্তর নিজে থেকেই private হয়ে যায়; তবু ব্যক্তিগত API-তে নিজে স্পষ্ট করে লেখো।'
+          - 'কোনো উত্তর অনেক জায়গায় বদলাতে পারে? ETag-এ তার সব উপাদান (আইডি, updatedAt, ভাষা) ঢোকাও।'
+      - type: commands
+        title: 'দেখে নাও'
+        items:
+          - {cmd: 'curl -I https://shop.test/api/products/42', desc: 'response header দেখো'}
+          - {cmd: 'curl -I -H ''If-None-Match: "<etag>"'' https://shop.test/api/products/42', desc: '৩০৪ পাওয়া যায় কি না পরীক্ষা'}
+    check:
+      q: 'ETag-এ কেন আইডি আর updatedAt ব্যবহার করা হলো, পুরো JSON-এর hash নয়?'
+      a: 'JSON-এর hash বের করতে আগে পুরো JSON বানাতে হয়, তাতে ৩০৪-এর লাভ থাকে না। updatedAt সস্তায় পাওয়া যায়, তাই ভারী কাজের আগেই মিলিয়ে ফেরত দেওয়া যায়।'
+
+  - slug: cdn-keys-busting
+    title: 'CDN, cache key আর cache busting'
+    kind: concept
+    tldr: 'CDN URL (আর Vary-র header) দিয়ে cache key বানায়; hash-সহ ফাইলের নাম আর এক বছরের immutable মেয়াদ দিলে নতুন deploy-এ পুরনো ফাইলের cache নিজে থেকেই এড়ানো যায়।'
+    keywords: ['CDN', 'cache key', 'Vary', 'cache busting', 'immutable', 'fingerprinted assets', 'hashed filename']
+    blocks:
+      - type: visual
+        kind: flow
+        caption: 'CDN কীভাবে একই ফাইল বহুজনকে দেয়'
+        nodes:
+          - {id: user, label: 'ব্যবহারকারী', sub: 'ঢাকায়', icon: user, col: 0, row: 1, tip: 'কাছের CDN সার্ভারে request পাঠায়।'}
+          - {id: cdn, label: 'CDN', sub: 'কাছের edge', icon: cdn, tone: accent, col: 1.5, row: 1, tip: 'URL আর Vary-র header মিলিয়ে cache key বানায়, তারপর সেই key দিয়ে কপি খোঁজে।'}
+          - {id: origin, label: 'মূল সার্ভার', sub: 'origin', icon: server, col: 3, row: 1, tip: 'শুধু miss হলে ডাকা হয়। Cache-Control দিয়ে CDN-কে বলে দেয় কত সময় রাখতে হবে।'}
+        edges:
+          - {from: user, to: cdn, label: 'ব্যবহারকারী কাছের CDN-এ ফাইল চায়'}
+          - {from: cdn, to: origin, label: 'CDN-এ নেই (miss), তাই মূল সার্ভারে যায়'}
+          - {from: origin, to: cdn, label: 'সার্ভার ফাইল আর Cache-Control পাঠায়', dashed: true}
+          - {from: cdn, to: user, label: 'CDN কপি রেখে ব্যবহারকারীকে ফাইল দেয়', dashed: true}
+          - {from: user, to: cdn, label: 'পরের জন একই ফাইল চাইলে CDN সরাসরি দেয় (hit)', tone: good}
+      - type: text
+        body: |
+          CDN-এর cache key সাধারণত URL। `/app.js?v=1` আর `/app.js?v=2` আলাদা key। আর `Vary: Accept-Language` দিলে ভাষা অনুযায়ী আলাদা কপি রাখে। cache busting মানে ফাইলের নামে তার বিষয়বস্তুর hash রাখা (`app-3f9a1c.js`)। বিষয়বস্তু বদলালে নাম বদলায়, তাই পুরনো cache আপনাআপনি বাদ।
+      - type: code
+        lang: nginx
+        file: 'nginx.conf'
+        code: |
+          # hash-সহ ফাইল: নাম বদলালে নতুন URL, তাই এক বছর রাখা নিরাপদ
+          location /assets/ {
+              add_header Cache-Control "public, max-age=31536000, immutable";
+          }
+
+          # HTML পাতা: সবসময় জিজ্ঞেস করে নাও, কারণ ভেতরে নতুন hash-এর লিংক থাকে
+          location / {
+              add_header Cache-Control "no-cache";
+          }
+        marks:
+          - {line: 3, tip: 'immutable বলে দেয়, এই ফাইল কখনো বদলাবে না, তাই reload করলেও জিজ্ঞেস কোরো না।'}
+          - {line: 8, tip: 'HTML যদি লম্বা রাখো, নতুন deploy-এর পরেও ব্যবহারকারী পুরনো ফাইলের লিংক দেখবে।'}
+      - type: quote
+        body: 'ফাইলের নামে hash রাখো, মেয়াদ এক বছর দাও। HTML-কে সবসময় ছোট মেয়াদে রাখো।'
+    aside:
+      - type: tips
+        items:
+          - 'Symfony AssetMapper, Webpack Encore আর Vite — সবাই প্রোডাকশনে ফাইলের নামে hash বসায়। নিজে বসাতে হয় না।'
+          - 'CDN-এ ভুলে আটকে যাওয়া ফাইল জরুরি হলে CDN-এর purge/invalidate সুবিধা দিয়ে মোছো।'
+      - type: pitfalls
+        items:
+          - '`Vary: Cookie` বা প্রতিটা request-এ আলাদা query string দিলে প্রতিটা request আলাদা key পায়, hit প্রায় শূন্য হয়ে যায়।'
+    check:
+      q: 'এক বছরের মেয়াদ দেওয়া app.js-এ নতুন কোড deploy করলে ব্যবহারকারী কীভাবে নতুন ফাইল পাবে?'
+      a: 'নতুন ফাইলের নাম নতুন hash পায় (app-9b2e7d.js), HTML সেই নতুন নামের লিংক দেয়। নতুন URL মানে নতুন cache key, তাই পুরনো কপির প্রশ্নই ওঠে না।'
+
+  - slug: public-cache-leak
+    title: 'ভুল public: একজনের পাতা সবাইকে'
+    kind: pitfall
+    tldr: 'ব্যক্তিগত বা cookie-নির্ভর উত্তরে public বা s-maxage দিলে CDN এক ব্যবহারকারীর পাতা অন্যদের পরিবেশন করে ফেলে; এটা সরাসরি তথ্য ফাঁস।'
+    keywords: ['cache leak', 'private data', 'public cache', 'Vary Cookie', 'CDN leak', 'তথ্য ফাঁস']
+    blocks:
+      - type: text
+        body: |
+          পাড়ার স্টলে যদি রহিমের নাম লেখা, তার নিজের জন্য আনা পত্রিকা "সবার জন্য" বলে রাখা হয়, করিম সেটা নিয়ে যাবে। নিচের কোডে dashboard-এ `public` আর `smaxage` দেওয়া হয়েছে। CDN প্রথম ব্যবহারকারীর dashboard ১০ মিনিট সবাইকে দেখাবে।
+      - type: code
+        lang: php
+        file: 'src/Controller/DashboardController.php'
+        variant: bad
+        code: |
+          #[Route('/api/dashboard')]
+          #[Cache(public: true, smaxage: 600)]     // বিপদ: CDN সবাইকে একই উত্তর দেবে
+          public function dashboard(): JsonResponse
+          {
+              return $this->json($this->dashboards->forUser($this->getUser()));
+          }
+        marks:
+          - {line: 2, tip: 'public + smaxage = CDN ১০ মিনিট কপি রাখবে, URL একই হলে যে-ই চাক।'}
+          - {line: 5, tip: 'উত্তরটা getUser()-এর ওপর নির্ভর করে, অথচ cache key-তে ব্যবহারকারী নেই।'}
+      - type: code
+        lang: php
+        file: 'src/Controller/DashboardController.php'
+        variant: good
+        code: |
+          #[Route('/api/dashboard')]
+          #[Cache(maxage: 0, private: true, mustRevalidate: true)]
+          public function dashboard(): JsonResponse
+          {
+              return $this->json($this->dashboards->forUser($this->getUser()));
+          }
+        marks:
+          - {line: 2, tip: 'private: শুধু ব্যবহারকারীর নিজের ব্রাউজার রাখতে পারে। CDN রাখবে না।'}
+      - type: points
+        title: 'public করার আগে তিন প্রশ্ন'
+        style: check
+        items:
+          - 'উত্তরটা কি সব ব্যবহারকারীর জন্য একদম এক?'
+          - 'Request-এ cookie বা Authorization header আছে কি, যা উত্তর বদলায়?'
+          - 'ভাষা বা দেশের মতো কিছু উত্তর বদলালে Vary header আছে কি?'
+    aside:
+      - type: pitfalls
+        items:
+          - 'সবকিছু public করে CDN-এর hit বাড়ানোর লোভ সামলাও; একটা ভুল public header একটা তথ্য ফাঁসের ঘটনা।'
+          - 'শুধু অ্যাপে test করলে এই ভুল ধরা পড়ে না; CDN-এর সামনে থেকে header আর উত্তর যাচাই করো।'
+      - type: remember
+        body: 'ব্যক্তিগত উত্তর = private (বা no-store)। public মানে "সবাই একই জিনিস পাবে"।'
+    check:
+      q: 'Authorization header-ওয়ালা API উত্তরে Cache-Control: public, s-maxage=600 দিলে কী ঝুঁকি?'
+      a: 'CDN উত্তরটা URL ধরে জমায় আর অন্য ব্যবহারকারীকে সেটাই দিতে পারে; ফলে একজনের ব্যক্তিগত তথ্য আরেকজন দেখে ফেলে।'
+
+flashcards:
+  - q: 'HTTP caching কেন দরকার?'
+    a: 'একই ফাইল বা উত্তর বারবার সার্ভার থেকে না এনে ব্রাউজার বা CDN-এর কপি ব্যবহার করতে, যাতে পেজ দ্রুত খোলে আর সার্ভারের খরচ কমে।'
+    more: |
+      যে request সার্ভারে পৌঁছায়ই না, সেটা সবচেয়ে দ্রুত। সার্ভার তখন শুধু সেটাই বানায় যা সত্যিই বদলেছে। এতে bandwidth-ও কমে, যা CDN বা ক্লাউডের বিলে সরাসরি পড়ে।
+    ref: same-file-again
+  - q: 'Cache-Control: no-cache আর no-store-এর তফাত কী?'
+    a: 'no-cache: কপি রাখা যাবে, কিন্তু ব্যবহারের আগে সার্ভারকে জিজ্ঞেস করতে হবে। no-store: কোথাও কপি রাখা যাবে না।'
+    more: |
+      নামের কারণে no-cache প্রায়ই ভুল বোঝা হয়। সংবেদনশীল উত্তরে (টোকেন, ব্যাংকের তথ্য) no-store ব্যবহার করো। HTML পাতায় সাধারণত no-cache চলে: ব্রাউজার ETag দিয়ে যাচাই করে, বদলায়নি হলে ৩০৪।
+    ref: cache-control-headers
+  - q: 'public আর private cache-এর তফাত কী?'
+    a: 'private: শুধু ব্যবহারকারীর নিজের ব্রাউজার রাখতে পারে। public: CDN বা proxy-ও রাখতে পারে।'
+    more: |
+      ব্যক্তিগত উত্তর, যেমন dashboard বা প্রোফাইল, private হতে হবে। public cache সবাইকে একই কপি দেয়, তাই সেটা শুধু সবার জন্য এক এমন উত্তরে নিরাপদ। `s-maxage` শুধু shared cache-এ প্রযোজ্য।
+    ref: cache-control-headers
+  - q: 'ETag আর If-None-Match কীভাবে কাজ করে?'
+    a: 'সার্ভার উত্তরের সাথে ETag দেয়। ব্রাউজার পরে If-None-Match-এ সেটা পাঠায়; মিললে সার্ভার বডি ছাড়া ৩০৪ দেয়।'
+    more: |
+      ৩০৪ Not Modified মানে "তোমার কপিই ঠিক, নতুন কিছু নেই"। বডি নামে না, তাই ডাউনলোড বাঁচে। request তবুও সার্ভারে যায়, তাই সেই খরচটা বাঁচাতে চাইলে max-age দিতে হয়।
+    ref: etag-304
+  - q: 'stale-while-revalidate=60 কী করে?'
+    a: 'মেয়াদ ফুরানোর পর ৬০ সেকেন্ড পুরনো কপি দেখানো চলে, আর পেছনে cache নতুন কপি এনে নেয়।'
+    more: |
+      ব্যবহারকারী অপেক্ষা করে না, কারণ সে সাথে সাথে পুরনো কপি পায়। পরের request নতুন কপি পায়। সার্ভারের ভেতরের cache-এও একই ধারণা কাজ করে; দাম হলো সামান্য সময় পুরনো তথ্য।
+    ref: cache-control-headers
+  - q: 'Cache busting কী?'
+    a: 'ফাইলের নামে তার বিষয়বস্তুর hash রাখা (app-3f9a1c.js), যাতে বদলালে নাম বদলায় আর পুরনো cache এড়ানো যায়।'
+    more: |
+      hash-সহ ফাইলের নাম নতুন হলে সেটা নতুন URL, মানে নতুন cache key। তাই ওই ফাইলে এক বছরের `immutable` মেয়াদ দেওয়া নিরাপদ। HTML পাতা ছোট মেয়াদে রাখতে হয়, কারণ নতুন নামের লিংক HTML-এই থাকে।
+    ref: cdn-keys-busting
+  - q: 'CDN-এ cache key কী দিয়ে ঠিক হয়?'
+    a: 'সাধারণত URL (query string সহ), আর Vary header-এ বলা request header (যেমন Accept-Language)।'
+    more: |
+      একই URL-এর ভিন্ন উত্তর (ভাষা, ডিভাইস) থাকলে Vary দিতে হয়, নইলে ভুল কপি যায়। আবার `Vary: Cookie` দিলে প্রতিটা ব্যবহারকারী আলাদা key পায়, hit শূন্য হয়ে যায়। তাই Vary অল্পই দাও।
+    ref: cdn-keys-busting
+  - q: 'কোন উত্তরে Cache-Control: public দেওয়া বিপজ্জনক?'
+    a: 'যে উত্তর ব্যবহারকারী বা cookie অনুযায়ী আলাদা হয়, যেমন dashboard, প্রোফাইল, কার্ট।'
+    more: |
+      CDN URL ধরে কপি রাখে। উত্তরটা ব্যবহারকারীর ওপর নির্ভর করলে প্রথম জনের কপি অন্যরা পেয়ে যায়, আর এটা তথ্য ফাঁস। এসব উত্তরে private বা no-store দাও।
+    ref: public-cache-leak
+
+quiz:
+  - q: 'নিচের header-এর অর্থ কী?'
+    lang: http
+    code: |
+      Cache-Control: public, max-age=60, s-maxage=600, stale-while-revalidate=120
+    hint: 'ব্রাউজার আর CDN-এর মেয়াদ আলাদা।'
+    options:
+      - text: 'ব্রাউজার ৬০ সেকেন্ড, CDN ৬০০ সেকেন্ড রাখতে পারবে; মেয়াদের পর ১২০ সেকেন্ড পুরনো কপি চলবে'
+        correct: true
+        why: 's-maxage শুধু shared cache-এর জন্য, max-age ব্রাউজারের জন্য; SWR পুরনো কপির অনুমতি।'
+      - text: 'কোনো cache কিছু রাখবে না'
+        correct: false
+        why: 'সেটা no-store-এর অর্থ।'
+      - text: 'শুধু ব্যবহারকারীর ব্রাউজার ৬০০ সেকেন্ড রাখবে'
+        correct: false
+        why: 'public বলছে CDN-ও রাখতে পারবে, আর ৬০০ s-maxage, যা CDN-এর।'
+      - text: 'প্রতিবার সার্ভারকে জিজ্ঞেস করতে হবে'
+        correct: false
+        why: 'সেটা no-cache; এখানে মেয়াদের ভেতরে জিজ্ঞেস করার দরকারই নেই।'
+    ref: cache-control-headers
+  - q: 'ক্লায়েন্টের কাছে ETag "v7a1" আছে। সার্ভারে পণ্য বদলায়নি। ক্লায়েন্ট If-None-Match দিয়ে request পাঠালে কী ঘটে?'
+    hint: 'বদলায়নি — তাহলে বডি পাঠানোর দরকার আছে?'
+    options:
+      - text: 'সার্ভার বডি ছাড়া ৩০৪ Not Modified দেয়; ক্লায়েন্ট নিজের কপি ব্যবহার করে'
+        correct: true
+        why: 'ছাপ মিলেছে, তাই ডাউনলোড বাঁচে।'
+      - text: 'সার্ভার ২০০ দিয়ে পুরো বডি আবার পাঠায়'
+        correct: false
+        why: 'এটা তখন ঘটে যখন ছাপ মেলে না, মানে পণ্য বদলেছে।'
+      - text: 'সার্ভার ৪০৪ দেয়'
+        correct: false
+        why: '৪০৪ মানে রিসোর্সই নেই; এখানে আছে, শুধু বদলায়নি।'
+      - text: 'ক্লায়েন্ট request-ই পাঠায় না'
+        correct: false
+        why: 'পাঠায়, মেয়াদ ফুরানোর পরে যাচাইয়ের জন্য। request না পাঠানো max-age-র কাজ।'
+    ref: etag-304
+  - q: 'কোন কোন উত্তরে Cache-Control: public, s-maxage=600 দেওয়া নিরাপদ?'
+    hint: 'সবার জন্য একই কি না?'
+    options:
+      - text: 'সবার জন্য একই পণ্যের তালিকা, যেখানে কোনো ব্যক্তিগত তথ্য নেই'
+        correct: true
+        why: 'সব ব্যবহারকারী একই উত্তর পায়, তাই CDN-এর কপি সবার জন্য সঠিক।'
+      - text: 'hash-সহ app-3f9a1c.js'
+        correct: true
+        why: 'বিষয়বস্তু বদলালে নাম বদলায়, তাই কপি বাসি হয় না।'
+      - text: 'লগইন করা ব্যবহারকারীর কার্ট'
+        correct: false
+        why: 'ব্যবহারকারীভেদে আলাদা; CDN প্রথম জনের কার্ট সবাইকে দেখাবে।'
+      - text: 'Authorization header দিয়ে পাওয়া /api/me'
+        correct: false
+        why: 'ব্যক্তিগত উত্তর; public হলে তথ্য ফাঁস।'
+    ref: public-cache-leak
+  - q: 'রহিম নতুন deploy করার পর বলছে, "কিছু ব্যবহারকারী এখনো পুরনো JS দেখছে।" app.js-এ max-age ১ বছর, নামে hash নেই। সবচেয়ে ভালো সমাধান কী?'
+    hint: 'ব্রাউজার কীভাবে বুঝবে ফাইল বদলেছে?'
+    options:
+      - text: 'ফাইলের নামে বিষয়বস্তুর hash যোগ করা (app-<hash>.js), আর HTML-এ নতুন লিংক দেওয়া'
+        correct: true
+        why: 'নতুন নাম মানে নতুন URL মানে নতুন cache key; পুরনো কপির কোনো প্রভাব থাকে না।'
+      - text: 'max-age ৫ সেকেন্ড করে দেওয়া'
+        correct: false
+        why: 'cache-এর লাভই চলে যায়; ফাইল সবসময় আবার নামে।'
+      - text: 'ব্যবহারকারীদের Ctrl+F5 চাপতে বলা'
+        correct: false
+        why: 'ব্যবহারকারীর ওপর দায় চাপানো কোনো সমাধান নয়।'
+      - text: 'no-store দেওয়া'
+        correct: false
+        why: 'তাহলে প্রতিবার ২.৪MB নামবে; সমস্যার জায়গায় অপচয়।'
+    ref: cdn-keys-busting
+  - q: 'নিচের Symfony কোডে সমস্যা কী?'
+    lang: php
+    code: |
+      #[Route('/api/me/orders')]
+      #[Cache(public: true, smaxage: 300)]
+      public function orders(): JsonResponse
+      {
+          return $this->json($this->orders->forUser($this->getUser()));
+      }
+    hint: 'CDN কার জন্য কপি রাখছে?'
+    options:
+      - text: 'public আর smaxage থাকায় CDN এক ব্যবহারকারীর অর্ডার অন্যদের দেখাতে পারে'
+        correct: true
+        why: 'উত্তর getUser()-এর ওপর নির্ভর করে, কিন্তু CDN-এর key শুধু URL।'
+      - text: 'smaxage-এর মান খুব বড়, ৩০ সেকেন্ড হলে নিরাপদ'
+        correct: false
+        why: 'ছোট মেয়াদেও ফাঁস ঘটে, শুধু সময়টা কম।'
+      - text: 'JsonResponse-এ cache header বসানো যায় না'
+        correct: false
+        why: 'যায়, সব Response-এই বসে।'
+      - text: 'আসলে কোনো সমস্যা নেই, কারণ Symfony নিজেই সব সামলায়'
+        correct: false
+        why: 'স্পষ্টভাবে public লিখলে Symfony সেটা মানে; দায় তোমার।'
+    ref: public-cache-leak
