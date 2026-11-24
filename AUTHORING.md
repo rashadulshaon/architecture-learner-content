@@ -52,7 +52,13 @@ show exactly how to do it properly.
 
 ## 2. Voice and language — Bangla edition
 
-- Bangla, চলিত ভাষা, friendly, addressing the learner as **তুমি**. Short sentences.
+- Bangla, চলিত ভাষা, friendly but respectful, addressing the learner as **আপনি** — never
+  তুমি. Every form that speaks to the learner takes the আপনি conjugation: আপনার, আপনাকে;
+  করুন, দেখুন, রাখুন, লিখুন, দিন, নিন, চালান, পাঠান (commands); করেন, পারেন, জানেন, পান
+  (present); করছেন, করেছেন, করবেন, পারবেন (other tenses); চলুন (let's). This covers prose,
+  `check`, flashcards, quiz, step bodies, tips and code comments. Third-person verbs stay as
+  they are (সার্ভার ক্র্যাশ করবে), and so does a conditional (deploy করলে). Story characters
+  may speak to each other in whatever register fits them. Short sentences.
 - Precise technical terms stay in English/Latin script: cache, queue, request, response,
   index, lock, transaction, retry, timeout, token, idempotency key, deploy.
   Words that are everyday Bangla are written in Bangla: সার্ভার, ডেটাবেস, কোড, অ্যাপ, ইমেইল,
@@ -138,6 +144,22 @@ names and numbers. Put the visual right after the sentence that introduces it.
 
 **Worked examples.** For implementation, show `variant: bad` (what a CRUD developer would
 naturally write) and then `variant: good`. Use `marks` to explain the 1–3 lines that matter.
+
+**Problem and fix, side by side (contrast).** The learner understands a fix only by seeing
+what it fixes. Whenever a slide names a problem, it must also *show* the fix, and whenever it
+recommends a fix, it must show what goes wrong without it — in the same slide or the next one,
+never "later" or only in an aside. Concretely:
+
+- A fix that is named must be demonstrated (code, config, a sequence, worked numbers), not
+  just mentioned. "Use a shared language" without the before/after rename teaches nothing.
+- The fix must actually solve the problem the story set up. If the story crashes at row
+  4,000, the code must show how the re-run finishes the file.
+- A recommendation states its price: what it costs, what it cannot do, and when not to use
+  it. A trade-off with only one side is an advert.
+- Numbers must add up across text, visual and code. Scale is made concrete ("1,000 orders a
+  minute is about 17 every second — one server handles that easily"), because the learner
+  does not yet know which volume is big.
+- Every technical claim must be true. A wrong claim taught confidently is worse than none.
 
 **Make truths stand out (isolation effect).** A non-negotiable rule goes in a `quote` block,
 one per slide at most, phrased so it can be memorised word for word.
@@ -269,7 +291,7 @@ text + metaphor bodies together max 780 characters.
   body: |                       # 20–460
     …
 - type: points
-  title: 'মনে রাখো'              # optional, max 48
+  title: 'মনে রাখুন'             # optional, max 48
   style: check                  # dot (default) | check | cross | number
   items: ['…', '…']             # 2–5 items, each max 150
 - type: quote
@@ -361,7 +383,7 @@ down, "easy to change" → "hard to change").
 ```yaml
   kind: steps
   steps:                        # 3–6
-    - {title: '১. Expand', body: 'নতুন কলাম যোগ করো', tip: '…'}   # title 30, body 120
+    - {title: '১. Expand', body: 'নতুন কলাম যোগ করুন', tip: '…'}   # title 30, body 120
 ```
 
 **table** — a cheat-sheet grid. First header may be `''`.
@@ -397,7 +419,7 @@ sequence. *Stacked levels* → layers. *A or B* → compare. *Do this, then this
 - type: commands
   title: 'Messenger কমান্ড'                    # optional, max 40
   items:                                      # 1–6
-    - {cmd: 'php bin/console messenger:consume async', desc: 'worker চালু করো'}
+    - {cmd: 'php bin/console messenger:consume async', desc: 'worker চালু করুন'}
 - type: terms
   items:                                      # 1–5
     - {term: 'TTL', meaning: 'কতক্ষণ পরে জিনিসটা বাসি ধরা হবে'}
