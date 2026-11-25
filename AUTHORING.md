@@ -1,6 +1,6 @@
-# Easy Architecture — content authoring guide
+# Architecture Learner — content authoring guide
 
-Easy Architecture is a visual learning site that teaches system design and software
+Architecture Learner is a visual learning site that teaches system design and software
 architecture. You write the content. The site renders it; you never write HTML.
 
 Read this whole guide, then read the two finished example files — they are the quality bar:
@@ -55,8 +55,8 @@ show exactly how to do it properly.
 - No filler, no hype, no "let's dive in". No emoji in prose. Every sentence must teach.
 - Be technically correct. State the industry-standard opinion plainly; when something is a
   genuine trade-off, say what decides it.
-- Interface words, when a lesson mentions them: the four rooms are **Learn**, **Flashcards**,
-  **Quiz** and **Bookmarks**; the recall question under a slide is **Ask yourself**; the button
+- Interface words, when a lesson mentions them: the three rooms are **Lesson**,
+  **Flashcards** and **Quiz**; there are no accounts or bookmarks; the recall question under a slide is **Ask yourself**; the button
   on a flashcard is **Learn more**; slide kinds are labelled Problem, Concept, Hands-on,
   Pitfall, Compare and Recap.
 
