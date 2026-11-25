@@ -16,7 +16,7 @@ slides:
           [02:01:13] app.INFO: Checkout started
           [02:01:13] app.INFO: Checkout started
           [02:01:14] app.INFO: Calling payment gateway
-          [02:01:14] app.ERROR: Payment failed for user rahim@example.com
+          [02:01:14] app.ERROR: Payment failed for user ryan@example.com
           [02:01:14] app.INFO: Order saved
           [02:01:15] app.ERROR: Something went wrong
           [02:01:15] app.INFO: Sending confirmation email
@@ -45,9 +45,9 @@ slides:
     blocks:
       - type: metaphor
         icon: truck
-        title: 'The courier''s booking form'
+        title: 'The shipping label'
         body: |
-          Book a parcel at a courier office and nobody accepts a handwritten letter. You fill in a form with boxes: sender, receiver, weight, destination. Because each fact has its own box, "how many parcels went to Khulna today?" takes a minute to answer. A structured log works the same way: each line is a JSON record with a fixed message and the changing facts in separate fields (the context).
+          Ship a package at a delivery company's counter and nobody accepts a handwritten note. You fill in a form with boxes: sender, receiver, weight, destination. Because each fact has its own box, "how many packages went to Chicago today?" takes a minute to answer. A structured log works the same way: each line is a JSON record with a fixed message and the changing facts in separate fields (the context).
       - type: visual
         kind: compare
         caption: 'The same event, written two ways'
@@ -79,7 +79,7 @@ slides:
               // fixed message; everything that varies goes in the context
               $this->logger->error('payment.failed', [
                   'order_id' => $order->getId(),
-                  'gateway' => 'bkash',
+                  'gateway' => 'stripe',
                   'amount_minor' => $order->getTotalMinor(),
                   'exception' => $e,
               ]);
@@ -133,9 +133,9 @@ slides:
     blocks:
       - type: metaphor
         icon: tag
-        title: 'The parcel''s tracking number'
+        title: 'The package''s tracking number'
         body: |
-          A courier sticks a tracking number on the parcel the moment you book it. Whether it's scanned at the Dhaka hub, on the truck or at the Khulna hub, the same number goes into the ledger. Search that number later and the whole journey appears as one list.
+          A delivery company sticks a tracking number on the package the moment you book it. Whether it's scanned at the Dallas hub, on the truck or at the Chicago hub, the same number goes into the ledger. Search that number later and the whole journey appears as one list.
       - type: text
         body: |
           A **correlation ID** is that tracking number for a request. Create it once at the front door, or reuse the one an upstream service already sent. Then a Monolog **processor** (a small piece of code that runs just before each log record is written) stamps the number on every line. Nobody has to type it by hand.
@@ -254,7 +254,7 @@ slides:
         rows:
           - cells: ['02:01:13', 'Shop API', 'checkout.started  order_id=5512']
             tip: 'The request arrives and gets the number 0191-ab.'
-          - cells: ['02:01:14', 'Payment service', 'payment.charged  gateway=bkash']
+          - cells: ['02:01:14', 'Payment service', 'payment.charged  gateway=stripe']
             tip: 'The customer''s money is taken. This line comes from another service but carries the same number.'
           - cells: ['02:01:14', 'Shop API', 'order.save_failed  reason=lock_timeout']
             tip: 'The database gave up waiting for a lock, so no order was created. This is where the story broke.'
@@ -410,7 +410,7 @@ slides:
         icon: map
         title: 'Time on the tracking page'
         body: |
-          A courier's tracking page doesn't only list where the parcel went. It also shows how long it sat at each stop: 2 hours at the Dhaka hub, 6 hours on the truck, 19 hours at the Khulna hub. Nobody has to tell you where the delay is.
+          A delivery company's tracking page doesn't only list where the package went. It also shows how long it sat at each stop: 2 hours at the Dallas hub, 6 hours on the truck, 19 hours at the Chicago hub. Nobody has to tell you where the delay is.
       - type: text
         body: |
           Distributed tracing gives you exactly this picture. One request's whole journey is a **trace**. Each step of it, a query or an outside call, is a **span**, recorded with its start time, its duration and its parent span. **OpenTelemetry** is the open standard and toolkit that creates spans and ships them to a collector, a small service that gathers them for a viewer. Logs tell you what happened; a trace tells you where the time went.
@@ -420,7 +420,7 @@ slides:
         items:
           - {label: 'POST /checkout', value: 820, display: '820ms', tone: accent, tip: 'The root span, the whole request. All the spans below are its children and fit inside it; the remaining ~100ms is PHP''s own work.'}
           - {label: 'SELECT cart', value: 35, display: '35ms', tone: good, tip: 'Reading the cart from the database. Fast, nothing to chase here.'}
-          - {label: 'bKash API call', value: 640, display: '640ms', tone: bad, tip: 'Almost 80% of the total time is here. The log shows no error, yet this is the real cause of the slowness.'}
+          - {label: 'Stripe API call', value: 640, display: '640ms', tone: bad, tip: 'Almost 80% of the total time is here. The log shows no error, yet this is the real cause of the slowness.'}
           - {label: 'INSERT order', value: 25, display: '25ms', tone: good, tip: 'Writing the order to the database, a normal duration.'}
           - {label: 'message to queue', value: 12, display: '12ms', tone: good, tip: 'Putting the email job on the queue. The worker''s spans join the same trace.'}
       - type: code
@@ -441,11 +441,11 @@ slides:
           - {line: 8, tip: 'Keeps the traces of 10% of requests (sampling). Keeping all of them raises storage cost and overhead. The price: the one request you wanted may be in the 90% dropped.'}
       - type: code
         lang: php
-        file: 'src/Payment/BkashGateway.php'
+        file: 'src/Payment/StripeGateway.php'
         variant: good
         code: |
           $span = Globals::tracerProvider()->getTracer('shop')
-              ->spanBuilder('bkash.charge')
+              ->spanBuilder('stripe.charge')
               ->startSpan();
           $scope = $span->activate();
 
@@ -499,7 +499,7 @@ flashcards:
   - q: 'What is a correlation ID?'
     a: 'A tracking number for one request, identical across every service, queue, worker and log line it touches.'
     more: |
-      Like a parcel's tracking number: wherever it's scanned, the same number is written down. Type the number into your log tool and the lines from the API, the payment service and the worker line up in time order. Now you can read the whole story of one request.
+      Like a package's tracking number: wherever it's scanned, the same number is written down. Type the number into your log tool and the lines from the API, the payment service and the worker line up in time order. Now you can read the whole story of one request.
     ref: correlation-id
   - q: 'Where is a correlation ID created, and what if the request already has one?'
     a: 'At the first door into your system. If an upstream service already sent one in a header, validate it and reuse it instead of making a new one.'
@@ -564,7 +564,7 @@ quiz:
         correct: false
         why: 'A successful payment is normal, so info is right. Use error only when something broke and someone needs to look.'
     ref: structured-logging
-  - q: 'Sumi''s API logs all carry a correlation ID, but the email worker''s logs don''t, so she can''t find out why an email never went out. What is the right fix?'
+  - q: 'Sarah''s API logs all carry a correlation ID, but the email worker''s logs don''t, so she can''t find out why an email never went out. What is the right fix?'
     hint: 'The worker is a separate process. How would it learn the number held in the request''s memory?'
     options:
       - text: 'Generate a new ID in the worker for each message'
@@ -580,7 +580,7 @@ quiz:
         correct: false
         why: 'You get more lines, but still no way to tell which line belongs to which request.'
     ref: id-across-boundaries
-  - q: 'Riyad''s team passes correlation_id by hand in every logger call, and sometimes forgets. What is the best fix?'
+  - q: 'Eric''s team passes correlation_id by hand in every logger call, and sometimes forgets. What is the best fix?'
     hint: 'What runs by itself just before every log record is written?'
     options:
       - text: 'Prepend the ID to the message as a string'
@@ -597,7 +597,7 @@ quiz:
         why: 'People will forget. Anything a machine can guarantee shouldn''t depend on human memory.'
     ref: correlation-id
   - q: 'A request coming through the API gateway already has an X-Correlation-Id header. What should your service do?'
-    hint: 'When a parcel moves from one hub to another, does it get a new tracking number?'
+    hint: 'When a package moves from one hub to another, does it get a new tracking number?'
     options:
       - text: 'Validate the value''s format, then use it'
         correct: true
@@ -609,7 +609,7 @@ quiz:
         correct: false
         why: 'Users can send headers too. Without validation, huge or forged text ends up in your logs (log injection).'
     ref: correlation-id
-  - q: 'Sumi wraps her HTTP client so the correlation header is added in one place. Which call will still go out without it?'
+  - q: 'Sarah wraps her HTTP client so the correlation header is added in one place. Which call will still go out without it?'
     hint: 'What exactly did she decorate?'
     options:
       - text: 'A call made through a separate scoped client that was not decorated'

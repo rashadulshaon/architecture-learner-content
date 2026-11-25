@@ -7,7 +7,7 @@ slides:
     blocks:
       - type: text
         body: |
-          Rahim sends 500 taka to Karim from a wallet app. The code does two things: lower Rahim's balance, raise Karim's. Each service method calls `flush()` internally, so each step is committed to the database on its own. If an exception hits after the first step, Rahim has been charged and Karim has received nothing.
+          Ryan sends $50 to Kevin from a wallet app. The code does two things: lower Ryan's balance, raise Kevin's. Each service method calls `flush()` internally, so each step is committed to the database on its own. If an exception hits after the first step, Ryan has been charged and Kevin has received nothing.
       - type: code
         lang: php
         file: 'src/Controller/TransferController.php'
@@ -16,7 +16,7 @@ slides:
           #[Route('/api/transfers', methods: ['POST'])]
           public function send(#[MapRequestPayload] SendMoney $dto): JsonResponse
           {
-              // flush() inside: Rahim's 500 taka debit is now permanent
+              // flush() inside: Ryan's $50 debit is now permanent
               $this->wallets->withdraw($dto->fromWalletId, $dto->amount);
 
               // what if an exception or a crash happens before this line?
@@ -26,21 +26,21 @@ slides:
           }
         marks:
           - {line: 5, tip: 'The moment this line finishes, the first change is permanent in the database. Whatever happens next, it will not undo itself.'}
-          - {line: 8, tip: 'Karim''s wallet is closed, the id is wrong, or a deploy lands right now: whatever stops this line from running, 500 taka disappear.'}
+          - {line: 8, tip: 'Kevin''s wallet is closed, the id is wrong, or a deploy lands right now: whatever stops this line from running, $50 disappears.'}
       - type: visual
         kind: sequence
         caption: 'An error between the two steps: who is left holding what'
         actors:
-          - {id: rahim, label: 'Rahim', icon: user, tip: 'Wants to send Karim 500 taka. His balance was 1000 taka.'}
+          - {id: ryan, label: 'Ryan', icon: user, tip: 'Wants to send Kevin $50. His balance was $100.'}
           - {id: app, label: 'Symfony app', icon: api, tip: 'Works in two steps: withdraw() first, deposit() second, each with its own flush().'}
           - {id: db, label: 'Database', icon: db, tip: 'Commits every flush() as a separate transaction. It has no idea that the two steps belong to the same job.'}
         messages:
-          - {from: rahim, to: app, label: 'Send 500 taka to Karim'}
-          - {from: app, to: db, label: 'Rahim''s balance 1000 → 500', tip: 'The flush() inside withdraw(). This change is committed immediately.'}
+          - {from: ryan, to: app, label: 'Send $50 to Kevin'}
+          - {from: app, to: db, label: 'Ryan''s balance $100 → $50', tip: 'The flush() inside withdraw(). This change is committed immediately.'}
           - {from: db, to: app, label: 'Committed', dashed: true}
           - {at: app, note: 'exception: code stops here', tone: bad, tip: 'deposit() never runs. Once PHP has stopped, nobody is left to undo the earlier commit.'}
-          - {from: app, to: rahim, label: '500 error', dashed: true, tone: bad, tip: 'Rahim sees "failed", yet his money has already been taken.'}
-          - {at: db, note: 'Rahim −500, Karim +0', tone: bad, tip: 'The system as a whole has lost 500 taka. This half-done state is exactly what a transaction prevents.'}
+          - {from: app, to: ryan, label: '500 error', dashed: true, tone: bad, tip: 'Ryan sees "failed", yet his money has already been taken.'}
+          - {at: db, note: 'Ryan −$50, Kevin +$0', tone: bad, tip: 'The system as a whole has lost $50. This half-done state is exactly what a transaction prevents.'}
     aside:
       - type: story
         title: '"Money deducted, recipient got nothing"'
@@ -52,8 +52,8 @@ slides:
           - {term: 'Commit', meaning: 'Making all the changes of a transaction permanent.'}
           - {term: 'Rollback', meaning: 'Throwing away all the changes of a transaction and returning to the earlier state.'}
     check:
-      q: 'If the server dies between the two steps, what happens to Rahim''s and Karim''s balances in this code?'
-      a: 'Rahim''s 500 taka stay deducted, because the first flush() was already committed. Karim''s balance doesn''t change, so 500 taka vanish from the total.'
+      q: 'If the server dies between the two steps, what happens to Ryan''s and Kevin''s balances in this code?'
+      a: 'Ryan''s $50 stays deducted, because the first flush() was already committed. Kevin''s balance doesn''t change, so $50 vanishes from the total.'
 
   - slug: four-promises
     title: 'ACID: the four promises of a transaction'
@@ -63,9 +63,9 @@ slides:
     blocks:
       - type: metaphor
         icon: wallet
-        title: 'Sending money on bKash'
+        title: 'Sending money on Venmo'
         body: |
-          When you tap Send Money in a mobile wallet like bKash, you see one of two outcomes: "success" or "failed". You never see "your money left, but it didn't arrive". A database transaction gives you exactly that guarantee. Split the guarantee into four parts and you get ACID.
+          When you tap Send Money in a payment app like Venmo, you see one of two outcomes: "success" or "failed". You never see "your money left, but it didn't arrive". A database transaction gives you exactly that guarantee. Split the guarantee into four parts and you get ACID.
       - type: visual
         kind: table
         caption: 'The four letters of ACID, explained with a wallet transfer'
@@ -157,9 +157,9 @@ slides:
           }
         marks:
           - {line: 9, tip: 'BEGIN happens here. Everything inside (reads, locks, writes) is part of one transaction. Whatever the closure returns is handed back to you.'}
-          - {line: 11, tip: 'The deadlock fix. If Rahim to Karim and Karim to Rahim run together, a fixed from-then-to order lets each grab one wallet and wait for the other forever. Sorted ids make both queue on the same wallet first.'}
+          - {line: 11, tip: 'The deadlock fix. If Ryan to Kevin and Kevin to Ryan run together, a fixed from-then-to order lets each grab one wallet and wait for the other forever. Sorted ids make both queue on the same wallet first.'}
           - {line: 14, tip: 'SELECT … FOR UPDATE: until this transaction commits, no other transaction can change this row. Without it, two transfers could read the same stale balance and compute wrong results.'}
-          - {line: 18, tip: 'If an exception escapes from here, wrapInTransaction() issues ROLLBACK itself, so Rahim''s debit does not stay behind.'}
+          - {line: 18, tip: 'If an exception escapes from here, wrapInTransaction() issues ROLLBACK itself, so Ryan''s debit does not stay behind.'}
           - {line: 24, tip: 'When the closure ends, Doctrine calls flush() itself and then COMMIT. You never write a separate flush().'}
       - type: points
         title: 'Three rules'
@@ -175,7 +175,7 @@ slides:
           - {term: 'FOR UPDATE', meaning: 'Taking a lock on the row while reading it, so nobody else can change it until you commit.'}
       - type: pitfalls
         items:
-          - 'Without the sort() above, Rahim→Karim and Karim→Rahim at the same time take their two locks in opposite order and deadlock: each waits for the other.'
+          - 'Without the sort() above, Ryan→Kevin and Kevin→Ryan at the same time take their two locks in opposite order and deadlock: each waits for the other.'
           - '"The EntityManager is closed" means an earlier transaction failed. Finish that request with an error response.'
       - type: tips
         items:
@@ -196,7 +196,7 @@ slides:
     blocks:
       - type: text
         body: |
-          A transaction can only undo changes to **its own database**. If you send an SMS, an email or an HTTP call to another service from inside it, that message is already out in the world, and a later rollback won't recall it. Imagine bKash texting "you have received money" and then cancelling the transfer. There is a second danger: while a slow call runs, the transaction stays open, and everyone else queues up behind the locked rows.
+          A transaction can only undo changes to **its own database**. If you send an SMS, an email or an HTTP call to another service from inside it, that message is already out in the world, and a later rollback won't recall it. Imagine Venmo texting "you have received money" and then canceling the transfer. There is a second danger: while a slow call runs, the transaction stays open, and everyone else queues up behind the locked rows.
       - type: code
         lang: php
         file: 'src/Service/TransferService.php'
@@ -207,7 +207,7 @@ slides:
               $to->deposit($amount);
 
               // this leaves for the outside world: rollback can't recall it
-              $this->sms->send($to->getPhone(), 'You have received 500 taka');
+              $this->sms->send($to->getPhone(), 'You have received $50');
           });   // if COMMIT fails here, the SMS has gone out but the money hasn't moved
         marks:
           - {line: 6, tip: 'If the gateway hangs for 20 seconds, the transaction stays open for 20 seconds, and nobody else can touch these two wallets.'}
@@ -240,7 +240,7 @@ slides:
           - {to: 'concurrency/distributed-transactions', label: 'Keeping a database and outside services in step'}
           - {to: 'messaging/events-vs-commands', label: 'Doing work later with Messenger'}
     check:
-      q: 'An SMS is sent from inside the transaction, then COMMIT fails. What does Karim see, and why?'
+      q: 'An SMS is sent from inside the transaction, then COMMIT fails. What does Kevin see, and why?'
       a: 'He gets the "money received" SMS, but his balance doesn''t go up. The database changes were rolled back, while the SMS had already reached an outside system and can''t be recalled.'
 
   - slug: what-it-protects
@@ -251,7 +251,7 @@ slides:
     blocks:
       - type: text
         body: |
-          A transaction is powerful, but it isn't magic. Its four promises hold only inside its own database. This is where people get it wrong most often: two transactions can both read Rahim's balance as 500 at the same moment and both deduct 400. Both write back 100, so 800 taka were paid out but the balance shows only 400 gone. Each transaction is flawless on its own, yet the result is wrong.
+          A transaction is powerful, but it isn't magic. Its four promises hold only inside its own database. This is where people get it wrong most often: two transactions can both read Ryan's balance as $500 at the same moment and both deduct $400. Both write back $100, so $800 went out but the balance shows only $400 gone. Each transaction is flawless on its own, yet the result is wrong.
       - type: visual
         kind: compare
         caption: 'Where the power of a transaction ends'
@@ -295,12 +295,12 @@ slides:
           - {to: 'concurrency/locking', label: 'Using locks to stop stale reads'}
           - {to: 'concurrency/distributed-transactions', label: 'Systems outside the database'}
     check:
-      q: 'Two transfers both read Rahim''s balance as 500 and each deducted 400. Both ran inside transactions, so why is the result still wrong?'
+      q: 'Two transfers both read Ryan''s balance as $500 and each deducted $400. Both ran inside transactions, so why is the result still wrong?'
       a: 'A transaction makes each job indivisible, but at the default isolation level both can read the same stale balance. Preventing that takes a lock or an atomic update.'
 
 flashcards:
   - q: 'What is a database transaction?'
-    a: 'A group of changes that is either made permanent all together (commit) or cancelled all together (rollback).'
+    a: 'A group of changes that is either made permanent all together (commit) or canceled all together (rollback).'
     more: |
       A job like sending money has several steps: take from one person, give to another. If the steps are saved separately, an error midway leaves half the job done. A transaction turns the steps into one indivisible job, so the in-between state is never stored.
     ref: half-transfer
@@ -337,7 +337,7 @@ flashcards:
   - q: 'A transfer locks two wallets. How do you stop two opposite transfers from deadlocking?'
     a: 'Always lock the wallet with the smaller id first, for example by sorting the two ids before the loop that takes the locks.'
     more: |
-      Rahim to Karim and Karim to Rahim at the same moment, each locking its own sender first, leaves each waiting for the wallet the other holds. With a fixed order both ask for the same wallet first, so one simply waits and then goes.
+      Ryan to Kevin and Kevin to Ryan at the same moment, each locking its own sender first, leaves each waiting for the wallet the other holds. With a fixed order both ask for the same wallet first, so one simply waits and then goes.
     ref: doctrine-transactions
   - q: 'Why is it dangerous to send an email, SMS or HTTP call inside a transaction?'
     a: 'A rollback can''t recall them, and the transaction stays open, holding locks, for as long as the call takes.'
@@ -347,7 +347,7 @@ flashcards:
   - q: 'Does a transaction prevent race conditions by itself?'
     a: 'No. At the default isolation level, two transactions can read the same stale value and calculate from it; you need a lock or an atomic update.'
     more: |
-      A transaction guarantees each job finishes completely or not at all. But if two transactions both read a balance of 500 and both deduct 400, each is flawless and the result is still wrong. The fix is a [[concurrency/locking|lock]] or an [[concurrency/atomic-operations|atomic update]].
+      A transaction guarantees each job finishes completely or not at all. But if two transactions both read a balance of $500 and both deduct $400, each is flawless and the result is still wrong. The fix is a [[concurrency/locking|lock]] or an [[concurrency/atomic-operations|atomic update]].
     ref: what-it-protects
 
 quiz:
@@ -372,7 +372,7 @@ quiz:
         why: 'Doctrine doesn''t wait for the end of the request; the SQL is sent and committed the moment flush() is called.'
       - text: 'Money is taken from the wallet, but the order stays pending'
         correct: false
-        why: 'The other way round. withdraw() only changed the entity in memory; the second flush() never ran, so it never reached the database.'
+        why: 'The other way around. withdraw() only changed the entity in memory; the second flush() never ran, so it never reached the database.'
     ref: half-transfer
   - q: 'When a transaction is rolled back, which of these return to their earlier state?'
     hint: 'Which things does the database keep track of, and which are out of its reach?'
@@ -409,7 +409,7 @@ quiz:
         correct: false
         why: 'Durability says committed data survives a crash. Here nothing is being committed at all.'
     ref: four-promises
-  - q: 'Sumi''s handler changes three entities and calls flush() once at the end. The third UPDATE violates a constraint. What happens to the first two?'
+  - q: 'Sarah''s handler changes three entities and calls flush() once at the end. The third UPDATE violates a constraint. What happens to the first two?'
     hint: 'How does flush() send the pending changes?'
     options:
       - text: 'The first two stay saved, only the third is dropped'

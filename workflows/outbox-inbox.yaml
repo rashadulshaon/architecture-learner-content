@@ -7,7 +7,7 @@ slides:
     blocks:
       - type: text
         body: |
-          Rahim's order service saves order 101 to the database, then is supposed to send an `OrderPlaced` message to the message broker (the post office that carries messages between services) so the stock service can set the goods aside. Right between the commit and the publish, the server crashes. The order exists, but nobody heard about it: stock is never reserved, and the customer never gets the product. This is called a **dual write**: one fact written to two places, with no way to tie the two writes together.
+          Ryan's order service saves order 101 to the database, then is supposed to send an `OrderPlaced` message to the message broker (the post office that carries messages between services) so the stock service can set the goods aside. Right between the commit and the publish, the server crashes. The order exists, but nobody heard about it: stock is never reserved, and the customer never gets the product. This is called a **dual write**: one fact written to two places, with no way to tie the two writes together.
       - type: visual
         kind: sequence
         caption: 'The commit succeeded, but the server crashed before publishing'
@@ -43,16 +43,16 @@ slides:
     blocks:
       - type: metaphor
         icon: book
-        title: 'The shop''s "to be sent" ledger'
+        title: 'The store''s "to be sent" ledger'
         body: |
-          A shopkeeper writes "10 kg of rice for Rina" in the sales ledger, and **on the same page, with the same pen**, writes "tell the warehouse". Both are written together, so you never get one without the other. Later the delivery boy goes round and carries those "tell the warehouse" lines to the warehouse, ticking each one off when it's delivered. If he stops halfway, the line is still there and someone else will send it.
+          A store owner writes "10 pounds of rice for Rachel" in the sales ledger, and **on the same page, with the same pen**, writes "tell the warehouse". Both are written together, so you never get one without the other. Later the delivery driver goes round and carries those "tell the warehouse" lines to the warehouse, ticking each one off when it's delivered. If he stops halfway, the line is still there and someone else will send it.
       - type: visual
         kind: flow
         caption: 'The order and the event share one transaction; sending is the relay''s job'
         nodes:
           - {id: app, label: 'Order service', sub: 'Symfony', icon: server, col: 0, row: 1, tip: 'Writes the order and the event in the same transaction. Never calls the broker directly.'}
           - {id: db, label: 'Database', sub: 'orders + outbox', icon: db, tone: accent, col: 2, row: 0, tip: 'Both tables are written in one transaction, so either both rows exist or neither does.'}
-          - {id: relay, label: 'Relay', sub: 'the delivery boy', icon: truck, col: 2, row: 2, tip: 'A separate process that finds unsent rows in the outbox and delivers them to the broker.'}
+          - {id: relay, label: 'Relay', sub: 'the delivery driver', icon: truck, col: 2, row: 2, tip: 'A separate process that finds unsent rows in the outbox and delivers them to the broker.'}
           - {id: broker, label: 'Message broker', sub: 'RabbitMQ', icon: queue, col: 4, row: 1, tip: 'Accepts the event and hands it to the consumers.'}
         edges:
           - {from: app, to: db, label: 'The order and the outbox row are written in one transaction', tone: good}
@@ -69,7 +69,7 @@ slides:
           - {term: 'Outbox', meaning: 'A table in your own database where events meant for the outside world are written first.'}
           - {term: 'Relay', meaning: 'The process that reads the outbox and sends the events out.'}
       - type: remember
-        body: 'Write in the ledger first, the delivery boy sends later. The fact and the news share one pen.'
+        body: 'Write in the ledger first, the delivery driver sends later. The fact and the news share one pen.'
     check:
       q: 'Which problem goes away when the event and the order are written in the same transaction?'
       a: 'The mismatch where the order exists but the event doesn''t (or the reverse). The two either commit together or roll back together.'
@@ -152,7 +152,7 @@ slides:
     blocks:
       - type: text
         body: |
-          Both patterns stand on two small tables. With no index on the unsent rows, the relay walks every old row on every poll: at 100,000 events a day that is 36 million rows after a year, when it wants the 50 not yet sent. With no cleanup, both tables grow for ever. Create them in a Doctrine Migration.
+          Both patterns stand on two small tables. With no index on the unsent rows, the relay walks every old row on every poll: at 100,000 events a day that is 36 million rows after a year, when it wants the 50 not yet sent. With no cleanup, both tables grow forever. Create them in a Doctrine Migration.
       - type: code
         lang: sql
         file: 'outbox table (PostgreSQL)'
@@ -304,7 +304,7 @@ flashcards:
   - q: 'How long should inbox rows be kept?'
     a: 'Longer than the longest time a duplicate can still arrive, say 14 days. Delete too early and a late duplicate looks new.'
     more: |
-      Keeping rows for ever makes the table grow without limit. Deleting them sooner than the broker can redeliver lets an old duplicate slip through and do its work twice. Match the retention to the broker's redelivery window.
+      Keeping rows forever makes the table grow without limit. Deleting them sooner than the broker can redeliver lets an old duplicate slip through and do its work twice. Match the retention to the broker's redelivery window.
     ref: outbox-inbox-tables
 
 quiz:
@@ -359,7 +359,7 @@ quiz:
         correct: false
         why: 'The order was committed long ago; a relay failure doesn''t touch it.'
     ref: outbox-and-relay
-  - q: 'You add an inbox to the stock handler. Which of these behaviours are correct?'
+  - q: 'You add an inbox to the stock handler. Which of these behaviors are correct?'
     hint: 'Which transaction holds the inbox write and the stock change?'
     options:
       - text: 'The inbox insert and the stock reservation are in the same transaction'
@@ -375,7 +375,7 @@ quiz:
         correct: false
         why: 'That only causes pointless retries, and the message ends up in the failure queue. Returning quietly is correct.'
     ref: inbox-dedup
-  - q: 'Rahim says: "We have an outbox, so the consumer doesn''t need idempotency any more." Is he right?'
+  - q: 'Ryan says: "We have an outbox, so the consumer doesn''t need idempotency any more." Is he right?'
     hint: 'Which delivery guarantee does an outbox give?'
     options:
       - text: 'Yes, an outbox gives exactly-once'
@@ -388,10 +388,10 @@ quiz:
         correct: false
         why: 'An outbox does send the event; the question is how many times.'
     ref: inbox-dedup
-  - q: 'Karim deletes inbox rows after 1 hour, but the broker can redeliver a message up to 3 days late. What can go wrong?'
+  - q: 'Kevin deletes inbox rows after 1 hour, but the broker can redeliver a message up to 3 days late. What can go wrong?'
     hint: 'What does the inbox look for when a late duplicate arrives?'
     options:
-      - text: 'The inbox insert starts failing for every message'
+      - text: 'The inbox insert starts failing forevery message'
         correct: false
         why: 'Deleting old rows makes inserts easier, not harder.'
       - text: 'Messages are lost, because the inbox swallows them'

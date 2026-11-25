@@ -7,12 +7,12 @@ slides:
     blocks:
       - type: metaphor
         icon: bank
-        title: 'The bus fare chart'
+        title: 'The parking garage rate chart'
         body: |
-          A bus conductor knows the procedure for collecting fares: find the start and the stop on the chart, read the fare, take the money. When fares go up, the authority issues a new chart, and nobody has to retrain the conductor. The procedure is the code; the chart is the data. The only question is whether your rule is a chart or a procedure.
+          A parking garage cashier knows the procedure for collecting fees: read the entry time on the ticket, find the hours on the chart, read the fee, take the money. When rates go up, the garage posts a new chart, and nobody has to retrain the cashier. The procedure is the code; the chart is the data. The only question is whether your rule is a chart or a procedure.
       - type: text
         body: |
-          At Rahim's e-commerce company, the marketing team changes the discount rules every week: "10% off the first order", "free delivery above 2,000 taka". Every change means a ticket, code, a review and a deploy. Changing one small number takes three days, and the developers are fed up.
+          At Ryan's e-commerce company, the marketing team changes the discount rules every week: "10% off the first order", "free delivery above $50". Every change means a ticket, code, a review and a deploy. Changing one small number takes three days, and the developers are fed up.
       - type: visual
         kind: bars
         caption: 'How long a discount change takes to go live (minutes)'
@@ -40,7 +40,7 @@ slides:
     blocks:
       - type: text
         body: |
-          The fare chart is data, but the rule "a fare is never zero or negative" is part of the procedure. Ask four questions about every rule. The more answers that point towards data, the safer it is to move the rule out of the code. And if you do, testing, versioning and audit become your job; the next slides show how.
+          The rate chart is data, but the rule "a fee is never negative" is part of the procedure. Ask four questions about every rule. The more answers that point towards data, the safer it is to move the rule out of the code. And if you do, testing, versioning and audit become your job; the next slides show how.
       - type: visual
         kind: table
         caption: 'Four questions to decide'
@@ -76,7 +76,7 @@ slides:
     blocks:
       - type: text
         body: |
-          Imagine each discount is one database row: a condition (`cart.total >= 200000 and user.firstOrder`), a percentage and a priority. The code just loops over the rows and applies the discount of the first condition that matches. Symfony's ExpressionLanguage runs that condition string in a safe, limited language. But remember that the condition is really code, so limit who may write it, and pass a small facts object rather than an entity.
+          Imagine each discount is one database row: a condition (`cart.total >= 5000 and user.firstOrder`), a percentage and a priority. The code just loops over the rows and applies the discount of the first condition that matches. Symfony's ExpressionLanguage runs that condition string in a safe, limited language. But remember that the condition is really code, so limit who may write it, and pass a small facts object rather than an entity.
       - type: code
         lang: php
         file: 'src/Discount/DiscountEngine.php'
@@ -128,13 +128,13 @@ slides:
               }
           }
         marks:
-          - {line: 4, tip: 'Lint before saving. Only the names cart and user are recognised; any other name is caught immediately.'}
+          - {line: 4, tip: 'Lint before saving. Only the names cart and user are recognized; any other name is caught immediately.'}
     aside:
       - type: tips
         items:
           - 'Don''t parse the string on every request. Give ExpressionLanguage a cache pool (a constructor argument) so the parsed result is kept.'
           - 'Keep the group of people who can change rules small, and log every change.'
-          - 'Money in rules is whole poisha (100 poisha = 1 taka), so 200000 means 2,000 taka. Never store money as a float.'
+          - 'Money in rules is whole cents (100 cents = $1), so 5000 means $50. Never store money as a float.'
       - type: pitfalls
         items:
           - 'Never run user input (for example, text a customer typed) as an expression. Only trusted staff may write them.'
@@ -186,13 +186,13 @@ slides:
 
           public static function cases(): iterable
           {
-              $r = 'cart.total >= 200000 and user.firstOrder';
-              yield 'first order, 2,000 taka' => [$r, 200000, true, true];
-              yield 'first order, 1,999 taka' => [$r, 199900, true, false];
-              yield 'returning customer' => [$r, 500000, false, false];
+              $r = 'cart.total >= 5000 and user.firstOrder';
+              yield 'first order, $50.00' => [$r, 5000, true, true];
+              yield 'first order, $49.99' => [$r, 4999, true, false];
+              yield 'returning customer' => [$r, 15000, false, false];
           }
         marks:
-          - {line: 1, tip: 'One test, many cases. Include values on both sides of every boundary: 2,000 and 1,999.'}
+          - {line: 1, tip: 'One test, many cases. Include values on both sides of every boundary: $50.00 and $49.99.'}
           - {line: 15, tip: 'Dropping the exact boundary (≥) is the most common mistake, and this is where the test catches it.'}
       - type: code
         lang: php
@@ -202,22 +202,22 @@ slides:
           public function dryRun(array $candidateRules, int $days = 30): DryRunReport
           {
               $changed = 0;
-              $extraTaka = 0;
+              $extraDollars = 0;
 
               foreach ($this->orders->placedWithinDays($days) as $order) {
                   $given = $order->discountPercent();      // what customers really got
                   $would = $this->engine->percentUsing($candidateRules, $order->cart(), $order->user());
                   if ($would !== $given) {
                       ++$changed;
-                      $extraTaka += intdiv($order->totalInPoisha() * ($would - $given), 10_000);
+                      $extraDollars += intdiv($order->totalInCents() * ($would - $given), 10_000);
                   }
               }
 
-              return new DryRunReport($changed, $extraTaka);
+              return new DryRunReport($changed, $extraDollars);
           }
         marks:
           - {line: 7, tip: 'Replay real past orders: what the old rules gave, against what the new rules would have given.'}
-          - {line: 11, tip: 'Poisha times percent points, divided by 10,000, gives taka. Say it prints 412 orders changed and 1,830,000 taka more: a typo is now visible before anyone sees it.'}
+          - {line: 11, tip: 'Cents times percent points, divided by 10,000, gives dollars. Say it prints 412 orders changed and $18,300 more: a typo is now visible before anyone sees it.'}
     aside:
       - type: tips
         items:
@@ -296,7 +296,7 @@ flashcards:
   - q: 'What is a business rule?'
     a: 'A business decision that ends up in code, such as who gets how much discount or which orders are held back.'
     more: |
-      The fare chart and the procedure for collecting fares are different things: the chart changes, the procedure doesn't. Some rules are like the chart (numbers, lists); others are like the procedure (complex calculations).
+      The rate chart and the procedure for collecting fees are different things: the chart changes, the procedure doesn't. Some rules are like the chart (numbers, lists); others are like the procedure (complex calculations).
     ref: weekly-discount-rules
   - q: 'When is it reasonable to keep a rule in data rather than code?'
     a: 'When it changes often, business staff change it, it is simple, and a mistake costs little.'
@@ -309,7 +309,7 @@ flashcards:
       Put a rule in data and you must build the safety of code review, tests and versioning yourself. For a rarely changed rule that effort never pays off. A complex rule in data slowly turns into an untested programming language.
     ref: code-or-data
   - q: 'What is Symfony ExpressionLanguage used for?'
-    a: 'Running a condition stored as a string (cart.total >= 200000) in a safe, limited language to get a result.'
+    a: 'Running a condition stored as a string (cart.total >= 5000) in a safe, limited language to get a result.'
     more: |
       `$language->evaluate($expr, ['cart' => $cart])` runs the condition, and `lint()` checks the syntax before you save. A condition is really code, so limit who may change it and never run user input through it.
     ref: expression-language-engine
@@ -411,7 +411,7 @@ quiz:
     options:
       - text: 'Let only trusted staff change rules'
         correct: true
-        why: 'A condition is code; whoever can write it can change the behaviour.'
+        why: 'A condition is code; whoever can write it can change the behavior.'
       - text: 'Check with lint() before saving'
         correct: true
         why: 'Bad syntax is caught on the admin page, not in production.'

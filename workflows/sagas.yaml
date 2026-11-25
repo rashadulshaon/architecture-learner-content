@@ -7,7 +7,7 @@ slides:
     blocks:
       - type: text
         body: |
-          Rahim's order flow is split across three services: payment, stock and courier. Rina places an order, the payment service takes her money, the stock service sets the goods aside, and then the courier service says "no couriers available today". Each of the three services has its own database, so a single `ROLLBACK` can't undo everything. Rina's money is gone, the goods are held, and the order goes nowhere.
+          Ryan's order flow is split across three services: payment, stock and courier. Rachel places an order, the payment service takes her money, the stock service sets the goods aside, and then the courier service says "no couriers available today". Each of the three services has its own database, so a single `ROLLBACK` can't undo everything. Rachel's money is gone, the goods are held, and the order goes nowhere.
       - type: visual
         kind: sequence
         caption: 'The third step fails, and the first two stay done'
@@ -17,7 +17,7 @@ slides:
           - {id: stock, label: 'Stock', icon: box, tip: 'Has already held the goods and committed in its own database.'}
           - {id: ship, label: 'Courier', icon: truck, tip: 'No courier is free today, so it reports failure.'}
         messages:
-          - {from: order, to: pay, label: 'Charge 1200'}
+          - {from: order, to: pay, label: 'Charge $120'}
           - {from: order, to: stock, label: 'Hold the goods'}
           - {from: order, to: ship, label: 'Book a courier'}
           - {from: ship, to: order, label: 'Failed: no courier', dashed: true, tone: bad}
@@ -35,14 +35,14 @@ slides:
       a: 'The payment and stock services have already committed in their own separate databases. Committed work can''t be rolled back.'
 
   - slug: cancel-the-wedding
-    title: 'Cancelling the wedding bookings: compensating actions'
+    title: 'Canceling the wedding bookings: compensating actions'
     kind: concept
-    tldr: 'A saga is a chain of small local transactions, each with an undo action (a compensation); when one fails, the earlier steps are cancelled in reverse order.'
+    tldr: 'A saga is a chain of small local transactions, each with an undo action (a compensation); when one fails, the earlier steps are canceled in reverse order.'
     keywords: ['compensating action', 'semantic rollback', 'saga steps', 'reverse order', 'compensation', 'undo']
     blocks:
       - type: metaphor
         icon: calendar
-        title: 'Cancelling the wedding bookings'
+        title: 'Canceling the wedding bookings'
         body: |
           For a wedding you've booked a community hall, a caterer and a photographer, and each took a deposit. Then the photographer says he can't come. You can't just "erase" the other bookings, because the deposits are already paid. Instead you do **new work**: call the caterer to cancel, ask for the deposit back, tell the hall. You may not get all of it back.
       - type: visual
@@ -149,7 +149,7 @@ slides:
           - 'Use an [[workflows/outbox-inbox|outbox]] to close the gap around the dispatch.'
       - type: refs
         items:
-          - {to: 'payments/payment-state-machine', label: 'Organising steps with a state machine'}
+          - {to: 'payments/payment-state-machine', label: 'Organizing steps with a state machine'}
     check:
       q: 'What happens if the orchestrator keeps the saga step in memory instead of the database?'
       a: 'On a restart or crash it forgets which order was at which step, so half-finished orders hang and nobody can run their undo actions.'
@@ -162,9 +162,9 @@ slides:
     blocks:
       - type: metaphor
         icon: users
-        title: 'A wedding manager versus everyone for themselves'
+        title: 'A wedding planner versus everyone for themselves'
         body: |
-          Orchestration is the wedding manager who tells everyone who does what and when, and who knows exactly where things got stuck. Choreography has no manager: the cook finishes and calls the waiter, the waiter serves and tells the decorator. Nobody sees the whole picture.
+          Orchestration is the wedding planner who tells everyone who does what and when, and who knows exactly where things got stuck. Choreography has no manager: the cook finishes and calls the waiter, the waiter serves and tells the decorator. Nobody sees the whole picture.
       - type: visual
         kind: table
         caption: 'The two kinds of saga side by side'
@@ -255,7 +255,7 @@ slides:
     blocks:
       - type: text
         body: |
-          The saga is at `reserved`, waiting for the courier. Five minutes pass and the sweeper fires. But the courier service isn't dead, only slow: at minute six it books van #88, and its reply gets lost. If the saga now undoes only the stock and the payment, Rina gets her money back, and a courier turns up for an order that no longer exists. A timeout means "no answer yet", not "it failed". The step's outcome is **unknown**, so undo it as if it had worked.
+          The saga is at `reserved`, waiting for the courier. Five minutes pass and the sweeper fires. But the courier service isn't dead, only slow: at minute six it books van #88, and its reply gets lost. If the saga now undoes only the stock and the payment, Rachel gets her money back, and a courier turns up for an order that no longer exists. A timeout means "no answer yet", not "it failed". The step's outcome is **unknown**, so undo it as if it had worked.
       - type: visual
         kind: compare
         caption: 'The same timeout, handled two ways'
@@ -276,7 +276,7 @@ slides:
             items:
               - 'Cancel the courier step too, by its own key'
               - 'Cancel works whether the booking exists or not'
-              - 'A late "book" request hits the cancelled key and is refused'
+              - 'A late "book" request hits the canceled key and is refused'
               - 'Then release stock, then refund, as before'
       - type: code
         lang: php
@@ -314,17 +314,17 @@ slides:
           {
               $booking = $this->bookings->findByKey($c->key);
               if (null === $booking) {
-                  // never arrived, or still on its way: leave a cancelled marker,
+                  // never arrived, or still on its way: leave a canceled marker,
                   // so a late BookCourier with this key is refused
                   $this->bookings->save(Booking::cancelled($c->key));
               } else {
-                  $booking->cancel();              // already cancelled? nothing changes
+                  $booking->cancel();              // already canceled? nothing changes
               }
               $this->bus->dispatch(new CourierBookingCancelled($c->orderId));
           }
         marks:
           - {line: 5, tip: 'The cancel may arrive before the booking it cancels. The marker closes that race.'}
-          - {line: 10, tip: 'Cancelling twice is harmless, so the saga can retry this as often as it needs.'}
+          - {line: 10, tip: 'Canceling twice is harmless, so the saga can retry this as often as it needs.'}
     aside:
       - type: tips
         items:
@@ -335,7 +335,7 @@ slides:
           - {to: 'payments/idempotency-keys', label: 'Idempotency keys'}
     check:
       q: 'The saga timed out waiting for the courier. Why must it cancel the courier step too, not just stock and payment?'
-      a: 'A timeout means no answer, not no booking. The courier may have booked a van and lost its reply. Cancelling by key is safe either way, and the marker refuses a late booking.'
+      a: 'A timeout means no answer, not no booking. The courier may have booked a van and lost its reply. Canceling by key is safe either way, and the marker refuses a late booking.'
 
 flashcards:
   - q: 'What is a saga, and why do you need one?'
@@ -376,7 +376,7 @@ flashcards:
   - q: 'A saga step times out. Did it fail?'
     a: 'Not necessarily: it may have worked and its reply got lost. Cancel it by its own idempotency key, then undo the earlier steps.'
     more: |
-      Silence tells you nothing about the other service. Cancelling by key is safe both ways: if the booking exists it is cancelled, and if not, a cancelled marker makes a late request be refused. Skip this only for steps that change nothing.
+      Silence tells you nothing about the other service. Canceling by key is safe both ways: if the booking exists it is canceled, and if not, a canceled marker makes a late request be refused. Skip this only for steps that change nothing.
     ref: timeout-is-not-failure
   - q: 'What if a compensation fails, and what must it be like?'
     a: 'It must be retried until it succeeds, so it has to be idempotent (for example the same key on the refund).'
@@ -438,7 +438,7 @@ quiz:
         why: 'On the second arrival the step is no longer started, so ReserveStock isn''t sent twice.'
       - text: '`$this->em->flush()`'
         correct: false
-        why: 'flush only saves the state; it doesn''t recognise duplicates.'
+        why: 'flush only saves the state; it doesn''t recognize duplicates.'
       - text: '`$this->bus->dispatch(...)`'
         correct: false
         why: 'dispatch sends the next command; it doesn''t stop duplicates.'

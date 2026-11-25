@@ -7,7 +7,7 @@ slides:
     blocks:
       - type: text
         body: |
-          Hasan Store's monthly report says "total outstanding: 5000 taka" on the first page, yet the list below it adds up to 4000. Both queries ran inside the same transaction. But in the gap between them, Karim's 1000 taka payment was committed, and the second query saw it. So where did the I in ACID go? The answer: isolation isn't a switch, it's a dial with four settings, and the default setting is fairly loose. The fix is one line, shown below: ask for REPEATABLE READ, so the whole transaction works from one snapshot, a frozen picture taken when it starts. The price: the report shows the shop as of its start, so Karim's payment appears only in the next run.
+          The Miller Market's monthly report says "total outstanding: $500" on the first page, yet the list below it adds up to $400. Both queries ran inside the same transaction. But in the gap between them, Kevin's $100 payment was committed, and the second query saw it. So where did the I in ACID go? The answer: isolation isn't a switch, it's a dial with four settings, and the default setting is fairly loose. The fix is one line, shown below: ask for REPEATABLE READ, so the whole transaction works from one snapshot, a frozen picture taken when it starts. The price: the report shows the shop as of its start, so Kevin's payment appears only in the next run.
       - type: code
         lang: php
         file: 'src/Report/DueReport.php'
@@ -15,31 +15,31 @@ slides:
         code: |
           // One transaction, default READ COMMITTED level
           $report = $conn->transactional(function (Connection $c): array {
-              $total = (int) $c->fetchOne('SELECT SUM(due) FROM customer');       // 5000
+              $total = (int) $c->fetchOne('SELECT SUM(due) FROM customer');       // $500
 
-              // right in this gap, Karim pays 1000 taka in another request and it commits
+              // right in this gap, Kevin pays $100 in another request and it commits
 
-              $rows = $c->fetchAllAssociative('SELECT name, due FROM customer');  // sums to 4000
+              $rows = $c->fetchAllAssociative('SELECT name, due FROM customer');  // sums to $400
 
               return ['total' => $total, 'rows' => $rows];
           });
         marks:
-          - {line: 3, tip: 'It saw whatever was committed at the moment this query ran: total outstanding 5000.'}
-          - {line: 7, tip: 'This query looked at the database afresh. Karim''s payment had been committed by then, so the rows add up to 4000.'}
+          - {line: 3, tip: 'It saw whatever was committed at the moment this query ran: total outstanding $500.'}
+          - {line: 7, tip: 'This query looked at the database afresh. Kevin''s payment had been committed by then, so the rows add up to $400.'}
       - type: visual
         kind: sequence
         caption: 'A payment slips in between the report''s two queries'
         actors:
           - {id: report, label: 'Report', icon: chart, tip: 'Runs two queries inside one transaction: the total first, then the list.'}
           - {id: db, label: 'Database', icon: db, tip: 'At READ COMMITTED, it shows each query the data that was committed at that moment.'}
-          - {id: pay, label: 'Karim''s payment', icon: money, tip: 'A completely separate request that reduces Karim''s 1000 taka due in its own transaction.'}
+          - {id: pay, label: 'Kevin''s payment', icon: money, tip: 'A completely separate request that reduces Kevin''s $100 due in its own transaction.'}
         messages:
           - {from: report, to: db, label: 'What is the total due?'}
-          - {from: db, to: report, label: '5000 taka', dashed: true}
-          - {from: pay, to: db, label: 'Karim''s due −1000, commit', tip: 'The report''s transaction is still open, yet nothing stops this commit.'}
+          - {from: db, to: report, label: '$500', dashed: true}
+          - {from: pay, to: db, label: 'Kevin''s due −$100, commit', tip: 'The report''s transaction is still open, yet nothing stops this commit.'}
           - {from: report, to: db, label: 'Give me each person''s due'}
-          - {from: db, to: report, label: 'List: sums to 4000', dashed: true, tone: bad, tip: 'The second query saw the new state. Two queries in one transaction got pictures from two different moments.'}
-          - {at: report, note: 'Total 5000, list says 4000', tone: bad, tip: 'The report disagrees with itself. No error, no log entry, just a wrong sheet of paper.'}
+          - {from: db, to: report, label: 'List: sums to $400', dashed: true, tone: bad, tip: 'The second query saw the new state. Two queries in one transaction got pictures from two different moments.'}
+          - {at: report, note: 'Total $500, list says $400', tone: bad, tip: 'The report disagrees with itself. No error, no log entry, just a wrong sheet of paper.'}
       - type: code
         lang: php
         file: 'src/Report/DueReport.php'
@@ -49,15 +49,15 @@ slides:
           $report = $conn->transactional(function (Connection $c): array {
               $c->executeStatement('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
 
-              $total = (int) $c->fetchOne('SELECT SUM(due) FROM customer');       // 5000
-              // Karim's 1000 taka commits here, but this transaction keeps its snapshot
-              $rows = $c->fetchAllAssociative('SELECT name, due FROM customer');  // sums to 5000
+              $total = (int) $c->fetchOne('SELECT SUM(due) FROM customer');       // $500
+              // Kevin's $100 commits here, but this transaction keeps its snapshot
+              $rows = $c->fetchAllAssociative('SELECT name, due FROM customer');  // sums to $500
 
               return ['total' => $total, 'rows' => $rows];
           });
         marks:
           - {line: 3, tip: 'PostgreSQL: this must run before the transaction''s first query, and it applies to this one transaction only.'}
-          - {line: 7, tip: 'Both queries read the same frozen picture, so the total and the list agree: 5000 and 5000.'}
+          - {line: 7, tip: 'Both queries read the same frozen picture, so the total and the list agree: $500 and $500.'}
     aside:
       - type: terms
         items:
@@ -70,7 +70,7 @@ slides:
           - {to: 'concurrency/acid', label: 'The four promises of ACID'}
     check:
       q: 'Both queries were in the same transaction, so why didn''t the numbers match?'
-      a: 'At the default READ COMMITTED level, each query sees the data committed at the moment it runs. Karim''s payment was committed between the two queries, so the second one saw the new state.'
+      a: 'At the default READ COMMITTED level, each query sees the data committed at the moment it runs. Kevin''s payment was committed between the two queries, so the second one saw the new state.'
 
   - slug: read-anomalies
     title: 'Three read problems: dirty, non-repeatable, phantom'
@@ -82,7 +82,7 @@ slides:
         icon: book
         title: 'The credit ledger: pencil and pen'
         body: |
-          In the corner shop's credit ledger, the clerk first writes in pencil (not yet committed). Once the figures check out, he goes over it in pen (commit); if they don't, he erases it (rollback). You stand beside him reading the ledger. Which entries you may see, and whether you see the same thing when you look twice, is exactly what isolation decides.
+          In a store's house-account ledger, the clerk first writes in pencil (not yet committed). Once the figures check out, he goes over it in pen (commit); if they don't, he erases it (rollback). You stand beside him reading the ledger. Which entries you may see, and whether you see the same thing when you look twice, is exactly what isolation decides.
       - type: visual
         kind: table
         caption: 'The three read anomalies, in ledger terms'
@@ -116,21 +116,21 @@ slides:
     blocks:
       - type: text
         body: |
-          Read problems make a report wrong; write problems corrupt the data itself. **Lost update**: two clerks read the same line, each calculates on their own and writes back, and the second wipes out the first. **Write skew** is subtler. The shop's rule is that at least one person must be on duty. Jamal and Kamal both look at the ledger, see "2 on duty", and each writes leave on **their own** line.
+          Read problems make a report wrong; write problems corrupt the data itself. **Lost update**: two clerks read the same line, each calculates on their own and writes back, and the second wipes out the first. **Write skew** is subtler. The shop's rule is that at least one person must be on duty. Jason and Chris both look at the ledger, see "2 on duty", and each writes leave on **their own** line.
       - type: visual
         kind: sequence
         caption: 'Write skew: both read correctly, both wrote validly, yet nobody is minding the shop'
         actors:
-          - {id: jamal, label: 'Jamal', icon: user, tip: 'Wants leave. Follows the rule by first checking that someone else is on duty.'}
+          - {id: jason, label: 'Jason', icon: user, tip: 'Wants leave. Follows the rule by first checking that someone else is on duty.'}
           - {id: db, label: 'Duty ledger', icon: db, tip: 'The shift table: one row per employee, with on_duty true or false.'}
-          - {id: kamal, label: 'Kamal', icon: user, tip: 'At exactly the same moment, runs the same check and reaches the same decision.'}
+          - {id: chris, label: 'Chris', icon: user, tip: 'At exactly the same moment, runs the same check and reaches the same decision.'}
         messages:
-          - {from: jamal, to: db, label: 'How many on duty?'}
-          - {from: kamal, to: db, label: 'How many on duty?'}
-          - {from: db, to: jamal, label: '2 people', dashed: true}
-          - {from: db, to: kamal, label: '2 people', dashed: true, tip: 'Jamal hasn''t written anything yet, so Kamal sees 2 too.'}
-          - {from: jamal, to: db, label: 'My row: on leave', tip: 'He changed only his own row. Looked at alone, this is perfectly valid.'}
-          - {from: kamal, to: db, label: 'My row: on leave', tone: bad, tip: 'A different row, so it doesn''t collide with Jamal''s write. Neither a row lock nor a version column notices anything.'}
+          - {from: jason, to: db, label: 'How many on duty?'}
+          - {from: chris, to: db, label: 'How many on duty?'}
+          - {from: db, to: jason, label: '2 people', dashed: true}
+          - {from: db, to: chris, label: '2 people', dashed: true, tip: 'Jason hasn''t written anything yet, so Chris sees 2 too.'}
+          - {from: jason, to: db, label: 'My row: on leave', tip: 'He changed only his own row. Looked at alone, this is perfectly valid.'}
+          - {from: chris, to: db, label: 'My row: on leave', tone: bad, tip: 'A different row, so it doesn''t collide with Jason''s write. Neither a row lock nor a version column notices anything.'}
           - {at: db, note: '0 on duty: rule broken', tone: bad, tip: 'No write was lost and no error was raised. What got damaged is the rule both of them checked at the start.'}
       - type: visual
         kind: compare
@@ -139,10 +139,10 @@ slides:
           - title: 'Lost update'
             tone: warn
             icon: pencil
-            tip: 'Happens in read-modify-write code: read, calculate in PHP, write. Fairly easy to recognise and to prevent.'
+            tip: 'Happens in read-modify-write code: read, calculate in PHP, write. Fairly easy to recognize and to prevent.'
             items:
               - 'Two people read the same row and write the same row'
-              - 'Due is 500; both add 100 and write 600, instead of 700'
+              - 'Due is $50; both add $10 and write $60, instead of $70'
               - 'Prevented by: atomic UPDATE (SET due = due + 100), FOR UPDATE lock, version column'
           - title: 'Write skew'
             tone: bad
@@ -206,7 +206,7 @@ slides:
       - type: terms
         items:
           - {term: 'Snapshot', meaning: 'A frozen picture of the data as of the start of the transaction; whatever others commit later, you keep seeing that picture.'}
-          - {term: 'Serialization failure', meaning: 'The database realised the result wouldn''t match "one at a time" and aborted the transaction (SQLSTATE 40001).'}
+          - {term: 'Serialization failure', meaning: 'The database realized the result wouldn''t match "one at a time" and aborted the transaction (SQLSTATE 40001).'}
       - type: commands
         title: 'Checking the current level'
         items:
@@ -224,7 +224,7 @@ slides:
     blocks:
       - type: text
         body: |
-          Most work stays at the default level, and each specific problem has its own specific tool. Where a rule **spans several rows**, such as "at least one person on duty", make only that transaction SERIALIZABLE. It comes at a price: when the database detects a collision, it aborts one transaction. That's not a bug but normal behaviour, and rerunning the whole transaction usually succeeds.
+          Most work stays at the default level, and each specific problem has its own specific tool. Where a rule **spans several rows**, such as "at least one person on duty", make only that transaction SERIALIZABLE. It comes at a price: when the database detects a collision, it aborts one transaction. That's not a bug but normal behavior, and rerunning the whole transaction usually succeeds.
       - type: code
         lang: php
         file: 'src/Database/SerializableRunner.php'
@@ -277,7 +277,7 @@ slides:
               );
           });
         marks:
-          - {line: 2, tip: 'It''s fine if Jamal and Kamal both read 2 here: at commit time the database aborts one of them, and on retry he reads 1 and stops.'}
+          - {line: 2, tip: 'It''s fine if Jason and Chris both read 2 here: at commit time the database aborts one of them, and on retry he reads 1 and stops.'}
       - type: points
         title: 'Which tool for which problem'
         style: check
@@ -303,7 +303,7 @@ slides:
           - {to: 'concurrency/atomic-operations', label: 'Atomic UPDATE for single-row arithmetic'}
     check:
       q: 'What extra piece must your code have when using SERIALIZABLE, and why?'
-      a: 'Retry. When the database detects a collision, it aborts one transaction with a serialization failure. That is normal behaviour, not a bug, and rerunning the whole transaction usually succeeds.'
+      a: 'Retry. When the database detects a collision, it aborts one transaction with a serialization failure. That is normal behavior, not a bug, and rerunning the whole transaction usually succeeds.'
 
 flashcards:
   - q: 'What is an isolation level?'
@@ -334,7 +334,7 @@ flashcards:
   - q: 'What is a lost update?'
     a: 'Two transactions read the same row, each calculates on its own and writes back, and the later write wipes out the earlier one.'
     more: |
-      Example: the due is 500 taka. Both read 500, add 100 and write 600, when the result should be 700. At READ COMMITTED it happens freely, and in MySQL InnoDB's REPEATABLE READ too. Prevent it with an atomic UPDATE, SELECT … FOR UPDATE, or a version column.
+      Example: the due is $50. Both read $50, add $10 and write $60, when the result should be $70. At READ COMMITTED it happens freely, and in MySQL InnoDB's REPEATABLE READ too. Prevent it with an atomic UPDATE, SELECT … FOR UPDATE, or a version column.
     ref: write-anomalies
   - q: 'What is write skew?'
     a: 'Two transactions read the same facts and decide, but write different rows. Each is valid alone; together they break a rule.'
@@ -358,7 +358,7 @@ flashcards:
     ref: choose-and-retry
 
 quiz:
-  - q: 'In a report transaction, the first query returns a total due of 5000, and the next query''s list sums to 4000. The database is PostgreSQL with default settings. What is the simplest fix?'
+  - q: 'In a report transaction, the first query returns a total due of $500, and the next query''s list sums to $400. The database is PostgreSQL with default settings. What is the simplest fix?'
     hint: 'The two queries must see the picture of one moment. Which level provides that?'
     options:
       - text: 'Call flush() between the two queries'
@@ -459,7 +459,7 @@ quiz:
     options:
       - text: '300, because that was committed'
         correct: false
-        why: 'That is READ COMMITTED behaviour, where every query looks afresh.'
+        why: 'That is READ COMMITTED behavior, where every query looks afresh.'
       - text: '500, because it sees the snapshot from the start of the transaction'
         correct: true
         why: 'At REPEATABLE READ the whole transaction sees one frozen picture; whatever others commit later is not visible.'

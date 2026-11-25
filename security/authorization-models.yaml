@@ -2,19 +2,19 @@ slides:
   - slug: role-explosion
     title: 'From ROLE_MANAGER to 40 roles'
     kind: story
-    tldr: 'Starting with roles alone is easy. But once conditions like "own department, expenses under 50,000 taka" arrive, the number of roles explodes.'
+    tldr: 'Starting with roles alone is easy. But once conditions like "own department, expenses under $500" arrive, the number of roles explodes.'
     keywords: ['role explosion', 'RBAC', 'ROLE_MANAGER', 'access control', 'authorization rules', 'too many roles']
     blocks:
       - type: text
         body: |
-          Rahim's expense-approval app starts with two roles: `ROLE_EMPLOYEE` and `ROLE_MANAGER`. Then the rules arrive. A manager may approve only expenses from their own department. Anything above 50,000 taka needs a director. Nobody may approve their own expense. For each new condition Rahim creates another role. Six months later there are 40 roles and nobody can say which one is for whom.
+          Ryan's expense-approval app starts with two roles: `ROLE_EMPLOYEE` and `ROLE_MANAGER`. Then the rules arrive. A manager may approve only expenses from their own department. Anything above $500 needs a director. Nobody may approve their own expense. For each new condition Ryan creates another role. Six months later there are 40 roles and nobody can say which one is for whom.
       - type: visual
         kind: steps
         caption: 'What you end up with when every condition becomes its own role'
         steps:
           - {title: '1. Two roles', body: 'ROLE_EMPLOYEE, ROLE_MANAGER', tip: 'A simple, clean start. For a small app this is enough.'}
           - {title: '2. By department', body: 'ROLE_MANAGER_SALES, ROLE_MANAGER_HR...', tip: 'A separate role for every department. Add a department and you add a role.'}
-          - {title: '3. By limit', body: 'ROLE_MANAGER_SALES_UPTO_50K', tip: 'The money limit has crept into the role too. Now it is department × limit, and the count multiplies.'}
+          - {title: '3. By limit', body: 'ROLE_MANAGER_SALES_UPTO_500', tip: 'The money limit has crept into the role too. Now it is department × limit, and the count multiplies.'}
           - {title: '4. 40 roles', body: 'Nobody can remember them all', tip: 'For example 8 departments times 5 variants each is already 40. When a new hire joins, working out which roles to assign becomes a small research project.'}
           - {title: '5. The way out', body: 'Three roles, and one voter that checks the facts', tip: 'Department and limit are facts about the expense, so one rule checks them against the expense. No new role per department.'}
     aside:
@@ -46,7 +46,7 @@ slides:
         rows:
           - cells: ['What it looks at', 'The user''s role', 'Facts about user, thing, environment', 'The relationship of user and thing']
             tip: 'RBAC is the simplest. In ABAC any fact (department, amount, time) can enter a rule. In ReBAC rules look like a graph: who is connected to what.'
-          - cells: ['Example', 'ROLE_MANAGER', 'Own department and ≤ 50,000', 'Editor of the folder, so also of the file']
+          - cells: ['Example', 'ROLE_MANAGER', 'Own department and ≤ $500', 'Editor of the folder, so also of the file']
             tip: 'Google Drive sharing is exactly ReBAC: be an editor of a folder and you are an editor of the files inside.'
           - cells: ['When it''s enough', 'A small app with a few titles', 'There are business conditions', 'There is sharing, teams, hierarchy']
             tip: 'Most apps start with RBAC and move on to ABAC. ReBAC is for sharing-heavy systems.'
@@ -75,7 +75,7 @@ slides:
     blocks:
       - type: text
         body: |
-          Instead of 40 roles, keep three (employee, manager, director) and move the rules into one voter. Each role includes the one below it: `role_hierarchy: {ROLE_MANAGER: ROLE_EMPLOYEE, ROLE_DIRECTOR: ROLE_MANAGER}` in `security.yaml`. The voter checks department, amount and "not their own expense". A manager's limit is 50,000 taka; a director has none.
+          Instead of 40 roles, keep three (employee, manager, director) and move the rules into one voter. Each role includes the one below it: `role_hierarchy: {ROLE_MANAGER: ROLE_EMPLOYEE, ROLE_DIRECTOR: ROLE_MANAGER}` in `security.yaml`. The voter checks department, amount and "not their own expense". A manager's limit is $500; a director has none.
       - type: code
         lang: php
         file: 'src/Security/Voter/ExpenseVoter.php'
@@ -100,17 +100,17 @@ slides:
                       return false;
                   }
 
-                  $limit = $this->security->isGranted('ROLE_DIRECTOR') ? PHP_INT_MAX : 50_000;
+                  $limit = $this->security->isGranted('ROLE_DIRECTOR') ? PHP_INT_MAX : 500;
 
                   return $subject->getDepartment() === $user->getDepartment()  // own department
-                      && $subject->getAmountTaka() <= $limit                     // under the limit
+                      && $subject->getAmountDollars() <= $limit                     // under the limit
                       && $subject->getRequester() !== $user                      // not their own
                       && $subject->isPending();
               }
           }
         marks:
           - {line: 16, tip: 'No login or no role means "no" right here. When in doubt, always false.'}
-          - {line: 20, tip: 'ROLE_DIRECTOR sits above ROLE_MANAGER, so a director passes the check above and has no limit. A 70,000 taka expense: manager no, director yes.'}
+          - {line: 20, tip: 'ROLE_DIRECTOR sits above ROLE_MANAGER, so a director passes the check above and has no limit. A $700 expense: manager no, director yes.'}
           - {line: 22, tip: 'The department lives in the Expense, not in a role. A new department needs no code change.'}
           - {line: 24, tip: 'Separation of duties: the person who made the request can''t approve it themselves.'}
       - type: code
@@ -139,7 +139,7 @@ slides:
           - {term: 'Voter', meaning: 'A small class Symfony asks: "may this user do this to that thing?" It answers yes or no.'}
       - type: tips
         items:
-          - 'Unit-test the voter: right-department manager yes; other department no; own expense no; 70,000 taka manager no, director yes.'
+          - 'Unit-test the voter: right-department manager yes; other department no; own expense no; $700 manager no, director yes.'
     check:
       q: 'Why does the manager''s "own department" condition belong in the voter and not in a role?'
       a: 'Department is a fact about the user and the thing, not a title. In a voter, a new department needs no code change and adds no roles.'
@@ -158,13 +158,13 @@ slides:
         caption: 'Climbing up from the file looking for a grant, stopping at the first match'
         nodes:
           - {id: file, label: 'Document', sub: 'budget.xlsx', icon: file, col: 0, row: 0, tip: 'The thing whose permission we want to know.'}
-          - {id: sub, label: 'Folder', sub: 'Q3 reports', icon: archive, col: 1.5, row: 0, tip: 'The file''s direct parent. Karim has no grant here.'}
-          - {id: root, label: 'Folder', sub: 'Accounts', icon: archive, col: 3, row: 0, tip: 'The folder above it. Karim is set as an editor here.'}
-          - {id: grant, label: 'grant', sub: 'Karim = editor', icon: key, tone: accent, col: 3, row: 1.5, tip: 'A row in the folder_grant table: which user has which relation on which folder.'}
+          - {id: sub, label: 'Folder', sub: 'Q3 reports', icon: archive, col: 1.5, row: 0, tip: 'The file''s direct parent. Kevin has no grant here.'}
+          - {id: root, label: 'Folder', sub: 'Accounts', icon: archive, col: 3, row: 0, tip: 'The folder above it. Kevin is set as an editor here.'}
+          - {id: grant, label: 'grant', sub: 'Kevin = editor', icon: key, tone: accent, col: 3, row: 1.5, tip: 'A row in the folder_grant table: which user has which relation on which folder.'}
         edges:
-          - {from: file, to: sub, label: 'Karim has no grant on the file, so go up to the folder'}
+          - {from: file, to: sub, label: 'Kevin has no grant on the file, so go up to the folder'}
           - {from: sub, to: root, label: 'None here either, so go higher'}
-          - {from: root, to: grant, label: 'Karim is an editor of the Accounts folder: found it', tone: good}
+          - {from: root, to: grant, label: 'Kevin is an editor of the Accounts folder: found it', tone: good}
       - type: code
         lang: php
         file: 'src/Security/Voter/DocumentVoter.php'
@@ -253,7 +253,7 @@ slides:
     aside:
       - type: story
         title: 'The stale manager'
-        body: 'Sumi is demoted at 10:00. The token she logged in with at 09:30 lives for one hour and still carries ROLE_MANAGER. At 10:20 she approves a 40,000 taka expense, because the API trusts the token. Loading her roles from the database on each request would have refused her at 10:00.'
+        body: 'Sarah is demoted at 10:00. The token she logged in with at 09:30 lives for one hour and still carries ROLE_MANAGER. At 10:20 she approves a $400 expense, because the API trusts the token. Loading her roles from the database on each request would have refused her at 10:00.'
       - type: tips
         items:
           - 'Symfony''s `access_decision_manager` strategy defaults to `affirmative`: one voter saying yes is enough. If you want any objecting voter to block access, use `unanimous`.'
@@ -351,7 +351,7 @@ flashcards:
   - q: 'What is RBAC, and where does it run out?'
     a: 'Role-based access control: permission by the user''s title. It is simple, but once department, amount or ownership conditions arrive, roles explode in number.'
     more: |
-      For a small app, `ROLE_USER` and `ROLE_ADMIN` are enough. But making a separate role for each condition such as "own department" or "under 50,000" makes the count multiply. That is when it is time to move to ABAC.
+      For a small app, `ROLE_USER` and `ROLE_ADMIN` are enough. But making a separate role for each condition such as "own department" or "under $500" makes the count multiply. That is when it is time to move to ABAC.
     ref: role-explosion
   - q: 'What does ABAC mean?'
     a: 'Attribute-based access control: the decision combines facts about the user, the thing and the environment (department, amount, time).'
@@ -386,7 +386,7 @@ flashcards:
   - q: 'What goes wrong if roles are packed into the token at login?'
     a: 'After a demotion or dismissal the old token still lists the old role, so the person keeps those powers until the token expires.'
     more: |
-      Sumi is demoted at 10:00, but her 09:30 token still says manager for another hour. Read the user's current roles from the database on each request, or keep tokens short. The price is one user read per request.
+      Sarah is demoted at 10:00, but her 09:30 token still says manager for another hour. Read the user's current roles from the database on each request, or keep tokens short. The price is one user read per request.
     ref: authz-pitfalls
   - q: 'What is separation of duties?'
     a: 'The person who requests an action can''t approve it themselves. For example, an employee can''t pass their own expense.'
@@ -395,7 +395,7 @@ flashcards:
     ref: voter-abac
 
 quiz:
-  - q: 'Every time a new department opens, Rahim has to create a new role like `ROLE_MANAGER_<DEPARTMENT>` and change code. What is the right fix?'
+  - q: 'Every time a new department opens, Ryan has to create a new role like `ROLE_MANAGER_<DEPARTMENT>` and change code. What is the right fix?'
     hint: 'Is a department a user''s title, or a fact about the thing?'
     options:
       - text: 'Keep making a separate role for each department'
@@ -420,7 +420,7 @@ quiz:
       {
           $user = $token->getUser();
           if ($attribute === 'EXPENSE_APPROVE') {
-              return $subject->getAmountTaka() <= 50_000;
+              return $subject->getAmountDollars() <= 500;
           }
 
           return true;
@@ -429,7 +429,7 @@ quiz:
     options:
       - text: 'An unrecognized attribute returns true, and the user and role are never checked at all'
         correct: true
-        why: 'Anyone can approve an expense under 50,000, and every other attribute is allowed for everybody. The default should be false.'
+        why: 'Anyone can approve an expense under $500, and every other attribute is allowed for everybody. The default should be false.'
       - text: 'Only the `<=` is wrong; it should be `<`'
         correct: false
         why: 'Where the limit falls is a business decision; the real problem is security.'
@@ -437,7 +437,7 @@ quiz:
         correct: false
         why: '`#[IsGranted]` just calls the voter. Whatever the voter says is the decision.'
     ref: deny-by-default
-  - q: 'The shop adds a `/api/expenses/export.csv` route and nobody writes a rule for it. Which setup keeps it closed?'
+  - q: 'The company adds a `/api/expenses/export.csv` route and nobody writes a rule for it. Which setup keeps it closed?'
     hint: 'What should a voter say about an action nobody has thought about yet?'
     options:
       - text: 'A voter that claims only known attributes and ends in `default => false`, plus `#[IsGranted]` on the new action'
@@ -479,7 +479,7 @@ quiz:
         correct: false
         why: 'That is not a reason; voters are exactly what keeps those `if`s organized.'
     ref: rbac-abac-rebac
-  - q: 'Sumi is a manager, and she tries to approve a 30,000 taka expense that she submitted herself. What does ExpenseVoter return?'
+  - q: 'Sarah is a manager, and she tries to approve a $300 expense that she submitted herself. What does ExpenseVoter return?'
     hint: 'Reread the rules: which one is broken here?'
     options:
       - text: 'true, because she is a manager and the amount is under the limit'

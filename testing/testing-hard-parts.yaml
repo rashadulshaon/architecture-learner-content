@@ -9,21 +9,21 @@ slides:
         icon: bank
         title: 'Two brothers at two ATMs'
         body: |
-          Two brothers share an account with 1,000 taka. At the same moment they walk up to two different ATMs and each tries to withdraw 1,000. Both machines check the balance first (1,000), and then both hand out the cash. Test either ATM alone and it works perfectly. The mistake only appears when both brothers come together. Code tests usually run "alone" in the same way.
+          Two brothers share an account with $1,000. At the same moment they walk up to two different ATMs and each tries to withdraw $1,000. Both machines check the balance first ($1,000), and then both hand out the cash. Test either ATM alone and it works perfectly. The mistake only appears when both brothers come together. Code tests usually run "alone" in the same way.
       - type: visual
         kind: sequence
         caption: 'One item left, two buyers, two orders'
         actors:
-          - {id: rahim, label: 'Buyer Rahim', icon: user, tip: 'Placing an order, believing he is the only buyer.'}
-          - {id: karim, label: 'Buyer Karim', icon: user, tip: 'Buying the same product at exactly the same moment.'}
+          - {id: ryan, label: 'Buyer Ryan', icon: user, tip: 'Placing an order, believing he is the only buyer.'}
+          - {id: kevin, label: 'Buyer Kevin', icon: user, tip: 'Buying the same product at exactly the same moment.'}
           - {id: db, label: 'Database', icon: db, tip: 'The stock column says 1. Both of them read it.'}
         messages:
-          - {from: rahim, to: db, label: 'Read the stock', tip: 'SELECT stock FROM product WHERE sku = ...'}
-          - {from: karim, to: db, label: 'Read the stock'}
-          - {from: db, to: rahim, label: 'stock = 1', dashed: true}
-          - {from: db, to: karim, label: 'stock = 1', dashed: true}
-          - {from: rahim, to: db, label: 'Write stock = 0, create order'}
-          - {from: karim, to: db, label: 'Write stock = 0, create order', tone: bad}
+          - {from: ryan, to: db, label: 'Read the stock', tip: 'SELECT stock FROM product WHERE sku = ...'}
+          - {from: kevin, to: db, label: 'Read the stock'}
+          - {from: db, to: ryan, label: 'stock = 1', dashed: true}
+          - {from: db, to: kevin, label: 'stock = 1', dashed: true}
+          - {from: ryan, to: db, label: 'Write stock = 0, create order'}
+          - {from: kevin, to: db, label: 'Write stock = 0, create order', tone: bad}
           - {at: db, note: 'Two orders, but there was only one item', tone: bad}
       - type: quote
         body: 'A race condition never happens in tests that run one after another.'
@@ -179,16 +179,16 @@ slides:
       a: 'The check and the decrement happen as one step inside the database, so no other buyer can slip in between. If 0 rows change, the stock was already gone.'
 
   - slug: idempotency-test
-    title: 'Pressing the lift button again and again: idempotency tests'
+    title: 'Pressing the elevator button again and again: idempotency tests'
     kind: howto
     tldr: 'Send the same Idempotency-Key twice: the response is the same and only one charge happens. Send different data with the same key and it must be rejected. That is how you test retries and double clicks.'
     keywords: ['idempotency test', 'Idempotency-Key', 'WebTestCase', 'duplicate request', 'retry', 'double charge']
     blocks:
       - type: metaphor
         icon: building
-        title: 'The lift button'
+        title: 'The elevator button'
         body: |
-          Press the lift button five times and one lift comes, not five. A payment API should behave like that button: the network drops and the client sends the same request again. With the same key, the server recognises "this is the request I already handled" and returns the earlier response, without charging again.
+          Press the elevator button five times and one elevator comes, not five. A payment API should behave like that button: the network drops and the client sends the same request again. With the same key, the server recognizes "this is the request I already handled" and returns the earlier response, without charging again.
       - type: visual
         kind: sequence
         caption: 'On a retry with the same key: the same response, no new charge'
@@ -199,7 +199,7 @@ slides:
         messages:
           - {from: client, to: api, label: 'POST /payments (key: K1)'}
           - {from: api, to: db, label: 'K1 is new: charge, store the result'}
-          - {from: api, to: client, label: '500 taka charged, 201', dashed: true}
+          - {from: api, to: client, label: '$50.00 charged, 201', dashed: true}
           - {at: client, note: 'The response got lost on the way, the client doesn''t know', tone: warn}
           - {from: client, to: api, label: 'retry: POST /payments (key: K1)'}
           - {from: api, to: db, label: 'Do we already have K1?'}
@@ -214,7 +214,7 @@ slides:
           {
               $client = static::createClient();
               $key = ['HTTP_IDEMPOTENCY_KEY' => 'order-42-attempt-1'];
-              $payload = ['orderId' => 42, 'amount' => 50_000];
+              $payload = ['orderId' => 42, 'amount' => 5_000];
 
               $client->jsonRequest('POST', '/api/payments', $payload, $key);
               $first = $client->getResponse()->getContent();
@@ -230,8 +230,8 @@ slides:
               $client = static::createClient();
               $key = ['HTTP_IDEMPOTENCY_KEY' => 'order-42-attempt-1'];
 
-              $client->jsonRequest('POST', '/api/payments', ['orderId' => 42, 'amount' => 50_000], $key);
-              $client->jsonRequest('POST', '/api/payments', ['orderId' => 42, 'amount' => 99_000], $key);
+              $client->jsonRequest('POST', '/api/payments', ['orderId' => 42, 'amount' => 5_000], $key);
+              $client->jsonRequest('POST', '/api/payments', ['orderId' => 42, 'amount' => 9_900], $key);
 
               self::assertResponseStatusCodeSame(422);   // our API's rule
           }
@@ -315,17 +315,17 @@ slides:
               {
                   $this->migrateTo(self::BEFORE);
                   $db = self::getContainer()->get(Connection::class);
-                  $db->insert('"user"', ['id' => 1, 'phone' => '01711111111']);
+                  $db->insert('"user"', ['id' => 1, 'phone' => '+1 555-0142']);
                   $db->insert('"user"', ['id' => 2, 'phone' => null]);   // corner case
 
                   $this->migrateTo(self::AFTER);
 
                   self::assertSame(2, (int) $db->fetchOne('SELECT COUNT(*) FROM "user"'));
-                  self::assertSame('01711111111', $db->fetchOne('SELECT phone FROM "user" WHERE id = 1'));
-              self::assertSame('01711111111', $db->fetchOne('SELECT mobile FROM "user" WHERE id = 1'));
+                  self::assertSame('+1 555-0142', $db->fetchOne('SELECT phone FROM "user" WHERE id = 1'));
+              self::assertSame('+1 555-0142', $db->fetchOne('SELECT mobile FROM "user" WHERE id = 1'));
 
                   // old code doesn't know about mobile: its INSERT must still work
-                  $db->insert('"user"', ['id' => 3, 'phone' => '01822222222']);
+                  $db->insert('"user"', ['id' => 3, 'phone' => '+1 555-0187']);
                   self::assertNull($db->fetchOne('SELECT mobile FROM "user" WHERE id = 3'));
               }
 
@@ -466,7 +466,7 @@ flashcards:
     ref: concurrency-test
 
 quiz:
-  - q: 'Selim''s test launches two Processes with usleep(50_000) between them. The test is green even on buggy code. What is the most likely cause?'
+  - q: 'Steve''s test launches two Processes with usleep(50_000) between them. The test is green even on buggy code. What is the most likely cause?'
     hint: 'What happens if the first one finishes before the second starts?'
     options:
       - text: 'The first process finishes before the second starts, so no race happens'
@@ -498,8 +498,8 @@ quiz:
         correct: false
         why: 'SQLite''s locking and isolation behave differently, so it won''t reproduce the production race.'
     ref: concurrency-test
-  - q: 'A client sends the same payment twice with the same Idempotency-Key. What is the correct behaviour?'
-    hint: 'Press the lift button five times: how many lifts come?'
+  - q: 'A client sends the same payment twice with the same Idempotency-Key. What is the correct behavior?'
+    hint: 'Press the elevator button five times: how many elevators come?'
     options:
       - text: 'The second time, return the earlier response and don''t charge again'
         correct: true
@@ -518,8 +518,8 @@ quiz:
     lang: php
     code: |
       $this->migrateTo(self::AFTER);
-      $db->insert('"user"', ['id' => 1, 'phone' => '01711111111']);
-      self::assertSame('01711111111', $db->fetchOne('SELECT phone FROM "user" WHERE id = 1'));
+      $db->insert('"user"', ['id' => 1, 'phone' => '+1 555-0142']);
+      self::assertSame('+1 555-0142', $db->fetchOne('SELECT phone FROM "user" WHERE id = 1'));
     hint: 'When is the old data being loaded?'
     options:
       - text: 'The data is loaded after the migration, so how the migration treats old data is never tested'

@@ -7,7 +7,7 @@ slides:
     blocks:
       - type: text
         body: |
-          Rahim picked a document database for a new e-commerce project because everyone on YouTube said "it's modern, no schema needed". The first month went fast. Six months later the finance team wanted a sales report by district, and payments needed to change an order, the stock and a wallet together. In a relational database both of those are a single statement. Rahim had to build them by hand in his own code.
+          Ryan picked a document database for a new e-commerce project because everyone on YouTube said "it's modern, no schema needed". The first month went fast. Six months later the finance team wanted a sales report by state, and payments needed to change an order, the stock and a payment balance together. In a relational database both of those are a single statement. Ryan had to build them by hand in his own code.
       - type: visual
         kind: compare
         caption: 'The same decision: how it felt in month one, and what it became six months later'
@@ -41,7 +41,7 @@ slides:
         items:
           - {to: 'thinking/what-is-architectural', label: 'Why choosing a database is a pillar decision'}
     check:
-      q: 'What exactly was Rahim''s mistake? Is a document database a bad thing?'
+      q: 'What exactly was Ryan''s mistake? Is a document database a bad thing?'
       a: 'No, it is not bad. The mistake was how he chose: his data was interlinked and his questions needed joins and transactions, which is relational territory. He chose by popularity instead of looking at the work.'
 
   - slug: six-kinds-of-databases
@@ -100,7 +100,7 @@ slides:
                  50/second     need: transaction, constraints
           Job 2  "My orders" list, newest first
                  300/second    need: lookup by customer_id, sorted result
-          Job 3  Monthly sales report by district
+          Job 3  Monthly sales report by state
                  20 per day    need: join + GROUP BY
           Job 4  Search products by name
                  200/second    need: full-text search
@@ -160,7 +160,7 @@ slides:
               private string $name;
 
               #[ORM\Column]
-              private int $priceInPoisha;      // every product has it: a strict column
+              private int $priceInCents;      // every product has it: a strict column
 
               /** @var array<string, scalar> phone RAM, shirt size: differs per product */
               #[ORM\Column(type: Types::JSONB)]
@@ -251,18 +251,18 @@ slides:
     blocks:
       - type: text
         body: |
-          Take one order, number 1001: Nadia bought 2 of product P55 for 1250 taka. Each family writes it down in its own shape, and the shape decides which questions are easy and which are painful. Read the "easy" and "gives up" lines under each shape.
+          Take one order, number 1001: Nicole bought 2 of product P55 for $60. Each family writes it down in its own shape, and the shape decides which questions are easy and which are painful. Read the "easy" and "gives up" lines under each shape.
       - type: code
         lang: text
         file: 'order 1001 in each family'
         code: |
           RELATIONAL: rows in linked tables
-            orders       id=1001  customer_id=7  total=1250
+            orders       id=1001  customer_id=7  total=6000
             order_items  order_id=1001  product_id=55  qty=2
-            easy: sales per district (join + GROUP BY)
+            easy: sales per state (join + GROUP BY)
             gives up: easy write scaling over many servers
           DOCUMENT: one JSON for the whole order
-            orders/1001 = {"customer": "Nadia", "items": [{"sku": "P55", "qty": 2}], "total": 1250}
+            orders/1001 = {"customer": "Nicole", "items": [{"sku": "P55", "qty": 2}], "total": 6000}
             easy: show the whole order in one read
             gives up: join with today's product prices
           KEY-VALUE: one key, one opaque value
@@ -271,12 +271,12 @@ slides:
             gives up: "all orders of customer 7"
           WIDE-COLUMN: rows grouped by partition key
             orders_by_customer  PARTITION KEY (customer_id)  SORTED BY created_at
-              (7, 2025-01-05, 1001, 1250)
+              (7, 2025-01-05, 1001, 6000)
             easy: customer 7's latest orders
-            gives up: "orders by district" (needs a second table, a copy)
+            gives up: "orders by state" (needs a second table, a copy)
           GRAPH: nodes and edges
-            (Nadia)-[:PLACED]->(Order 1001)-[:CONTAINS]->(Product P55)
-            easy: "who bought what people like Nadia bought"
+            (Nicole)-[:PLACED]->(Order 1001)-[:CONTAINS]->(Product P55)
+            easy: "who bought what people like Nicole bought"
             gives up: a cheap sum of all totals
           TIME-SERIES: a timestamp and a measurement
             cpu_load  time=10:00:01  server=web1  value=0.42
@@ -290,8 +290,8 @@ slides:
       - type: remember
         body: 'Look at the shape first: every family is easy at the questions its shape was built for, and painful at the rest.'
     check:
-      q: 'Your app must answer "all orders placed in Dhaka this month". Which of the six shapes above makes that a one-line question?'
-      a: 'The relational one: one join and a GROUP BY. Key-value cannot search inside values at all, and wide-column would need a second copy of the data keyed by district.'
+      q: 'Your app must answer "all orders placed in Texas this month". Which of the six shapes above makes that a one-line question?'
+      a: 'The relational one: one join and a GROUP BY. Key-value cannot search inside values at all, and wide-column would need a second copy of the data keyed by state.'
 
 
 flashcards:
@@ -313,15 +313,15 @@ flashcards:
   - q: 'When does a document database fit?'
     a: 'When everything about one thing is read and written together, its shape varies from item to item, and you almost never join across documents.'
     more: |
-      A CMS page or a product catalogue entry is a good example: it comes in whole and goes out whole. But when the data is interlinked (order, customer, payment) and reports need joins, a document database makes you build those joins in your own code.
+      A CMS page or a product catalog entry is a good example: it comes in whole and goes out whole. But when the data is interlinked (order, customer, payment) and reports need joins, a document database makes you build those joins in your own code.
     ref: six-kinds-of-databases
   - q: 'What does a wide-column database (like Cassandra) give you, and what does it take in return?'
     a: 'It gives huge write capacity spread over many servers. It takes joins and ad-hoc queries: you decide the queries first and shape the tables to match.'
     more: |
       Data is split across servers by a partition key, so writes can scale almost without limit. But you can mostly look things up only by that key. It suits huge workloads with known queries, like chat messages, event logs and sensor data; for an ordinary business app it is extra weight.
     ref: six-kinds-of-databases
-  - q: 'You store orders in Cassandra keyed by customer_id. Can you list all orders of one district?'
-    a: 'Not directly. You can only look up by the key the table was built for, so you would keep a second table (a copy) keyed by district.'
+  - q: 'You store orders in Cassandra keyed by customer_id. Can you list all orders of one state?'
+    a: 'Not directly. You can only look up by the key the table was built for, so you would keep a second table (a copy) keyed by state.'
     more: |
       This is the price of wide-column: queries are decided first and each gets its own copy of the data, and every write must update every copy. In relational the same question is one join and a GROUP BY, which is why it is the safer default when the questions are not yet known.
     ref: one-order-six-shapes
@@ -333,7 +333,7 @@ flashcards:
   - q: 'When do you need a graph database?'
     a: 'When the main questions are about relationships many steps deep, such as friends of friends, fraud rings or recommendations, and SQL turns them into deep joins.'
     more: |
-      A graph database stores nodes and edges directly, so hopping from one node to its neighbour is cheap. One or two steps of relationship (a customer's orders) work fine in relational. Think of a graph when the depth of the relationships is unknown or large.
+      A graph database stores nodes and edges directly, so hopping from one node to its neighbor is cheap. One or two steps of relationship (a customer's orders) work fine in relational. Think of a graph when the depth of the relationships is unknown or large.
     ref: six-kinds-of-databases
   - q: 'What is the hidden cost of adding a second database?'
     a: 'Separate backups, monitoring, upgrades and skills, plus the duty of keeping the same fact in agreement in two places.'
@@ -347,7 +347,7 @@ flashcards:
     ref: second-database-cost
 
 quiz:
-  - q: 'Karim''s team will build a school management app: students, classes, fees and results. It is not yet clear which questions will come later. Which database should they start with?'
+  - q: 'Kevin''s team will build a school management app: students, classes, fees and results. It is not yet clear which questions will come later. Which database should they start with?'
     hint: 'Are students, classes and fees separate, or linked to one another?'
     options:
       - text: 'A document database, because the schema will keep changing and fixed tables are a hassle'
@@ -372,7 +372,7 @@ quiz:
       - text: 'A per-minute counter of how many requests each client made'
         correct: true
         why: 'Fast increments by key and automatic expiry are exactly what a rate-limit counter needs.'
-      - text: 'A monthly sales report by district'
+      - text: 'A monthly sales report by state'
         correct: false
         why: 'It needs to scan many rows with joins and GROUP BY. A key-value store cannot search inside its values at all.'
       - text: 'A cache of a computed product page'
@@ -470,7 +470,7 @@ quiz:
         correct: false
         why: 'It will last a while, but one server has a write ceiling. With one known query, paying the price of a distributed database is worth it here.'
     ref: six-kinds-of-databases
-  - q: 'Nadia''s team stores each order as one JSON document. Finance now asks: "total sales per district, with each product''s current price". What is hard here?'
+  - q: 'Nicole''s team stores each order as one JSON document. Finance now asks: "total sales per state, with each product''s current price". What is hard here?'
     hint: 'Which part of the data lives in a different document?'
     options:
       - text: 'Reading one whole order, because the JSON is too big'

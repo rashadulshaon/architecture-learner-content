@@ -7,9 +7,9 @@ slides:
     blocks:
       - type: metaphor
         icon: ticket
-        title: 'The bus conductor''s seat card'
+        title: 'The host''s reserved card'
         body: |
-          A bus conductor hangs a card on a seat: looking and hanging happen in one motion. If it took three steps ("see if the seat is free, think about it, then hang the card"), another passenger could sit down in the middle. An atomic operation is exactly that one motion: checking the condition and making the change happen in a single database step.
+          A restaurant host puts a "reserved" card on a table: looking and placing the card happen in one motion. If it took three steps ("see if the table is free, think about it, then place the card"), another party could sit down in the middle. An atomic operation is exactly that one motion: checking the condition and making the change happen in a single database step.
       - type: code
         lang: php
         file: 'src/Service/OrderService.php'
@@ -21,20 +21,20 @@ slides:
               $em->flush();                         // two orders confirmed, one phone
           }
         marks:
-          - {line: 1, tip: 'The read happens in one step and the write in another. Karim''s request can read in the gap, and still sees 1.'}
+          - {line: 1, tip: 'The read happens in one step and the write in another. Kevin''s request can read in the gap, and still sees 1.'}
           - {line: 4, tip: 'Nothing fails: 0 is a perfectly legal stock value, so the database accepts both writes. Hence a plain CHECK would not catch this either.'}
       - type: visual
         kind: sequence
         caption: 'One phone in stock, two buyers at once. With a single UPDATE, only one gets it'
         actors:
-          - {id: r1, label: 'Rahim''s order', icon: user, tip: 'Wants to buy the last phone.'}
-          - {id: r2, label: 'Karim''s order', icon: user, tip: 'Wants to buy the same phone at almost the same moment.'}
+          - {id: r1, label: 'Ryan''s order', icon: user, tip: 'Wants to buy the last phone.'}
+          - {id: r2, label: 'Kevin''s order', icon: user, tip: 'Wants to buy the same phone at almost the same moment.'}
           - {id: db, label: 'Database', icon: db, tip: 'The product row has stock = 1.'}
         messages:
           - {from: r1, to: db, label: 'stock = stock − 1 WHERE stock >= 1', tip: 'The condition and the change are in one statement. The database locks the row while it does it.'}
-          - {from: db, to: r1, label: '1 row changed', dashed: true, tone: good, tip: 'affected rows = 1 means Rahim got it.'}
+          - {from: db, to: r1, label: '1 row changed', dashed: true, tone: good, tip: 'affected rows = 1 means Ryan got it.'}
           - {from: r2, to: db, label: 'stock = stock − 1 WHERE stock >= 1', tip: 'Now stock is 0, so the WHERE doesn''t match.'}
-          - {from: db, to: r2, label: '0 rows changed', dashed: true, tone: warn, tip: 'affected rows = 0 means sold out. Karim is told "it''s gone".'}
+          - {from: db, to: r2, label: '0 rows changed', dashed: true, tone: warn, tip: 'affected rows = 0 means sold out. Kevin is told "it''s gone".'}
           - {at: db, note: 'stock = 0, never −1', tone: good, tip: 'There was no gap, so there is no overselling either.'}
       - type: quote
         body: 'Put the condition in the WHERE, then check how many rows changed.'
@@ -89,7 +89,7 @@ slides:
         lang: sql
         file: 'migrations/Version2026….php (SQL)'
         code: |
-          -- Last line of defence: even if the code is wrong, the database won't accept negative stock
+          -- Last line of defense: even if the code is wrong, the database won't accept negative stock
           ALTER TABLE product
               ADD CONSTRAINT product_stock_non_negative CHECK (stock >= 0);
         marks:
@@ -131,7 +131,7 @@ slides:
           - {from: w1, to: db, label: 'If pending, mark paid', tip: 'UPDATE … SET status = ''paid'' WHERE id = 12 AND status = ''pending''.'}
           - {from: db, to: w1, label: '1 row changed', dashed: true, tone: good, tip: 'w1 won. From now on, only it does the receipt work.'}
           - {from: w2, to: db, label: 'If pending, mark paid', tip: 'By the time this UPDATE runs, status is already paid, so the WHERE doesn''t match.'}
-          - {from: db, to: w2, label: '0 rows changed', dashed: true, tone: warn, tip: 'w2 realises the work has already been done, and just quietly returns 200.'}
+          - {from: db, to: w2, label: '0 rows changed', dashed: true, tone: warn, tip: 'w2 realizes the work has already been done, and just quietly returns 200.'}
       - type: code
         lang: sql
         file: 'src/Repository/OrderRepository.php (SQL)'
@@ -191,7 +191,7 @@ slides:
           - cells: ['One vote per poll', 'UNIQUE (poll_id, user_id)']
             tip: 'The pair of columns is unique. Even a double tap leaves just one row.'
           - cells: ['Only one active booking per seat', 'UNIQUE (seat_id) WHERE status = ''active''']
-            tip: 'A partial unique index (PostgreSQL). There can be many cancelled bookings, but only one active.'
+            tip: 'A partial unique index (PostgreSQL). There can be many canceled bookings, but only one active.'
           - cells: ['The same idempotency key only once', 'UNIQUE (idempotency_key)']
             tip: 'On a retry, the second insert fails; you can then simply return the earlier response.'
       - type: code
@@ -323,14 +323,14 @@ flashcards:
       It avoids the race in the two-step "SELECT first, then INSERT or UPDATE". It is useful for incrementing counters, daily tallies or cache rows. Without a unique index, it doesn't work at all.
     ref: unique-and-upsert
   - q: 'What is a partial unique index used for?'
-    a: 'A unique rule over only some rows, such as one active booking per seat while cancelled ones can be many. In PostgreSQL: `WHERE status = ''active''`.'
+    a: 'A unique rule over only some rows, such as one active booking per seat while canceled ones can be many. In PostgreSQL: `WHERE status = ''active''`.'
     more: |
       `CREATE UNIQUE INDEX one_active ON booking (seat_id) WHERE status = 'active'`. The database itself prevents double-booking, even if there is a gap in the code. MySQL doesn't have it directly; you can work around it with a generated column.
     ref: unique-and-upsert
   - q: 'How do you stop negative stock even when the code has a bug?'
-    a: 'Add CHECK (stock >= 0) to the column. It is the last line of defence: whatever code or script makes a mistake, the database won''t accept a negative value.'
+    a: 'Add CHECK (stock >= 0) to the column. It is the last line of defense: whatever code or script makes a mistake, the database won''t accept a negative value.'
     more: |
-      The atomic UPDATE is the first defence and the CHECK constraint is the second; with both in place, one catches what the other misses. Add it through a migration, not with hand-run SQL.
+      The atomic UPDATE is the first defense and the CHECK constraint is the second; with both in place, one catches what the other misses. Add it through a migration, not with hand-run SQL.
     ref: atomic-update-doctrine
 
 quiz:
@@ -376,9 +376,9 @@ quiz:
       - text: '1, and it sends the receipt too'
         correct: false
         why: 'The status is already paid by then, so the WHERE doesn''t match. If it were 1, the receipt would go out twice.'
-      - text: '0; it realises the work is done and quietly returns success'
+      - text: '0; it realizes the work is done and quietly returns success'
         correct: true
-        why: 'This is the safe behaviour for a duplicate webhook: the work happens once, and the response is 200 both times.'
+        why: 'This is the safe behavior for a duplicate webhook: the work happens once, and the response is 200 both times.'
       - text: 'An exception, because two UPDATEs may not run at the same time'
         correct: false
         why: 'The database runs the two serially, with no exception; the second one just changes nothing.'

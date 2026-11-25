@@ -36,22 +36,26 @@ show exactly how to do it properly.
 
 ## 2. Voice and language
 
-- Plain, international English, as a good senior engineer would explain it to a colleague:
-  friendly, direct, addressing the learner as **you**. Short sentences, active voice,
-  contractions are fine ("don't", "it's").
+- Plain American English, as a good senior engineer in the US would explain it to a
+  colleague: friendly, direct, addressing the learner as **you**. Short sentences, active
+  voice, contractions are fine ("don't", "it's"). American spelling (color, behavior,
+  optimize, canceled). Readers come from everywhere, so no niche US slang, sports jargon or
+  cultural in-jokes.
 - Technical terms stay as engineers say them (cache, queue, idempotency key, deploy). The
   first time a term appears in a segment, say what it means in a few plain words.
-- Digits for numbers (`10 people`, `5 minutes`, `200ms`). Money in the story world is in
-  taka (`500 taka`, `Tk 500`).
-- Every abstract idea gets a **real-life metaphor from everyday Bangladeshi life**: a tea
-  stall, a biryani restaurant, the corner shop's credit ledger, a train ticket counter, a
-  mobile wallet like bKash, the postman, a school attendance register, a library, a bus
-  conductor, a pharmacy, a courier, the wedding kitchen, a traffic signal. Add the two or
-  three words a reader from elsewhere needs to picture it ("the corner shop's credit ledger,
-  where the shopkeeper writes down who owes what"). The metaphor must map onto the mechanism
-  point by point — not decoration. Reuse the same metaphor through a whole segment so the
-  learner builds one mental picture.
-- People in the stories have Bangladeshi names (Rahim, Karim, Nadia, …).
+- Digits for numbers (`10 people`, `5 minutes`, `200ms`). Money in the story world is in US
+  dollars (`$12`, `$1,250.00`), with prices realistic for the US: a coffee is about $4, a
+  phone a few hundred dollars. In code, store cents (`amount_cents`, `'USD'`).
+- Everyday units in stories are US ones (miles, pounds, °F); technical units stay (MB, ms).
+- Every abstract idea gets a **real-life metaphor from an everyday scene anyone can picture**:
+  a coffee shop, a pizza place, a restaurant kitchen, a grocery store, a store's house tab, a
+  concert or airline ticket sale, a payment app like PayPal, the mail carrier, a class roster,
+  a library, a pharmacy, a package delivery, a wedding caterer, a traffic light. The metaphor
+  must map onto the mechanism point by point — not decoration. Reuse the same metaphor
+  through a whole segment so the learner builds one mental picture.
+- People in the stories have common American first names (Ryan, Kevin, Sarah, …). Reuse
+  the recurring characters (Ryan, Kevin, Sarah, Jake, Rachel, Nicole) rather than inventing new
+  ones in every segment.
 - No filler, no hype, no "let's dive in". No emoji in prose. Every sentence must teach.
 - Be technically correct. State the industry-standard opinion plainly; when something is a
   genuine trade-off, say what decides it.
@@ -174,7 +178,7 @@ A flashcard is shown for 15 seconds to someone with **no context** — it must s
 
 ## 7. Quiz questions
 
-- Test understanding and application, not wording: prefer small scenarios ("In Rahim's app…
+- Test understanding and application, not wording: prefer small scenarios ("In Ryan's app…
   what should he do?") and "what is wrong with this code" (optional `code` + `lang`).
 - 3–5 options. Wrong options must be the mistakes a real beginner would make — plausible,
   never silly. Vary the position of the correct option.
@@ -245,7 +249,7 @@ text + metaphor bodies together max 1248 characters.
   body: |                       # 20–896
     …
 - type: metaphor
-  title: 'The corner shop ledger'   # max 77
+  title: 'The store''s house tab'   # max 77
   icon: shop                    # optional, from the icon list
   body: |                       # 20–736
     …
@@ -310,10 +314,10 @@ edges are the story: write each label as a full short sentence of what happens i
   kind: sequence
   caption: '…'
   actors:                       # 2–4 columns, left to right
-    - {id: rahim, label: 'Rahim', icon: user, tip: '…'}          # label max 29
+    - {id: ryan, label: 'Ryan', icon: user, tip: '…'}          # label max 29
   messages:                     # 2–9 rows, top to bottom, played one at a time
-    - {from: rahim, to: db, label: 'Read the balance', tip: '…'}  # label max 74; tip optional
-    - {from: db, to: rahim, label: '100 taka', dashed: true}
+    - {from: ryan, to: db, label: 'Read the balance', tip: '…'}  # label max 74; tip optional
+    - {from: db, to: ryan, label: '$100', dashed: true}
     - {at: db, note: 'Balance is now −50', tone: bad}            # a note on one actor's line, max 74
 ```
 

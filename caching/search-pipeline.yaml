@@ -7,7 +7,7 @@ slides:
     blocks:
       - type: text
         body: |
-          Right after saving a product, Rahim's controller writes straight to Elasticsearch. In library terms: putting the book on the shelf and writing its name in the catalogue notebook are two jobs in two places. One day Elasticsearch was down for half a minute. In that gap, 40 products landed in the database but never reached the index. Sellers phone in: "I listed my product and I can't find it." This trap of writing to two places separately is called a **dual write**.
+          Right after saving a product, Ryan's controller writes straight to Elasticsearch. In library terms: putting the book on the shelf and writing its name in the catalog notebook are two jobs in two places. One day Elasticsearch was down for half a minute. In that gap, 40 products landed in the database but never reached the index. Sellers phone in: "I listed my product and I can't find it." This trap of writing to two places separately is called a **dual write**.
       - type: code
         lang: php
         file: 'src/Controller/ProductController.php'
@@ -67,9 +67,9 @@ slides:
     blocks:
       - type: metaphor
         icon: book
-        title: 'The books on the shelf and the catalogue notebook'
+        title: 'The books on the shelf and the catalog notebook'
         body: |
-          In a library, the books on the shelves are the original and the catalogue notebook is the copy. When a new book arrives, the librarian puts it on the shelf and drops a slip into a basket: "Book 42 changed." Later an assistant picks up the slip, **goes to the shelf and looks at the book himself**, and only then updates the notebook. The slip carries no description of the book, just the number. So even if a slip arrives twice, or out of order, the notebook still gets the shelf's latest state.
+          In a library, the books on the shelves are the original and the catalog notebook is the copy. When a new book arrives, the librarian puts it on the shelf and drops a slip into a basket: "Book 42 changed." Later an assistant picks up the slip, **goes to the shelf and looks at the book himself**, and only then updates the notebook. The slip carries no description of the book, just the number. So even if a slip arrives twice, or out of order, the notebook still gets the shelf's latest state.
       - type: visual
         kind: flow
         caption: 'The pipeline from the database to the search index'
@@ -78,7 +78,7 @@ slides:
           - {id: db, label: 'Database', sub: 'source of truth', icon: db, tone: accent, col: 1.5, row: 0, tip: 'The books on the shelf. Every write happens here first, and every final answer comes from here.'}
           - {id: queue, label: 'Queue', sub: 'product 42 changed', icon: queue, col: 1.5, row: 2, tip: 'The basket of slips. Even if Elasticsearch is down, the message waits here safely.'}
           - {id: worker, label: 'Worker', sub: 'index handler', icon: worker, col: 3, row: 2, tip: 'The assistant. It picks up a message, re-reads the product from the database, then writes to the index. If that fails, it tries again.'}
-          - {id: es, label: 'Search index', sub: 'copy', icon: search, col: 4, row: 1, tip: 'The catalogue notebook. If it is lost, the whole thing can be rebuilt from the database.'}
+          - {id: es, label: 'Search index', sub: 'copy', icon: search, col: 4, row: 1, tip: 'The catalog notebook. If it is lost, the whole thing can be rebuilt from the database.'}
         edges:
           - {from: api, to: db, label: 'The database is written first: this is the source of truth'}
           - {from: api, to: queue, label: 'Then just a "product 42 changed" message goes on the queue'}
@@ -141,9 +141,9 @@ slides:
               ) {
               }
 
-              public function changePrice(Product $product, int $priceInPaisa): void
+              public function changePrice(Product $product, int $priceInCents): void
               {
-                  $product->changePrice($priceInPaisa);
+                  $product->changePrice($priceInCents);
                   $this->em->flush();                                         // 1. truth first
 
                   $this->bus->dispatch(new IndexProduct($product->getId()));  // 2. then the news
@@ -328,7 +328,7 @@ slides:
     blocks:
       - type: text
         body: |
-          When the analyzer or mapping changes, you can't patch the old catalogue notebook; you have to start a new one and copy every book from the shelves again. To keep readers from noticing, they always look at "the notebook on the table", and they never know which notebook is actually there. In Elasticsearch this table is called an **alias**: a nickname that points at a real index.
+          When the analyzer or mapping changes, you can't patch the old catalog notebook; you have to start a new one and copy every book from the shelves again. To keep readers from noticing, they always look at "the notebook on the table", and they never know which notebook is actually there. In Elasticsearch this table is called an **alias**: a nickname that points at a real index.
       - type: visual
         kind: steps
         caption: 'Moving the products alias from v1 to v2'
@@ -496,7 +496,7 @@ quiz:
         correct: false
         why: 'PUT with an ID is right, because it is idempotent. The problem isn''t the method, it is writing to two places separately.'
     ref: dual-write-drift
-  - q: 'In Sumi''s system the message carries the new price: {id: 7, price: 500}, then {id: 7, price: 450}. Two workers finished the messages in reverse order, and the index was left with 500. What is the best fix?'
+  - q: 'In Sarah''s system the message carries the new price: {id: 7, price: 500}, then {id: 7, price: 450}. Two workers finished the messages in reverse order, and the index was left with 500. What is the best fix?'
     hint: 'If the message just said "look at product 7 again", would the order still matter?'
     options:
       - text: 'Send only the ID in the message; the handler reads the latest price from the database and writes that'
@@ -544,7 +544,7 @@ quiz:
         correct: false
         why: 'It does, for example when a worker dies after finishing the work but before acknowledging it. That is exactly why the handler must be idempotent.'
     ref: index-handler
-  - q: 'You need to change the analyzer for product names. The catalogue has 2 million products, and search can''t go down for even a minute. Which path is right?'
+  - q: 'You need to change the analyzer for product names. The catalog has 2 million products, and search can''t go down for even a minute. Which path is right?'
     hint: 'Can you keep the old index running and build a new one beside it?'
     options:
       - text: 'Create a new index, fill it from the database with bulk, verify it, then flip the alias'

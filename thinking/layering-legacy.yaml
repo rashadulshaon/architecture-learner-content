@@ -7,7 +7,7 @@ slides:
     blocks:
       - type: text
         body: |
-          In Rahim's app, the whole order job lives in one controller: reading the JSON, running SQL, calculating the discount and sending the email. The rule is "10% off above 5000 taka", and the same rule is needed in another API and an admin page. It is trapped inside the controller, so Rahim copies it into each. Six months later first orders get 15% off. He updates two copies and forgets the third, so a first order of 6000 taka is charged 5,100 while the admin page shows 5,400.
+          In Ryan's app, the whole order job lives in one controller: reading the JSON, running SQL, calculating the discount and sending the email. The rule is "10% off above $100", and the same rule is needed in another API and an admin page. It is trapped inside the controller, so Ryan copies it into each. Six months later first orders get 15% off. He updates two copies and forgets the third, so a first order of $120 is charged $102 while the admin page shows $108.
       - type: code
         lang: php
         file: 'src/Controller/OrderController.php'
@@ -123,15 +123,15 @@ slides:
           // src/Order/DiscountPolicy.php: the rule, written once
           final readonly class DiscountPolicy
           {
-              public function apply(int $subtotalPaisa, bool $firstOrder): int
+              public function apply(int $subtotalCents, bool $firstOrder): int
               {
                   $percent = match (true) {
                       $firstOrder => 15,
-                      $subtotalPaisa > 500_000 => 10,   // above 5,000 taka
+                      $subtotalCents > 10_000 => 10,   // above $100
                       default => 0,
                   };
 
-                  return $subtotalPaisa - intdiv($subtotalPaisa * $percent, 100);
+                  return $subtotalCents - intdiv($subtotalCents * $percent, 100);
               }
           }
 
@@ -154,21 +154,21 @@ slides:
           // $total = $this->discounts->apply($subtotal, $first);
         marks:
           - {line: 7, tip: 'First orders get 15%, whatever the amount. The new rule lives here and nowhere else.'}
-          - {line: 8, tip: 'Above 5,000 taka (500,000 paisa) the discount is 10%. Everything else gets none.'}
+          - {line: 8, tip: 'Above $100 (10,000 cents) the discount is 10%. Everything else gets none.'}
           - {line: 20, tip: 'products and orders are interfaces. The Doctrine versions live in the layer below, and this class never sees them.'}
           - {line: 22, tip: 'The service asks DiscountPolicy for the total, so it holds no discount rule of its own. Callers 2 and 3 do the same.'}
           - {line: 26, tip: 'No email here. A separate handler listening for OrderPlaced sends it, so this class has no HTTP and no mailer.'}
       - type: visual
         kind: compare
-        caption: 'One 6,000-taka first order, before and after the rule moved'
+        caption: 'One $120 first order, before and after the rule moved'
         columns:
           - title: 'Before: three copies'
             tone: bad
             icon: cross
             tip: 'Each place calculated the discount on its own, so each had to be updated by hand.'
             items:
-              - 'Checkout updated to 15%: charges 5,100 taka'
-              - 'Admin page missed the change: shows 5,400'
+              - 'Checkout updated to 15%: charges $102'
+              - 'Admin page missed the change: shows $108'
               - 'The same order shows two different prices'
           - title: 'After: DiscountPolicy'
             tone: good
@@ -222,7 +222,7 @@ slides:
             items:
               - 'Plan: 6 months. Reality: 14, because the old app kept getting fixes'
               - 'Nothing reaches users in all that time'
-              - 'Launch day: hidden rules, like no cash on delivery above 20,000 taka, are missing'
+              - 'Launch day: hidden rules, like no cash on delivery above $400, are missing'
               - 'Orders go wrong, so the team rolls back: 14 months, nothing shipped'
           - title: 'Strangler fig'
             tone: good
@@ -264,7 +264,7 @@ slides:
         title: 'The steps'
         style: number
         items:
-          - 'Put a router in front of the old app; behaviour must not change.'
+          - 'Put a router in front of the old app; behavior must not change.'
           - 'Pick one small, low-risk path and rewrite it.'
           - 'Run the two side by side for a while and compare the answers.'
           - 'Shift the traffic, then delete the old code.'
@@ -294,8 +294,8 @@ slides:
         file: 'db/migration.sql'
         variant: bad
         code: |
-          -- The new app wants integer paisa, so rename the column
-          ALTER TABLE orders RENAME COLUMN total TO total_paisa;
+          -- The new app wants integer cents, so rename the column
+          ALTER TABLE orders RENAME COLUMN total TO total_cents;
 
           -- The old app, still running, now fails on every order page:
           -- SELECT total FROM orders  ->  ERROR: unknown column 'total'
@@ -307,10 +307,10 @@ slides:
         variant: good
         code: |
           -- 1. Expand: add the new column. The old app ignores it.
-          ALTER TABLE orders ADD COLUMN total_paisa BIGINT NULL;
+          ALTER TABLE orders ADD COLUMN total_cents BIGINT NULL;
 
           -- 2. Backfill the existing rows.
-          UPDATE orders SET total_paisa = ROUND(total * 100) WHERE total_paisa IS NULL;
+          UPDATE orders SET total_cents = ROUND(total * 100) WHERE total_cents IS NULL;
 
           -- 3. The new app writes both columns until the old app is gone.
 
@@ -318,7 +318,7 @@ slides:
           ALTER TABLE orders DROP COLUMN total;
         marks:
           - {line: 2, tip: 'Adding a nullable column breaks nobody, because the old app never selects it.'}
-          - {line: 5, tip: 'Old rows get their paisa value, so the new app can read every order.'}
+          - {line: 5, tip: 'Old rows get their cents value, so the new app can read every order.'}
           - {line: 10, tip: 'The drop is the one step you can''t take back. It waits until no old code reads `total`.'}
       - type: visual
         kind: steps
@@ -355,7 +355,7 @@ slides:
         kind: flow
         caption: 'The translator class turns the old language into the new one'
         nodes:
-          - {id: modern, label: 'New code', sub: 'Customer, Money', icon: code, col: 0, row: 1, tip: 'The new code uses clean names and types. It doesn''t recognise any of the old names.'}
+          - {id: modern, label: 'New code', sub: 'Customer, Money', icon: code, col: 0, row: 1, tip: 'The new code uses clean names and types. It doesn''t recognize any of the old names.'}
           - {id: acl, label: 'Anti-corruption layer', sub: 'LegacyCustomerGateway', icon: shield, tone: accent, col: 2, row: 1, tip: 'The only place where the old system''s odd names are understood. If the old system changes, only this needs touching.'}
           - {id: legacy, label: 'Legacy system', sub: 'cid, nm, st, bal', icon: server, tone: muted, col: 4, row: 1, tip: 'The old system with its odd names and formats. None of it will leak into new code.'}
         edges:
@@ -396,13 +396,13 @@ slides:
                       id: $row['cid'],
                       name: trim($row['nm']),
                       active: 'A' === $row['st'],
-                      balancePaisa: (int) round((float) $row['bal'] * 100),
+                      balanceCents: (int) round((float) $row['bal'] * 100),
                   );
               }
           }
         marks:
           - {line: 16, tip: 'The old `st` value becomes the new code''s `active` bool. This translation happens only here.'}
-          - {line: 17, tip: 'The decimal amount becomes integer paisa, because the new code doesn''t use floats for money.'}
+          - {line: 17, tip: 'The decimal amount becomes integer cents, because the new code doesn''t use floats for money.'}
       - type: quote
         body: 'Don''t let the old system''s language into new code; translate it at the border.'
     aside:
@@ -440,7 +440,7 @@ flashcards:
   - q: 'A discount rule is needed in three places. How do you keep them in step?'
     a: 'Write it once in its own class, such as `DiscountPolicy`, and have the checkout, the other API and the admin page all call it.'
     more: |
-      With three copies, a change that updates two leaves the third showing an old price: 5,100 taka at checkout, 5,400 on the admin page for the same 6,000-taka first order. With one class, one edit updates every caller and the rule gets its own test.
+      With three copies, a change that updates two leaves the third showing an old price: $102 at checkout, $108 on the admin page for the same $120 first order. With one class, one edit updates every caller and the rule gets its own test.
     ref: layered-symfony
   - q: 'Why is it wrong for a service to hold a `Request` object?'
     a: 'It ties the business rule to HTTP, so the rule can''t be used from a console command or a queue handler.'
@@ -522,10 +522,10 @@ quiz:
         correct: false
         why: 'Installing a router is a strangler fig step, not a full-rewrite one.'
     ref: strangler-fig
-  - q: 'A legacy API returns the balance as the string "1250.50". Where in the new code should it be converted to integer paisa?'
+  - q: 'A legacy API returns the balance as the string "1250.50". Where in the new code should it be converted to integer cents?'
     hint: 'Where do you confine the old system''s language?'
     options:
-      - text: 'In a translator (ACL) class, so the new code only ever sees `balancePaisa`'
+      - text: 'In a translator (ACL) class, so the new code only ever sees `balanceCents`'
         correct: true
         why: 'The translation lives in one place, and if the old format changes, only that changes.'
       - text: 'In every controller that needs the balance'
@@ -536,7 +536,7 @@ quiz:
         why: 'A template is for display, not for data conversion.'
       - text: 'No need to convert; you can calculate with the string'
         correct: false
-        why: 'Money handled as strings or floats goes wrong; integer paisa is safe.'
+        why: 'Money handled as strings or floats goes wrong; integer cents is safe.'
     ref: anti-corruption-layer
   - q: 'Which of these are a controller''s job?'
     hint: 'Think of the waiter''s job: take, call, hand back.'
@@ -547,7 +547,7 @@ quiz:
       - text: 'Calling a service and choosing the response status'
         correct: true
         why: 'Calling the work and shaping the HTTP reply is the controller''s responsibility.'
-      - text: 'Calculating the discount on orders above 5000 taka'
+      - text: 'Calculating the discount on orders above $100'
         correct: false
         why: 'Business rules belong in a service or the domain.'
       - text: 'Writing straight to a table with SQL'
@@ -586,19 +586,19 @@ quiz:
         correct: false
         why: 'Users stay on the same URL; the router switches the path behind the scenes.'
     ref: strangler-fig
-  - q: 'The new app and the old app share an `orders` table. The new app wants an integer `total_paisa` instead of `total`. What is the safe order of steps?'
+  - q: 'The new app and the old app share an `orders` table. The new app wants an integer `total_cents` instead of `total`. What is the safe order of steps?'
     hint: 'Which step can''t be undone, and when is it safe to take?'
     options:
-      - text: 'Rename `total` to `total_paisa` in one migration'
+      - text: 'Rename `total` to `total_cents` in one migration'
         correct: false
         why: 'The old app still selects `total` and breaks at once.'
       - text: 'Give the new app its own copy of the database and never sync them'
         correct: false
         why: 'Two databases mean two versions of every order, so orders placed on one are missing on the other.'
-      - text: 'Add `total_paisa`, backfill it, move the new app over, and drop `total` only after the old app is gone'
+      - text: 'Add `total_cents`, backfill it, move the new app over, and drop `total` only after the old app is gone'
         correct: true
         why: 'Each step is safe for the old app, and the one step that can''t be undone comes last.'
-      - text: 'Drop `total` first, then add `total_paisa`'
+      - text: 'Drop `total` first, then add `total_cents`'
         correct: false
         why: 'The old app breaks, and the data in `total` is lost before it was copied.'
     ref: shared-database-session

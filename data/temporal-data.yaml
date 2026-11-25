@@ -7,12 +7,12 @@ slides:
     blocks:
       - type: metaphor
         icon: book
-        title: 'The corner shop''s credit ledger'
+        title: 'The store''s account book'
         body: |
-          When there's a mistake in the credit ledger, a sensible shopkeeper doesn't scratch it out. He writes a new line: "Correction: 50 taka less, date, signature". In a scratched-out ledger nobody can tell what was written before. UPDATE is exactly that scratching out: the old value is gone, and so is who changed it and why.
+          When there's a mistake in the account book, a sensible store owner doesn't scratch it out. The owner writes a new line: "Correction: $5 less, date, signature". In a scratched-out book nobody can tell what was written before. UPDATE is exactly that scratching out: the old value is gone, and so is who changed it and why.
       - type: text
         body: |
-          At Rahim's shop, the price of rice went from 80 to 90 taka. Someone ran `UPDATE products SET price = 90 WHERE id = 7`. The invoice page reads the price from `products`, so last week's invoice now shows 90 taka, and the customer says, "But I bought it at 80." There's no proof either way.
+          At Ryan's shop, the price of rice went from 80 to $90. Someone ran `UPDATE products SET price = 90 WHERE id = 7`. The invoice page reads the price from `products`, so last week's invoice now shows $90, and the customer says, "But I bought it at 80." There's no proof either way.
       - type: visual
         kind: compare
         caption: 'The same event: overwriting vs keeping history'
@@ -22,7 +22,7 @@ slides:
             icon: pencil
             tip: 'The table holds only the current state. The database knows nothing about the past.'
             items:
-              - 'The invoice now says 90 taka'
+              - 'The invoice now says $90'
               - 'Who changed it? Unknown'
               - 'What was last month''s price? Unknown'
           - title: 'Keeping history'
@@ -30,7 +30,7 @@ slides:
             icon: history
             tip: 'Every step of a change is stored as its own row.'
             items:
-              - 'The invoice shows the 80 taka from the time of sale'
+              - 'The invoice shows the $80 from the time of sale'
               - 'Who, when and why are all recorded'
               - 'The price on any date can be looked up'
       - type: code
@@ -146,7 +146,7 @@ slides:
     blocks:
       - type: text
         body: |
-          An audit says who changed something and when; **effective dating** says which value was valid during which period. In a price table you don't edit a row. You close the old row's `valid_to` and add a new row. An empty `valid_to` means "still in force". You can even set a price for a future date, such as an Eid offer starting on the 1st. Without a guard, one typo can leave two rows covering 20 February, so the lookup returns two prices and nobody knows which is right. An exclusion constraint in PostgreSQL stops that.
+          An audit says who changed something and when; **effective dating** says which value was valid during which period. In a price table you don't edit a row. You close the old row's `valid_to` and add a new row. An empty `valid_to` means "still in force". You can even set a price for a future date, such as a Black Friday offer starting on a set date. Without a guard, one typo can leave two rows covering 20 February, so the lookup returns two prices and nobody knows which is right. An exclusion constraint in PostgreSQL stops that.
       - type: code
         lang: sql
         file: 'migrations/product_prices.sql'
@@ -169,8 +169,8 @@ slides:
           -- Which price applied at noon on 10 February?
           SELECT amount FROM product_prices
           WHERE product_id = 7
-            AND valid_from <= '2026-02-10 12:00+06'
-            AND (valid_to IS NULL OR valid_to > '2026-02-10 12:00+06');
+            AND valid_from <= '2026-02-10 12:00-05'
+            AND (valid_to IS NULL OR valid_to > '2026-02-10 12:00-05');
         marks:
           - {line: 9, tip: 'Two rows for the same product can never have overlapping periods. The database itself blocks the mistake.'}
           - {line: 18, tip: 'It started at or before `t`, and either hasn''t ended or ends after `t`: these two conditions match exactly one row.'}
@@ -202,9 +202,9 @@ slides:
         caption: 'Price history for product 7'
         headers: ['Price', 'valid_from', 'valid_to']
         rows:
-          - cells: ['80 taka', '01 Jan', '15 Feb']
-            tip: 'Purchases made during this period were at 80 taka.'
-          - cells: ['90 taka', '15 Feb', 'empty (in force)']
+          - cells: ['$80', '01 Jan', '15 Feb']
+            tip: 'Purchases made during this period were at $80.'
+          - cells: ['$90', '15 Feb', 'empty (in force)']
             tip: 'An empty `valid_to` means this is the current price.'
     aside:
       - type: remember
@@ -227,7 +227,7 @@ slides:
     blocks:
       - type: text
         body: |
-          **Soft delete** means keeping the row and setting `deleted_at`, so that an accidental delete can be undone and history stays. **Hard delete** really removes the row. The first trap: `users.email` is unique. Rahim deletes his account and tries to sign up again with the same email, but the deleted row is still holding that email, so he gets a unique error. The second trap: forget `deleted_at IS NULL` in even one query and deleted users reappear.
+          **Soft delete** means keeping the row and setting `deleted_at`, so that an accidental delete can be undone and history stays. **Hard delete** really removes the row. The first trap: `users.email` is unique. Ryan deletes his account and tries to sign up again with the same email, but the deleted row is still holding that email, so he gets a unique error. The second trap: forget `deleted_at IS NULL` in even one query and deleted users reappear.
       - type: code
         lang: sql
         file: 'migrations/users_email_unique.sql'
@@ -381,8 +381,8 @@ quiz:
     code: |
       SELECT amount FROM product_prices
       WHERE product_id = 7
-        AND valid_from <= '2026-02-20 10:00+06'
-        AND (valid_to IS NULL OR valid_to > '2026-02-20 10:00+06');
+        AND valid_from <= '2026-02-20 10:00-05'
+        AND (valid_to IS NULL OR valid_to > '2026-02-20 10:00-05');
     hint: 'Which row''s period contains the date being asked about?'
     options:
       - text: '90, because 20 February is after 15 February and the second row''s `valid_to` is empty'
@@ -398,7 +398,7 @@ quiz:
         correct: false
         why: 'The second row matches.'
     ref: effective-dating
-  - q: 'A users table with soft delete has a plain UNIQUE on email. Rahim deleted his account and can''t register again with the same email. Why, and what is the fix?'
+  - q: 'A users table with soft delete has a plain UNIQUE on email. Ryan deleted his account and can''t register again with the same email. Why, and what is the fix?'
     hint: 'The deleted row isn''t really gone.'
     options:
       - text: 'The deleted row still holds the email; build a partial unique index with `WHERE deleted_at IS NULL`'

@@ -7,18 +7,18 @@ slides:
     blocks:
       - type: text
         body: |
-          A bad deploy wrongly marked 2300 paid orders as `cancelled` within two hours. In a hurry, an engineer ran `UPDATE orders SET status = 'paid' WHERE status = 'cancelled'` in the production console. The 2300 were fixed, but 12,000 older orders that really had been cancelled over the past months also became `paid`. Nobody wrote down which rows changed.
+          A bad deploy wrongly marked 2300 paid orders as `canceled` within two hours. In a hurry, an engineer ran `UPDATE orders SET status = 'paid' WHERE status = 'canceled'` in the production console. The 2300 were fixed, but 12,000 older orders that really had been canceled over the past months also became `paid`. Nobody wrote down which rows changed.
       - type: visual
         kind: sequence
         caption: 'A one-line UPDATE, with no evidence left behind'
         actors:
-          - {id: dep, label: 'Bad deploy', icon: rocket, tip: 'The new code had a bug that wrongly cancelled paid orders.'}
+          - {id: dep, label: 'Bad deploy', icon: rocket, tip: 'The new code had a bug that wrongly canceled paid orders.'}
           - {id: eng, label: 'Engineer', icon: terminal, tip: 'Wants to fix it fast, with good intentions. But in the rush the condition grew too broad.'}
           - {id: db, label: 'Production DB', icon: db, tip: 'Does what it is told. Can''t tell which rows are the right ones and which are wrong.'}
         messages:
-          - {from: dep, to: db, label: '2300 paid orders wrongly cancelled', tone: bad}
-          - {from: eng, to: db, label: "UPDATE ... WHERE status = 'cancelled'", tone: warn, tip: 'The condition has no time window and no check for a paid payment.'}
-          - {at: db, note: '14,300 rows changed, 12,000 wrongly', tone: bad, tip: 'The 12,000 orders that really were cancelled are now marked paid too. They might even get shipped.'}
+          - {from: dep, to: db, label: '2300 paid orders wrongly canceled', tone: bad}
+          - {from: eng, to: db, label: "UPDATE ... WHERE status = 'canceled'", tone: warn, tip: 'The condition has no time window and no check for a paid payment.'}
+          - {at: db, note: '14,300 rows changed, 12,000 wrongly', tone: bad, tip: 'The 12,000 orders that really were canceled are now marked paid too. They might even get shipped.'}
           - {at: eng, note: 'The old values are written nowhere', tone: bad, tip: 'Now there is no way to tell what each row held before.'}
       - type: quote
         body: 'A correction is a transaction too. Who, when, why, and what it was before: all of it gets written down.'
@@ -31,7 +31,7 @@ slides:
         body: 'Correcting bad data is unavoidable. The question is how, so that the correction itself can be understood and reversed later.'
     check:
       q: 'Why did that UPDATE change 12,000 wrong rows as well?'
-      a: 'The condition was just `status = cancelled`. With no time window for the bad deploy and no check for a paid payment, orders that were genuinely cancelled matched too.'
+      a: 'The condition was just `status = canceled`. With no time window for the bad deploy and no check for a paid payment, orders that were genuinely canceled matched too.'
 
   - slug: correction-is-a-record
     title: 'Corrections in red ink: four ways to fix data'
@@ -41,9 +41,9 @@ slides:
     blocks:
       - type: metaphor
         icon: book
-        title: 'Red ink in the shop''s credit ledger'
+        title: 'Red ink in the store''s account book'
         body: |
-          When a wrong amount is written in the ledger, a good shopkeeper doesn't rub it out. He writes a line in red ink, "wrong amount cancelled", then a new line with the correct amount below it, with the date and his name. Both the original mistake and the correction stay visible. This is exactly how data corrections should work in software.
+          When a wrong amount is written in the ledger, a good bookkeeper doesn't rub it out. He writes a line in red ink, "wrong amount canceled", then a new line with the correct amount below it, with the date and his name. Both the original mistake and the correction stay visible. This is exactly how data corrections should work in software.
       - type: visual
         kind: table
         caption: 'How to fix each kind of data'
@@ -59,17 +59,17 @@ slides:
             tip: 'The before and after of every row sits in the log, so the whole fix can be reversed if needed.'
       - type: visual
         kind: table
-        caption: 'A deposit posted as 5000 instead of 500, fixed in red ink'
+        caption: 'A deposit posted as $5,000 instead of $500, fixed in red ink'
         headers: ['Entry', 'Debit', 'Credit', 'Note']
         rows:
-          - cells: ['E-1 Deposit (wrong)', 'Cash 5000', 'Wallet 5000', 'The mistake stays']
+          - cells: ['E-1 Deposit (wrong)', 'Cash $5,000', 'Wallet $5,000', 'The mistake stays']
             tip: 'The original wrong posting. It is never edited or deleted.'
-          - cells: ['E-2 Reversal of E-1', 'Wallet 5000', 'Cash 5000', 'Cancels E-1']
+          - cells: ['E-2 Reversal of E-1', 'Wallet $5,000', 'Cash $5,000', 'Cancels E-1']
             tip: 'The same two accounts, on opposite sides, so its effect cancels E-1 exactly.'
-          - cells: ['E-3 Deposit (correct)', 'Cash 500', 'Wallet 500', 'The right amount']
+          - cells: ['E-3 Deposit (correct)', 'Cash $500', 'Wallet $500', 'The right amount']
             tip: 'The deposit as it should have been posted in the first place.'
-          - cells: ['Net effect', 'Cash 500', 'Wallet 500', 'Debit = credit']
-            tip: 'Add the three entries: 500 taka in, with both sides equal, and the whole story still visible.'
+          - cells: ['Net effect', 'Cash $500', 'Wallet $500', 'Debit = credit']
+            tip: 'Add the three entries: $500 in, with both sides equal, and the whole story still visible.'
       - type: quote
         body: 'Fix by writing, not erasing: the mistake stays and so does the correction.'
     aside:
@@ -100,15 +100,15 @@ slides:
           Instead of a hand-typed UPDATE in the console, write a small script named after the ticket number. First it counts how many rows would change. If that doesn't match your "expected count", it stops. If it does, it changes the rows in one transaction and writes each row's before and after values to a log. The condition should be such that running it again finds 0 rows.
       - type: code
         lang: sql
-        file: 'FIX-1042: paid orders wrongly cancelled'
+        file: 'FIX-1042: paid orders wrongly canceled'
         variant: good
         code: |
           WITH bad AS (
             SELECT o.id, o.status AS old_status
               FROM orders o
-             WHERE o.updated_at >= '2026-11-20 13:00+06'
-               AND o.updated_at <  '2026-11-20 15:05+06'    -- window of the bad deploy
-               AND o.status = 'cancelled'
+             WHERE o.updated_at >= '2026-11-20 13:00-05'
+               AND o.updated_at <  '2026-11-20 15:05-05'    -- window of the bad deploy
+               AND o.status = 'canceled'
                AND EXISTS (SELECT 1 FROM payment p
                             WHERE p.order_id = o.id AND p.status = 'paid')
                FOR UPDATE OF o
@@ -126,7 +126,7 @@ slides:
            WHERE l.fix_id = 'FIX-1042' AND l.row_id = o.id
              AND o.status = l.new_value;
         marks:
-          - {line: 4, tip: 'Only rows inside the bad deploy''s time window. Genuinely cancelled orders from before or after are left alone.'}
+          - {line: 4, tip: 'Only rows inside the bad deploy''s time window. Genuinely canceled orders from before or after are left alone.'}
           - {line: 7, tip: 'Needs proof: this order really has a paid payment. The narrower the condition, the less room for error.'}
           - {line: 11, tip: 'The UPDATE and the log are in one statement. A change without a log entry simply can''t happen.'}
           - {line: 15, tip: 'Each row''s before and after values are written. If needed, the fix can be reversed from this.'}
@@ -161,7 +161,7 @@ slides:
         marks:
           - {line: 7, tip: 'If the counted number doesn''t match the expected one, nothing changes. A wrong condition, or surprising data, is caught right here.'}
           - {line: 12, tip: '`--dry-run` only shows the number. A second person looks at this output and signs off.'}
-          - {line: 16, tip: 'Run it again and it finds 0 rows. `status = cancelled` no longer matches, so a double fix can''t happen.'}
+          - {line: 16, tip: 'Run it again and it finds 0 rows. `status = canceled` no longer matches, so a double fix can''t happen.'}
     aside:
       - type: tips
         items:
@@ -176,7 +176,7 @@ slides:
           - {to: 'recovery/bulk-reprocessing', label: 'Safe replays'}
     check:
       q: 'Why does the script change nothing when run again, and why is that good?'
-      a: 'After the fix, the condition `status = cancelled` no longer matches, so it finds 0 rows. Running it twice by mistake, or again after a crash, is safe.'
+      a: 'After the fix, the condition `status = canceled` no longer matches, so it finds 0 rows. Running it twice by mistake, or again after a crash, is safe.'
 
   - slug: roll-back-or-forward
     title: 'Code rolls back, data doesn''t: roll back or roll forward'
@@ -238,7 +238,7 @@ slides:
           - {to: 'data/zero-downtime-migrations', label: 'Zero-downtime migrations'}
           - {to: 'resilience/zero-downtime-deploys', label: 'Safe deploys'}
     check:
-      q: 'After the roll back, 2300 orders were still cancelled. Why, and what is the next step?'
+      q: 'After the roll back, 2300 orders were still canceled. Why, and what is the next step?'
       a: 'A roll back restores only the code; the bad code had already changed the data. Next, run an audited data-fix script with a narrow condition to correct those rows.'
 
 flashcards:
@@ -255,7 +255,7 @@ flashcards:
   - q: 'How do you fix a money mistake in a ledger, and what do you never do?'
     a: 'You do: a reversing entry plus a new correct entry. You never do: UPDATE or DELETE an old entry.'
     more: |
-      A data-fix script doesn't change money entries in the ledger. Every money correction goes through the posting service as a transaction. For example, a deposit posted as 5000 instead of 500: the 5000 stays, a reversal of 5000 is added, then a correct deposit of 500. The net is 500, and debit = credit still holds.
+      A data-fix script doesn't change money entries in the ledger. Every money correction goes through the posting service as a transaction. For example, a deposit posted as $5,000 instead of $500: the $5,000 stays, a reversal of $5,000 is added, then a correct deposit of $500. The net is $500, and debit = credit still holds.
     ref: correction-is-a-record
   - q: 'Why does an audited data-fix script have an "expected count"?'
     a: 'If the counted number of rows doesn''t match the expected one, the script changes nothing. A wrong condition is caught before it runs.'
@@ -305,19 +305,19 @@ quiz:
         correct: false
         why: 'A wrong fee affects the customer''s money, and the books won''t balance.'
     ref: audited-data-fix
-  - q: 'In the ledger, 5000 taka was posted as a deposit instead of 500. What do you do?'
+  - q: 'In the ledger, $5,000 was posted as a deposit instead of $500. What do you do?'
     hint: 'A ledger entry never changes.'
     options:
-      - text: 'Write a reversing entry for the wrong transaction and post a new correct one for 500 taka'
+      - text: 'Write a reversing entry for the wrong transaction and post a new correct one for $500'
         correct: true
         why: 'History stays intact and debit = credit holds. The auditor gets the whole story.'
-      - text: '`UPDATE ledger_entry SET amount_minor = 50000` (500 taka)'
+      - text: '`UPDATE ledger_entry SET amount_minor = 50000` ($500)'
         correct: false
         why: 'Changing a ledger entry is forbidden, and changing one side breaks the balance between the two sides.'
       - text: 'Delete the wrong entry and insert a new one'
         correct: false
         why: 'Deleting erases history; an audit could prove nothing.'
-      - text: 'Reduce the wallet''s balance column by 4500 taka'
+      - text: 'Reduce the wallet''s balance column by $4,500'
         correct: false
         why: 'The balance is the result of the entries; changing it directly creates a mismatch with them.'
     ref: correction-is-a-record
@@ -326,10 +326,10 @@ quiz:
     code: |
       UPDATE orders
          SET status = 'paid'
-       WHERE status = 'cancelled';
+       WHERE status = 'canceled';
     hint: 'Where are the time window, the reason and the log?'
     options:
-      - text: 'Genuinely cancelled orders will change too, and the old values are written nowhere'
+      - text: 'Genuinely canceled orders will change too, and the old values are written nowhere'
         correct: true
         why: 'The condition is far too broad, and there is no log or count check.'
       - text: '`SET` should be written before `WHERE`'
@@ -386,7 +386,7 @@ quiz:
       - text: 'Run the fix script again'
         correct: false
         why: 'It finds 0 rows, because the condition no longer matches the fixed rows.'
-      - text: 'UPDATE orders SET status = ''cancelled'' WHERE status = ''paid'''
+      - text: 'UPDATE orders SET status = ''canceled'' WHERE status = ''paid'''
         correct: false
         why: 'That cancels every paid order, not just the 2300 the fix touched.'
     ref: audited-data-fix

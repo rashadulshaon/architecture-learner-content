@@ -7,9 +7,9 @@ slides:
     blocks:
       - type: metaphor
         icon: ticket
-        title: 'The 10 minutes on an online train ticket'
+        title: 'The 10 minutes on an online concert ticket'
         body: |
-          When you pick a seat on an online train ticket before Eid, it is held in your name for 10 minutes. Nobody else can take it in that time. If you haven't paid within 10 minutes, the seat becomes free again. That is a hold: a claim, but with an expiry date.
+          When you pick a seat while buying an online concert ticket, it is held in your name for 10 minutes. Nobody else can take it in that time. If you haven't paid within 10 minutes, the seat becomes free again. That is a hold: a claim, but with an expiry date.
       - type: visual
         kind: compare
         caption: 'Three ways to handle a seat during payment'
@@ -40,7 +40,7 @@ slides:
               - 'The seat is on sale the whole time'
     aside:
       - type: story
-        title: 'The morning Eid tickets open'
+        title: 'The morning the concert tickets go on sale'
         body: |
           Someone picks four seats, gets a phone call, and never pays, while hundreds of people see "sold out" for those seats. With no expiry, those seats stay locked for the whole sale. A hold with an expiry exists for exactly this reason. Its price: a held seat is out of everyone else's reach for up to 10 minutes, so also cap how many active holds one user may have (say 4).
       - type: terms
@@ -54,12 +54,12 @@ slides:
   - slug: reservation-states
     title: 'The life of a hold: four states'
     kind: concept
-    tldr: 'Every hold is a record: from held it becomes either confirmed, or expired or cancelled. The expiry lives in the record''s expires_at column.'
+    tldr: 'Every hold is a record: from held it becomes either confirmed, or expired or canceled. The expiry lives in the record''s expires_at column.'
     keywords: ['state machine', 'held', 'confirmed', 'expired', 'expires_at', 'states']
     blocks:
       - type: text
         body: |
-          Rather than writing "held" on the seat itself, create a separate **reservation record**. It holds which seat, for whom, what state it is in, and `expires_at`. The state changes along three paths: confirmed when payment arrives, expired when time runs out, cancelled when the user lets go. For product stock the idea is the same, except you count `reserved` instead of seats.
+          Rather than writing "held" on the seat itself, create a separate **reservation record**. It holds which seat, for whom, what state it is in, and `expires_at`. The state changes along three paths: confirmed when payment arrives, expired when time runs out, canceled when the user lets go. For product stock the idea is the same, except you count `reserved` instead of seats.
       - type: visual
         kind: flow
         animate: false
@@ -68,22 +68,22 @@ slides:
           - {id: held, label: 'held', sub: 'held, with an expiry', icon: hourglass, tone: accent, col: 0, row: 1, tip: 'The hold has been created. Until expires_at, the seat belongs to this user.'}
           - {id: confirmed, label: 'confirmed', sub: 'a firm booking', icon: check, tone: good, col: 2, row: 0, tip: 'Payment has arrived. This is a final state; it never changes again.'}
           - {id: expired, label: 'expired', sub: 'time ran out', icon: clock, tone: muted, col: 2, row: 1, tip: 'The time is up and the seat is free again. Also a final state.'}
-          - {id: cancelled, label: 'cancelled', sub: 'released by the user', icon: cross, tone: muted, col: 2, row: 2, tip: 'The user cancelled it. The seat is free at once.'}
+          - {id: canceled, label: 'canceled', sub: 'released by the user', icon: cross, tone: muted, col: 2, row: 2, tip: 'The user canceled it. The seat is free at once.'}
         edges:
           - {from: held, to: confirmed, label: 'payment succeeds', tone: good, tip: 'Only if payment arrives before the expiry.'}
           - {from: held, to: expired, label: 'time runs out', tone: warn, tip: 'expires_at has passed.'}
-          - {from: held, to: cancelled, label: 'cancelled', tip: 'The user pressed "release".'}
+          - {from: held, to: canceled, label: 'canceled', tip: 'The user pressed "release".'}
       - type: quote
         body: 'A hold is a claim with an expiry. The truth about the expiry lives in expires_at.'
     aside:
       - type: remember
-        body: 'From held you can go three ways; from confirmed, expired or cancelled there is no way back.'
+        body: 'From held you can go three ways; from confirmed, expired or canceled there is no way back.'
       - type: refs
         items:
           - {to: 'payments/payment-state-machine', label: 'Valid transitions and state machines'}
     check:
       q: 'Which three events take a `held` record to a final state?'
-      a: 'Successful payment gives confirmed, passing expires_at gives expired, and the user letting go gives cancelled. There is no way back from any of these three final states.'
+      a: 'Successful payment gives confirmed, passing expires_at gives expired, and the user letting go gives canceled. There is no way back from any of these three final states.'
 
   - slug: hold-implementation
     title: 'Building a hold: a unique index and an expiring row'
@@ -93,7 +93,7 @@ slides:
     blocks:
       - type: text
         body: |
-          Checking first and then inserting is not enough. At 10:00:00 Rahim and Karim both ask for seat 12: both SELECTs say "free", both INSERTs run, and the seat has two holds. The index below makes the database itself refuse the second insert.
+          Checking first and then inserting is not enough. At 10:00:00 Ryan and Kevin both ask for seat 12: both SELECTs say "free", both INSERTs run, and the seat has two holds. The index below makes the database itself refuse the second insert.
       - type: code
         lang: sql
         file: 'migration (PostgreSQL)'
@@ -106,7 +106,7 @@ slides:
               expires_at  TIMESTAMPTZ NOT NULL
           );
 
-          -- Only one active claim per seat at a time; expired/cancelled rows can pile up
+          -- Only one active claim per seat at a time; expired/canceled rows can pile up
           CREATE UNIQUE INDEX one_active_reservation
               ON reservation (seat_id) WHERE status IN ('held', 'confirmed');
         marks:
@@ -180,7 +180,7 @@ slides:
           }
         marks:
           - {line: 5, tip: 'The old state (held) and the expiry still being in the future are in one condition. This is compare-and-swap.'}
-          - {line: 11, tip: '0 means the hold no longer exists: it expired or was cancelled. Either way, it cannot be confirmed.'}
+          - {line: 11, tip: '0 means the hold no longer exists: it expired or was canceled. Either way, it cannot be confirmed.'}
       - type: code
         lang: php
         file: 'src/Scheduler/ReleaseExpiredHolds.php'
@@ -226,20 +226,20 @@ slides:
     blocks:
       - type: text
         body: |
-          Rahim starts paying in the last moment of his 10 minutes, the gateway is slow, and the success notice arrives **after** the expiry. By then Karim has already held the seat. Rahim's money has been taken, but the seat is no longer his. You have to accept that this will happen, and plan for it.
+          Ryan starts paying in the last moment of his 10 minutes, the gateway is slow, and the success notice arrives **after** the expiry. By then Kevin has already held the seat. Ryan's money has been taken, but the seat is no longer his. You have to accept that this will happen, and plan for it.
       - type: visual
         kind: sequence
-        caption: 'The payment lands after the expiry, and Karim gets Rahim''s seat'
+        caption: 'The payment lands after the expiry, and Kevin gets Ryan''s seat'
         actors:
-          - {id: rahim, label: 'Rahim', icon: user, tip: 'Held seat 12 and went off to pay.'}
-          - {id: karim, label: 'Karim', icon: user, tip: 'Asked for seat 12 after Rahim''s hold ran out.'}
+          - {id: ryan, label: 'Ryan', icon: user, tip: 'Held seat 12 and went off to pay.'}
+          - {id: kevin, label: 'Kevin', icon: user, tip: 'Asked for seat 12 after Ryan''s hold ran out.'}
           - {id: sys, label: 'Booking system', icon: server, tip: 'Handles holds and confirmations.'}
         messages:
-          - {from: rahim, to: sys, label: 'Hold seat 12, 10:00', tip: 'The hold lasts until 10:10.'}
-          - {from: karim, to: sys, label: 'Hold seat 12, 10:11', tip: 'Rahim''s hold has expired, so Karim gets it.'}
-          - {from: rahim, to: sys, label: 'Payment succeeds, 10:12', tip: 'The gateway reported it late.'}
-          - {at: sys, note: 'confirm: 0 rows changed', tone: bad, tip: 'The WHERE needs status = held and expires_at > now; Rahim''s hold is expired, so it doesn''t match.'}
-          - {from: sys, to: rahim, label: 'Money back, no seat', tone: warn, tip: 'Send a refund request to the gateway and tell the user clearly.'}
+          - {from: ryan, to: sys, label: 'Hold seat 12, 10:00', tip: 'The hold lasts until 10:10.'}
+          - {from: kevin, to: sys, label: 'Hold seat 12, 10:11', tip: 'Ryan''s hold has expired, so Kevin gets it.'}
+          - {from: ryan, to: sys, label: 'Payment succeeds, 10:12', tip: 'The gateway reported it late.'}
+          - {at: sys, note: 'confirm: 0 rows changed', tone: bad, tip: 'The WHERE needs status = held and expires_at > now; Ryan''s hold is expired, so it doesn''t match.'}
+          - {from: sys, to: ryan, label: 'Money back, no seat', tone: warn, tip: 'Send a refund request to the gateway and tell the user clearly.'}
       - type: points
         title: 'When a late payment arrives'
         style: check
@@ -280,7 +280,7 @@ slides:
               }
           }
         marks:
-          - {line: 15, tip: 'confirm() threw HoldExpired, meaning 0 rows changed: the seat is no longer Rahim''s.'}
+          - {line: 15, tip: 'confirm() threw HoldExpired, meaning 0 rows changed: the seat is no longer Ryan''s.'}
           - {line: 19, tip: 'The key is built from the payment id, so if this message is delivered twice the gateway refunds once.'}
     aside:
       - type: pitfalls
@@ -293,19 +293,19 @@ slides:
           - {to: 'payments/unknown-outcomes', label: 'Handling "did it happen or not?"'}
           - {to: 'time/expiry-timeouts', label: 'Designing expiries and deadlines'}
     check:
-      q: 'Rahim''s payment succeeded, but the seat has gone to someone else. What is the correct system behaviour?'
-      a: 'The confirm fails (0 rows), and the system sends a refund through the gateway, tells Rahim clearly, and lets him pick another seat. It must never quietly give two people the same seat.'
+      q: 'Ryan''s payment succeeded, but the seat has gone to someone else. What is the correct system behavior?'
+      a: 'The confirm fails (0 rows), and the system sends a refund through the gateway, tells Ryan clearly, and lets him pick another seat. It must never quietly give two people the same seat.'
 
 flashcards:
   - q: 'What is a reservation (hold)?'
     a: 'Keeping a seat, slot or stock reserved in someone''s name for a limited time. If it isn''t confirmed within that time, it is released again.'
     more: |
-      For the duration of the payment or the decision, nobody else can take the thing, yet it doesn't stay blocked forever. Like the 10 minutes on an online train ticket.
+      For the duration of the payment or the decision, nobody else can take the thing, yet it doesn't stay blocked forever. Like the 10 minutes you get to pay for an online concert ticket.
     ref: seat-in-limbo
   - q: 'Why is booking the seat only after payment risky?'
     a: 'Someone else can take the seat during payment. Then the user is charged and hears "sold out", and a refund is needed.'
     more: |
-      So hold the seat first, then take payment. The hold guarantees the seat for the length of the payment. If the payment fails or is cancelled, the hold expires or is released.
+      So hold the seat first, then take payment. The hold guarantees the seat for the length of the payment. If the payment fails or is canceled, the hold expires or is released.
     ref: seat-in-limbo
   - q: 'What is the problem with a hold that has no expiry?'
     a: 'Users who left without paying keep the seat blocked forever. Others see "sold out" while the seat is actually free.'
@@ -313,14 +313,14 @@ flashcards:
       Abandoned carts are very common. With an expiry, an unused hold ends on its own and the seat goes back on sale.
     ref: seat-in-limbo
   - q: 'What states can a reservation record be in?'
-    a: 'held (reserved with an expiry), confirmed (firm), expired (time ran out) and cancelled (released by the user). There is no way back from the last three.'
+    a: 'held (reserved with an expiry), confirmed (firm), expired (time ran out) and canceled (released by the user). There is no way back from the last three.'
     more: |
       Everything lives in one column (status), along with expires_at. To block invalid transitions (such as expired to confirmed), every change is an UPDATE that puts the old state in its WHERE.
     ref: reservation-states
   - q: 'How do you make sure only one of two simultaneous hold requests for a seat gets it?'
     a: 'Put `UNIQUE (seat_id) WHERE status IN (''held'', ''confirmed'')` on the reservation table. The second insert fails the unique constraint.'
     more: |
-      A partial unique index sets a rule over active claims only; expired and cancelled rows can pile up. Catch the failed insert's UniqueConstraintViolationException and show SeatTaken.
+      A partial unique index sets a rule over active claims only; expired and canceled rows can pile up. Catch the failed insert's UniqueConstraintViolationException and show SeatTaken.
     ref: hold-implementation
   - q: 'Why must a stale hold be cleared before creating a new one?'
     a: 'Its row still says ''held'', so the unique index treats it as active and blocks the new hold. Expire it first.'
@@ -335,7 +335,7 @@ flashcards:
   - q: 'What must you check when confirming?'
     a: 'That the state is still held and expires_at is still in the future. Both go in the WHERE of one UPDATE; if 0 rows change, the confirm did not happen.'
     more: |
-      This is compare-and-swap. It blocks confirming a hold that has expired or been cancelled. On a 0, throw HoldExpired and point to a refund or a new seat choice.
+      This is compare-and-swap. It blocks confirming a hold that has expired or been canceled. On a 0, throw HoldExpired and point to a refund or a new seat choice.
     ref: confirm-and-cleanup
   - q: 'If the cleanup job is down, is the hold logic still correct?'
     a: 'Yes. Both confirm and a new hold check expires_at themselves. Cleanup only keeps the records tidy; correctness doesn''t rest on it.'
@@ -350,7 +350,7 @@ flashcards:
   - q: 'Why give the refund request an idempotency key built from the payment id?'
     a: 'The payment message can be delivered twice. With the same key, the gateway refunds once and ignores the repeat.'
     more: |
-      Message queues deliver at least once, so a handler may run twice for the same payment. Without a key, the customer could be refunded twice. With the key `refund-<payment id>`, the second request is recognised as a repeat and does nothing.
+      Message queues deliver at least once, so a handler may run twice for the same payment. Without a key, the customer could be refunded twice. With the key `refund-<payment id>`, the second request is recognized as a repeat and does nothing.
     ref: late-payment
 
 quiz:
@@ -379,7 +379,7 @@ quiz:
       - text: 'expired'
         correct: true
         why: 'The time ran out and the seat was released; the old hold never comes back to life, and you create a new one.'
-      - text: 'cancelled'
+      - text: 'canceled'
         correct: true
         why: 'The user released it themselves; this is also a final state.'
       - text: 'held'
@@ -395,7 +395,7 @@ quiz:
     options:
       - text: 'A seat can have only one active (held or confirmed) reservation at a time'
         correct: true
-        why: 'Expired or cancelled rows fall outside the unique rule, so history can be kept.'
+        why: 'Expired or canceled rows fall outside the unique rule, so history can be kept.'
       - text: 'Each seat will have only one reservation in its whole life'
         correct: false
         why: 'Because of the WHERE condition, only active rows are counted; the rest can pile up.'
@@ -428,7 +428,7 @@ quiz:
       )->setParameter('id', $id)->setParameter('now', $now)->execute();
     hint: 'The WHERE has two conditions.'
     options:
-      - text: '0 means the hold is no longer valid: it expired or was cancelled'
+      - text: '0 means the hold is no longer valid: it expired or was canceled'
         correct: true
         why: 'If the two conditions don''t both match, no row changes. Then it cannot be confirmed.'
       - text: '0 means the database was busy and a retry will do'
@@ -454,13 +454,13 @@ quiz:
         correct: false
         why: 'expires_at is the truth about expiry; it works in confirm and in holds even without the job.'
     ref: confirm-and-cleanup
-  - q: 'Rahim''s payment succeeds 2 minutes after his hold expired, and Karim has meanwhile held the seat. What should the system do?'
+  - q: 'Ryan''s payment succeeds 2 minutes after his hold expired, and Kevin has meanwhile held the seat. What should the system do?'
     hint: 'How many rows will the confirm UPDATE change?'
     options:
-      - text: 'Confirm Rahim and cancel Karim''s hold, because Rahim paid'
+      - text: 'Confirm Ryan and cancel Kevin''s hold, because Ryan paid'
         correct: false
-        why: 'Karim''s hold is valid; forcing the payment through over everyone creates a new injustice.'
-      - text: 'Treat Rahim''s confirm as failed, send a refund and ask him to pick a new seat'
+        why: 'Kevin''s hold is valid; forcing the payment through over everyone creates a new injustice.'
+      - text: 'Treat Ryan''s confirm as failed, send a refund and ask him to pick a new seat'
         correct: true
         why: 'The CAS returns 0. Refunding the money and telling him clearly is the right course.'
       - text: 'Give both the same seat and sort it out later'

@@ -12,7 +12,7 @@ slides:
           A doctor never runs just one test on a patient. A blood test finds one kind of illness, an X-ray another, and a treadmill stress test shows whether the heart can take the strain. Passing one doesn't mean you pass the rest. Software is the same: each kind of test catches its own kind of bug and misses the others.
       - type: text
         body: |
-          Our shipping code reads the `charge_paisa` field from the courier's API. One day the courier quietly renames it to `charge`. Our unit tests still get the old response from a **mock** (a stand-in that returns a canned answer instead of calling the real API), so everything is green, yet in production the delivery charge comes out as zero.
+          Our shipping code reads the `charge_cents` field from the courier's API. One day the courier quietly renames it to `charge`. Our unit tests still get the old response from a **mock** (a stand-in that returns a canned answer instead of calling the real API), so everything is green, yet in production the delivery charge comes out as zero.
       - type: visual
         kind: table
         caption: 'Five kinds of tests: what each catches and what it misses'
@@ -26,7 +26,7 @@ slides:
             tip: 'Runs against the real database or queue, so it catches mistakes at the seams, the places where two parts meet.'
           - cells: ['Load', 'Slowness, breaking under traffic', 'Calculation mistakes']
             tip: 'Applies a crowd and sees which part runs out of breath first.'
-          - cells: ['Chaos', 'Whether behaviour is right during failures', 'Mistakes in normal operation']
+          - cells: ['Chaos', 'Whether behavior is right during failures', 'Mistakes in normal operation']
             tip: 'Deliberately breaks a dependency to see if the fallback (plan B) and the breaker (a switch that stops calling a sick service) really work.'
       - type: quote
         body: 'Each kind of test catches its own kind of bug. One green doesn''t mean all green.'
@@ -34,7 +34,7 @@ slides:
       - type: story
         title: 'The silently renamed field'
         body: |
-          An e-commerce team's courier service once switched to a new version and renamed a field. Every test the team had still passed. For seven hours orders went out with a delivery charge of 0, because the code had a `?? 0` fallback. Nobody realised that anything had broken.
+          An e-commerce team's courier service once switched to a new version and renamed a field. Every test the team had still passed. For seven hours orders went out with a delivery charge of 0, because the code had a `?? 0` fallback. Nobody realized that anything had broken.
       - type: refs
         items:
           - {to: 'testing/what-to-test', label: 'What is worth testing'}
@@ -50,7 +50,7 @@ slides:
     blocks:
       - type: text
         body: |
-          Two sides keep a written contract: "the response will contain an integer called `charge_paisa`." A **contract test** checks that contract from both directions. On our side: does our code read it as promised? On the other side: does the real API still keep the promise? Here we are the consumer (the one who uses the API) and the courier is the provider (the one who supplies it).
+          Two sides keep a written contract: "the response will contain an integer called `charge_cents`." A **contract test** checks that contract from both directions. On our side: does our code read it as promised? On the other side: does the real API still keep the promise? Here we are the consumer (the one who uses the API) and the courier is the provider (the one who supplies it).
       - type: visual
         kind: flow
         caption: 'The contract file binds both sides'
@@ -78,7 +78,7 @@ slides:
                       'timeout' => 5,
                   ]);
 
-                  $body = $client->request('GET', '/v1/rates?district=dhaka&weight=500')->getContent();
+                  $body = $client->request('GET', '/v1/rates?zone=NY&weight=500')->getContent();
 
                   $validator = new Validator();
                   $schema = json_decode(file_get_contents(__DIR__.'/courier-rates.schema.json'));
@@ -104,7 +104,7 @@ slides:
 
               $provider = new CourierRateProvider($client, new NullLogger());
 
-              self::assertSame(12_000, $provider->chargeFor('dhaka', 500));
+              self::assertSame(1_200, $provider->chargeFor('NY', 500));
           }
         marks:
           - {line: 4, tip: 'This example file lives next to the schema. If the schema changes, the example must change too, or the nightly test catches it.'}
@@ -133,7 +133,7 @@ slides:
     blocks:
       - type: text
         body: |
-          The contract is a short **JSON Schema** file: a description of what a JSON response must look like. It marks `charge_paisa` as **required** and a whole number. That one word is what stops the story's `?? 0` from hiding the rename, because a missing field is now a failure, not a zero. The example file beside it, `{"charge_paisa": 12000, "currency": "BDT"}`, is what the unit test uses (12,000 paisa is 120 taka).
+          The contract is a short **JSON Schema** file: a description of what a JSON response must look like. It marks `charge_cents` as **required** and a whole number. That one word is what stops the story's `?? 0` from hiding the rename, because a missing field is now a failure, not a zero. The example file beside it, `{"charge_cents": 1200, "currency": "USD"}`, is what the unit test uses (1,200 cents is $12.00).
       - type: code
         lang: json
         file: 'tests/Contract/courier-rates.schema.json'
@@ -142,10 +142,10 @@ slides:
           {
             "$schema": "http://json-schema.org/draft-04/schema#",
             "type": "object",
-            "required": ["charge_paisa", "currency"],
+            "required": ["charge_cents", "currency"],
             "properties": {
-              "charge_paisa": {"type": "integer", "minimum": 0},
-              "currency": {"type": "string", "enum": ["BDT"]}
+              "charge_cents": {"type": "integer", "minimum": 0},
+              "currency": {"type": "string", "enum": ["USD"]}
             }
           }
         marks:
@@ -157,14 +157,14 @@ slides:
         variant: bad
         code: |
           1) CourierContractTest::testSandboxResponseMatchesOurSchema
-          [{"property":"charge_paisa","message":"The property charge_paisa is required"}]
+          [{"property":"charge_cents","message":"The property charge_cents is required"}]
         marks:
           - {line: 2, tip: 'The failure names the exact field. We learn the same morning, not after seven hours of zero charges.'}
       - type: points
         title: 'When the nightly run goes red'
         style: number
         items:
-          - 'Read the field name in the message: the courier changed `charge_paisa`.'
+          - 'Read the field name in the message: the courier changed `charge_cents`.'
           - 'Change the schema and the example file to the new name, `charge`.'
           - 'The unit test now fails, because `CourierRateProvider` still reads the old name.'
           - 'Fix the provider until the unit test and the nightly run are both green.'
@@ -178,13 +178,13 @@ slides:
         items:
           - 'Don''t put every field in `required`: list only what the code reads, or the courier adding a field breaks your build for nothing.'
     check:
-      q: 'Why does marking `charge_paisa` as required matter after the courier renames it?'
+      q: 'Why does marking `charge_cents` as required matter after the courier renames it?'
       a: 'Without it, a missing field passes validation and the code''s `?? 0` quietly makes the charge zero. With it, the nightly run fails and names the field.'
 
   - slug: integration-real-deps
     title: 'Integration tests: a real database, not a mock'
     kind: howto
-    tldr: 'Run PostgreSQL in tests, just like production. SQLite or a mock hides the real behaviour of unique indexes, JSONB, FOR UPDATE and migrations.'
+    tldr: 'Run PostgreSQL in tests, just like production. SQLite or a mock hides the real behavior of unique indexes, JSONB, FOR UPDATE and migrations.'
     keywords: ['integration test', 'PostgreSQL', 'docker compose', 'SQLite', 'unique index', 'Testcontainers']
     blocks:
       - type: text
@@ -233,11 +233,11 @@ slides:
                   self::bootKernel();
                   $em = self::getContainer()->get(EntityManagerInterface::class);
 
-                  $em->persist(new User('rahim@example.com'));
+                  $em->persist(new User('ryan@example.com'));
                   $em->flush();
 
                   $this->expectException(UniqueConstraintViolationException::class);
-                  $em->persist(new User('RAHIM@example.com'));
+                  $em->persist(new User('RYAN@example.com'));
                   $em->flush();
               }
           }
@@ -248,14 +248,14 @@ slides:
         items:
           - 'In .env.test, set DATABASE_URL to postgresql://app:test_only@127.0.0.1:5433/app_test?serverVersion=16. It is for tests only, not a real password.'
           - 'Run the same compose.test.yaml in CI, so your machine and CI use the same database.'
-          - 'The same goes for RabbitMQ or Redis: if you rely on a dependency''s behaviour, keep the real one in your tests.'
+          - 'The same goes for RabbitMQ or Redis: if you rely on a dependency''s behavior, keep the real one in your tests.'
           - 'The price: slower than a unit test, and it needs Docker. For pure calculations keep the unit test; use integration tests for seams like queries, indexes, locks and migrations.'
       - type: refs
         items:
           - {to: 'data/zero-downtime-migrations', label: 'Rules for safe migrations'}
     check:
       q: 'Tests are green on SQLite, but duplicate emails get into production PostgreSQL. What is the likely cause?'
-      a: 'On SQLite the unique index on LOWER(email) behaves differently, or isn''t created at all. PostgreSQL''s real behaviour only shows up when you run against real PostgreSQL.'
+      a: 'On SQLite the unique index on LOWER(email) behaves differently, or isn''t created at all. PostgreSQL''s real behavior only shows up when you run against real PostgreSQL.'
 
   - slug: load-testing-k6
     title: 'Load tests: create a crowd with k6'
@@ -337,7 +337,7 @@ slides:
     blocks:
       - type: text
         body: |
-          Another hospital-style check: what does a bus do when a tyre bursts? A **chaos test** deliberately breaks one dependency and checks that the system behaves as expected. Start small: first inject failures in code tests, then on staging (a rehearsal copy of the site) over a real network. The code test fails until the provider handles the failure, and the second code block shows that handling.
+          Another hospital-style check: what does a bus do when a tire blows out? A **chaos test** deliberately breaks one dependency and checks that the system behaves as expected. Start small: first inject failures in code tests, then on staging (a rehearsal copy of the site) over a real network. The code test fails until the provider handles the failure, and the second code block shows that handling.
       - type: visual
         kind: steps
         caption: 'The five steps of a chaos experiment'
@@ -361,8 +361,8 @@ slides:
 
               $provider = new CourierRateProvider($client, new NullLogger());
 
-              self::assertNull($provider->chargeFor('dhaka', 500));   // 503: null, not a crash
-              self::assertNull($provider->chargeFor('dhaka', 500));   // timeout: null, not a crash
+              self::assertNull($provider->chargeFor('NY', 500));   // 503: null, not a crash
+              self::assertNull($provider->chargeFor('NY', 500));   // timeout: null, not a crash
           }
         marks:
           - {line: 4, tip: 'In real life, a 503 makes HttpClient throw a ServerException.'}
@@ -373,11 +373,11 @@ slides:
         file: 'src/Shipping/CourierRateProvider.php'
         variant: good
         code: |
-          public function chargeFor(string $district, int $grams): ?int
+          public function chargeFor(string $zone, int $grams): ?int
           {
               try {
                   $data = $this->client->request('GET', '/v1/rates', [
-                      'query' => ['district' => $district, 'weight' => $grams],
+                      'query' => ['zone' => $zone, 'weight' => $grams],
                       'timeout' => 2,
                   ])->toArray();   // throws on 4xx/5xx, on timeouts and on bad JSON
               } catch (ExceptionInterface $e) {
@@ -386,16 +386,16 @@ slides:
                   return null;   // no price, but no crash either
               }
 
-              return $data['charge_paisa'];
+              return $data['charge_cents'];
           }
 
-          public function chargeOrDefault(string $district, int $grams): int
+          public function chargeOrDefault(string $zone, int $grams): int
           {
-              return $this->chargeFor($district, $grams) ?? self::DEFAULT_CHARGE_PAISA;   // 8000
+              return $this->chargeFor($zone, $grams) ?? self::DEFAULT_CHARGE_CENTS;   // 800
           }
         marks:
           - {line: 8, tip: 'ExceptionInterface (Symfony Contracts) is the parent of server errors, transport errors and bad JSON. Without this catch, the test above fails with a ServerException and checkout would show an error page.'}
-          - {line: 18, tip: 'The hypothesis from step 2 in code: checkout carries on with a default charge (80 taka) when the courier is down.'}
+          - {line: 18, tip: 'The hypothesis from step 2 in code: checkout carries on with a default charge ($8.00) when the courier is down.'}
     aside:
       - type: commands
         title: 'Toxiproxy on staging'
@@ -405,7 +405,7 @@ slides:
           - {cmd: 'toxiproxy-cli toxic remove -n latency_downstream courier', desc: 'Remove the toxic when the experiment is over'}
       - type: pitfalls
         items:
-          - 'A default is a business decision: a flat 80 taka may undercharge a far district. Log and alert whenever the fallback is used.'
+          - 'A default is a business decision: a flat $8.00 may undercharge a far-away zone. Log and alert whenever the fallback is used.'
           - 'Don''t do chaos in production on day one. Start with unit tests and staging, then a small scope during low traffic.'
           - 'Never run chaos without a stop switch: decide in advance what you would have to see to halt it immediately.'
       - type: refs
@@ -428,7 +428,7 @@ flashcards:
       The mock's response is written by hand. When the outside party changes its response, the mock doesn't, so the test stays green and production breaks. The fix is a contract test, where the mock comes from the contract's example and the real response is checked against the contract.
     ref: different-tests-different-bugs
   - q: 'Why should integration tests run on real PostgreSQL, not SQLite?'
-    a: 'Unique indexes, FOR UPDATE, JSONB and migrations behave differently from one database to another. Only the real one shows production behaviour.'
+    a: 'Unique indexes, FOR UPDATE, JSONB and migrations behave differently from one database to another. Only the real one shows production behavior.'
     more: |
       Green on SQLite, broken in production is one of the most annoying experiences. Use compose.test.yaml to run the same major version of PostgreSQL as production, and keep the data on tmpfs to make it fast too.
     ref: integration-real-deps
@@ -464,7 +464,7 @@ flashcards:
     ref: chaos-failure-injection
 
 quiz:
-  - q: 'Rashed''s app calls an outside exchange-rate API. The API silently renames `rate` to `exchange_rate`. All of Rashed''s unit tests are green. Which test would have caught it?'
+  - q: 'Brian''s app calls an outside exchange-rate API. The API silently renames `rate` to `exchange_rate`. All of Brian''s unit tests are green. Which test would have caught it?'
     hint: 'The test that checks the real API''s response.'
     options:
       - text: 'A contract test: compare the real sandbox response with the schema'
@@ -481,11 +481,11 @@ quiz:
         why: 'Even if the code lines run, nobody verifies that the response fields are right.'
     ref: contract-tests
   - q: 'Which of these mistakes can only an integration test on real PostgreSQL catch?'
-    hint: 'Behaviour that belongs to the database itself, not to a mock or SQLite.'
+    hint: 'Behavior that belongs to the database itself, not to a mock or SQLite.'
     options:
       - text: 'Whether the unique index on LOWER(email) blocks duplicates in different letter case'
         correct: true
-        why: 'Index behaviour belongs to the database itself. On SQLite or a mock it is different or missing.'
+        why: 'Index behavior belongs to the database itself. On SQLite or a mock it is different or missing.'
       - text: 'Whether SELECT ... FOR UPDATE locks the row'
         correct: true
         why: 'Locking is a PostgreSQL feature. With a mock there is no way to verify it.'
@@ -496,10 +496,10 @@ quiz:
         correct: false
         why: 'There is nothing about the database here.'
     ref: integration-real-deps
-  - q: 'Tania ran her k6 script with 100 virtual users and the site fell over, but the script has no sleep. What is the most accurate thing to say about the result?'
+  - q: 'Tina ran her k6 script with 100 virtual users and the site fell over, but the script has no sleep. What is the most accurate thing to say about the result?'
     hint: 'Do real users fire requests with no pause?'
     options:
-      - text: 'The result is misleading: non-stop requests put far more pressure on the system than real behaviour, so the "100 users" figure isn''t realistic'
+      - text: 'The result is misleading: non-stop requests put far more pressure on the system than real behavior, so the "100 users" figure isn''t realistic'
         correct: true
         why: 'Real users read a page, think, then click. With a 20ms response, a virtual user without sleep sends about 50 requests a second instead of about 1, so 100 of them push like thousands of real users.'
       - text: 'The result is accurate, because more pressure means safer'
@@ -522,8 +522,8 @@ quiz:
 
       $provider = new CourierRateProvider($client, new NullLogger());
 
-      self::assertNull($provider->chargeFor('dhaka', 500));
-      self::assertNull($provider->chargeFor('dhaka', 500));
+      self::assertNull($provider->chargeFor('NY', 500));
+      self::assertNull($provider->chargeFor('NY', 500));
     hint: 'What kind of failures are the two mock responses?'
     options:
       - text: 'To check that the provider returns null without crashing on both kinds of failure (503 and timeout); it fails if an exception escapes'
@@ -539,7 +539,7 @@ quiz:
         correct: false
         why: 'The second mock simulates the timeout, and the two go through different exception paths.'
     ref: chaos-failure-injection
-  - q: 'The nightly contract run fails with "The property charge_paisa is required", and the courier now sends `charge`. What is the right next move?'
+  - q: 'The nightly contract run fails with "The property charge_cents is required", and the courier now sends `charge`. What is the right next move?'
     hint: 'The contract should describe the API as it is now, and the code should follow the contract.'
     options:
       - text: 'Remove `required` from the schema so the run goes green again'
@@ -555,13 +555,13 @@ quiz:
   - q: 'The courier returns a 503 and checkout shows an error page. What is wrong, and what is the fix?'
     lang: php
     code: |
-      public function chargeFor(string $district, int $grams): ?int
+      public function chargeFor(string $zone, int $grams): ?int
       {
           $data = $this->client->request('GET', '/v1/rates', [
-              'query' => ['district' => $district, 'weight' => $grams],
+              'query' => ['zone' => $zone, 'weight' => $grams],
           ])->toArray();
 
-          return $data['charge_paisa'];
+          return $data['charge_cents'];
       }
     hint: 'What does toArray() do with a 5xx answer?'
     options:
@@ -574,7 +574,7 @@ quiz:
       - text: 'Catch only TransportExceptionInterface, which covers all failures'
         correct: false
         why: 'It covers timeouts and dropped connections, but a 503 arrives as a ServerException and would still escape.'
-      - text: 'Add `?? 0` after `$data[''charge_paisa'']`'
+      - text: 'Add `?? 0` after `$data[''charge_cents'']`'
         correct: false
         why: 'The exception is thrown earlier, at toArray(), so this line is never reached. And a silent zero is the original bug.'
     ref: chaos-failure-injection

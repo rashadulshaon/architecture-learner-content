@@ -7,23 +7,23 @@ slides:
     blocks:
       - type: text
         body: |
-          Rahim's app tells the gateway, "charge 1200 taka to Rina's card." The gateway takes the money, but the network jams on the way back, and after 5 seconds Rahim's app gets a timeout. The app assumes "failed", marks the payment `failed` and tells Rina to try again. Rina taps again, and 1200 taka is deducted twice.
+          Ryan's app tells the gateway, "charge $120 to Rachel's card." The gateway takes the money, but the network jams on the way back, and after 5 seconds Ryan's app gets a timeout. The app assumes "failed", marks the payment `failed` and tells Rachel to try again. Rachel taps again, and $120 is deducted twice.
       - type: visual
         kind: sequence
         caption: 'Treating a timeout as failure charges the money twice'
         actors:
-          - {id: app, label: 'Rahim''s app', icon: server, tip: 'Calls the gateway. When no reply comes, it decides for itself, and that is the mistake.'}
+          - {id: app, label: 'Ryan''s app', icon: server, tip: 'Calls the gateway. When no reply comes, it decides for itself, and that is the mistake.'}
           - {id: gw, label: 'Gateway', icon: bank, tip: 'The real owner of the charge. It knows what actually happened, but couldn''t tell the app.'}
-          - {id: rina, label: 'Rina', icon: user, tip: 'The customer. She believes whatever the app shows her.'}
+          - {id: rachel, label: 'Rachel', icon: user, tip: 'The customer. She believes whatever the app shows her.'}
         messages:
-          - {from: app, to: gw, label: 'charge 1200 taka'}
+          - {from: app, to: gw, label: 'charge $120'}
           - {at: gw, note: 'The money is already taken', tone: warn, tip: 'The work was done properly, but the app doesn''t know yet.'}
           - {from: gw, to: app, label: 'Success (lost on the way)', dashed: true, tone: bad}
           - {at: app, note: 'Timeout after 5 s, so "failed"', tone: bad, tip: 'A timeout only says no reply came. It doesn''t say whether the work failed.'}
-          - {from: app, to: rina, label: '"Failed, please try again"', tone: bad}
-          - {from: rina, to: app, label: 'Taps again'}
-          - {from: app, to: gw, label: 'A new charge for 1200 taka', tone: bad}
-          - {at: gw, note: 'Total charged: 2400 taka', tone: bad}
+          - {from: app, to: rachel, label: '"Failed, please try again"', tone: bad}
+          - {from: rachel, to: app, label: 'Taps again'}
+          - {from: app, to: gw, label: 'A new charge for $120', tone: bad}
+          - {at: gw, note: 'Total charged: $240', tone: bad}
       - type: quote
         body: 'A timeout doesn''t mean failure, it means "I don''t know". Until you know, say neither failed nor succeeded.'
     aside:
@@ -36,17 +36,17 @@ slides:
       q: 'After a timeout, how many outcomes are possible, and which one did the app wrongly choose?'
       a: 'Three: success, failure or unknown. The app treated unknown as failure, yet the money had actually been taken.'
 
-  - slug: bkash-sms-missing
-    title: 'No SMS, but the balance went down'
+  - slug: payment-app-no-confirmation
+    title: 'No confirmation, but the balance went down'
     kind: concept
     tldr: 'Give the unknown state its own place (pending), then take your time asking the gateway for the truth or wait for its webhook; never guess.'
     keywords: ['pending state', 'status query', 'reconciliation', 'source of truth', 'unknown state', 'verification']
     blocks:
       - type: metaphor
         icon: phone
-        title: 'A bKash payment, but no SMS'
+        title: 'A payment app charge, but no confirmation'
         body: |
-          Rina pays at a shop with bKash (a mobile wallet), but the shopkeeper's phone gets no confirmation SMS. The shopkeeper doesn't say "I didn't get it", and doesn't say "I got it" either. He says "hold on", then checks the transaction ID in the bKash app. That "hold on" is **pending**, and checking the app is a **status query**; the real truth lives in bKash's ledger.
+          Rachel pays at a restaurant with a payment app like Venmo, but the cashier's screen shows no confirmation. The cashier doesn't say "I didn't get it", and doesn't say "I got it" either. She says "hold on", then checks the transaction ID in the payment app. That "hold on" is **pending**, and checking the app is a **status query**; the real truth lives in the payment provider's ledger.
       - type: visual
         kind: flow
         caption: 'When you don''t know, stay pending, then ask the gateway'
@@ -231,7 +231,7 @@ slides:
           - 'If a payment stays pending for a long time (say 24 hours), alert a person. Don''t keep retrying on your own forever.'
           - 'Each status query is a call to the gateway. A few hundred stuck payments every 10 minutes is fine; thousands every minute can hit its rate limit.'
     check:
-      q: 'If a status query makes the gateway say "I don''t recognise this reference" (404), what is the safe move, and why?'
+      q: 'If a status query makes the gateway say "I don''t recognize this reference" (404), what is the safe move, and why?'
       a: 'Send the charge again with the same idempotency key. The call never reached the gateway, and if it did arrive late, the same key stops the work from happening a second time.'
 
 flashcards:
@@ -254,12 +254,12 @@ flashcards:
     a: 'It is the home for "I don''t know". It makes no wrong decision either way, and you can verify later.'
     more: |
       Without pending, you'd have to force an unknown outcome into succeeded or failed. With pending, it simply means "waiting", and you can easily query which payments are waiting to be verified.
-    ref: bkash-sms-missing
+    ref: payment-app-no-confirmation
   - q: 'What are the three ways to learn the real result of an unknown payment?'
     a: 'The gateway''s webhook, a status query you make yourself, and a regular reconciliation job. Keep all three.'
     more: |
       A webhook is fast but can be lost. A status query is under your control. Reconciliation or a sweeper catches every remaining gap. With all three in place, no payment stays pending forever.
-    ref: bkash-sms-missing
+    ref: payment-app-no-confirmation
   - q: 'What should the idempotency key be when retrying after an unknown outcome?'
     a: 'The same key as the earlier attempt. A new key is new work to the gateway, so the money could be taken again.'
     more: |
@@ -270,7 +270,7 @@ flashcards:
     more: |
       If you call first and write afterwards, a crash leaves money taken at the gateway with nothing in our ledger, and nobody can find that payment. Write first, and the sweeper will catch it.
     ref: same-key-retry
-  - q: 'What do you do when a status query says the gateway doesn''t recognise the reference?'
+  - q: 'What do you do when a status query says the gateway doesn''t recognize the reference?'
     a: 'The call never reached the gateway. Sending the charge again with the same idempotency key is safe.'
     more: |
       If the gateway really never got the call, the work will happen for the first time now. If a call turns up late from somewhere else, the same key means the gateway won't do the work a second time. The result is the same either way, so it is safe.
@@ -299,7 +299,7 @@ quiz:
       try {
           $res = $gateway->request('POST', '/charges', [
               'headers' => ['Idempotency-Key' => (string) Uuid::v4()],
-              'json' => ['amount' => 1200],
+              'json' => ['amount' => 12000],
           ]);
           $res->getStatusCode();
           $payment->markSucceeded();
@@ -337,7 +337,7 @@ quiz:
         correct: false
         why: 'Exactly backwards: 402 is final, 503 is unknown.'
     ref: same-key-retry
-  - q: 'Rahim decides that if a payment is still pending after 1 hour, the app will mark it "failed" itself, without waiting for a webhook or a query. What is the problem?'
+  - q: 'Ryan decides that if a payment is still pending after 1 hour, the app will mark it "failed" itself, without waiting for a webhook or a query. What is the problem?'
     hint: 'Does the money go back just because time has passed?'
     options:
       - text: 'Time passing doesn''t prove the money wasn''t taken. It may still be taken at the gateway'
@@ -348,8 +348,8 @@ quiz:
         why: 'Whatever the time, a guess is a guess. You can''t call it failed without asking the gateway.'
       - text: 'There is no problem; one hour is enough'
         correct: false
-        why: 'If the gateway''s ledger later says "succeeded", the customer has been charged while the order is cancelled.'
-    ref: bkash-sms-missing
+        why: 'If the gateway''s ledger later says "succeeded", the customer has been charged while the order is canceled.'
+    ref: payment-app-no-confirmation
   - q: 'Which measures help stop a payment staying pending forever?'
     hint: 'If one path fails, what do the others do?'
     options:
@@ -366,7 +366,7 @@ quiz:
         correct: false
         why: 'The problem is in our system; pushing it onto the customer is no solution.'
     ref: resolve-by-asking
-  - q: 'A status query makes the gateway say "I don''t recognise this reference". What is the safest next step?'
+  - q: 'A status query makes the gateway say "I don''t recognize this reference". What is the safest next step?'
     hint: 'When you send the charge again, which does the gateway go by: the old key or a new one?'
     options:
       - text: 'Make a new key and send the charge again'
@@ -374,7 +374,7 @@ quiz:
         why: 'If the earlier call arrives late, the new key means the work happens twice.'
       - text: 'Mark the payment succeeded'
         correct: false
-        why: 'The gateway doesn''t recognise it at all, so the money was not taken. Calling it a success is wrong.'
+        why: 'The gateway doesn''t recognize it at all, so the money was not taken. Calling it a success is wrong.'
       - text: 'Send the charge again with the same earlier idempotency key'
         correct: true
         why: 'If the call never arrived, the work now happens once; if it did, the gateway returns the earlier result.'

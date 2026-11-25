@@ -7,20 +7,20 @@ slides:
     blocks:
       - type: metaphor
         icon: book
-        title: 'The corner shop''s credit ledger'
+        title: 'The store''s house-account book'
         body: |
-          A corner-shop owner writes the customer's name and phone number beside every line of the credit ledger, where he records who owes what. Mr Rahim's number changes. The shopkeeper writes the new number on one line, and the other two lines keep the old one. At month end he goes to call and can't tell which number is real. Write the same fact again and again in your table and exactly this happens.
+          A store owner writes the customer's name and phone number beside every line of the house-account book, where the owner records who owes what. Mr Miller's number changes. The owner writes the new number on one line, and the other two lines keep the old one. At month end the owner goes to call and can't tell which number is real. Write the same fact again and again in your table and exactly this happens.
       - type: visual
         kind: table
         caption: 'The customer_order table, with name and phone copied into every row'
         headers: ['order_id', 'customer_name', 'customer_phone']
         rows:
-          - cells: ['101', 'Rahim Uddin', '01711-000001']
-            tip: 'The first order has Rahim''s name and his old number. Everything was correct at that point.'
-          - cells: ['102', 'Rahim Uddeen', '01711-000001']
+          - cells: ['101', 'Steven Miller', '555-0101']
+            tip: 'The first order has Steven''s name and his old number. Everything was correct at that point.'
+          - cells: ['102', 'Stephen Miller', '555-0101']
             tip: 'The spelling differs: someone typed it by hand in this row. Now one person has two names.'
-          - cells: ['130', 'Rahim Uddin', '01711-000002']
-            tip: 'Rahim changed his number, but only the new order picked it up. The two earlier rows still hold the old one.'
+          - cells: ['130', 'Steven Miller', '555-0102']
+            tip: 'Steven changed his number, but only the new order picked it up. The two earlier rows still hold the old one.'
       - type: quote
         body: 'Every place you write a fact is a place you must update it, and forgetting just one makes your data lie.'
     aside:
@@ -45,7 +45,7 @@ slides:
         icon: book
         title: 'A separate page per customer'
         body: |
-          This time the shopkeeper opens one page in his ledger for each customer, with the name and number written exactly once. A credit line just says "page 12". When the number changes, he fixes it on that one page and everybody sees the new number. The page is a table row, the page number is the primary key, and the "page 12" on a credit line is the foreign key.
+          This time the owner opens one page in the book for each customer, with the name and number written exactly once. An account line just says "page 12". When the number changes, the owner fixes it on that one page and everybody sees the new number. The page is a table row, the page number is the primary key, and the "page 12" on a account line is the foreign key.
       - type: visual
         kind: flow
         caption: 'The phone number lives only in the customer table; the others point to it by ID'
@@ -68,16 +68,16 @@ slides:
           - 'Every column in a row must describe that row''s subject and nothing else.'
       - type: code
         lang: sql
-        file: 'Changing Rahim''s number, before and after'
+        file: 'Changing Steven''s number, before and after'
         code: |
           -- Before: the number sits in every order row
-          UPDATE customer_order SET customer_phone = '01711-000002'
-          WHERE customer_name = 'Rahim Uddin';   -- misses the row typed 'Rahim Uddeen'
+          UPDATE customer_order SET customer_phone = '555-0102'
+          WHERE customer_name = 'Steven Miller';   -- misses the row typed 'Stephen Miller'
 
           -- After: the number sits in one row, so one UPDATE is the whole job
-          UPDATE customer SET phone = '01711-000002' WHERE id = 12;
+          UPDATE customer SET phone = '555-0102' WHERE id = 12;
         marks:
-          - {line: 3, tip: 'Finding Rahim''s rows by name only works if every copy is spelled the same. Order 102 is not matched, so it keeps the old number.'}
+          - {line: 3, tip: 'Finding Steven''s rows by name only works if every copy is spelled the same. Order 102 is not matched, so it keeps the old number.'}
           - {line: 6, tip: 'The customer has one row, found by its id, so there is no copy to forget.'}
     aside:
       - type: remember
@@ -139,7 +139,7 @@ slides:
             ADD CONSTRAINT chk_order_item_quantity CHECK (quantity > 0);
 
           ALTER TABLE product
-            ADD CONSTRAINT chk_product_price CHECK (price_in_poisha >= 0);
+            ADD CONSTRAINT chk_product_price CHECK (price_in_cents >= 0);
         marks:
           - {line: 2, tip: 'CHECK: if the condition is false, the database rejects the row. Doctrine attributes have no CHECK, so add it in a migration with addSql().'}
       - type: visual
@@ -177,34 +177,34 @@ slides:
     blocks:
       - type: text
         body: |
-          The opposite mistake exists too: normalizing everything and reading an order's price from the product's current price. If a product goes from 100 to 120 taka, last month's invoice for 3 of them quietly changes from 300 to 360. So the price at the moment of the order must be copied into the order's own row. That is legitimate denormalization: a copy made on purpose, for a known reason.
+          The opposite mistake exists too: normalizing everything and reading an order's price from the product's current price. If a product goes from $10 to $12, last month's invoice for 3 of them quietly changes from $30 to $36. So the price at the moment of the order must be copied into the order's own row. That is legitimate denormalization: a copy made on purpose, for a known reason.
       - type: code
         lang: sql
         file: 'Dangerous: reading the price through a join'
         variant: bad
         code: |
-          SELECT SUM(p.price_in_poisha * oi.quantity) AS total
+          SELECT SUM(p.price_in_cents * oi.quantity) AS total
           FROM order_item oi
           JOIN product p ON p.id = oi.product_id
           WHERE oi.order_id = 130;
         marks:
-          - {line: 1, tip: 'p.price_in_poisha is the product''s price today. If the price changes tomorrow, the total of the old order changes too.'}
+          - {line: 1, tip: 'p.price_in_cents is the product''s price today. If the price changes tomorrow, the total of the old order changes too.'}
       - type: code
         lang: sql
         file: 'Safe: the price at order time, in the row itself'
         variant: good
         code: |
-          ALTER TABLE order_item ADD COLUMN unit_price_in_poisha INT;
-          UPDATE order_item oi SET unit_price_in_poisha = p.price_in_poisha
+          ALTER TABLE order_item ADD COLUMN unit_price_in_cents INT;
+          UPDATE order_item oi SET unit_price_in_cents = p.price_in_cents
           FROM product p WHERE p.id = oi.product_id;
-          ALTER TABLE order_item ALTER COLUMN unit_price_in_poisha SET NOT NULL;
+          ALTER TABLE order_item ALTER COLUMN unit_price_in_cents SET NOT NULL;
 
-          SELECT SUM(unit_price_in_poisha * quantity) AS total
+          SELECT SUM(unit_price_in_cents * quantity) AS total
           FROM order_item
           WHERE order_id = 130;
         marks:
-          - {line: 2, tip: 'Old rows get today''s price once, the best value we have. From now on the order code copies `$product->getPriceInPoisha()` into every new order_item when it is created, and it never changes afterwards.'}
-          - {line: 6, tip: 'No join is needed and the result is always the same: 3 × 100 = 300, even after the price becomes 120. This is a snapshot.'}
+          - {line: 2, tip: 'Old rows get today''s price once, the best value we have. From now on the order code copies `$product->getPriceInCents()` into every new order_item when it is created, and it never changes afterwards.'}
+          - {line: 6, tip: 'No join is needed and the result is always the same: 3 × $10 = $30, even after the price becomes $12. This is a snapshot.'}
       - type: visual
         kind: compare
         caption: 'Which copies are fine and which are a danger'
@@ -344,10 +344,10 @@ quiz:
     options:
       - text: 'The order_item rows for that product are deleted too'
         correct: false
-        why: 'That is CASCADE behaviour. RESTRICT is the exact opposite.'
+        why: 'That is CASCADE behavior. RESTRICT is the exact opposite.'
       - text: 'The product_id on the order_item becomes NULL by itself'
         correct: false
-        why: 'That is SET NULL behaviour, and it would not even work on a NOT NULL column.'
+        why: 'That is SET NULL behavior, and it would not even work on a NOT NULL column.'
       - text: 'The database blocks the delete and raises an error'
         correct: true
         why: 'RESTRICT means that as long as another row refers to it, it cannot be deleted. History never ends up orphaned.'
@@ -371,14 +371,14 @@ quiz:
         correct: false
         why: 'A join is usually fast when indexed. Copying without measuring only adds risk.'
     ref: when-to-duplicate
-  - q: 'Rahim''s phone is copied into every order row. A developer runs the UPDATE below. What goes wrong?'
+  - q: 'Steven''s phone is copied into every order row. A developer runs the UPDATE below. What goes wrong?'
     lang: sql
     code: |
-      UPDATE customer_order SET customer_phone = '01711-000002'
-      WHERE customer_name = 'Rahim Uddin';
+      UPDATE customer_order SET customer_phone = '555-0102'
+      WHERE customer_name = 'Steven Miller';
     hint: 'Look at how the name was typed in the other rows.'
     options:
-      - text: 'Rows where the name was typed differently ("Rahim Uddeen") are missed and keep the old number'
+      - text: 'Rows where the name was typed differently ("Stephen Miller") are missed and keep the old number'
         correct: true
         why: 'With copies, you find them by matching text, and any variant slips through. One person ends up with two numbers.'
       - text: 'Nothing, the UPDATE fixes every row of that customer'

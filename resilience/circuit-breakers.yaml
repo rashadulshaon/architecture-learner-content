@@ -43,9 +43,9 @@ slides:
     blocks:
       - type: metaphor
         icon: bolt
-        title: 'The MCB or fuse at home'
+        title: 'The circuit breaker at home'
         body: |
-          When the wiring shorts, the MCB (a household circuit breaker) cuts the line by itself so a fire doesn't start. After a while you gently flip the switch back: if all is well it keeps running, and if it shorts again it trips immediately. In code, that is exactly a circuit breaker: the healthy state is **closed**, the cut state is **open**, and the testing state is **half-open**.
+          When the wiring shorts, the circuit breaker in your electrical panel cuts the line by itself so a fire doesn't start. After a while you gently flip the switch back: if all is well it keeps running, and if it shorts again it trips immediately. In code, that is exactly a circuit breaker: the healthy state is **closed**, the cut state is **open**, and the testing state is **half-open**.
       - type: visual
         kind: flow
         animate: false
@@ -128,17 +128,17 @@ slides:
               return $this->paymentClient->request('GET', "/v1/payments/$paymentId")->toArray();
           }
 
-          public function charge(string $orderId, int $paisa): array
+          public function charge(string $orderId, int $cents): array
           {
               // POST: with the same Idempotency-Key, a retry won't charge the money twice
               return $this->paymentClient->request('POST', '/v1/charges', [
                   'headers' => ['Idempotency-Key' => 'order-'.$orderId],
-                  'json' => ['amount' => $paisa],
+                  'json' => ['amount' => $cents],
               ])->toArray();
           }
         marks:
           - {line: 1, tip: 'Because the argument is named $paymentClient, Symfony injects the scoped client payment.client, retries included.'}
-          - {line: 14, tip: 'Retrying means the same call may go out more than once. The danger is a POST without a key: charged twice. With a key, the gateway recognises the second one.'}
+          - {line: 14, tip: 'Retrying means the same call may go out more than once. The danger is a POST without a key: charged twice. With a key, the gateway recognizes the second one.'}
       - type: visual
         kind: table
         caption: 'Wait times over three retries: 500 ms, doubling, jitter ±30%'
@@ -231,7 +231,7 @@ slides:
               return $this->breaker->call(
                   'courier',
                   fn () => $this->courier->chargeFor($district, $weightGrams),
-                  fn () => self::DEFAULT_CHARGE_PAISA,   // fallback: a fixed default charge
+                  fn () => self::DEFAULT_CHARGE_CENTS,   // fallback: a fixed default charge
               );
           }
         marks:
@@ -364,7 +364,7 @@ flashcards:
       Two gains at once: your workers stay free (fail fast), and the sick service is relieved of load. Without a breaker, every call drags out to the 2-second timeout and the worker pool runs out quickly.
     ref: circuit-breaker-states
   - q: 'What do exponential backoff and jitter each do?'
-    a: 'Backoff lengthens the wait before each retry (500 ms, 1000 ms, 2000 ms). Jitter randomises that wait so clients don''t all come back together.'
+    a: 'Backoff lengthens the wait before each retry (500 ms, 1000 ms, 2000 ms). Jitter randomizes that wait so clients don''t all come back together.'
     more: |
       With backoff alone, all clients return at the same instant, in repeated waves. Jitter flattens those waves. In Symfony retry_failed you can set both `multiplier` and `jitter` in config.
     ref: backoff-jitter-retry
@@ -390,7 +390,7 @@ flashcards:
     ref: circuit-breaker-states
 
 quiz:
-  - q: 'Rina''s app immediately retries every failed gateway call 5 times. Today 60% of gateway calls fail, and 120 clicks arrive per second. The gateway''s capacity is 150/second. What happens?'
+  - q: 'Rachel''s app immediately retries every failed gateway call 5 times. Today 60% of gateway calls fail, and 120 clicks arrive per second. The gateway''s capacity is 150/second. What happens?'
     hint: 'Each failure creates another call. What does the total come to?'
     options:
       - text: 'Total calls exceed capacity and the gateway fails even more: a retry storm'
@@ -456,7 +456,7 @@ quiz:
         why: '503 is temporary, and GET is safe: the result is the same however often you send it.'
       - text: 'POST /charges with an Idempotency-Key, after a timeout'
         correct: true
-        why: 'Because of the key, the gateway recognises the second call and the money is charged only once.'
+        why: 'Because of the key, the gateway recognizes the second call and the money is charged only once.'
       - text: 'Resending the same POST after a 422 Validation Error'
         correct: false
         why: 'The input itself is wrong, so the same call will always fail. Retrying only adds load.'

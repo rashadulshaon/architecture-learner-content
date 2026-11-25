@@ -15,17 +15,17 @@ slides:
           - {id: app, label: 'Our app', icon: server, tip: 'Calls the gateway for the customer''s payment. Records "pending" in its own ledger.'}
           - {id: gw, label: 'Gateway', icon: card, tip: 'Takes the money from the bank. Records the transaction as "paid" in its own statement.'}
         messages:
-          - {from: app, to: gw, label: 'charge 500 taka, ref: pay_881'}
+          - {from: app, to: gw, label: 'charge $45.00, ref: pay_881'}
           - {from: gw, to: app, label: 'Success (but lost on the way)', dashed: true, tone: bad, tip: 'Our app timed out and never received the reply.'}
           - {at: app, note: 'Ledger: pay_881 still pending', tone: warn}
-          - {at: gw, note: 'Statement: pay_881 paid, 500 taka', tone: bad, tip: 'The outside truth and our truth are now different.'}
+          - {at: gw, note: 'Statement: pay_881 paid, $45.00', tone: bad, tip: 'The outside truth and our truth are now different.'}
       - type: quote
         body: 'Your books and the outside books are two separate truths. Without regular matching, errors quietly pile up.'
     aside:
       - type: story
         title: 'A surprise six months later'
         body: |
-          A company learned in its annual audit, six months on, that the gateway showed 400,000 taka more than its own records. A retry bug had meant some payments were never written to the ledger. Daily matching would have caught it on day one.
+          A company learned in its annual audit, six months on, that the gateway showed $12,000 more than its own records. A retry bug had meant some payments were never written to the ledger. Daily matching would have caught it on day one.
       - type: problem
         body: 'Outside systems (banks, gateways) keep their own version of the truth. Unless you regularly check that your books agree with theirs, you won''t know.'
     check:
@@ -40,9 +40,9 @@ slides:
     blocks:
       - type: metaphor
         icon: wallet
-        title: 'A bKash agent''s end of day'
+        title: 'A shop owner''s closing time'
         body: |
-          At night, a bKash agent checks every line of their own notebook against the bKash statement. The key they match on is the transaction ID (TrxID), not the time or the amount, because many transactions share the same amount. Whatever doesn't match gets circled in red ink. That red circle is a **break**.
+          At night, a shop owner checks every line of their own sales notebook against the card processor's daily statement. The key they match on is the transaction ID, not the time or the amount, because many transactions share the same amount. Whatever doesn't match gets circled in red ink. That red circle is a **break**.
       - type: visual
         kind: table
         caption: 'Types of break and their likely causes'
@@ -81,7 +81,7 @@ slides:
     blocks:
       - type: text
         body: |
-          The method has three steps. First, load the provider's statement (file or API) into a `statement_line` table. Second, run one `FULL OUTER JOIN` against `ledger_payment`, with each ref counted per side and compared on amount, status and day. Anything missing on a side, counted twice, or different is a break, and the `CASE` names which of the six it is. A line whose reference matches but lands on a different day is a `timing` break. To tell that from a truly missing line, the query looks one day either side, so the job runs for two days ago, when the neighbouring day's statement has arrived. Third, write the results to `recon_break` with a UNIQUE on `(day, provider, ref)`, so that running the job twice never inserts the same break twice.
+          The method has three steps. First, load the provider's statement (file or API) into a `statement_line` table. Second, run one `FULL OUTER JOIN` against `ledger_payment`, with each ref counted per side and compared on amount, status and day. Anything missing on a side, counted twice, or different is a break, and the `CASE` names which of the six it is. A line whose reference matches but lands on a different day is a `timing` break. To tell that from a truly missing line, the query looks one day either side, so the job runs for two days ago, when the neighboring day's statement has arrived. Third, write the results to `recon_break` with a UNIQUE on `(day, provider, ref)`, so that running the job twice never inserts the same break twice.
       - type: code
         lang: sql
         file: 'The query that finds breaks'
@@ -141,7 +141,7 @@ slides:
           }
         marks:
           - {line: 2, tip: 'The Symfony Scheduler runs this command every day at 3 a.m. To keep it running you need `messenger:consume scheduler_default`.'}
-          - {line: 12, tip: 'Without an argument it means "2 days ago", when the neighbouring day''s statement has arrived. You can also re-run any earlier day by hand.'}
+          - {line: 12, tip: 'Without an argument it means "2 days ago", when the neighboring day''s statement has arrived. You can also re-run any earlier day by hand.'}
     aside:
       - type: commands
         title: 'Commands to run it'
@@ -187,9 +187,9 @@ slides:
 
           $txId = $ledger->post(
               memo: "Reconciliation correction: {$break->ref}",
-              postings: [   // pay_881: the gateway holds 500 taka we never recorded
-                  new Posting($gatewayClearing, Side::Debit,  new Money(50000, 'BDT')),
-                  new Posting($sales,           Side::Credit, new Money(50000, 'BDT')),
+              postings: [   // pay_881: the gateway holds $45.00 we never recorded
+                  new Posting($gatewayClearing, Side::Debit,  new Money(4500, 'USD')),
+                  new Posting($sales,           Side::Credit, new Money(4500, 'USD')),
               ],
           );
 
@@ -242,7 +242,7 @@ flashcards:
   - q: 'What is a timing difference, and why is it not a real error?'
     a: 'The same reference is on both sides but on different days (cutoff or T+1 settlement). The job labels it `timing`, not missing.'
     more: |
-      The query looks one day either side of the day it checks, so a line that merely sits on the neighbouring day is not called missing. If you don't flag these separately, false alarms go off every day and people learn to ignore alerts.
+      The query looks one day either side of the day it checks, so a line that merely sits on the neighboring day is not called missing. If you don't flag these separately, false alarms go off every day and people learn to ignore alerts.
     ref: match-and-break
   - q: 'How does one query tell six break types apart?'
     a: 'It counts each ref per side and compares amount, status and day. A `CASE` picks the first true test: duplicate, missing either side, amount, status, else timing.'
@@ -261,7 +261,7 @@ flashcards:
     ref: dont-plug-the-gap
 
 quiz:
-  - q: 'The gateway statement has pay_881 (500 taka, paid), but our ledger doesn''t. What type of break is this, and what comes first?'
+  - q: 'The gateway statement has pay_881 ($45.00, paid), but our ledger doesn''t. What type of break is this, and what comes first?'
     hint: 'They have it, we don''t.'
     options:
       - text: 'missing_in_ledger; find the cause and write a correcting entry'
@@ -309,7 +309,7 @@ quiz:
         correct: false
         why: 'DO NOTHING means the old rows are not touched at all.'
     ref: daily-reconcile-job
-  - q: 'The statement says pay_77 is `refunded`, our ledger says `paid`, and both show 500 taka on the same day. Which break is it?'
+  - q: 'The statement says pay_77 is `refunded`, our ledger says `paid`, and both show $45.00 on the same day. Which break is it?'
     hint: 'Reference, amount and day all agree.'
     options:
       - text: 'status_mismatch: a refund we never saw'
@@ -317,7 +317,7 @@ quiz:
         why: 'The amount agrees but the status doesn''t. The query compares status after amount, so this is where it lands.'
       - text: 'amount_mismatch'
         correct: false
-        why: 'Both sides show 500 taka, so the amounts agree.'
+        why: 'Both sides show $45.00, so the amounts agree.'
       - text: 'timing'
         correct: false
         why: 'Both lines are on the same day, so it is not a day difference.'
@@ -358,7 +358,7 @@ quiz:
         why: 'The query looks one day either side, finds the ref on the 21st, and labels it timing instead of missing. A cutoff difference is not a real error.'
       - text: 'As missing_at_provider, because the 20 November statement has no such line'
         correct: false
-        why: 'That would raise a false alarm. The join also looks at the neighbouring day, where the line is found.'
+        why: 'That would raise a false alarm. The join also looks at the neighboring day, where the line is found.'
       - text: 'The ledger date must be changed to the 21st'
         correct: false
         why: 'Ledger entries can''t be changed, and the cause is the cutoff, not the date.'
