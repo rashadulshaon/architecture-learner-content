@@ -1,0 +1,506 @@
+slides:
+  - slug: one-box-one-break-in
+    title: 'One upload form, and the whole shop is gone'
+    kind: story
+    tldr: 'When the app, the database, the photos and the backups share one server and one disk, a single hole reaches all of them, and a single runaway job fills the disk under all of them.'
+    keywords: ['single server', 'monolith on one box', 'file upload attack', 'web shell', 'disk full', 'backup on same disk', 'blast radius']
+    blocks:
+      - type: text
+        body: |
+          Nadia's shop, Shobuj Haat, runs on one VPS with a 100 GB disk. On it live the Symfony app, MySQL (12 GB), 60 GB of product photos and seven nightly backups of 3 GB each. The system takes 4 GB and 3 GB is free. The photo form saves each file under the name the visitor sent, inside `public/uploads/`, and nginx runs any `.php` file it finds there.
+      - type: visual
+        kind: flow
+        caption: 'One uploaded file, and every part on the box is reached'
+        nodes:
+          - {id: attacker, label: 'Attacker', sub: 'any visitor', icon: user, tone: bad, col: 0, row: 1, tip: 'Needs no password. The upload form is open to every visitor, because customers send photos with it.'}
+          - {id: upload, label: 'Upload form', sub: 'public/uploads/', icon: file, tone: warn, col: 1.5, row: 1, tip: 'The folder is served by nginx and anything ending in .php gets executed. This is the hole.'}
+          - {id: env, label: '.env file', sub: 'database password', icon: key, col: 3, row: 0, tip: 'The app must be able to read this file, so a script running as the app can read it too.'}
+          - {id: db, label: 'MySQL', sub: 'all customers, 12 GB', icon: db, col: 3, row: 1, tip: 'Listens on the same machine, so the password from .env works straight away. Nothing else stands in the way.'}
+          - {id: backups, label: 'Backups', sub: 'same disk, 21 GB', icon: archive, col: 3, row: 2, tip: 'Seven dumps of 3 GB each, in a folder the app''s user can write to. Whoever controls the app can delete them.'}
+        edges:
+          - {from: attacker, to: upload, label: 'The attacker uploads shell.php as a "photo" and opens its URL', tone: bad}
+          - {from: upload, to: env, label: 'The script runs as the app''s user and reads the database password from .env', tone: bad}
+          - {from: upload, to: db, label: 'With that password it dumps every customer and order', tone: bad}
+          - {from: upload, to: backups, label: 'It deletes the seven backups too, because they sit on the same disk', tone: bad}
+      - type: text
+        body: |
+          On another night nothing is stolen at all. A bot posts 3 GB of images, the free space is gone, and MySQL cannot write any more, so every order fails. Same box, same disk, same story: one thing goes wrong and everything goes with it.
+    aside:
+      - type: terms
+        items:
+          - {term: 'Web root', meaning: 'The folder the web server hands out directly to visitors. Here that is `public/`.'}
+          - {term: 'Web shell', meaning: 'A tiny script an attacker uploads that lets them run commands on your server from a browser.'}
+          - {term: 'VPS', meaning: 'A virtual private server: one rented machine, usually with one disk.'}
+      - type: problem
+        body: 'The pieces on this box have very different jobs, but they share a door (the web server), a password file, a CPU and a disk. When one piece is hurt, the others have no wall to hide behind.'
+    check:
+      q: 'In the story, the hole was an upload form. Which two other facts about the box turned that one hole into three losses?'
+      a: 'The database password sat in `.env`, readable by the app, and the backups were on the same disk in a folder the app could write to. All of it was reachable from one machine.'
+
+  - slug: blast-radius-and-split
+    title: 'Blast radius: split what must not fail together'
+    kind: concept
+    tldr: 'Blast radius is how much one break-in or one runaway job can reach. Split the box so each part gets its own machine, its own door and its own failure.'
+    keywords: ['blast radius', 'defence in depth', 'resource contention', 'app tier', 'private network', 'managed database', 'object storage']
+    blocks:
+      - type: metaphor
+        icon: shop
+        title: 'One drawer, or a drawer, a bank and a godown'
+        body: |
+          Picture a corner shop that keeps the cash, the credit ledger (the notebook of who owes what), the stock and the spare copy of the ledger in one drawer behind one lock. One stolen key or one fire takes the lot. Now split it: the till stays at the front, the ledger goes to a locked back room that only the till clerk may enter, the stock goes to a godown, and the spare ledger goes home with the owner. Each one now needs its own break-in.
+      - type: points
+        title: 'What a single box shares'
+        style: cross
+        items:
+          - 'One door: a break-in through the web app reaches the database, the photos and the backups.'
+          - 'One CPU and RAM: a heavy report query slows every web request.'
+          - 'One calendar: you cannot patch or scale the database without touching the app, nor the other way round.'
+          - 'One disk: when it fills or dies, the data, the photos and the backups go together.'
+      - type: visual
+        kind: flow
+        caption: 'After the split, every part has its own place, and the attacker''s way in is shut'
+        nodes:
+          - {id: user, label: 'Customers', sub: 'browsers', icon: users, col: 0, row: 1, tip: 'Real shoppers. They only ever talk to the load balancer.'}
+          - {id: attacker, label: 'Attacker', sub: 'from the internet', icon: user, tone: bad, col: 1, row: 0, tip: 'Tries the database directly, as any scanner on the internet would.'}
+          - {id: lb, label: 'Load balancer', sub: 'the public door', icon: lb, col: 1, row: 1, tip: 'The only part with a public address. It spreads requests over the app servers.'}
+          - {id: app, label: 'App tier', sub: '2+ stateless servers', icon: server, tone: accent, col: 2, row: 1, tip: 'The Symfony app, in copies that keep nothing inside themselves, so any one can be replaced or patched while the others work.'}
+          - {id: db, label: 'Database', sub: 'private network only', icon: db, col: 3, row: 0, tip: 'On its own host or a managed service. It has a private address, and only the app tier may connect.'}
+          - {id: files, label: 'Object storage', sub: 'photos and files', icon: storage, col: 3, row: 2, tip: 'Product photos live here, not on any server''s disk. Nothing uploaded here is ever run as code.'}
+          - {id: backup, label: 'Backups', sub: 'in another place', icon: archive, col: 4, row: 0, tip: 'Copies kept away from the machines they protect, so what hurts one does not hurt the other.'}
+        edges:
+          - {from: user, to: lb, label: 'A customer''s request reaches the load balancer'}
+          - {from: lb, to: app, label: 'The load balancer hands it to one of the app servers'}
+          - {from: app, to: db, label: 'The app asks the database over the private network only', tone: good}
+          - {from: app, to: files, label: 'Photos are written to object storage, not to the app''s disk', tone: good}
+          - {from: db, to: backup, label: 'Backups are copied to a separate place, away from the database host', dashed: true, tone: good}
+          - {from: attacker, to: db, label: 'The attacker tries the database directly: refused, it has no public address', tone: bad, dashed: true}
+      - type: quote
+        body: 'Whatever shares a machine, a disk or a password can fail, or be broken into, together.'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Blast radius', meaning: 'How much of the system one failure or one break-in can damage.'}
+          - {term: 'Defence in depth', meaning: 'Several locks in a row, each assuming the one before it has failed.'}
+          - {term: 'App tier', meaning: 'The group of identical app servers that run your Symfony code and keep no state of their own.'}
+      - type: refs
+        items:
+          - {to: 'scaling/load-balancing', label: 'Load balancers and single points of failure'}
+          - {to: 'data/files-blobs', label: 'Moving files to object storage'}
+          - {to: 'scaling/horizontal-vertical', label: 'Making the app stateless'}
+    check:
+      q: 'A heavy monthly report makes the shop''s pages slow. Which shared thing is hurting, and what does the split change?'
+      a: 'CPU and RAM are shared. With the database on its own host, the report no longer steals the web server''s CPU and RAM. Sending reports to a replica protects the database as well.'
+
+  - slug: private-database
+    title: 'Make the database listen on the private network only'
+    kind: howto
+    tldr: 'Bind the database to its private address and let in only the app subnet: bind-address for MySQL, listen_addresses plus one pg_hba.conf line for PostgreSQL.'
+    keywords: ['bind-address', 'listen_addresses', 'pg_hba.conf', 'private network', 'database firewall', 'MySQL', 'PostgreSQL']
+    blocks:
+      - type: text
+        body: |
+          Moving the database to its own host is only half the job. If it still listens on every address, any scanner on the internet can try passwords against it. Tell it to listen on the private address only, and keep the database port closed in the firewall as a second lock. MySQL first: the red line is the lazy fix that "makes it connect from anywhere".
+      - type: code
+        lang: diff
+        file: '/etc/mysql/mysql.conf.d/mysqld.cnf'
+        code: |2
+           [mysqld]
+          -bind-address = 0.0.0.0     # every network card, the public one too
+          +bind-address = 10.0.1.5    # only this host's private address
+           port         = 3306
+        marks:
+          - {line: 2, tip: '0.0.0.0 means "all addresses of this machine". With a public address on the machine, the whole internet can reach port 3306.'}
+          - {line: 3, tip: 'Listens only on the private address. Machines outside the private network cannot even open a connection.'}
+      - type: text
+        body: |
+          PostgreSQL uses two files. `listen_addresses` chooses the addresses it listens on, and `pg_hba.conf` chooses who may log in from where. The single `host` line below lets one user into one database, and only from the app subnet. A managed database offers the same two locks as "not publicly accessible" plus a security group, as in [[infra/cloud-primitives|private subnets and security groups]].
+      - type: code
+        lang: text
+        file: 'postgresql.conf and pg_hba.conf'
+        variant: good
+        code: |
+          # postgresql.conf
+          listen_addresses = 'localhost,10.0.1.5'   # never '*' on a database host
+
+          # pg_hba.conf
+          # TYPE  DATABASE  USER      ADDRESS      METHOD
+          host    shop      shop_app  10.0.1.0/24  scram-sha-256
+        marks:
+          - {line: 2, tip: 'Localhost for admin work on the host itself, plus the one private address. Nothing public.'}
+          - {line: 6, tip: 'Read it as: the user shop_app may reach database shop from 10.0.1.0/24 with a hashed password. Every other address is refused.'}
+      - type: quote
+        body: 'A database gets a private address and a short list of who may call it.'
+    aside:
+      - type: commands
+        title: 'Check it from both sides'
+        items:
+          - {cmd: 'ss -ltnp | grep -E ''3306|5432''', desc: 'on the database host: it must show 10.0.1.5, not 0.0.0.0'}
+          - {cmd: 'nc -vz <public-ip> 3306', desc: 'from your laptop: it must fail'}
+      - type: tips
+        items:
+          - 'Do both: bind to the private address and close the port in the firewall. If one is changed by mistake, the other still holds.'
+          - 'The price: the app and the database now talk over a network, so a wrong firewall rule or subnet breaks the shop. Test the connection after every change.'
+    check:
+      q: 'Why is `bind-address = 0.0.0.0` dangerous even when the database password is strong?'
+      a: 'It makes the database reachable from every network the machine is on, the internet included. Bots can then try passwords and known bugs. Listen on the private address and allow only the app subnet.'
+
+  - slug: least-privilege-user
+    title: 'Give the app a database user that can do very little'
+    kind: howto
+    tldr: 'The running app needs SELECT, INSERT, UPDATE and DELETE on its tables, and nothing else. Give it exactly that, keep a separate user for migrations, and point DATABASE_URL at the private host.'
+    keywords: ['least privilege', 'GRANT', 'DATABASE_URL', 'migration user', 'doctrine migrations', 'database user', 'defence in depth']
+    blocks:
+      - type: text
+        body: |
+          Today the app logs in as `root`, so a web shell inherits root and can `DROP` every table. Create one user for the running app with only the rights the code uses. A second user, used only during deploys, may change the schema.
+      - type: code
+        lang: sql
+        file: 'run once as an admin on the database host'
+        variant: good
+        code: |
+          -- the running app: data only
+          CREATE USER 'shop_app'@'10.0.1.%' IDENTIFIED BY 'CHANGE_ME_app';
+          GRANT SELECT, INSERT, UPDATE, DELETE ON shop.* TO 'shop_app'@'10.0.1.%';
+
+          -- the deploy step: may also change the schema
+          CREATE USER 'shop_migrate'@'10.0.1.%' IDENTIFIED BY 'CHANGE_ME_migrate';
+          GRANT ALL PRIVILEGES ON shop.* TO 'shop_migrate'@'10.0.1.%';
+        marks:
+          - {line: 3, tip: 'Exactly what the code does at runtime. No DROP, ALTER or CREATE, no other database, and no global rights such as FILE.'}
+          - {line: 7, tip: 'Only the deploy pipeline holds this user. A script that gets into the running app never sees its password.'}
+      - type: code
+        lang: env
+        file: '.env.local on the app servers (never committed)'
+        variant: good
+        code: |
+          # the running app: the limited user, on the private host
+          DATABASE_URL="mysql://shop_app:CHANGE_ME_app@10.0.1.5:3306/shop?serverVersion=8.0"
+        marks:
+          - {line: 2, tip: 'The host is the database''s private address, and the user is shop_app. The migrate user''s URL stays in the deploy pipeline and is never put on the app servers.'}
+      - type: text
+        body: |
+          The deploy step runs `DATABASE_URL="$MIGRATE_DATABASE_URL" php bin/console doctrine:migrations:migrate --no-interaction`. Be honest about the limit: a script inside the app can still read and change rows, because the app can. Least privilege shrinks the damage, it does not remove it.
+      - type: quote
+        body: 'Each layer assumes the one before it has already failed.'
+    aside:
+      - type: tips
+        items:
+          - 'PostgreSQL: `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO shop_app`, plus `USAGE` on the sequences so inserts get their ids.'
+          - 'Doctrine''s Messenger transport can create its own table at runtime. Set `auto_setup=0` and run `messenger:setup-transports` in the deploy step.'
+          - 'The price: two users and two passwords to store and rotate, and a migration run with the wrong URL fails. That failure is the point.'
+      - type: commands
+        items:
+          - {cmd: 'SHOW GRANTS FOR ''shop_app''@''10.0.1.%'';', desc: 'see exactly what the app user may do'}
+      - type: terms
+        items:
+          - {term: 'Least privilege', meaning: 'Every user and program gets only the rights it needs for its job, and no more.'}
+    check:
+      q: 'A web shell now runs inside the app, and the app uses `shop_app`. Name one thing it can still do and one thing it no longer can.'
+      a: 'It can still read and change rows, as the app does. It can no longer `DROP` or `ALTER` tables, create new users, or touch other databases.'
+
+  - slug: uploads-and-backups
+    title: 'Uploads and backups: the cheap basics, even on one box'
+    kind: pitfall
+    tldr: 'Before you split anything: never let the web server run files from the uploads folder, validate and rename every upload, and push backups to a place the server cannot delete from.'
+    keywords: ['file upload security', 'web shell', 'nginx uploads', 'deny php', 'off-site backup', 'write-only backup key', 'client_max_body_size']
+    blocks:
+      - type: text
+        body: |
+          These steps cost almost nothing and cut the exact chain from the story. In the diff, the red block is the generic PHP handler that runs any `.php` file, `shell.php` in `uploads/` included. The green blocks pin `/uploads/` so nothing in it is ever run, and hand only `index.php` to PHP, as Symfony's own nginx recipe does.
+      - type: code
+        lang: diff
+        file: '/etc/nginx/sites-available/shop'
+        code: |2
+           server {
+               root /var/www/shop/public;
+               location / { try_files $uri /index.php$is_args$args; }
+          -    location ~ \.php$ {
+          -        fastcgi_pass unix:/run/php/php8.3-fpm.sock;
+          -        include fastcgi_params;
+          -        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+          -    }
+          +    location ^~ /uploads/ {
+          +        location ~ \.php$ { deny all; }
+          +    }
+          +    location ~ ^/index\.php(/|$) {
+          +        fastcgi_pass unix:/run/php/php8.3-fpm.sock;
+          +        include fastcgi_params;
+          +        fastcgi_param SCRIPT_FILENAME $realpath_root$fastcgi_script_name;
+          +        internal;
+          +    }
+          +    location ~ \.php$ { return 404; }
+           }
+        marks:
+          - {line: 4, tip: 'Any URL ending in .php is passed to PHP-FPM, so /uploads/shell.php runs as code. This is how the attacker got in.'}
+          - {line: 10, tip: '^~ makes this prefix win over the regex rules, and inside it every .php request is refused.'}
+          - {line: 12, tip: 'Only the front controller, index.php, may be executed. Every other .php file gets a 404.'}
+      - type: points
+        title: 'And on every upload'
+        style: check
+        items:
+          - 'Store files outside `public/` (for example `var/uploads/`) and serve them through a controller, or use object storage.'
+          - 'Check the real type and size on the server (`#[Assert\Image]`, `client_max_body_size`), not in the browser.'
+          - 'Ignore the visitor''s file name: save as a random name such as `Uuid::v7()` plus an extension you chose.'
+          - 'Keep uploads on their own volume or under a quota, so a flood fills that, not the disk MySQL writes to.'
+      - type: text
+        body: |
+          Backups need the same care. A dump on the same disk dies with the disk and with the intruder. Copy it to another place, and use a key that can add files but not delete them. More in [[recovery/backups-restore|backups and the 3-2-1 rule]].
+      - type: code
+        lang: bash
+        file: '/usr/local/bin/backup-shop.sh'
+        variant: good
+        code: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          f="/var/backups/shop-$(date +%F).sql.gz"
+          mysqldump --defaults-extra-file=/root/.backup.cnf --single-transaction shop | gzip > "$f"
+
+          # 'backup-writer' may only add objects (s3:PutObject), it cannot delete old copies
+          aws s3 cp "$f" "s3://shop-backups-offsite/db/" --profile backup-writer
+
+          rm -f "$f"    # nothing is left on this disk for an intruder to find
+        marks:
+          - {line: 8, tip: 'The copy goes to a bucket outside this server. Switch on bucket versioning or Object Lock too, so even an overwritten file can be recovered.'}
+          - {line: 10, tip: 'The local copy is removed, so the box never holds the only or the latest backup.'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'Validation can be fooled. Treat it as a second lock, and treat object storage as the real fix, because nothing there can ever run.'
+          - 'A backup key that can also delete lets an intruder wipe the remote copies as well.'
+      - type: refs
+        items:
+          - {to: 'data/files-blobs', label: 'Files in object storage'}
+          - {to: 'recovery/backups-restore', label: 'Backups and restore drills'}
+    check:
+      q: 'Why is a nightly dump kept in a folder on the same server not a real backup?'
+      a: 'The same break-in, disk failure or mistaken `rm -rf` that hits the database hits the dump too. Copy it to another place with a key that cannot delete.'
+
+  - slug: price-and-when-one-box
+    title: 'What the split costs, and when one box is fine'
+    kind: compare
+    tldr: 'The split adds a network hop to every query, more parts to run and a bigger bill. A single box is still fine for a prototype or a tiny internal tool, if the cheap basics are in place.'
+    keywords: ['network latency', 'N+1', 'cost of splitting', 'when to split', 'single server fine', 'trade-off', 'operations']
+    blocks:
+      - type: text
+        body: |
+          Nothing here is free. Every query now crosses a network, typically about 1 ms inside one data centre, against well under 0.1 ms to a database on the same box. One query will not notice. A page that runs 200 queries, the N+1 problem where a list triggers one extra query per row, now waits 200 ms longer. The fix is to load those rows in one query with a JOIN.
+      - type: visual
+        kind: bars
+        caption: 'Extra waiting added by the network, at about 1 ms per query'
+        items:
+          - {label: '1 query', value: 1, display: '1ms', tip: 'A single lookup. You will never notice the hop.'}
+          - {label: '20 queries', value: 20, display: '20ms', tip: 'A normal page with a few lists. Still hardly visible.'}
+          - {label: '200 queries (N+1)', value: 200, display: '200ms', tone: bad, tip: 'One extra query per row of a list. On one box this hid in the noise, across a network it is a fifth of a second.'}
+          - {label: '200 rows, one JOIN', value: 1, display: '1ms', tone: good, tip: 'The same page after loading the rows in a single query. The hop is paid once.'}
+      - type: visual
+        kind: table
+        caption: 'One box against the split, and what each costs'
+        headers: ['', 'One box', 'Split']
+        rows:
+          - cells: ['A break-in through the web app', 'Reaches everything', 'Stops at the app tier']
+            tip: 'The attacker must break into each part separately, and each part has its own credentials.'
+          - cells: ['A heavy report query', 'Slows every web page', 'Web servers stay free']
+            tip: 'The database still feels the report. Run reports on a replica to protect it too.'
+          - cells: ['Patching and scaling', 'All together', 'Each part on its own']
+            tip: 'You can patch the database at night and add app servers at noon, without touching the other.'
+          - cells: ['A disk fails or fills', 'Data, photos, backups', 'Only that one part']
+            tip: 'Photos in object storage and backups elsewhere do not share the database disk.'
+          - cells: ['Time per query', 'Well under 0.1ms', 'About 1ms']
+            tip: 'The price in latency. Harmless for one query, visible for hundreds.'
+          - cells: ['Parts to run and watch', 'One server', 'More parts, a network']
+            tip: 'More to monitor and patch, and a new failure: the network between the tiers can drop or slow down.'
+          - cells: ['Monthly bill', 'One small server', 'Several, and it adds up']
+            tip: 'A load balancer, extra app servers and a managed database each add their own line to the bill.'
+      - type: points
+        title: 'One box is fine for a prototype, with the basics kept'
+        style: check
+        items:
+          - 'The database listens on localhost or a private address, never on a public one.'
+          - 'Uploads cannot run scripts, and the app has a least-privilege database user.'
+          - 'Backups are pushed off the box with a key that cannot delete.'
+          - 'The firewall opens only 80, 443 and SSH.'
+    aside:
+      - type: when
+        use:
+          - 'The shop takes real orders and a lost day of data would hurt'
+          - 'Reports or imports slow down the web pages'
+          - 'The app and the database need different patch or scaling schedules'
+        avoid:
+          - 'A prototype or a tiny internal tool: one box plus the basics is fine'
+          - 'You have not measured the bottleneck yet: find it first'
+      - type: refs
+        items:
+          - {to: 'scaling/load-latency', label: 'Finding the real bottleneck'}
+          - {to: 'scaling/horizontal-vertical', label: 'Vertical vs horizontal scaling'}
+    check:
+      q: 'After moving the database to its own host, a list page with 200 queries feels slower. What happened, and what is the best fix?'
+      a: 'Each query now pays about 1 ms of network time, so 200 queries add about 200 ms. Load the rows in one query with a JOIN instead of one query per row.'
+
+flashcards:
+  - q: 'What is "blast radius" in system design?'
+    a: 'How much of the system a single failure or break-in can damage. Splitting parts onto separate machines, networks and credentials makes it smaller.'
+    more: |
+      On one box with the app, database, photos and backups together, one hole in the upload form reaches everything. After the split, an attacker who gets into the app still has to break into the database, the storage and the backups separately.
+    ref: blast-radius-and-split
+  - q: 'Why is a backup stored on the same disk as the database not a real backup?'
+    a: 'The same disk failure, break-in or mistaken delete that hits the database hits the backup. A backup must live somewhere else.'
+    more: |
+      One disk is one failure. Push the backup to another place, with a key that can add files but not delete them, and switch on versioning or Object Lock. See [[recovery/backups-restore|backups and the 3-2-1 rule]].
+    ref: uploads-and-backups
+  - q: 'Name three things a single server shares between the app, the database and the files.'
+    a: 'The door (one break-in reaches all), the CPU and RAM (one heavy job slows all) and the disk (one full or dead disk takes all).'
+    more: |
+      A fourth is the calendar: you cannot patch or scale one part without touching the others. The split gives each part its own door, its own resources and its own failure.
+    ref: blast-radius-and-split
+  - q: 'How do you keep a MySQL or PostgreSQL server off the public internet in its own config?'
+    a: 'MySQL: `bind-address` set to the private IP. PostgreSQL: `listen_addresses` set to the private IP, and a `pg_hba.conf` line limited to the app subnet.'
+    more: |
+      Keep the database port closed in the firewall or security group too. Check from outside with `nc -vz <public-ip> 3306`: it must fail. On a managed database, choose "not publicly accessible" and allow only the app's security group.
+    ref: private-database
+  - q: 'What rights should the running app''s database user have?'
+    a: 'Only what the code does at runtime: SELECT, INSERT, UPDATE and DELETE on its own database. No DROP, ALTER or CREATE, and no global rights.'
+    more: |
+      A web shell that gets into the app inherits the app's database rights. With `shop_app` it can still read and change rows, but it cannot drop or alter tables. Least privilege limits the damage, it does not remove it.
+    ref: least-privilege-user
+  - q: 'Why run migrations with a different database user than the app?'
+    a: 'Migrations need to change the schema, the app does not. Keeping the powerful user in the deploy pipeline stops a script in the app from using it.'
+    more: |
+      The deploy step runs `DATABASE_URL="$MIGRATE_DATABASE_URL" php bin/console doctrine:migrations:migrate --no-interaction`. The price is a second user and password to keep and rotate.
+    ref: least-privilege-user
+  - q: 'What is "defence in depth"?'
+    a: 'Several independent locks in a row, each designed on the assumption that the one before it has already failed.'
+    more: |
+      Safe uploads stop the shell. A private database stops the outside world. Least privilege limits what a shell that got in can do. Off-box backups let you recover if everything else fails. Any single lock will fail one day, so the rest must hold.
+    ref: least-privilege-user
+  - q: 'How do you stop an uploaded `shell.php` from running in nginx?'
+    a: 'Pin `/uploads/` with `location ^~` and deny `.php` inside it, pass only `index.php` to PHP-FPM, or store uploads outside `public/`.'
+    more: |
+      Also check the real type and size on the server, and save under a random name such as `Uuid::v7()`, not the visitor's file name. The safest place for uploads is object storage, where nothing can ever run as code.
+    ref: uploads-and-backups
+  - q: 'What does splitting the database onto its own host cost per query?'
+    a: 'A network hop, typically about 1 ms inside one data centre, against well under 0.1 ms on the same box. 200 queries add about 200 ms.'
+    more: |
+      One query is harmless, but an N+1 page multiplies the hop. Load the rows in one JOIN. The split also adds more parts to run and watch, a new failure (the network between tiers) and a bigger monthly bill. When one box is still fine, see [[scaling/horizontal-vertical|vertical vs horizontal scaling]].
+    ref: price-and-when-one-box
+
+quiz:
+  - q: 'In Nadia''s story, why were the backups deleted along with the database being stolen?'
+    hint: 'Ask where the backups lived, and who could write there.'
+    options:
+      - text: 'They sat on the same disk, in a folder the app''s user could write to'
+        correct: true
+        why: 'The script ran as the app, so it could delete anything the app could. A backup that shares the machine shares the fate of the machine.'
+      - text: 'MySQL deletes the old backups whenever it is dumped'
+        correct: false
+        why: 'A dump never deletes anything. Someone, or some script, had to delete the files.'
+      - text: 'The backups were not compressed'
+        correct: false
+        why: 'Compression changes the size, not who can reach the files.'
+      - text: 'nginx removes files that are older than a week'
+        correct: false
+        why: 'nginx serves files. It does not clean up folders.'
+    ref: one-box-one-break-in
+  - q: 'Every night at 9 a.m. a heavy sales report runs, and the shop''s pages crawl until it ends. Which problem of the single box is this?'
+    hint: 'No break-in happened. Two jobs are competing for something.'
+    options:
+      - text: 'Resource contention: the report and the web requests share the same CPU and RAM'
+        correct: true
+        why: 'Both run on one machine, so whatever the report takes, the web requests lose. On a separate database host, the web servers keep their CPU.'
+      - text: 'A large blast radius, because an attacker got in'
+        correct: false
+        why: 'Blast radius is about what one break-in reaches. Nobody broke in here.'
+      - text: 'The N+1 query problem'
+        correct: false
+        why: 'N+1 is many small queries from one page. Here one big job competes with other work.'
+      - text: 'Replication lag'
+        correct: false
+        why: 'There is no replica in this setup, so there is nothing to lag.'
+    ref: blast-radius-and-split
+  - q: 'What is wrong with these settings on a database host that has a public IP address?'
+    lang: text
+    code: |
+      # postgresql.conf
+      listen_addresses = '*'
+
+      # pg_hba.conf
+      host    all       all       0.0.0.0/0    scram-sha-256
+    hint: 'Read who may connect, and from where.'
+    options:
+      - text: 'It listens on every address and accepts logins from anywhere, so the whole internet can try to connect'
+        correct: true
+        why: 'Narrow `listen_addresses` to the private address and limit `pg_hba.conf` to one user, one database and the app subnet.'
+      - text: 'Nothing, scram-sha-256 is a strong method'
+        correct: false
+        why: 'A strong password check is one lock. Anyone on the internet can still knock, and bots try passwords and known bugs all day.'
+      - text: 'The password method should be `trust`'
+        correct: false
+        why: '`trust` lets anyone in without a password. It makes it worse.'
+      - text: 'The database should listen on port 80'
+        correct: false
+        why: 'The port number is not the problem. The addresses and the allowed clients are.'
+    ref: private-database
+  - q: 'The app uses `shop_app` (SELECT, INSERT, UPDATE, DELETE). An attacker gets a web shell on the app server. What can the shell still do?'
+    hint: 'Think about what the app itself can do.'
+    options:
+      - text: 'Read the tables the app can read'
+        correct: true
+        why: 'The shell inherits the app''s rights, and the app reads these tables. Least privilege shrinks damage, it does not remove it.'
+      - text: 'Delete or change rows'
+        correct: true
+        why: 'The app has DELETE and UPDATE, so the shell has them too. This is why the upload hole must be closed as well.'
+      - text: 'Run DROP TABLE on the orders table'
+        correct: false
+        why: 'shop_app was never granted DROP, so the database refuses the statement.'
+      - text: 'ALTER the table structure or read other databases'
+        correct: false
+        why: 'The grants cover only SELECT, INSERT, UPDATE and DELETE on `shop.*`. Schema changes and other databases are out of reach.'
+    ref: least-privilege-user
+  - q: 'Which change really stops an uploaded `shell.php` from running as code?'
+    hint: 'The fix must change what the server does with the file.'
+    options:
+      - text: 'Refuse to execute `.php` inside `/uploads/` (or store uploads outside `public/`, or in object storage)'
+        correct: true
+        why: 'Even a file that gets through validation is only data and never runs. This closes the exact path the attacker used.'
+      - text: 'Rename the uploads folder to something secret'
+        correct: false
+        why: 'Hiding the name is not a lock. The attacker uploads the file and gets its URL back, or finds it in the page.'
+      - text: 'Check the file extension in JavaScript before the upload'
+        correct: false
+        why: 'The attacker does not use your form. Browser checks are for friendly users only.'
+      - text: 'Limit uploads to 2 MB'
+        correct: false
+        why: 'A web shell can be a few hundred bytes. Size limits help against floods, not against scripts.'
+    ref: uploads-and-backups
+  - q: 'Which of these make a nightly backup safe from the story''s attacker?'
+    hint: 'The attacker has the app''s files and keys on the box.'
+    options:
+      - text: 'Copy it to an off-box bucket with a key that only has s3:PutObject'
+        correct: true
+        why: 'The backup is on another machine, and the key on the box cannot delete old copies, so the attacker cannot wipe them.'
+      - text: 'Turn on versioning or Object Lock on that bucket'
+        correct: true
+        why: 'Even an overwritten or deleted object can be recovered, or cannot be removed at all, so the history survives.'
+      - text: 'Keep a second copy in another folder on the same disk'
+        correct: false
+        why: 'Same disk, same user, same intruder. Two copies on one disk are still one failure.'
+      - text: 'Zip the dump with a password stored in `.env` on the same box'
+        correct: false
+        why: 'The attacker reads `.env` and can still delete the file. The password protects nothing that matters.'
+    ref: uploads-and-backups
+  - q: 'After the database moved to its own host (about 1 ms per query), a list page that runs 200 queries feels slower. What is the best fix?'
+    hint: 'Where did the extra time come from?'
+    options:
+      - text: 'Load the rows in one query with a JOIN, so the network hop is paid once'
+        correct: true
+        why: 'Hop times 200 queries is about 200 ms. One query pays the hop once.'
+      - text: 'Move the database back onto the app server'
+        correct: false
+        why: 'This undoes the safety the split bought. The page, not the architecture, is wrong.'
+      - text: 'Add more app servers'
+        correct: false
+        why: 'More servers handle more requests at once, but each request still waits for its 200 hops.'
+      - text: 'Nothing, the network is free'
+        correct: false
+        why: 'The network adds latency to every query. That is the honest price of the split.'
+    ref: price-and-when-one-box

@@ -1,0 +1,506 @@
+slides:
+  - slug: one-box-one-break-in
+    title: 'একটা আপলোড ফর্ম, আর পুরো দোকান শেষ'
+    kind: story
+    tldr: 'অ্যাপ, ডেটাবেস, ছবি আর ব্যাকআপ একই সার্ভারে, একই ডিস্কে থাকলে একটা ফুটো সবকিছুতে পৌঁছে যায়, আর একটা বেপরোয়া কাজ সবার নিচের ডিস্কই ভরে ফেলে।'
+    keywords: ['single server', 'এক সার্ভারে সব', 'file upload attack', 'web shell', 'disk full', 'একই ডিস্কে ব্যাকআপ', 'blast radius']
+    blocks:
+      - type: text
+        body: |
+          নাদিয়ার দোকান "সবুজ হাট" চলে একটা VPS-এ, ডিস্ক ১০০ GB। সেই এক ডিস্কেই Symfony অ্যাপ, MySQL (১২ GB), ৬০ GB পণ্যের ছবি আর রোজ রাতের ৩ GB-র সাতটা ব্যাকআপ। সিস্টেম নেয় ৪ GB, ফাঁকা থাকে ৩ GB। ছবির ফর্ম ফাইলটা ব্যবহারকারীর দেওয়া নামেই `public/uploads/`-এ রাখে, আর nginx সেখানকার যেকোনো `.php` ফাইল চালিয়ে দেয়।
+      - type: visual
+        kind: flow
+        caption: 'একটা আপলোড করা ফাইল, আর বাক্সের সবকিছু হাতের মুঠোয়'
+        nodes:
+          - {id: attacker, label: 'আক্রমণকারী', sub: 'যেকোনো দর্শক', icon: user, tone: bad, col: 0, row: 1, tip: 'কোনো পাসওয়ার্ড লাগে না। ক্রেতারা ছবি পাঠায় বলে আপলোড ফর্ম সবার জন্য খোলা।'}
+          - {id: upload, label: 'আপলোড ফর্ম', sub: 'public/uploads/', icon: file, tone: warn, col: 1.5, row: 1, tip: 'ফোল্ডারটা nginx সরাসরি দেখায়, আর .php-তে শেষ হওয়া যেকোনো ফাইল চালানো হয়। এটাই ফুটো।'}
+          - {id: env, label: '.env ফাইল', sub: 'ডেটাবেসের পাসওয়ার্ড', icon: key, col: 3, row: 0, tip: 'অ্যাপকে এই ফাইল পড়তে হয়, তাই অ্যাপের হয়ে চলা স্ক্রিপ্টও পড়তে পারে।'}
+          - {id: db, label: 'MySQL', sub: 'সব ক্রেতা, ১২ GB', icon: db, col: 3, row: 1, tip: 'একই মেশিনে শোনে, তাই .env-এর পাসওয়ার্ড সঙ্গে সঙ্গে কাজ করে। মাঝে আর কোনো বাধা নেই।'}
+          - {id: backups, label: 'ব্যাকআপ', sub: 'একই ডিস্কে, ২১ GB', icon: archive, col: 3, row: 2, tip: 'অ্যাপের ইউজার যে ফোল্ডারে লিখতে পারে সেখানে ৩ GB-র সাতটা ডাম্প। অ্যাপ যার হাতে, সে এগুলো মুছতে পারে।'}
+        edges:
+          - {from: attacker, to: upload, label: 'আক্রমণকারী shell.php-কে "ছবি" বলে আপলোড করে, তারপর তার URL খোলে', tone: bad}
+          - {from: upload, to: env, label: 'স্ক্রিপ্ট অ্যাপের ইউজার হয়ে চলে আর .env থেকে ডেটাবেসের পাসওয়ার্ড পড়ে', tone: bad}
+          - {from: upload, to: db, label: 'সেই পাসওয়ার্ডে সে প্রত্যেক ক্রেতা আর অর্ডারের ডাম্প নেয়', tone: bad}
+          - {from: upload, to: backups, label: 'ব্যাকআপও একই ডিস্কে, তাই সাতটাই মুছে ফেলে', tone: bad}
+      - type: text
+        body: |
+          আরেক রাতে কিছু চুরি যায় না, তবুও সর্বনাশ। একটা bot ৩ GB ছবি পাঠিয়ে ফাঁকা জায়গা শেষ করে দেয়, MySQL আর লিখতে পারে না, প্রতিটা অর্ডার ব্যর্থ। একই বাক্স, একই ডিস্ক, একই গল্প: একটা জিনিস বিগড়ালে সবকিছু সঙ্গে যায়।
+    aside:
+      - type: terms
+        items:
+          - {term: 'Web root', meaning: 'যে ফোল্ডার ওয়েব সার্ভার সরাসরি দর্শককে দেয়। এখানে সেটা `public/`।'}
+          - {term: 'Web shell', meaning: 'আক্রমণকারীর আপলোড করা ছোট স্ক্রিপ্ট, যা দিয়ে ব্রাউজার থেকে আপনার সার্ভারে কমান্ড চালানো যায়।'}
+          - {term: 'VPS', meaning: 'ভাড়া করা একটা ভার্চুয়াল সার্ভার, সাধারণত একটাই ডিস্কওয়ালা।'}
+      - type: problem
+        body: 'বাক্সের জিনিসগুলোর কাজ আলাদা, কিন্তু দরজা (ওয়েব সার্ভার), পাসওয়ার্ডের ফাইল, CPU আর ডিস্ক এক। একটা আঘাত পেলে বাকিদের আড়াল করার দেয়াল নেই।'
+    check:
+      q: 'গল্পে ফুটো ছিল আপলোড ফর্মে। বাক্সের আর কোন দুটো ব্যাপার সেই এক ফুটোকে তিনটে ক্ষতিতে বদলে দিল?'
+      a: 'ডেটাবেসের পাসওয়ার্ড অ্যাপের পড়ার মতো `.env`-এ ছিল, আর ব্যাকআপ ছিল একই ডিস্কে, অ্যাপ যেখানে লিখতে পারে। সবই একটা মেশিন থেকে নাগালে।'
+
+  - slug: blast-radius-and-split
+    title: 'Blast radius: যা একসাথে ভাঙা চলবে না, তা আলাদা করুন'
+    kind: concept
+    tldr: 'Blast radius মানে একটা break-in বা একটা বেপরোয়া কাজ কতদূর পৌঁছায়। বাক্স ভাগ করুন, যাতে প্রতিটা অংশের নিজের মেশিন, নিজের দরজা আর নিজের ব্যর্থতা থাকে।'
+    keywords: ['blast radius', 'defence in depth', 'resource contention', 'app tier', 'private network', 'managed database', 'ব্যাকআপ আলাদা']
+    blocks:
+      - type: metaphor
+        icon: shop
+        title: 'এক ড্রয়ার, নাকি ড্রয়ার, ব্যাংক আর গুদাম'
+        body: |
+          মুদি দোকানি নগদ টাকা, বাকির খাতা, মালের হিসাব আর খাতার নকল সব রেখেছেন এক ড্রয়ারে, এক তালায়। একটা চাবি চুরি বা একটা আগুন, সব শেষ। এবার ভাগ করুন: ক্যাশ কাউন্টারে সামনে, বাকির খাতা পেছনের তালাবন্ধ ঘরে যেখানে শুধু ক্যাশিয়ার ঢোকে, মাল গুদামে, আর খাতার নকল মালিকের বাড়িতে। এখন প্রতিটার জন্য আলাদা করে সিঁধ কাটতে হবে।
+      - type: points
+        title: 'এক বাক্সে যা ভাগাভাগি হয়'
+        style: cross
+        items:
+          - 'এক দরজা: ওয়েব অ্যাপের ফুটো দিয়ে ঢুকলে ডেটাবেস, ছবি আর ব্যাকআপ সবই নাগালে।'
+          - 'এক CPU আর RAM: ভারী রিপোর্ট query সব ওয়েব request ধীর করে।'
+          - 'এক ক্যালেন্ডার: অ্যাপ না ছুঁয়ে ডেটাবেস patch বা scale করা যায় না, উল্টোটাও না।'
+          - 'এক ডিস্ক: ভরলে বা মরলে ডেটা, ছবি আর ব্যাকআপ একসাথে যায়।'
+      - type: visual
+        kind: flow
+        caption: 'ভাগ করার পর প্রতিটা অংশের নিজের জায়গা, আর আক্রমণকারীর পথ বন্ধ'
+        nodes:
+          - {id: user, label: 'ক্রেতারা', sub: 'ব্রাউজার', icon: users, col: 0, row: 1, tip: 'আসল ক্রেতা। তারা শুধু load balancer-এর সাথেই কথা বলে।'}
+          - {id: attacker, label: 'আক্রমণকারী', sub: 'ইন্টারনেট থেকে', icon: user, tone: bad, col: 1, row: 0, tip: 'ইন্টারনেটের যেকোনো স্ক্যানারের মতো সরাসরি ডেটাবেসে ঢোকার চেষ্টা করে।'}
+          - {id: lb, label: 'Load balancer', sub: 'প্রকাশ্য দরজা', icon: lb, col: 1, row: 1, tip: 'একমাত্র যার পাবলিক ঠিকানা আছে। request ভাগ করে দেয় app সার্ভারদের মধ্যে।'}
+          - {id: app, label: 'App tier', sub: '২+ stateless সার্ভার', icon: server, tone: accent, col: 2, row: 1, tip: 'Symfony অ্যাপ, এমন কপিতে যারা নিজের ভেতরে কিছু জমায় না। তাই একটাকে বদলানো বা patch করার সময় বাকিরা চলে।'}
+          - {id: db, label: 'ডেটাবেস', sub: 'শুধু private network', icon: db, col: 3, row: 0, tip: 'নিজের হোস্টে বা managed সার্ভিসে। ঠিকানা private, আর শুধু app tier সংযোগ করতে পারে।'}
+          - {id: files, label: 'Object storage', sub: 'ছবি ও ফাইল', icon: storage, col: 3, row: 2, tip: 'পণ্যের ছবি এখানে থাকে, কোনো সার্ভারের ডিস্কে নয়। এখানে আপলোড করা কিছু কখনো কোড হিসেবে চলে না।'}
+          - {id: backup, label: 'ব্যাকআপ', sub: 'অন্য জায়গায়', icon: archive, col: 4, row: 0, tip: 'যে মেশিনকে বাঁচায় তার থেকে দূরে রাখা কপি, তাই একটার বিপদ আরেকটাকে ছোঁয় না।'}
+        edges:
+          - {from: user, to: lb, label: 'ক্রেতার request আসে load balancer-এ'}
+          - {from: lb, to: app, label: 'Load balancer সেটা একটা app সার্ভারে পাঠায়'}
+          - {from: app, to: db, label: 'অ্যাপ ডেটাবেসকে জিজ্ঞেস করে শুধু private network দিয়ে', tone: good}
+          - {from: app, to: files, label: 'ছবি লেখা হয় object storage-এ, অ্যাপের ডিস্কে নয়', tone: good}
+          - {from: db, to: backup, label: 'ব্যাকআপ কপি হয় ডেটাবেস হোস্টের থেকে আলাদা জায়গায়', dashed: true, tone: good}
+          - {from: attacker, to: db, label: 'আক্রমণকারী সরাসরি ডেটাবেসে ঢুকতে চায়: ফিরিয়ে দেওয়া হয়, পাবলিক ঠিকানাই নেই', tone: bad, dashed: true}
+      - type: quote
+        body: 'যা একই মেশিন, একই ডিস্ক বা একই পাসওয়ার্ড ভাগ করে, তা একসাথে ভাঙে, একসাথেই হ্যাক হয়।'
+    aside:
+      - type: terms
+        items:
+          - {term: 'Blast radius', meaning: 'একটা ব্যর্থতা বা একটা break-in সিস্টেমের কতটা ক্ষতি করতে পারে।'}
+          - {term: 'Defence in depth', meaning: 'পরপর কয়েকটা তালা, যার প্রতিটা ধরে নেয় আগেরটা ইতিমধ্যে ভেঙেছে।'}
+          - {term: 'App tier', meaning: 'একই রকম app সার্ভারের দল, যারা আপনার Symfony কোড চালায় আর নিজের ভেতরে কোনো state রাখে না।'}
+      - type: refs
+        items:
+          - {to: 'scaling/load-balancing', label: 'Load balancer আর single point of failure'}
+          - {to: 'data/files-blobs', label: 'ফাইল object storage-এ সরানো'}
+          - {to: 'scaling/horizontal-vertical', label: 'অ্যাপকে stateless করা'}
+    check:
+      q: 'প্রতি মাসের ভারী রিপোর্ট চললে দোকানের পাতা ধীর হয়। কোন ভাগাভাগিটা ক্ষতি করছে, আর ভাগ করলে কী বদলায়?'
+      a: 'CPU আর RAM ভাগাভাগি হচ্ছে। ডেটাবেস নিজের হোস্টে গেলে রিপোর্ট ওয়েব সার্ভারের CPU-RAM কাড়ে না। রিপোর্ট replica-তে পাঠালে ডেটাবেসও রেহাই পায়।'
+
+  - slug: private-database
+    title: 'ডেটাবেস শুনবে শুধু private network-এ'
+    kind: howto
+    tldr: 'ডেটাবেসকে তার private ঠিকানায় বেঁধে দিন, আর ঢুকতে দিন শুধু app subnet-কে: MySQL-এ bind-address, PostgreSQL-এ listen_addresses আর pg_hba.conf-এর একটা লাইন।'
+    keywords: ['bind-address', 'listen_addresses', 'pg_hba.conf', 'private network', 'ডেটাবেস firewall', 'MySQL', 'PostgreSQL']
+    blocks:
+      - type: text
+        body: |
+          ডেটাবেস নিজের হোস্টে সরানো অর্ধেক কাজ। সে যদি এখনো সব ঠিকানায় শোনে, ইন্টারনেটের যেকোনো স্ক্যানার তাতে পাসওয়ার্ড ঠুকতে পারে। তাকে শুধু private ঠিকানায় শুনতে বলুন, আর দ্বিতীয় তালা হিসেবে firewall-এ ডেটাবেসের port বন্ধ রাখুন। আগে MySQL: লাল লাইনটা সেই কুঁড়ে সমাধান, যা "যেখান থেকে খুশি connect করায়"।
+      - type: code
+        lang: diff
+        file: '/etc/mysql/mysql.conf.d/mysqld.cnf'
+        code: |2
+           [mysqld]
+          -bind-address = 0.0.0.0     # সব নেটওয়ার্ক কার্ড, পাবলিকটাও
+          +bind-address = 10.0.1.5    # শুধু এই হোস্টের private ঠিকানা
+           port         = 3306
+        marks:
+          - {line: 2, tip: '0.0.0.0 মানে "এই মেশিনের সব ঠিকানা"। মেশিনে পাবলিক ঠিকানা থাকলে পুরো ইন্টারনেট ৩৩০৬ port-এ পৌঁছে যায়।'}
+          - {line: 3, tip: 'শোনে শুধু private ঠিকানায়। private network-এর বাইরের মেশিন connection খুলতেই পারে না।'}
+      - type: text
+        body: |
+          PostgreSQL-এ দুটো ফাইল। `listen_addresses` ঠিক করে কোন ঠিকানায় শুনবে, আর `pg_hba.conf` ঠিক করে কে কোথা থেকে ঢুকতে পারবে। নিচের একটা `host` লাইন একজন ইউজারকে একটা ডেটাবেসে ঢুকতে দেয়, তাও শুধু app subnet থেকে। Managed ডেটাবেসে একই দুই তালা হলো "not publicly accessible" আর security group, যেমন [[infra/cloud-primitives|private subnet ও security group]]-এ আছে।
+      - type: code
+        lang: text
+        file: 'postgresql.conf ও pg_hba.conf'
+        variant: good
+        code: |
+          # postgresql.conf
+          listen_addresses = 'localhost,10.0.1.5'   # ডেটাবেস হোস্টে কখনো '*' নয়
+
+          # pg_hba.conf
+          # TYPE  DATABASE  USER      ADDRESS      METHOD
+          host    shop      shop_app  10.0.1.0/24  scram-sha-256
+        marks:
+          - {line: 2, tip: 'হোস্টে বসে প্রশাসনের কাজের জন্য localhost, আর একটা private ঠিকানা। পাবলিক কিছু নেই।'}
+          - {line: 6, tip: 'পড়ুন এভাবে: ইউজার shop_app ১০.০.১.০/২৪ থেকে shop ডেটাবেসে hash-করা পাসওয়ার্ডে ঢুকতে পারবে। বাকি সব ঠিকানা ফেরত।'}
+      - type: quote
+        body: 'ডেটাবেসের ঠিকানা private, আর কে ডাকতে পারবে তার তালিকা ছোট।'
+    aside:
+      - type: commands
+        title: 'দুই দিক থেকে যাচাই'
+        items:
+          - {cmd: 'ss -ltnp | grep -E ''3306|5432''', desc: 'ডেটাবেস হোস্টে: 10.0.1.5 দেখাতে হবে, 0.0.0.0 নয়'}
+          - {cmd: 'nc -vz <public-ip> 3306', desc: 'নিজের ল্যাপটপ থেকে: ব্যর্থ হতে হবে'}
+      - type: tips
+        items:
+          - 'দুটোই করুন: private ঠিকানায় bind, আর firewall-এ port বন্ধ। একটা ভুলে বদলে গেলে অন্যটা ধরে রাখবে।'
+          - 'দাম: অ্যাপ আর ডেটাবেস এখন নেটওয়ার্কে কথা বলে, তাই ভুল firewall rule বা subnet দোকান থামিয়ে দিতে পারে। প্রতিটা বদলের পর connection পরীক্ষা করুন।'
+    check:
+      q: 'ডেটাবেসের পাসওয়ার্ড শক্ত হলেও `bind-address = 0.0.0.0` বিপজ্জনক কেন?'
+      a: 'এতে মেশিনের সব নেটওয়ার্ক থেকে, ইন্টারনেট সমেত, ডেটাবেসে পৌঁছানো যায়। তখন bot পাসওয়ার্ড আর জানা bug ঠুকতে পারে। private ঠিকানায় শুনুন, আর ঢুকতে দিন শুধু app subnet-কে।'
+
+  - slug: least-privilege-user
+    title: 'অ্যাপকে এমন ডেটাবেস ইউজার দিন, যে অল্প কাজই পারে'
+    kind: howto
+    tldr: 'চলতি অ্যাপের দরকার তার টেবিলে SELECT, INSERT, UPDATE, DELETE, এর বেশি কিছু নয়। ঠিক এটুকুই দিন, migration-এর জন্য আলাদা ইউজার রাখুন, আর DATABASE_URL private হোস্টে দেখান।'
+    keywords: ['least privilege', 'GRANT', 'DATABASE_URL', 'migration user', 'doctrine migrations', 'ডেটাবেস ইউজার', 'defence in depth']
+    blocks:
+      - type: text
+        body: |
+          আজ অ্যাপ `root` হয়ে login করে, তাই web shell-ও root পায় আর প্রতিটা টেবিল `DROP` করতে পারে। চলতি অ্যাপের জন্য একটা ইউজার বানান, যার অধিকার শুধু কোডের লাগা কাজটুকু। দ্বিতীয় একজন ইউজার শুধু deploy-এর সময় কাজ করবে, schema বদলানোর অধিকার তার।
+      - type: code
+        lang: sql
+        file: 'অ্যাডমিন হয়ে ডেটাবেস হোস্টে একবার চালান'
+        variant: good
+        code: |
+          -- চলতি অ্যাপ: শুধু ডেটা
+          CREATE USER 'shop_app'@'10.0.1.%' IDENTIFIED BY 'CHANGE_ME_app';
+          GRANT SELECT, INSERT, UPDATE, DELETE ON shop.* TO 'shop_app'@'10.0.1.%';
+
+          -- deploy-এর ধাপ: schema-ও বদলাতে পারে
+          CREATE USER 'shop_migrate'@'10.0.1.%' IDENTIFIED BY 'CHANGE_ME_migrate';
+          GRANT ALL PRIVILEGES ON shop.* TO 'shop_migrate'@'10.0.1.%';
+        marks:
+          - {line: 3, tip: 'চলার সময় কোড যা করে ঠিক তাই। DROP, ALTER বা CREATE নেই, অন্য ডেটাবেস নেই, FILE-এর মতো global অধিকারও নেই।'}
+          - {line: 7, tip: 'এই ইউজার থাকে শুধু deploy pipeline-এর হাতে। চলতি অ্যাপে ঢোকা স্ক্রিপ্ট তার পাসওয়ার্ড কখনো দেখে না।'}
+      - type: code
+        lang: env
+        file: 'app সার্ভারের .env.local (কখনো commit নয়)'
+        variant: good
+        code: |
+          # চলতি অ্যাপ: সীমিত ইউজার, private হোস্টে
+          DATABASE_URL="mysql://shop_app:CHANGE_ME_app@10.0.1.5:3306/shop?serverVersion=8.0"
+        marks:
+          - {line: 2, tip: 'হোস্ট হলো ডেটাবেসের private ঠিকানা, আর ইউজার shop_app। migrate ইউজারের URL থাকে deploy pipeline-এ, app সার্ভারে কখনো নয়।'}
+      - type: text
+        body: |
+          Deploy-এর ধাপ চালায় `DATABASE_URL="$MIGRATE_DATABASE_URL" php bin/console doctrine:migrations:migrate --no-interaction`। সীমাটাও সৎভাবে জানুন: অ্যাপের ভেতরের স্ক্রিপ্ট এখনো সারি পড়তে আর বদলাতে পারে, কারণ অ্যাপ পারে। Least privilege ক্ষতি ছোট করে, মুছে দেয় না।
+      - type: quote
+        body: 'প্রতিটা স্তর ধরে নেয়, আগের স্তরটা ইতিমধ্যে ভেঙেছে।'
+    aside:
+      - type: tips
+        items:
+          - 'PostgreSQL-এ: `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO shop_app`, সঙ্গে sequence-এ `USAGE`, যাতে insert id পায়।'
+          - 'Doctrine-এর Messenger transport চলার সময় নিজের টেবিল বানাতে পারে। `auto_setup=0` দিন, আর deploy-এর ধাপে `messenger:setup-transports` চালান।'
+          - 'দাম: দুজন ইউজার, দুটো পাসওয়ার্ড রাখা ও বদলানোর ঝামেলা, আর ভুল URL-এ migration চালালে ব্যর্থ হবে। সেই ব্যর্থতাই উদ্দেশ্য।'
+      - type: commands
+        items:
+          - {cmd: 'SHOW GRANTS FOR ''shop_app''@''10.0.1.%'';', desc: 'অ্যাপের ইউজার ঠিক কী কী পারে দেখুন'}
+      - type: terms
+        items:
+          - {term: 'Least privilege', meaning: 'প্রতিটা ইউজার ও প্রোগ্রাম পায় শুধু কাজের জন্য যতটুকু অধিকার দরকার, তার বেশি নয়।'}
+    check:
+      q: 'অ্যাপের ভেতরে এখন web shell চলছে, আর অ্যাপ `shop_app` ব্যবহার করে। সে এখনো কী পারে আর কী আর পারে না, একটা করে বলুন।'
+      a: 'অ্যাপের মতোই সারি পড়তে ও বদলাতে এখনো পারে। কিন্তু টেবিল `DROP` বা `ALTER`, নতুন ইউজার বানানো বা অন্য ডেটাবেসে হাত দেওয়া আর পারে না।'
+
+  - slug: uploads-and-backups
+    title: 'আপলোড আর ব্যাকআপ: এক বাক্সেও যে সস্তা নিয়মগুলো লাগে'
+    kind: pitfall
+    tldr: 'কিছু ভাগ করার আগেই: uploads ফোল্ডারের ফাইল ওয়েব সার্ভারকে চালাতে দেবেন না, প্রতিটা আপলোড যাচাই ও নাম বদল করুন, আর ব্যাকআপ পাঠান এমন জায়গায় যেখান থেকে সার্ভার মুছতে পারে না।'
+    keywords: ['file upload security', 'web shell', 'nginx uploads', 'deny php', 'off-site backup', 'write-only backup key', 'client_max_body_size']
+    blocks:
+      - type: text
+        body: |
+          এই ধাপগুলোর খরচ প্রায় শূন্য, কিন্তু গল্পের ঠিক সেই শৃঙ্খলটা কাটে। diff-এর লাল অংশ সাধারণ PHP handler, যা যেকোনো `.php` চালায়, `uploads/`-এর `shell.php`-ও। সবুজ অংশ `/uploads/`-কে এমনভাবে আটকায় যে সেখানে কিছুই চলে না, আর PHP-কে দেয় শুধু `index.php`, Symfony-র নিজের nginx recipe যেমন করে।
+      - type: code
+        lang: diff
+        file: '/etc/nginx/sites-available/shop'
+        code: |2
+           server {
+               root /var/www/shop/public;
+               location / { try_files $uri /index.php$is_args$args; }
+          -    location ~ \.php$ {
+          -        fastcgi_pass unix:/run/php/php8.3-fpm.sock;
+          -        include fastcgi_params;
+          -        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+          -    }
+          +    location ^~ /uploads/ {
+          +        location ~ \.php$ { deny all; }
+          +    }
+          +    location ~ ^/index\.php(/|$) {
+          +        fastcgi_pass unix:/run/php/php8.3-fpm.sock;
+          +        include fastcgi_params;
+          +        fastcgi_param SCRIPT_FILENAME $realpath_root$fastcgi_script_name;
+          +        internal;
+          +    }
+          +    location ~ \.php$ { return 404; }
+           }
+        marks:
+          - {line: 4, tip: '.php-তে শেষ হওয়া যেকোনো URL PHP-FPM-এ যায়, তাই /uploads/shell.php কোড হয়ে চলে। আক্রমণকারী এই পথেই ঢুকেছিল।'}
+          - {line: 10, tip: '^~ থাকলে এই prefix regex rule-এর ওপরে জেতে, আর এর ভেতরে প্রতিটা .php request ফেরত যায়।'}
+          - {line: 12, tip: 'শুধু front controller index.php চলতে পারে। বাকি প্রতিটা .php ফাইলে ৪০৪।'}
+      - type: points
+        title: 'আর প্রতিটা আপলোডে'
+        style: check
+        items:
+          - 'ফাইল রাখুন `public/`-এর বাইরে (যেমন `var/uploads/`) আর controller দিয়ে দেখান, নয়তো object storage-এ।'
+          - 'আসল ধরন ও আকার যাচাই করুন সার্ভারে (`#[Assert\Image]`, `client_max_body_size`), ব্রাউজারে নয়।'
+          - 'দর্শকের দেওয়া নাম মানবেন না: `Uuid::v7()`-এর মতো এলোমেলো নাম আর আপনার ঠিক করা extension দিন।'
+          - 'uploads রাখুন আলাদা volume-এ বা quota-র নিচে, যাতে বন্যায় ভরে সেই জায়গা, MySQL যে ডিস্কে লেখে সেটা নয়।'
+      - type: text
+        body: |
+          ব্যাকআপেও একই যত্ন লাগে। একই ডিস্কের ডাম্প ডিস্কের সাথেও মরে, অনুপ্রবেশকারীর হাতেও। কপিটা অন্য জায়গায় পাঠান, আর এমন key দিয়ে যা ফাইল যোগ করতে পারে কিন্তু মুছতে পারে না। বিস্তারিত: [[recovery/backups-restore|ব্যাকআপ ও 3-2-1 নিয়ম]]।
+      - type: code
+        lang: bash
+        file: '/usr/local/bin/backup-shop.sh'
+        variant: good
+        code: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          f="/var/backups/shop-$(date +%F).sql.gz"
+          mysqldump --defaults-extra-file=/root/.backup.cnf --single-transaction shop | gzip > "$f"
+
+          # 'backup-writer' শুধু object যোগ করতে পারে (s3:PutObject), পুরনো কপি মুছতে পারে না
+          aws s3 cp "$f" "s3://shop-backups-offsite/db/" --profile backup-writer
+
+          rm -f "$f"    # এই ডিস্কে অনুপ্রবেশকারীর জন্য কিছুই পড়ে থাকে না
+        marks:
+          - {line: 8, tip: 'কপি যায় এই সার্ভারের বাইরের bucket-এ। bucket versioning বা Object Lock-ও চালু রাখুন, যাতে ওপরে লেখা হয়ে গেলেও ফাইল ফেরত পাওয়া যায়।'}
+          - {line: 10, tip: 'লোকাল কপি মুছে ফেলা হয়, তাই বাক্সে কখনো একমাত্র বা সর্বশেষ ব্যাকআপ থাকে না।'}
+    aside:
+      - type: pitfalls
+        items:
+          - 'যাচাই ফাঁকি দেওয়া যায়। একে দ্বিতীয় তালা ধরুন; আসল সমাধান object storage, কারণ সেখানে কিছু কখনো চলে না।'
+          - 'যে ব্যাকআপ key মুছতেও পারে, তা দিয়ে অনুপ্রবেশকারী দূরের কপিগুলোও মুছে ফেলে।'
+      - type: refs
+        items:
+          - {to: 'data/files-blobs', label: 'Object storage-এ ফাইল'}
+          - {to: 'recovery/backups-restore', label: 'ব্যাকআপ ও restore drill'}
+    check:
+      q: 'রাতের ডাম্প একই সার্ভারের ফোল্ডারে রাখলে সেটা আসল ব্যাকআপ নয় কেন?'
+      a: 'যে break-in, ডিস্ক নষ্ট বা ভুল `rm -rf` ডেটাবেসকে মারে, সেটা ডাম্পকেও মারে। কপি রাখুন অন্য জায়গায়, মুছতে-না-পারা key দিয়ে।'
+
+  - slug: price-and-when-one-box
+    title: 'ভাগ করার দাম, আর কখন এক বাক্সই যথেষ্ট'
+    kind: compare
+    tldr: 'ভাগ করলে প্রতিটা query-তে নেটওয়ার্কের একটা ধাপ, চালানোর জিনিস বেশি আর বিল বড় হয়। প্রোটোটাইপ বা ছোট অভ্যন্তরীণ টুলে এক বাক্স এখনো ঠিক, যদি সস্তা নিয়মগুলো মানা হয়।'
+    keywords: ['network latency', 'N+1', 'ভাগ করার খরচ', 'কখন ভাগ করবেন', 'এক সার্ভারই যথেষ্ট', 'trade-off', 'operations']
+    blocks:
+      - type: text
+        body: |
+          এখানে কিছুই বিনা মূল্যে নয়। প্রতিটা query এখন নেটওয়ার্ক পার হয়, একই data centre-এ সাধারণত প্রায় ১ ms, যেখানে একই বাক্সে ০.১ ms-এর অনেক নিচে। একটা query-তে টের পাবেন না। কিন্তু যে পাতা ২০০টা query চালায়, মানে N+1 সমস্যা, যেখানে তালিকার প্রতিটা সারির জন্য একটা বাড়তি query, তার এখন ২০০ ms বেশি লাগে। সমাধান: সারিগুলো একটাই JOIN-query-তে আনুন।
+      - type: visual
+        kind: bars
+        caption: 'নেটওয়ার্কের জোড়া বাড়তি অপেক্ষা, প্রতি query-তে প্রায় ১ ms ধরে'
+        items:
+          - {label: '১টা query', value: 1, display: '1ms', tip: 'একটা মাত্র lookup। এই ধাপ আপনি কখনো টের পাবেন না।'}
+          - {label: '২০টা query', value: 20, display: '20ms', tip: 'কয়েকটা তালিকাওয়ালা সাধারণ পাতা। এখনো চোখে পড়ে না।'}
+          - {label: '২০০টা (N+1)', value: 200, display: '200ms', tone: bad, tip: 'তালিকার প্রতিটা সারির জন্য একটা বাড়তি query। এক বাক্সে এটা লুকিয়ে থাকত, নেটওয়ার্কে এটা সেকেন্ডের পাঁচ ভাগের এক ভাগ।'}
+          - {label: '২০০ সারি, ১ JOIN', value: 1, display: '1ms', tone: good, tip: 'একই পাতা, সারিগুলো একটা query-তে আনার পর। ধাপের দাম দিতে হয় একবারই।'}
+      - type: visual
+        kind: table
+        caption: 'এক বাক্স বনাম ভাগ করা, আর প্রতিটার দাম'
+        headers: ['', 'এক বাক্স', 'ভাগ করা']
+        rows:
+          - cells: ['ওয়েব অ্যাপের ভেতর দিয়ে break-in', 'সবকিছুতে পৌঁছায়', 'app tier-এ থেমে যায়']
+            tip: 'আক্রমণকারীকে প্রতিটা অংশে আলাদা করে ঢুকতে হয়, আর প্রতিটার নিজের credential।'
+          - cells: ['ভারী রিপোর্ট query', 'প্রতিটা ওয়েব পাতা ধীর', 'ওয়েব সার্ভার ফাঁকা থাকে']
+            tip: 'রিপোর্টের চাপ ডেটাবেস তবু টের পায়। তাকেও বাঁচাতে রিপোর্ট চালান replica-তে।'
+          - cells: ['Patch ও scaling', 'সব একসাথে', 'প্রতিটা নিজের মতো']
+            tip: 'ডেটাবেস patch করুন রাতে, app সার্ভার বাড়ান দুপুরে, একটা আরেকটাকে না ছুঁয়ে।'
+          - cells: ['ডিস্ক নষ্ট বা ভরে গেলে', 'ডেটা, ছবি, ব্যাকআপ', 'শুধু সেই অংশ']
+            tip: 'Object storage-এর ছবি আর অন্য জায়গার ব্যাকআপ ডেটাবেসের ডিস্ক ভাগ করে না।'
+          - cells: ['প্রতি query-তে সময়', '০.১ms-এর অনেক নিচে', 'প্রায় 1ms']
+            tip: 'এটা latency-র দাম। একটা query-তে নিরীহ, শ'' শ'' query-তে চোখে পড়ে।'
+          - cells: ['চালানো ও দেখার জিনিস', 'একটা সার্ভার', 'আরও অংশ, একটা নেটওয়ার্ক']
+            tip: 'দেখার আর patch করার জিনিস বাড়ে, আর নতুন ব্যর্থতা আসে: tier-দের মাঝের নেটওয়ার্ক কাটতে বা ধীর হতে পারে।'
+          - cells: ['মাসিক বিল', 'একটা ছোট সার্ভার', 'কয়েকটা, জমে ওঠে']
+            tip: 'Load balancer, বাড়তি app সার্ভার আর managed ডেটাবেস, প্রতিটা বিলে আলাদা লাইন যোগ করে।'
+      - type: points
+        title: 'এক বাক্সেও যা মানতেই হবে'
+        style: check
+        items:
+          - 'ডেটাবেস শোনে localhost বা private ঠিকানায়, কখনো পাবলিকে নয়।'
+          - 'uploads-এ স্ক্রিপ্ট চলে না, আর অ্যাপের ডেটাবেস ইউজার least-privilege।'
+          - 'ব্যাকআপ বাক্সের বাইরে যায়, মুছতে-না-পারা key দিয়ে।'
+          - 'firewall খোলে শুধু 80, 443 আর SSH।'
+    aside:
+      - type: when
+        use:
+          - 'দোকানে আসল অর্ডার আসে আর একদিনের ডেটা হারালে ক্ষতি'
+          - 'রিপোর্ট বা import-এ ওয়েব পাতা ধীর হয়'
+          - 'অ্যাপ আর ডেটাবেসের patch বা scaling-এর সময়সূচি আলাদা'
+        avoid:
+          - 'প্রোটোটাইপ বা ছোট অভ্যন্তরীণ টুল: এক বাক্স আর সস্তা নিয়মেই চলে'
+          - 'bottleneck এখনো মাপা হয়নি: আগে সেটা খুঁজুন'
+      - type: refs
+        items:
+          - {to: 'scaling/load-latency', label: 'আসল bottleneck খোঁজা'}
+          - {to: 'scaling/horizontal-vertical', label: 'Vertical বনাম horizontal scaling'}
+    check:
+      q: 'ডেটাবেস নিজের হোস্টে সরানোর পর ২০০ query-র একটা তালিকা-পাতা ধীর লাগছে। কী হয়েছে, আর সবচেয়ে ভালো সমাধান কী?'
+      a: 'প্রতিটা query এখন প্রায় ১ ms নেটওয়ার্ক সময় দেয়, তাই ২০০ query-তে প্রায় ২০০ ms বাড়ে। প্রতি সারিতে একটা করে নয়, সারিগুলো একটাই JOIN-query-তে আনুন।'
+
+flashcards:
+  - q: 'সিস্টেম ডিজাইনে "blast radius" কী?'
+    a: 'একটা ব্যর্থতা বা একটা break-in সিস্টেমের কতটা ক্ষতি করতে পারে। আলাদা মেশিন, নেটওয়ার্ক আর credential-এ অংশ ভাগ করলে এটা ছোট হয়।'
+    more: |
+      অ্যাপ, ডেটাবেস, ছবি আর ব্যাকআপ এক বাক্সে থাকলে আপলোড ফর্মের একটা ফুটোই সবকিছুতে পৌঁছায়। ভাগ করার পর অ্যাপে ঢুকলেও আক্রমণকারীকে ডেটাবেস, storage আর ব্যাকআপে আলাদা করে ঢুকতে হয়।
+    ref: blast-radius-and-split
+  - q: 'ডেটাবেসের ডিস্কেই রাখা ব্যাকআপ আসল ব্যাকআপ নয় কেন?'
+    a: 'যে ডিস্ক নষ্ট, break-in বা ভুল মোছা ডেটাবেসকে মারে, সেটা ব্যাকআপকেও মারে। ব্যাকআপ থাকতে হবে অন্য কোথাও।'
+    more: |
+      এক ডিস্ক মানে এক ব্যর্থতা। ব্যাকআপ পাঠান অন্য জায়গায়, ফাইল যোগ করতে পারে কিন্তু মুছতে পারে না এমন key দিয়ে, আর versioning বা Object Lock চালু রাখুন। দেখুন [[recovery/backups-restore|ব্যাকআপ ও 3-2-1 নিয়ম]]।
+    ref: uploads-and-backups
+  - q: 'অ্যাপ, ডেটাবেস আর ফাইলের মধ্যে এক সার্ভার কোন তিনটে জিনিস ভাগাভাগি করে?'
+    a: 'দরজা (একটা break-in সবাইকে ধরে), CPU-RAM (একটা ভারী কাজ সবাইকে ধীর করে) আর ডিস্ক (একটা ভরা বা মরা ডিস্ক সবাইকে টানে)।'
+    more: |
+      চতুর্থটা সময়সূচি: একটা অংশ patch বা scale করতে গেলে বাকিগুলোও ছুঁতে হয়। ভাগ করলে প্রতিটা অংশ পায় নিজের দরজা, নিজের সম্পদ আর নিজের ব্যর্থতা।
+    ref: blast-radius-and-split
+  - q: 'MySQL বা PostgreSQL-কে নিজের config-এ ইন্টারনেট থেকে কীভাবে আড়াল করবেন?'
+    a: 'MySQL-এ `bind-address` private IP-তে। PostgreSQL-এ `listen_addresses` private IP-তে, আর `pg_hba.conf`-এ app subnet-এ সীমিত একটা লাইন।'
+    more: |
+      firewall বা security group-এও ডেটাবেসের port বন্ধ রাখুন। বাইরে থেকে `nc -vz <public-ip> 3306` চালিয়ে দেখুন: ব্যর্থ হতে হবে। Managed ডেটাবেসে "not publicly accessible" বেছে শুধু অ্যাপের security group-কে ঢুকতে দিন।
+    ref: private-database
+  - q: 'চলতি অ্যাপের ডেটাবেস ইউজারের কী কী অধিকার থাকা উচিত?'
+    a: 'শুধু চলার সময় কোড যা করে: নিজের ডেটাবেসে SELECT, INSERT, UPDATE, DELETE। DROP, ALTER, CREATE নয়, global অধিকারও নয়।'
+    more: |
+      অ্যাপে ঢোকা web shell অ্যাপের ডেটাবেস-অধিকার পায়। `shop_app` হলে সে সারি পড়তে-বদলাতে পারে, কিন্তু টেবিল drop বা alter করতে পারে না। Least privilege ক্ষতি সীমিত করে, মুছে দেয় না।
+    ref: least-privilege-user
+  - q: 'migration চালাতে অ্যাপের চেয়ে আলাদা ডেটাবেস ইউজার কেন?'
+    a: 'Migration-এ schema বদলাতে হয়, অ্যাপের হয় না। ক্ষমতাবান ইউজার deploy pipeline-এ রাখলে অ্যাপের ভেতরের স্ক্রিপ্ট তাকে কাজে লাগাতে পারে না।'
+    more: |
+      Deploy-এর ধাপ চালায় `DATABASE_URL="$MIGRATE_DATABASE_URL" php bin/console doctrine:migrations:migrate --no-interaction`। দাম: দ্বিতীয় একজন ইউজার আর পাসওয়ার্ড রাখা ও বদলানো।
+    ref: least-privilege-user
+  - q: '"Defence in depth" মানে কী?'
+    a: 'পরপর কয়েকটা স্বাধীন তালা, যার প্রতিটা ধরে নিয়ে বানানো যে আগেরটা ইতিমধ্যে ভেঙেছে।'
+    more: |
+      নিরাপদ আপলোড shell আটকায়। Private ডেটাবেস বাইরের দুনিয়া আটকায়। Least privilege ঢুকে পড়া shell-এর ক্ষমতা কমায়। বাক্সের বাইরের ব্যাকআপ সবকিছু ব্যর্থ হলে ফেরার পথ দেয়। যেকোনো একটা তালা একদিন ভাঙবে, তাই বাকিগুলো টিকতে হবে।
+    ref: least-privilege-user
+  - q: 'nginx-এ আপলোড করা `shell.php`-কে চলা থেকে কীভাবে আটকাবেন?'
+    a: '`/uploads/`-কে `location ^~` দিয়ে আটকে তার ভেতরে `.php` deny করুন, PHP-FPM-কে শুধু `index.php` দিন, অথবা uploads রাখুন `public/`-এর বাইরে।'
+    more: |
+      সার্ভারে আসল ধরন ও আকারও যাচাই করুন, আর দর্শকের নামে নয়, `Uuid::v7()`-এর মতো এলোমেলো নামে রাখুন। আপলোডের সবচেয়ে নিরাপদ জায়গা object storage, যেখানে কিছুই কোড হয়ে চলে না।
+    ref: uploads-and-backups
+  - q: 'ডেটাবেস নিজের হোস্টে সরালে প্রতি query-তে কী দাম পড়ে?'
+    a: 'নেটওয়ার্কের একটা ধাপ: একই data centre-এ সাধারণত প্রায় ১ ms, একই বাক্সে ০.১ ms-এর অনেক নিচে। ২০০ query-তে প্রায় ২০০ ms বাড়ে।'
+    more: |
+      একটা query নিরীহ, কিন্তু N+1 পাতা ধাপটাকে গুণ করে। সারিগুলো একটা JOIN-এ আনুন। ভাগ করায় আরও আছে: চালানোর অংশ বেশি, নতুন ব্যর্থতা (tier-দের মাঝের নেটওয়ার্ক) আর বড় মাসিক বিল। এক বাক্স কখন ঠিক, দেখুন [[scaling/horizontal-vertical|vertical বনাম horizontal scaling]]।
+    ref: price-and-when-one-box
+
+quiz:
+  - q: 'নাদিয়ার গল্পে ডেটাবেস চুরির সাথে সাথে ব্যাকআপও মুছে গেল কেন?'
+    hint: 'ব্যাকআপ কোথায় ছিল, আর সেখানে কে লিখতে পারত?'
+    options:
+      - text: 'সেগুলো একই ডিস্কে ছিল, এমন ফোল্ডারে যেখানে অ্যাপের ইউজার লিখতে পারে'
+        correct: true
+        why: 'স্ক্রিপ্ট অ্যাপ হয়ে চলছিল, তাই অ্যাপ যা মুছতে পারে সে-ও পারে। যে ব্যাকআপ মেশিন ভাগ করে, সে মেশিনের ভাগ্যও ভাগ করে।'
+      - text: 'MySQL ডাম্প নিলেই পুরনো ব্যাকআপ মুছে দেয়'
+        correct: false
+        why: 'ডাম্প কিছু মোছে না। কোনো মানুষ বা স্ক্রিপ্টকেই ফাইল মুছতে হয়েছে।'
+      - text: 'ব্যাকআপ compress করা ছিল না'
+        correct: false
+        why: 'Compress করলে আকার বদলায়, ফাইলে কে পৌঁছাতে পারে তা বদলায় না।'
+      - text: 'nginx এক সপ্তাহের পুরনো ফাইল মুছে দেয়'
+        correct: false
+        why: 'nginx ফাইল পরিবেশন করে, ফোল্ডার সাফ করে না।'
+    ref: one-box-one-break-in
+  - q: 'প্রতিদিন সকাল ৯টায় একটা ভারী বিক্রির রিপোর্ট চলে, আর শেষ না হওয়া পর্যন্ত দোকানের পাতা হামাগুড়ি দেয়। এক বাক্সের কোন সমস্যা এটা?'
+    hint: 'কেউ ঢোকেনি। দুটো কাজ কিছু একটা নিয়ে কাড়াকাড়ি করছে।'
+    options:
+      - text: 'Resource contention: রিপোর্ট আর ওয়েব request একই CPU ও RAM ভাগ করছে'
+        correct: true
+        why: 'দুটোই এক মেশিনে, তাই রিপোর্ট যা নেয় ওয়েব request তা হারায়। ডেটাবেস আলাদা হোস্টে গেলে ওয়েব সার্ভারের CPU তার নিজের থাকে।'
+      - text: 'বড় blast radius, কারণ আক্রমণকারী ঢুকেছে'
+        correct: false
+        why: 'Blast radius মানে একটা break-in কতদূর পৌঁছায়। এখানে কেউ ঢোকেনি।'
+      - text: 'N+1 query সমস্যা'
+        correct: false
+        why: 'N+1 মানে এক পাতা থেকে অনেক ছোট query। এখানে একটা বড় কাজ অন্য কাজের সাথে কাড়াকাড়ি করছে।'
+      - text: 'Replication lag'
+        correct: false
+        why: 'এই সেটআপে replica-ই নেই, তাই পিছিয়ে পড়ার কিছু নেই।'
+    ref: blast-radius-and-split
+  - q: 'পাবলিক IP-ওয়ালা ডেটাবেস হোস্টে নিচের সেটিংয়ে ভুলটা কী?'
+    lang: text
+    code: |
+      # postgresql.conf
+      listen_addresses = '*'
+
+      # pg_hba.conf
+      host    all       all       0.0.0.0/0    scram-sha-256
+    hint: 'কে ঢুকতে পারবে, আর কোথা থেকে, সেটা পড়ুন।'
+    options:
+      - text: 'সব ঠিকানায় শোনে আর যেকোনো জায়গা থেকে login নেয়, তাই পুরো ইন্টারনেট connect করার চেষ্টা করতে পারে'
+        correct: true
+        why: '`listen_addresses` private ঠিকানায় আর `pg_hba.conf` একজন ইউজার, একটা ডেটাবেস আর app subnet-এ সীমিত করুন।'
+      - text: 'কিছুই নয়, scram-sha-256 শক্ত পদ্ধতি'
+        correct: false
+        why: 'শক্ত পাসওয়ার্ড-যাচাই একটাই তালা। ইন্টারনেটের যে কেউ তবুও কড়া নাড়তে পারে, আর bot সারাদিন পাসওয়ার্ড আর জানা bug ঠোকে।'
+      - text: 'পদ্ধতিটা `trust` হওয়া উচিত'
+        correct: false
+        why: '`trust` পাসওয়ার্ড ছাড়াই ঢুকতে দেয়। এতে অবস্থা আরও খারাপ।'
+      - text: 'ডেটাবেসকে port 80-তে শুনতে হবে'
+        correct: false
+        why: 'port নম্বর সমস্যা নয়। সমস্যা হলো ঠিকানা আর কাদের ঢুকতে দেওয়া হচ্ছে।'
+    ref: private-database
+  - q: 'অ্যাপ `shop_app` (SELECT, INSERT, UPDATE, DELETE) ব্যবহার করে। app সার্ভারে আক্রমণকারী একটা web shell পেল। সে এখনো কী কী পারে?'
+    hint: 'অ্যাপ নিজে কী পারে ভাবুন।'
+    options:
+      - text: 'অ্যাপ যে টেবিল পড়তে পারে, সেগুলো পড়তে'
+        correct: true
+        why: 'Shell অ্যাপের অধিকার পায়, আর অ্যাপ এই টেবিল পড়ে। Least privilege ক্ষতি কমায়, মুছে দেয় না।'
+      - text: 'সারি মুছতে বা বদলাতে'
+        correct: true
+        why: 'অ্যাপের DELETE আর UPDATE আছে, তাই shell-এরও আছে। এজন্যই আপলোডের ফুটোও বন্ধ করতে হয়।'
+      - text: 'orders টেবিলে DROP TABLE চালাতে'
+        correct: false
+        why: 'shop_app-কে DROP কখনো দেওয়া হয়নি, তাই ডেটাবেস কমান্ডটা ফিরিয়ে দেয়।'
+      - text: 'টেবিলের গঠন ALTER করতে বা অন্য ডেটাবেস পড়তে'
+        correct: false
+        why: 'grant শুধু `shop.*`-এ SELECT, INSERT, UPDATE, DELETE-এর। schema বদল আর অন্য ডেটাবেস নাগালের বাইরে।'
+    ref: least-privilege-user
+  - q: 'আপলোড করা `shell.php`-কে কোড হিসেবে চলা থেকে আসলে কোন বদলটা আটকায়?'
+    hint: 'সমাধানকে বদলাতে হবে ফাইলটা নিয়ে সার্ভার কী করে।'
+    options:
+      - text: '`/uploads/`-এ `.php` চালানো নিষেধ করা (বা uploads `public/`-এর বাইরে বা object storage-এ রাখা)'
+        correct: true
+        why: 'যাচাই পার হয়ে ঢুকলেও ফাইলটা শুধু ডেটা, কখনো চলে না। আক্রমণকারীর ঠিক সেই পথটাই বন্ধ হয়।'
+      - text: 'uploads ফোল্ডারের নাম গোপন কিছু করে দেওয়া'
+        correct: false
+        why: 'নাম লুকানো তালা নয়। আক্রমণকারী ফাইল আপলোড করে URL ফেরত পায়, নয়তো পাতা থেকে খুঁজে নেয়।'
+      - text: 'আপলোডের আগে JavaScript-এ extension যাচাই'
+        correct: false
+        why: 'আক্রমণকারী আপনার ফর্ম ব্যবহারই করে না। ব্রাউজারের যাচাই শুধু ভালো ব্যবহারকারীর জন্য।'
+      - text: 'আপলোড ২ MB-তে সীমিত করা'
+        correct: false
+        why: 'Web shell কয়েকশো byte-ও হতে পারে। আকারের সীমা বন্যা ঠেকায়, স্ক্রিপ্ট নয়।'
+    ref: uploads-and-backups
+  - q: 'গল্পের আক্রমণকারীর হাত থেকে রাতের ব্যাকআপ বাঁচায় এর মধ্যে কোনগুলো?'
+    hint: 'আক্রমণকারীর হাতে বাক্সের ফাইল আর key দুটোই।'
+    options:
+      - text: 'কপি বাক্সের বাইরের bucket-এ পাঠানো, এমন key দিয়ে যার শুধু s3:PutObject আছে'
+        correct: true
+        why: 'ব্যাকআপ অন্য মেশিনে, আর বাক্সের key পুরনো কপি মুছতে পারে না, তাই আক্রমণকারী সেগুলো সাফ করতে পারে না।'
+      - text: 'সেই bucket-এ versioning বা Object Lock চালু করা'
+        correct: true
+        why: 'ওপরে লেখা বা মোছা object-ও ফেরত আনা যায়, বা একেবারেই মোছা যায় না, তাই ইতিহাস টিকে থাকে।'
+      - text: 'একই ডিস্কের আরেকটা ফোল্ডারে দ্বিতীয় কপি রাখা'
+        correct: false
+        why: 'একই ডিস্ক, একই ইউজার, একই অনুপ্রবেশকারী। এক ডিস্কের দুই কপিও একটাই ব্যর্থতা।'
+      - text: 'ডাম্পে পাসওয়ার্ড দিয়ে zip করা, পাসওয়ার্ড একই বাক্সের `.env`-এ'
+        correct: false
+        why: 'আক্রমণকারী `.env` পড়ে, আর ফাইল তবুও মুছতে পারে। পাসওয়ার্ড কাজের কিছু আটকায় না।'
+    ref: uploads-and-backups
+  - q: 'ডেটাবেস নিজের হোস্টে সরানোর পর (প্রতি query-তে প্রায় ১ ms) ২০০ query-র একটা তালিকা-পাতা ধীর লাগছে। সবচেয়ে ভালো সমাধান কী?'
+    hint: 'বাড়তি সময়টা এল কোথা থেকে?'
+    options:
+      - text: 'সারিগুলো একটা JOIN-query-তে আনা, যাতে নেটওয়ার্কের ধাপের দাম একবারই পড়ে'
+        correct: true
+        why: 'ধাপের সময় × ২০০টা query = প্রায় ২০০ ms। একটা query ধাপের দাম দেয় একবার।'
+      - text: 'ডেটাবেস আবার app সার্ভারে ফিরিয়ে আনা'
+        correct: false
+        why: 'এতে ভাগ করে পাওয়া নিরাপত্তা চলে যায়। ভুলটা পাতার, স্থাপত্যের নয়।'
+      - text: 'আরও app সার্ভার যোগ করা'
+        correct: false
+        why: 'বেশি সার্ভার একসাথে বেশি request সামলায়, কিন্তু প্রতিটা request-কে এখনো ২০০ ধাপের অপেক্ষা করতে হয়।'
+      - text: 'কিছু না, নেটওয়ার্ক বিনা পয়সার'
+        correct: false
+        why: 'নেটওয়ার্ক প্রতিটা query-তে latency যোগ করে। ভাগ করার এটাই সৎ দাম।'
+    ref: price-and-when-one-box

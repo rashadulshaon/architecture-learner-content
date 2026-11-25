@@ -1,0 +1,428 @@
+slides:
+  - slug: second-server-surprises
+    title: 'দুই সার্ভার বাড়ল, আর পুরনো কোড চলতেই থাকল'
+    kind: story
+    tldr: 'বাড়তি সার্ভারে worker চালালে একই queue বিনা খরচে ভাগ হয়। কিন্তু deploy-এর stop signal যায় লোকাল cache দিয়ে, তাই খবর পায় শুধু একটা সার্ভার।'
+    keywords: ['messenger workers', 'multiple servers', 'competing consumers', 'stop-workers', 'deploy', 'অনেক সার্ভার', 'পুরনো কোড', 'worker বাড়ানো']
+    blocks:
+      - type: metaphor
+        icon: shop
+        title: 'এক রেল, তিন রান্নাঘর'
+        body: |
+          বিরিয়ানির হোটেলে সব অর্ডারের টিকিট ঝোলে একটাই রেলে। রহিম দ্বিতীয় আর তৃতীয় রান্নাঘর খুলল, আর তিন ঘরের বাবুর্চিরাই একই রেল থেকে পরের টিকিট নেয়। প্রতিটা টিকিট যায় ঠিক একজন বাবুর্চির কাছে, তাই তিন রান্নাঘরে তিনগুণ অর্ডার সামলানো যায়, নতুন কোনো পরিকল্পনা ছাড়াই। চমকটা এখানে: প্রতিটা রান্নাঘরের নিজের নোটিশ বোর্ড, আর ম্যানেজার "আজ থেকে নতুন রেসিপি" নোটটা টাঙিয়েছেন শুধু প্রথম রান্নাঘরের বোর্ডে।
+      - type: visual
+        kind: sequence
+        caption: 'লোকাল cache থাকলে deploy-এর পরে সার্ভার ২ ভার্সন ১-ই চালায়'
+        actors:
+          - {id: deploy, label: 'Deploy script', icon: terminal, tip: 'প্রতি রিলিজে একবার চলে, এখানে সার্ভার ১-এ। ভার্সন ২ বসায়, তারপর worker-দের restart করতে বলে।'}
+          - {id: s1, label: 'সার্ভার ১-এর worker', icon: server, tip: 'যে সার্ভারে deploy চলেছে, সেখানকার worker।'}
+          - {id: s2, label: 'সার্ভার ২-এর worker', icon: server, tip: 'আরেক সার্ভারের worker। একই queue পড়ে, কিন্তু cache আলাদা।'}
+          - {id: queue, label: 'Queue', icon: queue, tip: 'সব worker যেখান থেকে বার্তা তোলে, সেই একটাই শেয়ার করা transport।'}
+        messages:
+          - {from: deploy, to: s1, label: 'messenger:stop-workers চালায়', tip: 'কমান্ডটা যে মেশিনে চলে, সেই মেশিনের cache-এ restart-চিহ্ন লেখে। ডিফল্ট filesystem cache হলে সেটা সার্ভার ১-এর নিজের ডিস্ক।'}
+          - {at: s1, note: 'চিহ্ন পায়, ভার্সন ২-এ restart', tone: good}
+          - {at: s2, note: 'এখানে চিহ্ন নেই, এখনো ভার্সন ১', tone: bad}
+          - {from: queue, to: s2, label: 'ভার্সন ২-এর বানানো বার্তা', dashed: true, tip: 'ওয়েব অ্যাপ ইতিমধ্যে ভার্সন ২, তাই বার্তায় নতুন ফিল্ড বসায়।'}
+          - {at: s2, note: 'পুরনো handler নতুন বার্তায় ভাঙে', tone: bad}
+      - type: points
+        title: 'পথে আরও চারটা চমক'
+        items:
+          - 'Handler সার্ভার ১-এ একটা ফাইল রাখল, পরের কাজ চলল সার্ভার ২-এ, আর ফাইলটা সেখানে নেই।'
+          - 'Worker চলে ঘণ্টার পর ঘণ্টা, একটা request-এর মতো নয়। তাই ছোট মেমরি লিক বা মেমরিতে রাখা বাসি মান জমে জমে বড় হয়।'
+          - 'প্রতিটা worker একটা ডেটাবেস connection ধরে রাখে, তাই সার্ভার বাড়লে একই ডেটাবেসে connection বাড়ে।'
+          - 'সব worker একটাই transport পড়ে, তাই কোনো এক সময় worker নয়, queue নিজেই সীমা হয়ে দাঁড়ায়।'
+    aside:
+      - type: story
+        title: 'যে ফিল্ডটা কেউ পড়ল না'
+        body: |
+          এক টিম বার্তায় একটা নতুন ফিল্ড যোগ করে deploy দিল। সার্ভার ১-এর worker restart হয়ে ঠিকমতো চলল। সার্ভার ২ পুরনো handler-ই রাখল, যে ফিল্ডটা দেখেই না, আর তিন দিন কেউ টের পেল না।
+      - type: terms
+        items:
+          - {term: 'Competing consumers', meaning: 'অনেক worker একই queue পড়ে, আর প্রতিটা বার্তা যায় তাদের একজনের কাছে।'}
+          - {term: 'Worker', meaning: '`messenger:consume` দিয়ে চালু করা, দীর্ঘ সময় চলা একটা PHP process।'}
+      - type: refs
+        items:
+          - {to: 'messaging/delivery-guarantees', label: 'ক্রম আর ডুপ্লিকেট বার্তা'}
+    check:
+      q: 'Deploy-এর পরে সার্ভার ১ নতুন কোড চালাচ্ছে, কিন্তু সার্ভার ২ চালাচ্ছে না। stop signal-এ কী ভুল হয়েছে?'
+      a: '`messenger:stop-workers` যে সার্ভারে চলে, তার cache-এই চিহ্ন লেখে। Filesystem cache হলে সেটা সার্ভার ১-এর ডিস্ক, তাই সার্ভার ২-এর worker কখনো চিহ্নটা দেখে না।'
+
+  - slug: shared-stop-signal
+    title: 'Stop signal-এর জন্য একটাই শেয়ার করা জায়গা'
+    kind: concept
+    tldr: 'Stop কমান্ড app cache-এ একটা চিহ্ন রাখে, worker সেটা পড়ে। Cache এমন জায়গায় রাখুন যা সব সার্ভার দেখে, অথবা সার্ভারে সার্ভারে restart দিন, অথবা container বদলে দিন।'
+    keywords: ['messenger:stop-workers', 'shared cache', 'redis cache', 'rolling deploy', 'supervisorctl restart', 'শেয়ার করা cache']
+    blocks:
+      - type: text
+        body: |
+          `messenger:stop-workers` কোনো worker-এর সঙ্গে কথা বলে না। সে app cache-এ (`cache.app`) একটা timestamp লিখে রাখে। প্রতিটা worker বার্তার ফাঁকে সেখানে দেখে, আর চিহ্নটা নিজের চালু হওয়ার সময়ের চেয়ে নতুন হলে চলতি বার্তা শেষ করে বেরিয়ে যায়। তারপর supervisor নতুন কোডে নতুন process চালু করে। অর্থাৎ signal পৌঁছায় ঠিক সেই worker-দের কাছে, যারা একই cache পড়ে।
+      - type: visual
+        kind: flow
+        caption: 'একটা কমান্ড, একটা শেয়ার করা cache, প্রতি সার্ভারের প্রতিটা worker'
+        nodes:
+          - {id: deploy, label: 'Deploy script', icon: terminal, col: 0, row: 1, tip: 'প্রতি রিলিজে একবার stop কমান্ড চালায়।'}
+          - {id: cache, label: 'শেয়ার করা cache', sub: 'Redis', icon: cache, tone: accent, col: 1.5, row: 1, tip: 'restart-চিহ্ন যেখানে লেখা ও পড়া হয়, সেই একটাই জায়গা। সব সার্ভার এখানে পৌঁছাতে পারে।'}
+          - {id: w1, label: 'সার্ভার ১-এর worker', icon: worker, col: 3, row: 0, tip: 'বার্তার ফাঁকে cache দেখে।'}
+          - {id: w2, label: 'সার্ভার ২-এর worker', icon: worker, col: 3, row: 1, tip: 'আলাদা মেশিনে, কিন্তু একই cache পড়ে।'}
+          - {id: w3, label: 'সার্ভার ৩-এর worker', icon: worker, col: 3, row: 2, tip: 'এটাও নিজের মেশিনে, আর একই cache পড়ে।'}
+        edges:
+          - {from: deploy, to: cache, label: 'Deploy stop-workers চালায়, সে শেয়ার করা cache-এ restart-চিহ্ন লেখে।', tip: 'এক জায়গা থেকে একটা কমান্ড।'}
+          - {from: cache, to: w1, label: 'সার্ভার ১-এর worker চলতি বার্তার পরে চিহ্ন দেখে বেরিয়ে যায়।', tone: good}
+          - {from: cache, to: w2, label: 'অন্য সার্ভারের worker ২-ও একই চিহ্ন দেখে বেরিয়ে যায়।', tone: good}
+          - {from: cache, to: w3, label: 'worker ৩-ও তাই করে। তারপর supervisor সবগুলো নতুন কোডে চালু করে।', tone: good}
+      - type: code
+        lang: yaml
+        file: 'config/packages/cache.yaml'
+        variant: good
+        code: |
+          framework:
+              cache:
+                  # cache.app-ই stop signal বয়ে নেয়। ডিফল্টে সেটা এই সার্ভারেরই
+                  # ডিস্কের ফোল্ডার, তাই অন্য সার্ভার চিহ্নটা দেখে না।
+                  app: cache.adapter.redis
+                  default_redis_provider: '%env(REDIS_URL)%'
+        marks:
+          - {line: 5, tip: 'Redis প্রতিটা সার্ভার থেকে পৌঁছানো যায়, তাই একটা stop-workers কল সবাই দেখে।'}
+      - type: points
+        title: 'Deploy-এ worker নতুন করার তিন উপায়'
+        items:
+          - '**শেয়ার করা cache:** `php bin/console messenger:stop-workers` একবার চালান। দাম: সব সার্ভারের ওই cache লাগে, আর সেটা বন্ধ থাকলে signal পৌঁছায় না।'
+          - '**সার্ভারে সার্ভারে:** deploy প্রতিটা সার্ভারে stop কমান্ড বা `supervisorctl restart` চালায়। দাম: script-কে সব সার্ভার জানতে হয়, আর বাদ পড়া সার্ভার পুরনোই থাকে।'
+          - '**Container বদল:** rolling deploy নতুন container তোলে, পুরনোগুলো নামায়। দাম: orchestrator লাগে, আর পুরনো container-কে কাজ শেষ করার সময় দিতে হয়।'
+      - type: quote
+        body: 'Cache দিয়ে পাঠানো stop signal শুধু তাদের কাছেই পৌঁছায়, যারা একই cache পড়ে।'
+    aside:
+      - type: commands
+        items:
+          - {cmd: 'php bin/console messenger:stop-workers', desc: 'একই cache-এর সব worker-কে চলতি বার্তার পরে বেরিয়ে যেতে বলুন'}
+          - {cmd: 'supervisorctl restart messenger-async:*', desc: 'এই সার্ভারের worker একে একে, ভদ্রভাবে restart করুন'}
+      - type: tips
+        items:
+          - 'Worker চলতি বার্তা শেষ করেই বেরোয়, তাই deploy কোনো কাজ মাঝপথে কাটে না।'
+          - 'কমান্ডটা শুধু worker-কে বেরোতে বলে। Supervisor না থাকলে কেউ তাদের আবার চালু করে না।'
+    check:
+      q: 'তিন সার্ভারে worker আছে, আপনি `messenger:stop-workers` একবার চালালেন। সবগুলো restart হতে কী কী লাগবে?'
+      a: 'তিনটা সার্ভারকেই একই cache পড়তে হবে, আর প্রতিটা সার্ভারে একটা supervisor লাগবে, যা পুরনো process বেরোলে নতুনটা চালু করে।'
+
+  - slug: workers-config
+    title: 'Worker বাঁচিয়ে রাখা, আর কয়টা চালাবেন'
+    kind: howto
+    tldr: 'প্রতি সেকেন্ডে কয়টা কাজ আর প্রতিটা কতক্ষণ লাগে, তা থেকে worker-সংখ্যা বের করুন। Supervisor সেই সংখ্যা চালায় ও restart করে। Flag দিয়ে প্রতিটা worker নিজে অবসর নেয়।'
+    keywords: ['supervisor', 'systemd', 'numprocs', 'time-limit', 'memory-limit', 'worker সংখ্যা', 'সুপারভাইজর']
+    blocks:
+      - type: text
+        body: |
+          ধরুন টিমকে প্রতি সেকেন্ডে **৪০টা কাজ** সামলাতে হবে, আর একটা কাজে লাগে **০.৫ সেকেন্ড**। একটা worker সেকেন্ডে ২টা কাজ শেষ করে, তাই ৪০ ÷ ২ = **সব সময় ২০টা worker ব্যস্ত**। মাত্র ১০টা থাকলে সেকেন্ডে ২০টা কাজ হয়, ২০টা জমে: queue প্রতি মিনিটে ১,২০০ করে বাড়ে। প্রায় ৩০% বাড়তি জায়গা (২৬) রেখে ২৭ ধরুন: ৩ সার্ভার × ৯ worker। দাম: ২৭টা ডেটাবেস connection, আর সার্ভারপ্রতি সর্বোচ্চ ৯ × ১২৮ MB = প্রায় ১.১ GB মেমরি।
+      - type: code
+        lang: ini
+        file: '/etc/supervisor/conf.d/messenger.conf'
+        variant: good
+        code: |
+          ; তিন সার্ভারেই একই ফাইল: ৩ x ৯ = ২৭ worker
+          [program:messenger-async]
+          directory=/var/www/app
+          command=php bin/console messenger:consume async --time-limit=900 --memory-limit=128M --limit=500
+          process_name=%(program_name)s_%(process_num)02d
+          numprocs=9
+          user=www-data
+          environment=APP_ENV="prod"
+          autostart=true
+          autorestart=true
+          startsecs=0
+          startretries=10
+          stopsignal=TERM
+          stopwaitsecs=60
+        marks:
+          - {line: 4, tip: 'প্রতিটা flag worker-কে ইচ্ছা করে বের করে দেয়: ১৫ মিনিট পরে, ১২৮ MB পেরোলে (বার্তার ফাঁকে দেখা হয়), বা ৫০০ বার্তা পরে। লিক দিনের পর দিন বাড়তে পারে না।'}
+          - {line: 6, tip: 'এই সার্ভারে নয়টা কপি। তিন সার্ভারে একই ফাইলে মোট ২৭।'}
+          - {line: 10, tip: 'Worker যে কারণেই বেরোক, supervisor নতুন একটা চালু করে।'}
+          - {line: 14, tip: 'TERM-এর পরে supervisor চলতি কাজের জন্য ৬০ সেকেন্ড পর্যন্ত অপেক্ষা করে। সবচেয়ে ধীর কাজের চেয়ে বেশি রাখুন।'}
+      - type: quote
+        body: 'প্রতিটা worker-কে সময়মতো অবসর নিতে দিন, আর পরেরজনকে বসানোর ভার দিন supervisor-কে।'
+    aside:
+      - type: tips
+        items:
+          - '`--time-limit` একটা নিরাপত্তা-জালও: stop signal হারালেও ১৫ মিনিটের মধ্যে worker নতুন কোড চালায়।'
+          - 'systemd হলে `Restart=always` দিয়ে একটা template unit বানান, flag একই থাকবে।'
+          - 'TERM-এ ভদ্রভাবে থামতে PHP-র `pcntl` extension লাগে।'
+      - type: terms
+        items:
+          - {term: 'Supervisor', meaning: 'ছোট একটা প্রোগ্রাম, যা আপনার worker চালু করে আর বেরিয়ে গেলে আবার চালু করে।'}
+      - type: refs
+        items:
+          - {to: 'messaging/background-jobs', label: 'Visibility timeout আর priority lane'}
+    check:
+      q: 'প্রতি সেকেন্ডে ৩০টা কাজ আসে, প্রতিটায় ০.২ সেকেন্ড। কয়টা worker সব সময় ব্যস্ত থাকবে, আর ৪টা থাকলে কী হবে?'
+      a: '৩০ × ০.২ = ৬টা worker সব সময় ব্যস্ত। চারটা worker সেকেন্ডে মাত্র ২০টা কাজ শেষ করে, তাই queue সেকেন্ডে ১০ করে, মিনিটে ৬০০ করে বাড়ে।'
+
+  - slug: state-on-one-server
+    title: 'ফাঁদ: যে state একটা সার্ভারে আটকে থাকে'
+    kind: pitfall
+    tldr: 'এক সার্ভারের ডিস্কের ফাইল বা worker-এর মেমরিতে রাখা মান অনেক সার্ভারে ভাঙে। ID পাঠান, ফাইল রাখুন শেয়ার করা storage-এ, আর cache-এ TTL দিন।'
+    keywords: ['local file', 'shared storage', 'flysystem', 'worker memory', 'stale cache', 'message ID', 'লোকাল ফাইল']
+    blocks:
+      - type: text
+        body: |
+          এক সার্ভারে ইনভয়েসের PDF বানানোর কাজ আর সেটা ইমেইল করার কাজ সব সময় পাশাপাশি চলত, তাই লোকাল ডিস্কের path চলত। তিন সার্ভারে queue দ্বিতীয় কাজটা দেয় যেকোনো worker-কে, আর ফাইল আছে মাত্র একটায়। আবার worker চলে ঘণ্টার পর ঘণ্টা, তাই property-তে রাখা মান process শেষ না হওয়া পর্যন্ত থেকে যায়। সমাধান: বার্তায় যাবে ইনভয়েসের **ID**, ফাইল যাবে এমন storage-এ যেখানে সব সার্ভার পৌঁছায়, আর cache-এ থাকবে TTL। দাম: লোকাল পড়ার বদলে একটা নেটওয়ার্ক কল, আর একটা বাড়তি নির্ভরতা।
+      - type: code
+        lang: php
+        file: 'src/MessageHandler/SendInvoiceHandler.php'
+        variant: bad
+        code: |
+          #[AsMessageHandler]
+          final class SendInvoiceHandler
+          {
+              private ?array $rates = null;
+
+              public function __invoke(SendInvoice $m): void
+              {
+                  $this->rates ??= $this->fx->loadRates();     // একবার লোড, ঘণ্টার পর ঘণ্টা থাকে
+                  $path = '/var/www/app/var/invoices/'.$m->invoiceId.'.pdf';
+                  file_put_contents($path, $this->pdf->render($m->invoiceId, $this->rates));
+                  // পরের worker অন্য সার্ভারে চললে সেখানে $path নেই
+                  $this->bus->dispatch(new EmailInvoice($path));
+              }
+          }
+        marks:
+          - {line: 4, tip: 'Property worker যতক্ষণ বাঁচে ততক্ষণ থাকে। সকাল ৯টায় পড়া rate রাত ৯টাতেও ব্যবহার হচ্ছে।'}
+          - {line: 10, tip: 'কাজটা যে সার্ভারে চলছে, শুধু তার লোকাল ডিস্কে লেখা হচ্ছে।'}
+          - {line: 12, tip: 'অন্য সার্ভারে একটা path-এর কোনো অর্থ নেই।'}
+      - type: code
+        lang: php
+        file: 'src/MessageHandler/SendInvoiceHandler.php'
+        variant: good
+        code: |
+          #[AsMessageHandler]
+          final readonly class SendInvoiceHandler
+          {
+              public function __construct(
+                  private FilesystemOperator $invoicesStorage,  // flysystem: S3 বা শেয়ার করা ডিস্ক
+                  private FxRates $fx,                          // ৫ মিনিটের TTL-সহ cache
+                  private InvoicePdf $pdf,
+                  private MessageBusInterface $bus,
+              ) {}
+
+              public function __invoke(SendInvoice $m): void
+              {
+                  $this->invoicesStorage->write(
+                      "invoices/{$m->invoiceId}.pdf",
+                      $this->pdf->render($m->invoiceId, $this->fx->current()),
+                  );
+                  $this->bus->dispatch(new EmailInvoice($m->invoiceId)); // path নয়, ID
+              }
+          }
+        marks:
+          - {line: 5, tip: 'শেয়ার করা storage: সব সার্ভার একই ফাইল পড়ে-লেখে। দাম: নেটওয়ার্ক কল, আর ভাঙতে পারে এমন আরেকটা জিনিস।'}
+          - {line: 6, tip: 'Cache pool-এ TTL আছে, তাই ঘণ্টা ধরে চলা worker-এও মান সর্বোচ্চ ৫ মিনিটের পুরনো।'}
+          - {line: 18, tip: 'বার্তায় শুধু ID। ইমেইলের handler storage থেকে ফাইলটা আনে।'}
+      - type: quote
+        body: 'বার্তায় ID, ফাইল শেয়ার করা storage-এ। কোনো কাজ যেন একটা সার্ভারের ডিস্কের ওপর নির্ভর না করে।'
+    aside:
+      - type: tips
+        items:
+          - 'প্রতিটা বার্তার পরে Symfony `kernel.reset` ট্যাগ করা service রিসেট করে, কিন্তু আপনার নিজের property রিসেট হয় না।'
+          - 'মান তাজা থাকতে হলে property-র বদলে TTL-সহ cache pool দিয়ে পড়ুন।'
+      - type: pitfalls
+        items:
+          - 'এক handler-এ `var/` বা `/tmp`-এ লিখে অন্য বার্তায় সেটা পড়া।'
+          - 'মেমরি লিক: আগের স্লাইডের `--memory-limit` আর `--limit` ঠিক এটাই ধরে।'
+    check:
+      q: 'তিন সার্ভার হলে লোকাল path দিয়ে `new EmailInvoice($path)` কেন বাগ?'
+      a: 'পরের কাজ অন্য সার্ভারে চলতে পারে, যেখানে ওই path নেই। ID পাঠান, আর ফাইল আনুন এমন storage থেকে, যা সব সার্ভার শেয়ার করে।'
+
+  - slug: transport-and-limits
+    title: 'Transport বা ডেটাবেস যখন সীমা হয়ে দাঁড়ায়'
+    kind: compare
+    tldr: 'Queue-র গভীরতা আর বার্তার বয়স দেখে বুঝুন কখন worker বাড়াতে হবে। প্রতিটা worker-এ একটা ডেটাবেস connection লাগে, আর transport-কেও তাল রাখতে হয়, তাই পরিমাণ দেখে বাছুন।'
+    keywords: ['messenger:stats', 'queue depth', 'doctrine transport', 'redis transport', 'rabbitmq', 'sqs', 'ডেটাবেস connection']
+    blocks:
+      - type: text
+        body: |
+          দুটো সংখ্যা দেখুন: queue depth (`php bin/console messenger:stats`, transport গুনতে পারলে) আর সবচেয়ে পুরনো বার্তার বয়স। সব worker ব্যস্ত থাকা অবস্থায় depth বাড়লে worker বাড়ান। কিন্তু প্রতিটা worker প্রায় একটা ডেটাবেস connection ধরে রাখে। ৩ সার্ভার × ৯ worker = ২৭, আর PostgreSQL ডিফল্টে দেয় ১০০টা। ওয়েব অ্যাপ সর্বোচ্চ ৪০ নিলে বাকি ৬০, অর্থাৎ ৯ worker-এর প্রায় ৬টা সার্ভার। এর বেশি হলে worker কমান বা আগে PgBouncer-এর মতো pooler বসান, দাম: আরেকটা জিনিস চালানো। Transport-এরও সীমা আছে:
+      - type: visual
+        kind: table
+        caption: 'চারটা transport, আর প্রতিটার দাম'
+        headers: ['', 'Doctrine', 'Redis', 'RabbitMQ', 'SQS']
+        rows:
+          - cells: ['Worker কাজ পায় কীভাবে', 'আপনার ডেটাবেসের টেবিল poll করে', 'Redis stream থেকে পড়ে', 'AMQP broker থেকে নেয়', 'AWS-এর managed queue poll করে']
+            tip: 'Doctrine-এ ২৭টা অলস worker সেকেন্ডে প্রায় ২৭ বার ডেটাবেসের কাছে কাজ চায়।'
+          - cells: ['কোথায় মানায়', 'মাঝারি পরিমাণ, নতুন কিছু চালাতে হয় না', 'বেশি পরিমাণ, ছোট একটা সার্ভার', 'বেশি পরিমাণ, routing, অনেক অ্যাপ', 'বেশি পরিমাণ, সার্ভার চালাতে হয় না']
+            tip: 'যা আগেই চালান তা দিয়ে শুরু করুন, সংখ্যা বললে ওপরে উঠুন।'
+          - cells: ['দাম', 'Worker মূল ডেটাবেসে চাপ বাড়ায়', 'মেমরিতে থাকে: persistence ছাড়া crash-এ বার্তা যেতে পারে', 'আরেকটা সিস্টেম চালানো ও শেখা', 'প্রতি request-এ খরচ, AWS-এ বাঁধা']
+            tip: 'প্রতিটা বিকল্প খরচটা অন্য কোথাও সরায়। যেটা চালাতে পারবেন সেটা বাছুন।'
+      - type: quote
+        body: 'Connection গুনুন worker × সার্ভার ধরে, আর রাখুন ডেটাবেসের সীমার নিচে।'
+    aside:
+      - type: commands
+        items:
+          - {cmd: 'php bin/console messenger:stats', desc: 'প্রতি transport-এ কতগুলো বার্তা অপেক্ষায়'}
+      - type: tips
+        items:
+          - 'অলস worker ডিফল্টে poll-এর মাঝে ১ সেকেন্ড ঘুমায় (`--sleep`)।'
+          - 'ব্যর্থ বার্তা আর retry আলাদা বিষয়, তার জন্য retry-র পাঠ দেখুন।'
+      - type: refs
+        items:
+          - {to: 'messaging/dlq-retries', label: 'Retry আর ব্যর্থ বার্তা'}
+    check:
+      q: 'Doctrine transport-এ ৫ সার্ভারে ৪০ worker চলছে, আর ওয়েব অ্যাপ ধীর। Worker কী বাড়িয়েছে?'
+      a: 'প্রতিটা একটা ডেটাবেস connection ধরে, আর সেকেন্ডে প্রায় একবার বার্তার টেবিল poll করে, তাই মূল ডেটাবেস সেই চাপ বয়। Worker কমান, অথবা Redis, RabbitMQ বা SQS-এ যান।'
+
+flashcards:
+  - q: 'Messenger worker-এর ক্ষেত্রে "competing consumers" মানে কী?'
+    a: 'অনেক worker একটাই শেয়ার করা transport পড়ে, আর প্রতিটা বার্তা যায় তাদের একজনের কাছে। কোড না বদলেই worker বা সার্ভার বাড়ালে কাজ বাড়ে।'
+    more: |
+      এটাই বিনা খরচে বাড়ে। কিন্তু ক্রমের নিশ্চয়তা মেলে না, আর crash-এর পরে একই বার্তা দুইবার আসতে পারে, তাই handler idempotent হতে হয়। দেখুন [[messaging/delivery-guarantees|delivery guarantee]]।
+    ref: second-server-surprises
+  - q: 'সার্ভার ১-এ `messenger:stop-workers` চালালে সার্ভার ২-এর worker কেন পুরনো কোডেই থাকে?'
+    a: 'কমান্ডটা যে মেশিনে চলে, তার app cache-এ চিহ্ন লেখে। লোকাল filesystem cache হলে অন্য সার্ভারের worker চিহ্নটা কখনো দেখে না।'
+    more: |
+      Worker বার্তার ফাঁকে app cache দেখে। নিজের চালু হওয়ার সময়ের চেয়ে নতুন চিহ্ন পেলেই শুধু বেরোয়। Cache আলাদা হলে চিহ্নও আলাদা।
+    ref: shared-stop-signal
+  - q: 'Deploy-এ worker নতুন করার তিনটা উপায় আর প্রতিটার দাম বলুন।'
+    a: 'শেয়ার করা cache (Redis-এর মতো কিছু লাগে), সার্ভারে সার্ভারে restart (script-কে সব সার্ভার জানতে হয), বা container বদল (orchestrator লাগে)।'
+    more: |
+      শেয়ার করা cache থাকলে একটা `messenger:stop-workers` সব সার্ভারে পৌঁছায়, কিন্তু cache বন্ধ থাকলে signal হারায়। সার্ভারে সার্ভারে restart সোজা, তবে একটা মেশিন বাদ পড়া সহজ। Orchestrator আগে থেকেই থাকলে rolling container বদলই সবচেয়ে পরিষ্কার।
+    ref: shared-stop-signal
+  - q: '`--time-limit`, `--memory-limit` আর `--limit` কী করে?'
+    a: 'প্রতিটা worker-কে ইচ্ছা করে বের করে দেয়: N সেকেন্ড পরে, মেমরির সীমা পেরোলে, বা N বার্তা পরে। তারপর supervisor নতুন একটা চালু করে।'
+    more: |
+      তিনটা মিলে লিককে দিনের পর দিন বাড়তে দেয় না, আর পুরনো কোড কতক্ষণ চলবে তারও সীমা বাঁধে। মেমরি দেখা হয় বার্তার ফাঁকে, তাই একটা খুব বড় বার্তা বেরোনোর আগেই সীমা ছাড়িয়ে যেতে পারে।
+    ref: workers-config
+  - q: 'প্রতি কাজে ০.৫ সেকেন্ড, আর সেকেন্ডে ৪০টা কাজ আসে। কয়টা worker লাগবে?'
+    a: 'একটা worker সেকেন্ডে ২টা করে, তাই ৪০ ÷ ২ = ২০টা সব সময় ব্যস্ত। প্রায় ৩০% বাড়তি ধরলে ২৬ বা তার বেশি।'
+    more: |
+      নিয়ম: ব্যস্ত worker = প্রতি সেকেন্ডের কাজ × প্রতি কাজের সেকেন্ড। মাত্র ১০টা worker থাকলে queue সেকেন্ডে ২০, মিনিটে ১,২০০ করে বাড়ে। শেষ সংখ্যাটা সার্ভারে ভাগ করুন, যেমন ৩ × ৯ = ২৭।
+    ref: workers-config
+  - q: 'বার্তায় ফাইলের path না দিয়ে ID দেওয়া উচিত কেন?'
+    a: 'পরের কাজ অন্য সার্ভারে চলতে পারে, যেখানে লোকাল path নেই। ফাইল রাখুন শেয়ার করা storage-এ, আর পাঠান ID।'
+    more: |
+      কাজের যা কিছু লাগে তা প্রতিটা সার্ভার থেকে পৌঁছানো যেতে হবে: ফাইলের জন্য শেয়ার করা storage, state-এর জন্য ডেটাবেস বা শেয়ার করা cache। দাম: লোকাল ডিস্ক পড়ার বদলে একটা নেটওয়ার্ক কল।
+    ref: state-on-one-server
+  - q: 'Handler-এর property-তে রাখা মান কেন বাসি হয়ে যেতে পারে?'
+    a: 'Worker চলে ঘণ্টার পর ঘণ্টা, PHP-FPM request-এর মতো নয়, তাই property-র মান process শেষ না হওয়া পর্যন্ত থাকে।'
+    more: |
+      বদলায় এমন মান TTL-সহ cache pool দিয়ে পড়ুন, তাতে বয়সের একটা সীমা থাকে। `--time-limit`-ও কাজে লাগে, কারণ worker restart হয়ে পরিষ্কার অবস্থায় শুরু করে।
+    ref: state-on-one-server
+  - q: 'আপনার worker-রা কয়টা ডেটাবেস connection নেয়?'
+    a: 'প্রতি worker-এ প্রায় একটা, অর্থাৎ worker × সার্ভার। ৩ সার্ভার × ৯ worker = ২৭, সঙ্গে ওয়েব অ্যাপ, সব মিলে ডেটাবেসের সীমার নিচে।'
+    more: |
+      PostgreSQL ডিফল্টে ১০০টা connection দেয়। ওয়েব অ্যাপ সর্বোচ্চ ৪০ নিলে worker-এর জন্য থাকে প্রায় ৬০। এর বেশি হলে worker কমান, অথবা PgBouncer-এর মতো pooler বসান, দাম: আরেকটা component।
+    ref: transport-and-limits
+  - q: 'অনেক worker থাকলে Doctrine transport-এর দাম কী?'
+    a: 'প্রতিটা worker কাজের জন্য আপনার মূল ডেটাবেস poll করে, তাই worker যত বাড়ে চাপও তত। মাঝারি পরিমাণে এটা মানায়।'
+    more: |
+      ডিফল্টে অলস worker poll-এর মাঝে ১ সেকেন্ড ঘুমায়, তাই ২৭টা অলস worker সেকেন্ডে প্রায় ২৭টা query করে। Redis, RabbitMQ আর SQS এই চাপ মূল ডেটাবেস থেকে সরায়, প্রতিটার নিজস্ব দাম নিয়ে।
+    ref: transport-and-limits
+
+quiz:
+  - q: 'আপনার অ্যাপে ৩ সার্ভারে worker চলে, আর `cache.app` ডিফল্ট filesystem cache। Deploy শুধু সার্ভার ১-এ `messenger:stop-workers` চালায়। কোন পরিবর্তনে সব সার্ভার নতুন কোড পাবে?'
+    hint: 'Signal যায় cache দিয়ে, আর প্রতিটা সার্ভারের ডিস্ক আলাদা।'
+    options:
+      - text: '`cache.app`-কে এমন Redis-এ নেওয়া, যা সব সার্ভার ব্যবহার করে'
+        correct: true
+        why: 'তখন একটা কমান্ডের লেখা চিহ্ন প্রতিটা worker দেখতে পায়।'
+      - text: 'Deploy-এর সময় প্রতিটা সার্ভারে stop কমান্ড চালানো'
+        correct: true
+        why: 'প্রতিটা সার্ভার নিজের cache-এ চিহ্ন লেখে, আর নিজের worker তা পড়ে। দাম: script যেন কোনো সার্ভার বাদ না দেয়।'
+      - text: 'Deploy-এর পরে সার্ভার ১-এ `cache:clear` চালানো'
+        correct: false
+        why: 'এতে শুধু সার্ভার ১-এর cache মোছে। অন্য সার্ভারের worker কিছুই জানে না।'
+      - text: 'সার্ভার ২ আর ৩-এ `numprocs` বাড়ানো'
+        correct: false
+        why: 'পুরনো কোডের আরও process-ও পুরনো কোডই চালায়।'
+    ref: shared-stop-signal
+  - q: 'প্রতি সেকেন্ডে ৬০টা কাজ আসে, প্রতিটায় ০.২৫ সেকেন্ড। সব সময় কয়টা worker ব্যস্ত থাকা দরকার?'
+    hint: 'প্রতি সেকেন্ডের কাজকে গুণ করুন প্রতি কাজের সেকেন্ড দিয়ে।'
+    options:
+      - text: '৪টা, কারণ একটা worker সেকেন্ডে ৪টা কাজ করে'
+        correct: false
+        why: 'ওটা একটা worker-এর গতি। আসা কাজের সঙ্গে মেলাতে ৬০ ÷ ৪ জন worker লাগবে।'
+      - text: '৬০টা, প্রতি সেকেন্ডের কাজে একটা করে'
+        correct: false
+        why: 'এতে ধরা হয়নি যে worker ০.২৫ সেকেন্ডে কাজ সেরে পরেরটা নেয়। মেমরি আর connection নষ্ট হয়।'
+      - text: 'প্রায় ১৫টা, আর স্পাইকের জন্য কিছু বাড়তি'
+        correct: true
+        why: '৬০ × ০.২৫ = ১৫টা worker ব্যস্ত। প্রায় ৩০% বাড়তি ধরলে সংখ্যা ২০-র কাছাকাছি।'
+    ref: workers-config
+  - q: 'Worker দিনের পর দিন চলে, মেমরি বাড়তে বাড়তে সার্ভার তাদের মেরে ফেলে। এই config-এ কী নেই?'
+    lang: ini
+    code: |
+      [program:messenger-async]
+      command=php bin/console messenger:consume async
+      numprocs=9
+      autorestart=true
+    hint: 'autorestart কাজ করে process বেরোনোর পরে। বেরোনোর আগেই কী তাকে থামাবে?'
+    options:
+      - text: '`--memory-limit`, যাতে সীমা পেরোলে worker নিজে ভদ্রভাবে বেরিয়ে যায়'
+        correct: true
+        why: 'বার্তার ফাঁকে মেমরি দেখে বেরোয়, আর supervisor নতুন একটা চালু করে।'
+      - text: '`--time-limit`, যাতে কোনো worker নির্দিষ্ট সময়ের বেশি না বাঁচে'
+        correct: true
+        why: 'যেকোনো লিকের আয়ু বাঁধে, আর পুরনো কোড কতক্ষণ চলবে তারও সীমা দেয়।'
+      - text: 'কিছু না, `autorestart=true`-ই লিক-করা worker restart করে দেয়'
+        correct: false
+        why: 'সে process বেরোনোর পরেই restart করে। যে worker বাড়তেই থাকে সে নিজে থেকে বেরোয় না।'
+      - text: '`numprocs=1` করা'
+        correct: false
+        why: 'প্রতিটা worker তবুও লিক করবে। শুধু ক্ষমতা কমবে।'
+    ref: workers-config
+  - q: 'এটা ১ সার্ভারে চলে, কিন্তু ৩ সার্ভারে ভাঙে কেন?'
+    lang: php
+    code: |
+      $path = '/var/www/app/var/invoices/'.$m->invoiceId.'.pdf';
+      file_put_contents($path, $this->pdf->render($m->invoiceId));
+      $this->bus->dispatch(new EmailInvoice($path));
+    hint: 'পরের worker কোথায় চলে, আর ফাইলটা কোথায়?'
+    options:
+      - text: 'পরের worker অন্য সার্ভারে চলতে পারে, যেখানে ওই path নেই'
+        correct: true
+        why: 'ফাইল একটা মেশিনের ডিস্কে। Queue পরের কাজ দেয় যেকোনো worker-কে।'
+      - text: 'Path পাঠালে Messenger বার্তা হারিয়ে ফেলে'
+        correct: false
+        why: 'বার্তা ঠিকই পৌঁছায়। সে এমন ফাইলের দিকে দেখায়, যা সেখানে নেই।'
+      - text: 'Worker থেকে PHP ফাইল লিখতে পারে না'
+        correct: false
+        why: 'Worker ফাইল লিখতে পারে। সমস্যা হলো ফাইলটা কোথায় গিয়ে পড়ছে।'
+    ref: state-on-one-server
+  - q: '৫টা সার্ভার যোগ করার পরে queue বেশির ভাগ সময় খালি থাকলেও মূল ডেটাবেস ধীর। আপনি Doctrine transport ব্যবহার করেন। সবচেয়ে সম্ভাব্য কারণ কী?'
+    hint: 'অলস worker প্রতি সেকেন্ডে কী করে?'
+    options:
+      - text: 'প্রতিটা worker মূল ডেটাবেসের messages টেবিল poll করে, আর প্রতিটা একটা connection ধরে রাখে'
+        correct: true
+        why: 'কাজ কম থাকলেও poll আর connection-এর চাপ worker-সংখ্যার সঙ্গে বাড়ে।'
+      - text: 'Doctrine transport ১০টার বেশি worker-এ কাজ করে না'
+        correct: false
+        why: 'এমন কোনো সীমা নেই। খরচটা ভাগ করা ডেটাবেসের ওপর চাপ।'
+      - text: 'Stop signal worker-দের loop-এ restart করাচ্ছে'
+        correct: false
+        why: 'সেটা ঘটে signal ছাড়লে, মানে deploy প্রতি একবার।'
+    ref: transport-and-limits
+  - q: 'রহিম ৩ সার্ভারে `messenger:consume async` চালু করল। প্রতিটা বার্তা একজন worker-ই সামলাবে, এজন্য কি কোড বদলাতে হবে?'
+    hint: 'শেয়ার করা transport একটা বার্তা নিয়ে কী করে ভাবুন।'
+    options:
+      - text: 'হ্যাঁ, প্রতিটা সার্ভারকে আলাদা queue দিতে হবে'
+        correct: false
+        why: 'আলাদা queue হাতে কাজ ভাগ করা। শেয়ার করা queue আগে থেকেই ভাগ করে।'
+      - text: 'না, প্রতিটা বার্তা একজন worker পায়। তবে crash-এ আবার আসতে পারে, তাই handler idempotent রাখুন'
+        correct: true
+        why: 'Transport একবারে একজনকে বার্তা দেয়, কিন্তু delivery at-least-once, তাই ডুপ্লিকেট এখনো সম্ভব।'
+      - text: 'হ্যাঁ, বার্তা তিনজনের কাছেই যায়, তাই lock লাগবে'
+        correct: false
+        why: 'Competing consumers কপি পায় না। তারা পালা করে নেয়।'
+      - text: 'না, আর এখন ডুপ্লিকেট অসম্ভব'
+        correct: false
+        why: 'Crash বা visibility timeout-এর পরে ডুপ্লিকেট এখনো হতে পারে।'
+    ref: second-server-surprises
+  - q: 'পরিকল্পনা: ৬ সার্ভারে ৯টা করে worker, ওয়েব অ্যাপ সর্বোচ্চ ৪০ connection নেয়, আর PostgreSQL ডিফল্ট সীমায়। সমস্যা কী, সমাধান কী?'
+    hint: 'Worker × সার্ভার, সঙ্গে ওয়েব অ্যাপ, ১০০-র সঙ্গে মেলান।'
+    options:
+      - text: 'প্রতিটা worker-এর `--memory-limit` বাড়ানো'
+        correct: false
+        why: 'এখানে সমস্যা মেমরির নয়, connection-এর।'
+      - text: 'worker-এর ৫৪ আর ওয়েবের ৪০, মোট ৯৪, সীমার গা ঘেঁষে; আরেকটা সার্ভারেই ভাঙবে। worker কমান বা pooler বসান'
+        correct: true
+        why: '৬ × ৯ = ৫৪, সঙ্গে ৪০ মানে ১০০-র মধ্যে ৯৪। আগে হিসাব করুন, তারপর worker কমান বা PgBouncer-এর মতো pooler বসান।'
+      - text: 'Worker-রা একটাই connection ভাগ করে, তাই সমস্যা নেই'
+        correct: false
+        why: 'প্রতিটা worker process নিজের একটা করে connection ধরে।'
+    ref: transport-and-limits

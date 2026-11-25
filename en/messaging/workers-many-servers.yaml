@@ -1,0 +1,428 @@
+slides:
+  - slug: second-server-surprises
+    title: 'Two more servers, and old code keeps running'
+    kind: story
+    tldr: 'Extra workers on extra servers share one queue for free. But the deploy that restarts them signals through a local cache, so only one server hears it.'
+    keywords: ['messenger workers', 'multiple servers', 'competing consumers', 'stop-workers', 'deploy', 'stale code', 'scale workers']
+    blocks:
+      - type: metaphor
+        icon: shop
+        title: 'One ticket rail, three kitchens'
+        body: |
+          A biryani restaurant hangs every order ticket on one rail. Rahim opens a second and a third kitchen, and the cooks in all three take the next ticket from that same rail. Each ticket goes to exactly one cook, so three kitchens serve three times the orders with no new planning. The surprise: every kitchen has its own notice board, and the manager pinned "new recipe from today" on the first kitchen's board only.
+      - type: visual
+        kind: sequence
+        caption: 'After a deploy with a local cache, server 2 keeps running version 1'
+        actors:
+          - {id: deploy, label: 'Deploy script', icon: terminal, tip: 'Runs once per release, here on server 1. It ships version 2 and then asks the workers to restart.'}
+          - {id: s1, label: 'Server 1 workers', icon: server, tip: 'Workers on the server where the deploy ran.'}
+          - {id: s2, label: 'Server 2 workers', icon: server, tip: 'Workers on another server. They read the same queue, but a different cache.'}
+          - {id: queue, label: 'Queue', icon: queue, tip: 'The one shared transport that all workers take messages from.'}
+        messages:
+          - {from: deploy, to: s1, label: 'Run messenger:stop-workers', tip: 'The command writes a restart mark into the cache of the machine it runs on. With the default filesystem cache, that is server 1''s own disk.'}
+          - {at: s1, note: 'Sees the mark, restarts on version 2', tone: good}
+          - {at: s2, note: 'No mark here, still on version 1', tone: bad}
+          - {from: queue, to: s2, label: 'A message built by version 2', dashed: true, tip: 'The web app already runs version 2, so it puts the new fields into messages.'}
+          - {at: s2, note: 'Old handler breaks on the new message', tone: bad}
+      - type: points
+        title: 'Four more surprises on the way'
+        items:
+          - 'A handler saves a file on server 1, the next job runs on server 2, and the file is not there.'
+          - 'A worker lives for hours, not for one request, so a small memory leak or a stale in-memory value adds up.'
+          - 'Every worker holds a database connection, so more servers means more connections to one database.'
+          - 'All workers read one transport, so at some point the queue itself, not the workers, is the limit.'
+    aside:
+      - type: story
+        title: 'The field that nobody read'
+        body: |
+          A team added a field to a message and deployed. Server 1 restarted its workers and handled it. Server 2 kept the old handler, which ignored the field, and nobody noticed for three days.
+      - type: terms
+        items:
+          - {term: 'Competing consumers', meaning: 'Many workers read one queue, and each message goes to just one of them.'}
+          - {term: 'Worker', meaning: 'A long-running PHP process started by `messenger:consume`.'}
+      - type: refs
+        items:
+          - {to: 'messaging/delivery-guarantees', label: 'Order and duplicate messages'}
+    check:
+      q: 'After a deploy, server 1 runs the new code but server 2 does not. What went wrong with the stop signal?'
+      a: '`messenger:stop-workers` writes its mark into the cache of the server it runs on. With a filesystem cache that is server 1''s disk, so workers on server 2 never see it.'
+
+  - slug: shared-stop-signal
+    title: 'One shared place for the stop signal'
+    kind: concept
+    tldr: 'The stop command leaves a mark in the app cache and workers read it. Put the cache where every server can see it, or restart per server, or replace containers.'
+    keywords: ['messenger:stop-workers', 'shared cache', 'redis cache', 'rolling deploy', 'supervisorctl restart', 'graceful stop']
+    blocks:
+      - type: text
+        body: |
+          `messenger:stop-workers` never talks to a worker. It writes a timestamp into the app cache (`cache.app`). Every worker looks there between messages, and when the mark is newer than its own start, it finishes the message it is on and exits. A supervisor then starts a fresh process on the new code. So the signal reaches exactly the workers that read the same cache.
+      - type: visual
+        kind: flow
+        caption: 'One command, one shared cache, every worker on every server'
+        nodes:
+          - {id: deploy, label: 'Deploy script', icon: terminal, col: 0, row: 1, tip: 'Runs the stop command once per release.'}
+          - {id: cache, label: 'Shared cache', sub: 'Redis', icon: cache, tone: accent, col: 1.5, row: 1, tip: 'The one place the restart mark is written and read. Every server can reach it.'}
+          - {id: w1, label: 'Worker, server 1', icon: worker, col: 3, row: 0, tip: 'Checks the cache between messages.'}
+          - {id: w2, label: 'Worker, server 2', icon: worker, col: 3, row: 1, tip: 'On another machine, reading the same cache.'}
+          - {id: w3, label: 'Worker, server 3', icon: worker, col: 3, row: 2, tip: 'Also on its own machine, also reading the same cache.'}
+        edges:
+          - {from: deploy, to: cache, label: 'The deploy runs stop-workers, which writes a restart mark into the shared cache.', tip: 'One command from one place.'}
+          - {from: cache, to: w1, label: 'Worker 1 sees the mark after its current message and exits.', tone: good}
+          - {from: cache, to: w2, label: 'Worker 2, on another server, sees the same mark and exits.', tone: good}
+          - {from: cache, to: w3, label: 'Worker 3 does too. The supervisor then starts all of them on the new code.', tone: good}
+      - type: code
+        lang: yaml
+        file: 'config/packages/cache.yaml'
+        variant: good
+        code: |
+          framework:
+              cache:
+                  # cache.app also carries the stop signal. Its default is a folder
+                  # on THIS server's disk, so other servers never see the mark.
+                  app: cache.adapter.redis
+                  default_redis_provider: '%env(REDIS_URL)%'
+        marks:
+          - {line: 5, tip: 'Redis is reachable from every server, so one stop-workers call is seen by all of them.'}
+      - type: points
+        title: 'Three ways to refresh workers on a deploy'
+        items:
+          - '**Shared cache:** run `php bin/console messenger:stop-workers` once. Price: every server needs that cache, and while it is down the signal does not arrive.'
+          - '**Per server:** the deploy runs the stop command, or `supervisorctl restart`, on every server. Price: the script must know every server, and a skipped one stays stale.'
+          - '**Replace containers:** a rolling deploy starts new containers and stops the old ones. Price: you need an orchestrator, and old containers need time to finish their job.'
+      - type: quote
+        body: 'A stop signal sent through a cache reaches only the workers that read that same cache.'
+    aside:
+      - type: commands
+        items:
+          - {cmd: 'php bin/console messenger:stop-workers', desc: 'Ask all workers on the same cache to exit after their current message'}
+          - {cmd: 'supervisorctl restart messenger-async:*', desc: 'Restart this server''s workers, one by one, gracefully'}
+      - type: tips
+        items:
+          - 'Workers finish the message they are on, so a deploy does not cut a job in half.'
+          - 'The command only makes workers exit. Without a supervisor, nobody starts them again.'
+    check:
+      q: 'You run `messenger:stop-workers` once, with workers on three servers. What must hold for all of them to restart?'
+      a: 'All three must read the same cache, and each server needs a supervisor that starts a new process once the old one exits.'
+
+  - slug: workers-config
+    title: 'Keeping workers alive, and how many to run'
+    kind: howto
+    tldr: 'Work out the worker count from jobs per second and job time, then let a supervisor run that many and restart them. The flags make each worker retire cleanly.'
+    keywords: ['supervisor', 'systemd', 'numprocs', 'time-limit', 'memory-limit', 'worker count', 'sizing workers']
+    blocks:
+      - type: text
+        body: |
+          Say the team must handle **40 jobs a second**, and a job takes **0.5 s**. One worker finishes 2 jobs a second, so 40 ÷ 2 = **20 workers busy at all times**. With only 10, 20 jobs a second get done and 20 wait: the queue grows by 1,200 a minute. Add about 30% headroom (26) and round up to 27: 3 servers × 9 workers. The price is 27 database connections and up to 9 × 128 MB = about 1.1 GB of memory per server.
+      - type: code
+        lang: ini
+        file: '/etc/supervisor/conf.d/messenger.conf'
+        variant: good
+        code: |
+          ; same file on all 3 servers: 3 x 9 = 27 workers
+          [program:messenger-async]
+          directory=/var/www/app
+          command=php bin/console messenger:consume async --time-limit=900 --memory-limit=128M --limit=500
+          process_name=%(program_name)s_%(process_num)02d
+          numprocs=9
+          user=www-data
+          environment=APP_ENV="prod"
+          autostart=true
+          autorestart=true
+          startsecs=0
+          startretries=10
+          stopsignal=TERM
+          stopwaitsecs=60
+        marks:
+          - {line: 4, tip: 'Each flag makes a worker exit on purpose: after 15 minutes, past 128 MB (checked between messages), or after 500 messages. A leak cannot grow for days.'}
+          - {line: 6, tip: 'Nine copies on this server. The same file on three servers gives 27.'}
+          - {line: 10, tip: 'Whenever a worker exits, for any reason, the supervisor starts a new one.'}
+          - {line: 14, tip: 'After TERM, the supervisor waits up to 60 s for the current job. Keep it above your slowest job.'}
+      - type: quote
+        body: 'Let every worker retire on schedule, and let a supervisor hire the next one.'
+    aside:
+      - type: tips
+        items:
+          - '`--time-limit` is also a safety net: even if a stop signal is lost, workers run new code within 15 minutes.'
+          - 'With systemd, use a template unit with `Restart=always`, and the same flags.'
+          - 'Graceful stop on TERM needs the `pcntl` PHP extension.'
+      - type: terms
+        items:
+          - {term: 'Supervisor', meaning: 'A small program that starts your workers and starts them again when they exit.'}
+      - type: refs
+        items:
+          - {to: 'messaging/background-jobs', label: 'Visibility timeout and priority lanes'}
+    check:
+      q: 'You need 30 jobs a second and each job takes 0.2 s. How many workers must be busy, and what happens with 4?'
+      a: '30 × 0.2 = 6 workers busy at all times. Four workers finish only 20 jobs a second, so the queue grows by 10 a second, 600 a minute.'
+
+  - slug: state-on-one-server
+    title: 'The trap: state that lives on one server'
+    kind: pitfall
+    tldr: 'A file on one server''s disk or a value cached in a worker''s memory breaks on many servers. Send IDs, keep files in shared storage, cache with a TTL.'
+    keywords: ['local files', 'shared storage', 'flysystem', 'worker memory', 'stale cache', 'message ID', 'state in handler']
+    blocks:
+      - type: text
+        body: |
+          On one server, the job that builds an invoice PDF and the job that emails it always ran side by side, so a path on local disk worked. On three servers, the queue hands the second job to any worker, and the file sits on only one of them. Also, a worker lives for hours, so a value kept in a property stays until the process ends. The fix: the message carries the invoice **ID**, the file goes to storage every server can reach, and cached values get a TTL. The price: a network call instead of a local read, and one more dependency.
+      - type: code
+        lang: php
+        file: 'src/MessageHandler/SendInvoiceHandler.php'
+        variant: bad
+        code: |
+          #[AsMessageHandler]
+          final class SendInvoiceHandler
+          {
+              private ?array $rates = null;
+
+              public function __invoke(SendInvoice $m): void
+              {
+                  $this->rates ??= $this->fx->loadRates();     // loaded once, kept for hours
+                  $path = '/var/www/app/var/invoices/'.$m->invoiceId.'.pdf';
+                  file_put_contents($path, $this->pdf->render($m->invoiceId, $this->rates));
+                  // the next worker may run on another server, where $path does not exist
+                  $this->bus->dispatch(new EmailInvoice($path));
+              }
+          }
+        marks:
+          - {line: 4, tip: 'A property lives as long as the worker. The rate read at 9 a.m. is still used at 9 p.m.'}
+          - {line: 10, tip: 'This writes to the local disk of whichever server runs the job.'}
+          - {line: 12, tip: 'A path means nothing on another server.'}
+      - type: code
+        lang: php
+        file: 'src/MessageHandler/SendInvoiceHandler.php'
+        variant: good
+        code: |
+          #[AsMessageHandler]
+          final readonly class SendInvoiceHandler
+          {
+              public function __construct(
+                  private FilesystemOperator $invoicesStorage,  // flysystem on S3 or a shared disk
+                  private FxRates $fx,                          // cached with a 5-minute TTL
+                  private InvoicePdf $pdf,
+                  private MessageBusInterface $bus,
+              ) {}
+
+              public function __invoke(SendInvoice $m): void
+              {
+                  $this->invoicesStorage->write(
+                      "invoices/{$m->invoiceId}.pdf",
+                      $this->pdf->render($m->invoiceId, $this->fx->current()),
+                  );
+                  $this->bus->dispatch(new EmailInvoice($m->invoiceId)); // the ID, not the path
+              }
+          }
+        marks:
+          - {line: 5, tip: 'Shared storage: every server reads and writes the same files. Price: a network call, and one more thing that can fail.'}
+          - {line: 6, tip: 'The cache pool has a TTL, so a value is at most 5 minutes old, even in a worker that lives for hours.'}
+          - {line: 18, tip: 'The message carries only the ID. The email handler fetches the file from storage.'}
+      - type: quote
+        body: 'Messages carry IDs. Files live in shared storage. A job never needs one server''s disk.'
+    aside:
+      - type: tips
+        items:
+          - 'Symfony resets services tagged `kernel.reset` after each message, but your own properties are not reset.'
+          - 'If a value must be fresh, read it through a cache pool with a TTL instead of a property.'
+      - type: pitfalls
+        items:
+          - 'Writing to `var/` or `/tmp` in one handler and reading it in another message.'
+          - 'A memory leak: that is what `--memory-limit` and `--limit` from the last slide catch.'
+    check:
+      q: 'Why is `new EmailInvoice($path)` with a local path a bug once there are three servers?'
+      a: 'The next job may run on another server, where that path does not exist. Send the ID and fetch the file from storage that all servers share.'
+
+  - slug: transport-and-limits
+    title: 'When the transport or the database is the limit'
+    kind: compare
+    tldr: 'Watch queue depth and message age to know when to add workers. Each worker costs a database connection, and the transport must keep up, so choose it by volume.'
+    keywords: ['messenger:stats', 'queue depth', 'doctrine transport', 'redis transport', 'rabbitmq', 'sqs', 'database connections']
+    blocks:
+      - type: text
+        body: |
+          Watch two numbers: queue depth (`php bin/console messenger:stats`, if the transport can count) and the age of the oldest message. Depth rising while every worker is busy means add workers. But each worker holds about one database connection. 3 servers × 9 workers is 27, and PostgreSQL allows 100 by default. If the web app peaks at 40, that leaves 60, so about 6 servers of 9. Past that, run fewer workers or put a pooler such as PgBouncer in front, at the price of one more thing to run. The transport has limits too:
+      - type: visual
+        kind: table
+        caption: 'Four transports, and what each one costs you'
+        headers: ['', 'Doctrine', 'Redis', 'RabbitMQ', 'SQS']
+        rows:
+          - cells: ['How workers get work', 'Poll a table in your database', 'Read from a Redis stream', 'Consume from an AMQP broker', 'Poll a managed AWS queue']
+            tip: 'With Doctrine, 27 idle workers ask the database for work about 27 times a second.'
+          - cells: ['Fits', 'Modest volume, nothing new to run', 'High volume, one small server', 'High volume, routing, many apps', 'High volume, no server to run']
+            tip: 'Start with what you already run, and move up when the numbers say so.'
+          - cells: ['Price', 'Workers add load to your main database', 'Lives in memory: a crash can lose messages without persistence', 'One more system to run and learn', 'Pay per request, tied to AWS']
+            tip: 'Every option moves the cost somewhere. Pick the one you can operate.'
+      - type: quote
+        body: 'Count connections as workers times servers, and keep that below what the database allows.'
+    aside:
+      - type: commands
+        items:
+          - {cmd: 'php bin/console messenger:stats', desc: 'How many messages wait in each transport'}
+      - type: tips
+        items:
+          - 'Idle workers sleep 1 second between polls by default (`--sleep`).'
+          - 'Failed messages and retries are a separate topic, covered in the retries lesson.'
+      - type: refs
+        items:
+          - {to: 'messaging/dlq-retries', label: 'Retries and failed messages'}
+    check:
+      q: 'You run the Doctrine transport with 40 workers on 5 servers, and the web app gets slow. What did the workers add?'
+      a: 'Each holds a database connection and polls the messages table about once a second, so your main database carries that load. Cut workers, or move to Redis, RabbitMQ or SQS.'
+
+flashcards:
+  - q: 'What does "competing consumers" mean for Messenger workers?'
+    a: 'Many workers read one shared transport, and each message goes to just one of them. Adding workers or servers raises throughput with no code change.'
+    more: |
+      This is what scales for free. It does not give you ordering, and a message can still arrive twice after a crash, so handlers must be idempotent. See [[messaging/delivery-guarantees|delivery guarantees]].
+    ref: second-server-surprises
+  - q: 'Why do workers on server 2 keep old code after `messenger:stop-workers` on server 1?'
+    a: 'The command writes a mark into the app cache of the machine it runs on. With a local filesystem cache, workers on other servers never see it.'
+    more: |
+      Workers poll the app cache between messages. They exit only when they find a mark newer than their own start. Different cache, different marks.
+    ref: shared-stop-signal
+  - q: 'Name three ways to refresh workers on a deploy, with the price of each.'
+    a: 'Shared cache (needs Redis or similar), restart per server (the script must list every server), or replace containers (needs an orchestrator).'
+    more: |
+      With a shared cache, one `messenger:stop-workers` reaches every server, but a cache outage means the signal is lost. Per-server restarts are simple but easy to skip on one machine. Rolling container replacement is cleanest if you already run an orchestrator.
+    ref: shared-stop-signal
+  - q: 'What do `--time-limit`, `--memory-limit` and `--limit` do?'
+    a: 'Each makes a worker exit on purpose: after N seconds, past a memory cap, or after N messages. The supervisor then starts a fresh one.'
+    more: |
+      Together they stop leaks from growing for days and cap how long old code can run. The memory check happens between messages, so one very large message can still pass the cap before the worker exits.
+    ref: workers-config
+  - q: 'Each job takes 0.5 s and 40 jobs a second arrive. How many workers do you need?'
+    a: 'One worker does 2 jobs a second, so 40 ÷ 2 = 20 busy at all times. Add about 30% headroom, so 26 or more.'
+    more: |
+      Rule: workers busy = jobs per second × seconds per job. With only 10 workers the queue grows by 20 jobs a second, 1,200 a minute. Split the final count across servers, for example 3 × 9 = 27.
+    ref: workers-config
+  - q: 'Why should a message carry an ID instead of a file path?'
+    a: 'The next job may run on another server, where a local path does not exist. Keep the file in shared storage and send the ID.'
+    more: |
+      Anything a job needs must be reachable from every server: shared storage for files, the database or a shared cache for state. The price is a network call instead of a local disk read.
+    ref: state-on-one-server
+  - q: 'Why can a value stored in a handler property go stale?'
+    a: 'A worker lives for hours, unlike a PHP-FPM request, so a property keeps its value until the process ends.'
+    more: |
+      Read changing values through a cache pool with a TTL, so the age is bounded. The `--time-limit` flag also helps, because the worker restarts and starts clean.
+    ref: state-on-one-server
+  - q: 'How many database connections do your workers use?'
+    a: 'About one per worker, so workers times servers. 3 servers × 9 workers is 27, plus the web app, all under the database limit.'
+    more: |
+      PostgreSQL allows 100 connections by default. If the web app peaks at 40, about 60 are left for workers. Past that, run fewer workers or add a pooler such as PgBouncer, at the price of one more component.
+    ref: transport-and-limits
+  - q: 'What is the price of the Doctrine transport once you have many workers?'
+    a: 'Every worker polls your main database for work, so its load grows with the number of workers. It suits modest volume.'
+    more: |
+      By default an idle worker sleeps 1 second between polls, so 27 idle workers make about 27 queries a second. Redis, RabbitMQ and SQS move that load off your main database, each with its own cost.
+    ref: transport-and-limits
+
+quiz:
+  - q: 'Your app has workers on 3 servers and `cache.app` is the default filesystem cache. The deploy runs `messenger:stop-workers` on server 1 only. Which changes make all servers pick up the new code?'
+    hint: 'The signal travels through the cache, and each server has its own disk.'
+    options:
+      - text: 'Point `cache.app` at a Redis that all servers use'
+        correct: true
+        why: 'Then the mark written by the one command is visible to every worker.'
+      - text: 'Run the stop command on every server during the deploy'
+        correct: true
+        why: 'Each server writes the mark into its own cache, and its own workers read it. The price is that the script must not skip a server.'
+      - text: 'Run `cache:clear` on server 1 after the deploy'
+        correct: false
+        why: 'That clears server 1''s cache only. It does not tell workers on other servers anything.'
+      - text: 'Raise `numprocs` on servers 2 and 3'
+        correct: false
+        why: 'More processes of the old code are still old code.'
+    ref: shared-stop-signal
+  - q: 'You need 60 jobs a second and each job takes 0.25 s. How many workers must be busy at all times?'
+    hint: 'Multiply jobs per second by the seconds each job takes.'
+    options:
+      - text: '4 workers, because each does 4 jobs a second'
+        correct: false
+        why: 'That is the speed of one worker. You still need 60 ÷ 4 workers to match the arrivals.'
+      - text: '60 workers, one for every job per second'
+        correct: false
+        why: 'That ignores that a worker finishes a job in 0.25 s and takes the next. It wastes memory and connections.'
+      - text: 'About 15, plus some headroom for spikes'
+        correct: true
+        why: '60 × 0.25 = 15 workers busy. Headroom of about 30% brings it to around 20.'
+    ref: workers-config
+  - q: 'Workers run for days and memory keeps growing until the server kills them. What is missing from this config?'
+    lang: ini
+    code: |
+      [program:messenger-async]
+      command=php bin/console messenger:consume async
+      numprocs=9
+      autorestart=true
+    hint: 'autorestart only helps after a process exits. What makes it exit before the crash?'
+    options:
+      - text: '`--memory-limit`, so a worker exits cleanly once it passes a cap'
+        correct: true
+        why: 'It checks memory between messages and exits, and the supervisor starts a fresh one.'
+      - text: '`--time-limit`, so no worker lives longer than a set time'
+        correct: true
+        why: 'It bounds the lifetime of any leak, and it also limits how long old code can run.'
+      - text: 'Nothing, `autorestart=true` already restarts leaky workers'
+        correct: false
+        why: 'It restarts a process only after it exits. A worker that keeps growing never exits by itself.'
+      - text: 'Set `numprocs=1`'
+        correct: false
+        why: 'Each worker still leaks. You only lose capacity.'
+    ref: workers-config
+  - q: 'Why does this fail on 3 servers, but not on 1?'
+    lang: php
+    code: |
+      $path = '/var/www/app/var/invoices/'.$m->invoiceId.'.pdf';
+      file_put_contents($path, $this->pdf->render($m->invoiceId));
+      $this->bus->dispatch(new EmailInvoice($path));
+    hint: 'Where does the next worker run, and where is the file?'
+    options:
+      - text: 'The next worker may run on another server, where that path does not exist'
+        correct: true
+        why: 'The file is on one machine''s disk. The queue gives the next job to any worker.'
+      - text: 'Messenger loses messages when a path is sent'
+        correct: false
+        why: 'The message arrives fine. It points to a file that is not there.'
+      - text: 'PHP cannot write files from a worker'
+        correct: false
+        why: 'Workers can write files. The problem is where the file ends up.'
+    ref: state-on-one-server
+  - q: 'After you add 5 more servers, the main database slows down although the queue is empty most of the time. You use the Doctrine transport. What is the most likely cause?'
+    hint: 'What does an idle worker do every second?'
+    options:
+      - text: 'Every worker polls the messages table in your main database, and each one holds a connection'
+        correct: true
+        why: 'Load from polling and connections grows with the number of workers, even when there is little work.'
+      - text: 'The Doctrine transport stops working above 10 workers'
+        correct: false
+        why: 'There is no such limit. The cost is load on the shared database.'
+      - text: 'The stop signal makes workers restart in a loop'
+        correct: false
+        why: 'That only happens when the signal fires, which is once per deploy.'
+    ref: transport-and-limits
+  - q: 'Rahim starts `messenger:consume async` on 3 servers. Must he change code so that each message is handled by just one worker?'
+    hint: 'Think about what the shared transport does with a message.'
+    options:
+      - text: 'Yes, give each server its own queue'
+        correct: false
+        why: 'Separate queues would split the work by hand. A shared queue already shares it.'
+      - text: 'No, each message goes to one worker. But a crash can cause redelivery, so handlers should be idempotent'
+        correct: true
+        why: 'The transport hands a message to one worker at a time, and delivery is at-least-once, so a duplicate is still possible.'
+      - text: 'Yes, every message reaches all three, so he must add a lock'
+        correct: false
+        why: 'Competing consumers do not receive copies. They take turns.'
+      - text: 'No, and duplicates are now impossible'
+        correct: false
+        why: 'Duplicates can still happen after a crash or a visibility timeout.'
+    ref: second-server-surprises
+  - q: 'The plan: 6 servers with 9 workers each, a web app that peaks at 40 connections, PostgreSQL at its default limit. What is the problem, and what is the fix?'
+    hint: 'Workers times servers, plus the web app, against 100.'
+    options:
+      - text: 'Raise `--memory-limit` on every worker'
+        correct: false
+        why: 'Memory is not the issue here, connections are.'
+      - text: '54 worker connections plus 40 for the web is 94, which is close; one more server breaks it. Run fewer workers or add a pooler'
+        correct: true
+        why: '6 × 9 = 54, plus 40 gives 94 of 100. Count the budget first, then cut workers or add a pooler such as PgBouncer.'
+      - text: 'Workers share one connection, so there is no problem'
+        correct: false
+        why: 'Each worker process holds about one connection of its own.'
+    ref: transport-and-limits
