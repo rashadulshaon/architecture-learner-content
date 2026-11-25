@@ -1,43 +1,27 @@
 # Easy Architecture — content authoring guide
 
-Easy Architecture is a visual learning site, in **English and Bangla**, that teaches system
-design and software architecture. You write the content. The site renders it; you never write
-HTML.
+Easy Architecture is a visual learning site that teaches system design and software
+architecture. You write the content. The site renders it; you never write HTML.
 
 Read this whole guide, then read the two finished example files — they are the quality bar:
 
-- `content/bn/start/how-to-learn.yaml` (and its English edition in `content/en/start/`)
-- `content/bn/start/crud-to-architecture.yaml`
+- `content/start/how-to-learn.yaml`
+- `content/start/crud-to-architecture.yaml`
 
-## 0. Two editions, one structure
+## 0. One language: English
 
-The course exists twice: an **English edition** (`content/en/`, the site's default) and a
-**Bangla edition** (`content/bn/`). The learner switches between them in the header.
+Everything is written in **English**: slides, flashcards, quiz, outline titles. There is no
+second edition. A learner who prefers Bangla flips the EN / BN switch in the header, and
+Google Translate translates the page in their browser.
 
-They are **two editions, not a translation**. A sentence that is exactly right in English can
-sound stiff and foreign when carried word for word into Bangla, and the other way round. So
-each edition is written in its own natural voice (sections 2 and 2a): rephrase, reorder,
-split or merge sentences, pick the idiom a native writer would use. What must not change is
-the *teaching*: the same idea on each slide, the same facts, numbers and code behaviour.
+So write English that a machine translates well, which is also English a busy reader takes in
+at a glance:
 
-Both editions share **one structure**, so that a bookmark, a progress mark or a link points to
-the same thing in either language. The validator compares the editions and fails on any
-difference in:
-
-- slide `slug`s, their order and `kind`
-- the blocks of each slide: same `type`s in the same order, same visual `kind`, same number
-  of nodes, edges, actors, messages, layers, columns, steps, rows, bars, points and items
-- every identifier and setting: node/actor `id`, `from`/`to`/`at`, `col`/`row`, `tone`, `icon`,
-  `style`, `variant`, `lang`, `dashed`, `animate`, bar `value`
-- aside sections (same `type`s, same number of items, same `refs` targets)
-- flashcards (same number, same order, same `ref`) and quiz questions (same number and order,
-  same options in the same order with the same `correct` flags, same `ref`, `code` present or not)
-
-Free to differ: every piece of prose, `keywords` (search terms of that language — any number),
-comments inside code, and the line a code `mark` points to (when a comment wraps differently).
-
-When you write a new segment, write both editions. When you change the structure of one
-(add a slide, a node, an option), make the same change in the other.
+- Short sentences, one idea each. Name the subject; avoid long chains of "which" and "that".
+- No idioms, puns or wordplay that only work in English ("a perfect storm", "kick the can").
+  Say the plain thing.
+- Put identifiers, commands, file names and code in backticks: inline code, code blocks and
+  commands are marked so Google leaves them as written.
 
 ## 1. The learner
 
@@ -50,48 +34,27 @@ Write so that **a 10-year-old could follow the idea**, and so that **an engineer
 implement it tomorrow**. Both at once. Most tutorials stop at the high-level idea; ours must
 show exactly how to do it properly.
 
-## 2. Voice and language — Bangla edition
-
-- Bangla, চলিত ভাষা, friendly but respectful, addressing the learner as **আপনি** — never
-  তুমি. Every form that speaks to the learner takes the আপনি conjugation: আপনার, আপনাকে;
-  করুন, দেখুন, রাখুন, লিখুন, দিন, নিন, চালান, পাঠান (commands); করেন, পারেন, জানেন, পান
-  (present); করছেন, করেছেন, করবেন, পারবেন (other tenses); চলুন (let's). This covers prose,
-  `check`, flashcards, quiz, step bodies, tips and code comments. Third-person verbs stay as
-  they are (সার্ভার ক্র্যাশ করবে), and so does a conditional (deploy করলে). Story characters
-  may speak to each other in whatever register fits them. Short sentences.
-- Precise technical terms stay in English/Latin script: cache, queue, request, response,
-  index, lock, transaction, retry, timeout, token, idempotency key, deploy.
-  Words that are everyday Bangla are written in Bangla: সার্ভার, ডেটাবেস, কোড, অ্যাপ, ইমেইল,
-  পাসওয়ার্ড, টেবিল, ফাইল, ব্যবহারকারী.
-- The first time a term appears in a segment, say what it means in a few plain words.
-- Bangla digits in prose (১০ জন, ৫ মিনিট); ASCII digits inside code, commands and units
-  glued to English (`200ms`, `p99`).
-- Every abstract idea gets a **real-life metaphor from everyday Bangladeshi life**: চায়ের
-  দোকান, বিরিয়ানির হোটেল, মুদি দোকানের বাকির খাতা, ট্রেনের টিকিট কাউন্টার, বিকাশ/মোবাইল ব্যাংকিং,
-  ডাকপিয়ন, স্কুলের হাজিরা খাতা, লাইব্রেরি, বাসের কন্ডাক্টর, ফার্মেসি, কুরিয়ার, বিয়েবাড়ির রান্না,
-  ট্রাফিক সিগন্যাল. The metaphor must map onto the mechanism point by point — not decoration.
-  Reuse the same metaphor through a whole segment so the learner builds one mental picture.
-- No filler, no hype, no "চলো শুরু করা যাক". No emoji in prose. Every sentence must teach.
-- Be technically correct. State the industry-standard opinion plainly; when something is a
-  genuine trade-off, say what decides it.
-
-## 2a. Voice and language — English edition
+## 2. Voice and language
 
 - Plain, international English, as a good senior engineer would explain it to a colleague:
   friendly, direct, addressing the learner as **you**. Short sentences, active voice,
-  contractions are fine ("don't", "it's"). Write it as if English were the original — never
-  translationese ("This is called as…", "Let us see…", "In this case what happens is…").
+  contractions are fine ("don't", "it's").
 - Technical terms stay as engineers say them (cache, queue, idempotency key, deploy). The
   first time a term appears in a segment, say what it means in a few plain words.
-- ASCII digits everywhere (`10 people`, `5 minutes`). Money in the story world stays in taka
-  (`500 taka`, `Tk 500`).
-- Metaphors: keep the everyday Bangladeshi scene when it travels well — a tea stall, a biryani
-  restaurant, the corner shop's credit ledger, a train ticket counter, a mobile wallet like
-  bKash, a courier, the wedding kitchen, a bus conductor. Add the two or three words a reader
-  from elsewhere needs to picture it ("the corner shop's credit ledger, where the shopkeeper
-  writes down who owes what"). The metaphor must still map onto the mechanism point by point.
-- People keep their names (Rahim, Karim, Nadia, …); the story world is the same in both editions.
-- Every other rule of section 2 applies: no filler, no hype, no emoji, every sentence teaches.
+- Digits for numbers (`10 people`, `5 minutes`, `200ms`). Money in the story world is in
+  taka (`500 taka`, `Tk 500`).
+- Every abstract idea gets a **real-life metaphor from everyday Bangladeshi life**: a tea
+  stall, a biryani restaurant, the corner shop's credit ledger, a train ticket counter, a
+  mobile wallet like bKash, the postman, a school attendance register, a library, a bus
+  conductor, a pharmacy, a courier, the wedding kitchen, a traffic signal. Add the two or
+  three words a reader from elsewhere needs to picture it ("the corner shop's credit ledger,
+  where the shopkeeper writes down who owes what"). The metaphor must map onto the mechanism
+  point by point — not decoration. Reuse the same metaphor through a whole segment so the
+  learner builds one mental picture.
+- People in the stories have Bangladeshi names (Rahim, Karim, Nadia, …).
+- No filler, no hype, no "let's dive in". No emoji in prose. Every sentence must teach.
+- Be technically correct. State the industry-standard opinion plainly; when something is a
+  genuine trade-off, say what decides it.
 - Interface words, when a lesson mentions them: the four rooms are **Learn**, **Flashcards**,
   **Quiz** and **Bookmarks**; the recall question under a slide is **Ask yourself**; the button
   on a flashcard is **Learn more**; slide kinds are labelled Problem, Concept, Hands-on,
@@ -99,12 +62,11 @@ show exactly how to do it properly.
 
 ## 3. Unit of work: one file per sub-segment
 
-`content/outline.yaml` lists every topic and its sub-segments (with an English `scope` note
-describing what to cover, and every title and summary in both editions:
-`title: {en: '…', bn: '…'}`). Each sub-segment is one file per edition:
+`content/outline.yaml` lists every topic and its sub-segments, with their titles, a topic
+summary, and a `scope` note describing what to cover (for authors only). Each sub-segment is
+one file:
 
-    content/en/<topic-slug>/<segment-slug>.yaml
-    content/bn/<topic-slug>/<segment-slug>.yaml
+    content/<topic-slug>/<segment-slug>.yaml
 
 with three top-level keys: `slides`, `flashcards`, `quiz`. Cover the segment's `scope`
 completely — nothing left unexplained — but in small steps.
@@ -196,16 +158,15 @@ links per slide (hard limit 4). Not every slide needs one. See section 8.
 - Code must be correct and realistic — real class and method names, no pseudo-code, no
   `// ...do stuff`. Show only the part that matters: **max 36 lines, max 96 columns**,
   spaces not tabs. Omit `<?php`, `namespace` and `use` lines unless they are the point.
-- Short comments inside code are welcome where they aim the eye — in the language of the
-  edition. Apart from its comments, the code is the same in both editions.
+- Short comments inside code are welcome where they aim the eye.
 - `file` is the path label (`src/Service/PaymentService.php`, `config/packages/cache.yaml`).
 
 ## 6. Flashcards
 
 A flashcard is shown for 15 seconds to someone with **no context** — it must stand alone.
 
-- `q`: one short question (max 140 characters). `a`: the answer in one or two short
-  sentences (max 230). No "as we saw above".
+- `q`: one short question (max 224 characters). `a`: the answer in one or two short
+  sentences (max 368). No "as we saw above".
 - `more`: 2–4 sentences of extra explanation shown when the learner asks to learn more.
 - `ref`: the slide that teaches it.
 - Cover every important fact of the segment: definitions, rules, numbers, "X vs Y",
@@ -213,12 +174,12 @@ A flashcard is shown for 15 seconds to someone with **no context** — it must s
 
 ## 7. Quiz questions
 
-- Test understanding and application, not wording: prefer small scenarios ("রহিমের অ্যাপে…
-  কী করা উচিত?") and "what is wrong with this code" (optional `code` + `lang`).
+- Test understanding and application, not wording: prefer small scenarios ("In Rahim's app…
+  what should he do?") and "what is wrong with this code" (optional `code` + `lang`).
 - 3–5 options. Wrong options must be the mistakes a real beginner would make — plausible,
   never silly. Vary the position of the correct option.
 - Roughly **one question in four has more than one correct option** (the site shows
-  checkboxes then). Do not write "(একাধিক)" in the question; the site labels it.
+  checkboxes then). Do not write "(select all)" in the question; the site labels it.
 - Every option has a `why`: for a wrong option, why it is wrong; for a correct one, why it
   is right. `hint` nudges thinking without giving the answer away. `ref` is the slide to study.
 - Spread the questions across all slides of the segment.
@@ -246,7 +207,7 @@ A blank line starts a new paragraph.
 
 ## 10. YAML rules (these prevent almost every syntax error)
 
-- One-line strings: **always single-quoted** — `title: 'Cache-aside কী?'`.
+- One-line strings: **always single-quoted** — `title: 'What is cache-aside?'`.
   Inside single quotes nothing is special except `'` itself, which is written `''`
   (`'Conway''s Law'`). Backslashes need no escaping.
 - Multi-line prose and **all code**: a literal block — `body: |` then the text indented
@@ -258,61 +219,59 @@ A blank line starts a new paragraph.
 
 ## 11. Schema reference
 
-Lengths are counted in visible characters (a Bangla letter with its vowel sign counts once;
-markup does not count). Limits are enforced by the validator. The numbers below are for the
-Bangla edition; **English limits are 1.6× larger** (the same idea takes more Latin letters,
-and they are narrower on screen) — the validator applies this for you.
+Lengths are counted in visible characters (markup such as `**`, backticks and link targets
+does not count). The validator enforces every limit below.
 
 ### Slide
 
 ```yaml
 - slug: cache-aside-flow        # unique in this file; lowercase english, hyphens
-  title: '…'                    # max 70
+  title: '…'                    # max 112
   kind: concept                 # story | concept | howto | pitfall | compare | recap
-  tldr: '…'                     # the whole slide in one line, 12–170; shown in search results
-  keywords: ['cache aside', 'lazy loading', 'ক্যাশ']   # 2–10 search terms, English AND Bangla
+  tldr: '…'                     # the whole slide in one line, 12–272; shown in search results
+  keywords: ['cache aside', 'lazy loading']   # 2–10 search terms, each max 40
   blocks: [ … ]                 # 2–5 blocks, at least one visual or code
   aside: [ … ]                  # 1–4 sections
-  check: {q: '…', a: '…'}       # q max 170, a max 260
+  check: {q: '…', a: '…'}       # q 8–272, a max 416
 ```
 
 Per slide at most: 2 `text`, 1 `metaphor`, 2 `points`, 1 `quote`, 2 `code`, 2 `visual`;
-text + metaphor bodies together max 780 characters.
+text + metaphor bodies together max 1248 characters.
 
 ### Blocks
 
 ```yaml
 - type: text
-  body: |                       # 20–560
+  body: |                       # 20–896
     …
 - type: metaphor
-  title: 'মুদি দোকানের বাকির খাতা'   # max 48
+  title: 'The corner shop ledger'   # max 77
   icon: shop                    # optional, from the icon list
-  body: |                       # 20–460
+  body: |                       # 20–736
     …
 - type: points
-  title: 'মনে রাখুন'             # optional, max 48
+  title: 'Remember'             # optional, max 77
   style: check                  # dot (default) | check | cross | number
-  items: ['…', '…']             # 2–5 items, each max 150
+  items: ['…', '…']             # 2–5 items, each max 240
 - type: quote
-  body: '…'                     # 8–190 — a rule worth memorising
-  by: 'Conway''s Law'           # optional, max 40
+  body: '…'                     # 8–304 — a rule worth memorising
+  by: 'Conway''s Law'           # optional, max 64
 - type: code
   lang: php                     # php vue ts js yaml sql bash json http nginx dockerfile twig
                                 # text diff ini xml html graphql protobuf env
-  file: 'src/Service/OrderService.php'   # optional label, max 70
+  file: 'src/Service/OrderService.php'   # optional label, max 112
   variant: good                 # good | bad | neutral (default)
   code: |                       # max 36 lines × 96 columns
     …
   marks:                        # optional, max 5 — highlighted lines with a hover explanation
-    - {line: 4, tip: '…'}       # tip 8–200
+    - {line: 4, tip: '…'}       # tip 8–320
 - type: visual                  # see below
 ```
 
 ### Visuals
 
-Every visual needs a `caption` (6–120) and a `tip` on every element — the tip is the short
-explanation shown when the learner hovers that element (8–220 characters; say what the
+Every visual needs a `caption` (6–192) and a `tip` on every element — the tip is the short
+explanation shown when the learner hovers that element (8–352 characters; say what the
 element *is or does*, do not repeat its label).
 
 `tone` (optional everywhere): `default`, `good` (green), `bad` (red), `warn` (amber),
@@ -328,14 +287,15 @@ edges are the story: write each label as a full short sentence of what happens i
   caption: '…'
   animate: true                 # default. false = static diagram (state machines, structure):
                                 #   all arrows drawn at once with their labels ON the arrows,
-                                #   so labels must then be max 20 characters
+                                #   so labels must then be max 32 characters
   nodes:                        # 2–9
     - {id: api, label: 'API', sub: 'Symfony', icon: api, tone: accent, col: 1, row: 0, tip: '…'}
   edges:                        # 1–10, in story order
-    - {from: api, to: db, label: 'অর্ডারটা ডেটাবেসে লেখে', tip: '…', tone: good, dashed: false}
+    - {from: api, to: db, label: 'Writes the order to the database', tip: '…', tone: good, dashed: false}
 ```
 
-- `id`: lowercase, starts with a letter (`api`, `db_main`). `label` max 22, `sub` max 26.
+- `id`: lowercase, starts with a letter (`api`, `db_main`). `label` max 36, `sub` max 42;
+  an animated edge `label` max 103.
 - Grid: `col` 0–4, `row` 0–3, in steps of 0.5. Left-to-right is the natural reading order.
   Two nodes must be at least 1 col or 1 row apart, and **an arrow must not pass through a
   third node** — the validator checks both; move a node off the line if it complains.
@@ -350,11 +310,11 @@ edges are the story: write each label as a full short sentence of what happens i
   kind: sequence
   caption: '…'
   actors:                       # 2–4 columns, left to right
-    - {id: rahim, label: 'রহিম', icon: user, tip: '…'}          # label max 18
+    - {id: rahim, label: 'Rahim', icon: user, tip: '…'}          # label max 29
   messages:                     # 2–9 rows, top to bottom, played one at a time
-    - {from: rahim, to: db, label: 'ব্যালেন্স পড়ো', tip: '…'}     # label max 46; tip optional
-    - {from: db, to: rahim, label: '১০০ টাকা', dashed: true}
-    - {at: db, note: 'ব্যালেন্স এখন −৫০', tone: bad}             # a note on one actor's line
+    - {from: rahim, to: db, label: 'Read the balance', tip: '…'}  # label max 74; tip optional
+    - {from: db, to: rahim, label: '100 taka', dashed: true}
+    - {at: db, note: 'Balance is now −50', tone: bad}            # a note on one actor's line, max 74
 ```
 
 **layers** — a stack drawn in 3D, top to bottom (architecture layers, a request passing
@@ -363,7 +323,7 @@ down, "easy to change" → "hard to change").
 ```yaml
   kind: layers
   layers:                       # 2–6
-    - {label: 'Controller', sub: 'HTTP বোঝে', tone: default, tip: '…'}   # label 26, sub 48
+    - {label: 'Controller', sub: 'Speaks HTTP', tone: default, tip: '…'}   # label 42, sub 77
 ```
 
 **compare** — 2–3 columns side by side (bad vs good, option A vs B).
@@ -371,11 +331,11 @@ down, "easy to change" → "hard to change").
 ```yaml
   kind: compare
   columns:
-    - title: 'Offset pagination'   # max 30
+    - title: 'Offset pagination'   # max 48
       tone: bad
       icon: cross                  # optional
       tip: '…'
-      items: ['…', '…']            # 1–5, each max 96
+      items: ['…', '…']            # 1–5, each max 154
 ```
 
 **steps** — an ordered process, highlighted one step at a time.
@@ -383,16 +343,16 @@ down, "easy to change" → "hard to change").
 ```yaml
   kind: steps
   steps:                        # 3–6
-    - {title: '১. Expand', body: 'নতুন কলাম যোগ করুন', tip: '…'}   # title 30, body 120
+    - {title: '1. Expand', body: 'Add the new column', tip: '…'}   # title 48, body 192
 ```
 
 **table** — a cheat-sheet grid. First header may be `''`.
 
 ```yaml
   kind: table
-  headers: ['', 'REST', 'gRPC']          # 2–5, each max 22
+  headers: ['', 'REST', 'gRPC']          # 2–5, each max 36
   rows:                                  # 2–7
-    - cells: ['গতি', 'মাঝারি', 'দ্রুত']    # one per header, each max 52
+    - cells: ['Speed', 'Medium', 'Fast']   # one per header, each max 84
       tip: '…'
 ```
 
@@ -401,7 +361,7 @@ down, "easy to change" → "hard to change").
 ```yaml
   kind: bars
   items:                        # 2–6
-    - {label: 'p50', value: 40, display: '40ms', tone: good, tip: '…'}   # value sets bar length
+    - {label: 'p50', value: 40, display: '40ms', tone: good, tip: '…'}   # label 42, display 29; value sets bar length
 ```
 
 Which one? Something *moves between parts* → flow. *Order of messages over time* matters →
@@ -411,47 +371,51 @@ sequence. *Stacked levels* → layers. *A or B* → compare. *Do this, then this
 ### Aside sections
 
 ```yaml
-- {type: story, title: '…', body: '…'}        # title max 48, body 20–440
-- {type: problem, body: '…'}                  # what problem this solves; max 320
-- {type: remember, body: '…'}                 # one-line memory hook; max 220
+- {type: story, title: '…', body: '…'}        # title max 77, body 20–704
+- {type: problem, body: '…'}                  # what problem this solves; 10–512
+- {type: remember, body: '…'}                 # one-line memory hook; 10–352
 - type: tips                                  # also: pitfalls
-  items: ['…']                                # 1–4, each max 150
+  items: ['…']                                # 1–4, each max 240
 - type: commands
-  title: 'Messenger কমান্ড'                    # optional, max 40
+  title: 'Messenger commands'                 # optional, max 64
   items:                                      # 1–6
-    - {cmd: 'php bin/console messenger:consume async', desc: 'worker চালু করুন'}
+    - {cmd: 'php bin/console messenger:consume async', desc: 'Start a worker'}   # desc max 176
 - type: terms
   items:                                      # 1–5
-    - {term: 'TTL', meaning: 'কতক্ষণ পরে জিনিসটা বাসি ধরা হবে'}
+    - {term: 'TTL', meaning: 'How long until a stored copy counts as stale'}   # term 58, meaning 240
 - type: when
-  use: ['…']                                  # 1–3, each max 120
+  use: ['…']                                  # 1–3, each max 192
   avoid: ['…']                                # 1–3
 - type: refs
   items:                                      # 1–3
-    - {to: 'caching/cache-stampede', label: 'Cache stampede ঠেকানো'}
+    - {to: 'caching/cache-stampede', label: 'Preventing a cache stampede'}   # label max 96
 ```
 
 ### Flashcards and quiz
 
 ```yaml
 flashcards:
-  - q: '…'                      # 8–140
-    a: '…'                      # max 230
-    more: |                     # 60–620
+  - q: '…'                      # 8–224
+    a: '…'                      # max 368
+    more: |                     # 60–992
       …
     ref: cache-aside-flow
 
 quiz:
-  - q: '…'                      # 10–300
+  - q: '…'                      # 10–480
     lang: php                   # only with code
     code: |                     # optional, max 24 lines
       …
-    hint: '…'                   # 8–220
+    hint: '…'                   # 8–352
     options:                    # 3–5; at least one correct and one wrong
-      - {text: '…', correct: true, why: '…'}     # text max 170, why 8–280
+      - {text: '…', correct: true, why: '…'}     # text max 272, why 8–448
       - {text: '…', correct: false, why: '…'}
     ref: cache-aside-flow
 ```
+
+### Outline
+
+Topic `title` max 77 and `summary` max 272; segment `title` max 96.
 
 ### Icons
 
@@ -468,14 +432,14 @@ From the `backend/` directory:
 
     php bin/validate-content.php <topic>/<segment> [<topic>/<segment> …]
 
-It checks both editions of each segment and that their structures match. It must end with
+It checks each segment against this guide. It must end with
 `OK — no errors`. Warnings about links to segments that have "no content
 yet" are fine. Fix every error; do not delete content to silence the validator — rephrase
-or split instead. Do not edit any file outside your assigned `content/<edition>/<topic>/` files.
+or split instead. Do not edit any file outside your assigned `content/<topic>/` files.
 
 ## 13. Final checklist per file
 
-- Does each edition read as if it had been written in that language first?
+- Is the English plain enough to survive machine translation (short sentences, no idioms)?
 - Does the first slide make the learner feel the problem?
 - Could a 10-year-old retell each slide's idea after reading it once?
 - Does at least one slide show real, correct, paste-able Symfony (or Vue) code for doing it properly?
