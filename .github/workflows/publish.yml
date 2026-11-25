@@ -1,0 +1,55 @@
+# Checks every content change and publishes the JSON the app reads.
+#
+#   pull request → validate only
+#   push to main → validate, build, and replace the `build` branch with the new JSON
+#
+# The app fetches https://raw.githubusercontent.com/<owner>/<repo>/build/outline.json (and the
+# topic files next to it), so a merged change is live within a few minutes, without
+# redeploying the app. If validation fails, nothing is published and learners keep the
+# last good version.
+name: Publish content
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Validate
+        run: npm run check
+
+      - name: Build JSON
+        run: npm run build
+
+      - name: Publish to the build branch
+        if: github.event_name != 'pull_request'
+        working-directory: dist
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git init -q -b build
+          git add -A
+          git -c user.name='github-actions[bot]' \
+              -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              commit -q -m "Build from ${GITHUB_SHA}"
+          git push -q -f "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" build

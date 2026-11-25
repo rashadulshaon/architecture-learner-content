@@ -5,8 +5,8 @@ architecture. You write the content. The site renders it; you never write HTML.
 
 Read this whole guide, then read the two finished example files — they are the quality bar:
 
-- `content/start/how-to-learn.yaml`
-- `content/start/crud-to-architecture.yaml`
+- `start/how-to-learn.yaml`
+- `start/crud-to-architecture.yaml`
 
 ## 0. One language: English
 
@@ -62,11 +62,11 @@ show exactly how to do it properly.
 
 ## 3. Unit of work: one file per sub-segment
 
-`content/outline.yaml` lists every topic and its sub-segments, with their titles, a topic
+`outline.yaml` lists every topic and its sub-segments, with their titles, a topic
 summary, and a `scope` note describing what to cover (for authors only). Each sub-segment is
 one file:
 
-    content/<topic-slug>/<segment-slug>.yaml
+    <topic-slug>/<segment-slug>.yaml
 
 with three top-level keys: `slides`, `flashcards`, `quiz`. Cover the segment's `scope`
 completely — nothing left unexplained — but in small steps.
@@ -428,14 +428,14 @@ shuffle repeat school megaphone target wifi wifi-off send inbox image id history
 
 ## 12. Validate before you finish
 
-From the `backend/` directory:
+From the repository root (run `npm install` once first):
 
-    php bin/validate-content.php <topic>/<segment> [<topic>/<segment> …]
+    npm run check -- <topic>/<segment> [<topic>/<segment> …]
 
 It checks each segment against this guide. It must end with
 `OK — no errors`. Warnings about links to segments that have "no content
 yet" are fine. Fix every error; do not delete content to silence the validator — rephrase
-or split instead. Do not edit any file outside your assigned `content/<topic>/` files.
+or split instead. Do not edit any file outside your assigned `<topic>/` files.
 
 ## 13. Final checklist per file
 
